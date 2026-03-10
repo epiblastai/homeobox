@@ -1,18 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
-import time
-from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 import numpy as np
-import obstore
-from numcodecs.zstd import Zstd
 
 from zarr.core.array import Array, AsyncArray
-from zarr.core.array_spec import ArrayConfig, ArraySpec
 from zarr.core.buffer import default_buffer_prototype
 from zarr.core.sync import sync
 from zarr.core.indexing import BasicIndexer, BasicSelection, ChunkProjection, Indexer
@@ -20,11 +14,7 @@ from zarr.core.indexing import BasicIndexer, BasicSelection, ChunkProjection, In
 from zarr.core.buffer import BufferPrototype, NDArrayLikeOrScalar
 from zarr.core.chunk_grids import ChunkGrid
 
-try:
-    from lancell._rust import RustShardReader
-    _HAS_RUST = True
-except ImportError:
-    _HAS_RUST = False
+from lancell._rust import RustShardReader
 
 
 # ---------------------------------------------------------------------------
@@ -225,55 +215,24 @@ class BatchArray(Array):
 # Obstore-based shard reader
 # ---------------------------------------------------------------------------
 
-_MAX_UINT64 = 2**64 - 1
-
 
 class ObstoreShardReader:
-    """Reads zarr sharded array chunks via obstore, bypassing zarr's store layer."""
+    """Reads zarr sharded array chunks via the Rust shard reader."""
 
-    def __init__(self, s3_store, arr: Array):
+    def __init__(self, arr: Array):
         """
         Parameters
         ----------
-        s3_store : obstore S3Store pointing at the zarr array root
-        arr : opened zarr.Array (used only for metadata)
+        arr : opened zarr.Array (sharded, backed by an obstore S3Store)
         """
-        md = arr.metadata
-        self.s3_store = s3_store
-        self.dtype = np.dtype(md.dtype.to_native_dtype())
-
-        sharding_codec = md.codecs[0]
-        self.chunk_size: int = sharding_codec.chunk_shape[0]
-        self.shard_size: int = arr.shards[0]
-        self.chunks_per_shard: int = self.shard_size // self.chunk_size
-
-        # Index sizing: 2 x uint64 per chunk + 4 bytes crc32c
-        self.index_raw_bytes: int = self.chunks_per_shard * 2 * 8
-        self.index_total_bytes: int = self.index_raw_bytes + 4
-
-        # Direct zstd codec for fast decompression (bypasses zarr pipeline overhead)
-        self.zstd_codec = Zstd()
-        self.chunk_bytes = self.chunk_size * self.dtype.itemsize
-
-        # Create Rust reader if available (extracts S3 config from arr.store internally)
-        self._rust_reader = None
-        if _HAS_RUST:
-            try:
-                self._rust_reader = RustShardReader(arr)
-            except Exception as e:
-                print(f"    [warn] Failed to create RustShardReader, using Python fallback: {e}")
-
-    def parse_shard_index(self, raw_bytes: bytes) -> np.ndarray:
-        """Parse raw shard index bytes into (N, 2) uint64 array."""
-        return np.frombuffer(
-            raw_bytes[: self.index_raw_bytes], dtype="<u8"
-        ).reshape(self.chunks_per_shard, 2)
+        self.dtype = np.dtype(arr.metadata.dtype.to_native_dtype())
+        self._rust_reader = RustShardReader(arr)
 
     async def read_ranges(
         self, starts: np.ndarray, ends: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
         """
-        Read element ranges from the sharded array via obstore.
+        Read element ranges from the sharded array.
 
         Parameters
         ----------
@@ -284,179 +243,11 @@ class ObstoreShardReader:
         (flat_data, lengths) where flat_data is the concatenated result and
         lengths[i] = ends[i] - starts[i].
         """
-        if self._rust_reader is not None:
-            t0 = time.perf_counter()
-            loop = asyncio.get_running_loop()
-            raw_bytes, lengths = await loop.run_in_executor(
-                None,
-                self._rust_reader.read_ranges,
-                starts.astype(np.int64),
-                ends.astype(np.int64),
-            )
-            flat_data = np.frombuffer(raw_bytes, dtype=self.dtype)
-            t1 = time.perf_counter()
-            print(
-                f"    read_ranges (rust): {len(starts)} cells, "
-                f"total={t1 - t0:.4f}s"
-            )
-            return flat_data, lengths
-
-        t_start = time.perf_counter()
-        chunk_size = self.chunk_size
-        chunks_per_shard = self.chunks_per_shard
-
-        # Step 1: Map each range to (absolute_chunk_idx) and track slicing info.
-        # For each chunk we need to fetch, record which cell ranges need slices.
-        # chunk_requests: abs_chunk_idx -> list of (cell_idx, local_start, local_end)
-        chunk_requests: dict[int, list[tuple[int, int, int]]] = defaultdict(list)
-
-        for cell_idx in range(len(starts)):
-            s, e = int(starts[cell_idx]), int(ends[cell_idx])
-            pos = s
-            while pos < e:
-                abs_chunk = pos // chunk_size
-                local_start = pos % chunk_size
-                chunk_end = min(e, (abs_chunk + 1) * chunk_size)
-                local_end = local_start + (chunk_end - pos)
-                chunk_requests[abs_chunk].append((cell_idx, local_start, local_end))
-                pos = chunk_end
-
-        # Step 2: Group chunks by shard
-        # shard_chunks: shard_idx -> set of local_chunk_idx
-        shard_chunks: dict[int, set[int]] = defaultdict(set)
-        for abs_chunk in chunk_requests:
-            shard_idx = abs_chunk // chunks_per_shard
-            local_chunk = abs_chunk % chunks_per_shard
-            shard_chunks[shard_idx].add(local_chunk)
-
-        t_mapping = time.perf_counter()
-        n_chunks = len(chunk_requests)
-        n_shards = len(shard_chunks)
-
-        # Step 3: Fetch shard indexes concurrently
-        async def fetch_shard_index(shard_idx: int):
-            key = f"c/{shard_idx}"
-            meta = await obstore.head_async(self.s3_store, key)
-            fsize = meta["size"]
-            idx_raw = await obstore.get_range_async(
-                self.s3_store,
-                key,
-                start=fsize - self.index_total_bytes,
-                end=fsize,
-            )
-            return shard_idx, key, self.parse_shard_index(bytes(idx_raw))
-
-        index_results = await asyncio.gather(
-            *[fetch_shard_index(sid) for sid in sorted(shard_chunks)]
+        loop = asyncio.get_running_loop()
+        raw_bytes, lengths = await loop.run_in_executor(
+            None,
+            self._rust_reader.read_ranges,
+            starts.astype(np.int64),
+            ends.astype(np.int64),
         )
-
-        t_index = time.perf_counter()
-
-        # Step 4: Look up byte ranges and fetch compressed data per shard
-        # Build mapping: abs_chunk_idx -> decoded numpy array (filled after decode)
-        decoded_chunks: dict[int, np.ndarray] = {}
-        fetch_bytes_total = 0
-        fetch_times = []
-        decode_times = []
-
-        async def fetch_and_decode_shard(
-            shard_idx: int, shard_key: str, index: np.ndarray
-        ):
-            nonlocal fetch_bytes_total
-            local_chunks = sorted(shard_chunks[shard_idx])
-            byte_starts = []
-            byte_ends = []
-            valid_locals = []
-            for lc in local_chunks:
-                off, ln = index[lc]
-                if off == _MAX_UINT64:
-                    # Empty chunk - store zeros
-                    abs_chunk = shard_idx * chunks_per_shard + lc
-                    decoded_chunks[abs_chunk] = np.zeros(chunk_size, dtype=self.dtype)
-                    continue
-                byte_starts.append(int(off))
-                byte_ends.append(int(off + ln))
-                valid_locals.append(lc)
-
-            if not valid_locals:
-                return
-
-            t_f0 = time.perf_counter()
-            buffers = await obstore.get_ranges_async(
-                self.s3_store,
-                shard_key,
-                starts=byte_starts,
-                ends=byte_ends,
-            )
-            t_f1 = time.perf_counter()
-
-            fetch_bytes_total += sum(len(b) for b in buffers)
-            fetch_times.append(t_f1 - t_f0)
-
-            # Decode chunks: zstd decompress directly via numcodecs (bypasses zarr pipeline)
-            t_d0 = time.perf_counter()
-            zstd = self.zstd_codec
-            dtype = self.dtype
-
-            def _decode_one(buf):
-                return np.frombuffer(zstd.decode(bytes(buf)), dtype=dtype)
-
-            loop = asyncio.get_running_loop()
-            with concurrent.futures.ThreadPoolExecutor() as pool:
-                decoded = list(await asyncio.gather(
-                    *[loop.run_in_executor(pool, _decode_one, buf) for buf in buffers]
-                ))
-            t_d1 = time.perf_counter()
-
-            decode_times.append(t_d1 - t_d0)
-
-            for lc, chunk_arr in zip(valid_locals, decoded):
-                abs_chunk = shard_idx * chunks_per_shard + lc
-                decoded_chunks[abs_chunk] = chunk_arr
-
-        await asyncio.gather(
-            *[
-                fetch_and_decode_shard(sid, key, idx)
-                for sid, key, idx in index_results
-            ]
-        )
-
-        t_fetch_decode = time.perf_counter()
-        total_fetch = sum(fetch_times)
-        total_decode = sum(decode_times)
-
-        # Step 6: Slice decoded chunks to extract requested elements
-        lengths = ends - starts
-        total = int(lengths.sum())
-        out = np.empty(total, dtype=self.dtype)
-        out_pos = 0
-        for cell_idx in range(len(starts)):
-            s, e = int(starts[cell_idx]), int(ends[cell_idx])
-            pos = s
-            while pos < e:
-                abs_chunk = pos // chunk_size
-                local_start = pos % chunk_size
-                chunk_end = min(e, (abs_chunk + 1) * chunk_size)
-                local_end = local_start + (chunk_end - pos)
-                n = local_end - local_start
-                out[out_pos : out_pos + n] = decoded_chunks[abs_chunk][
-                    local_start:local_end
-                ]
-                out_pos += n
-                pos = chunk_end
-
-        t_slice = time.perf_counter()
-
-        print(
-            f"    read_ranges: {len(starts)} cells, {n_chunks} chunks, {n_shards} shards, "
-            f"{fetch_bytes_total/1e6:.1f}MB | "
-            f"map={t_mapping - t_start:.4f}s  "
-            f"idx={t_index - t_mapping:.4f}s  "
-            f"fetch={total_fetch:.4f}s({len(fetch_times)}shards)  "
-            f"decode={total_decode:.4f}s  "
-            f"fetch+decode_wall={t_fetch_decode - t_index:.4f}s  "
-            f"slice={t_slice - t_fetch_decode:.4f}s  "
-            f"total={t_slice - t_start:.4f}s"
-        )
-
-        return out, lengths
+        return np.frombuffer(raw_bytes, dtype=self.dtype), lengths

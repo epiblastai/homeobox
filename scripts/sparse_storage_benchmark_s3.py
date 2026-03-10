@@ -4,6 +4,7 @@ S3 equivalent of sparse_storage_benchmark.py.
 Reads data already uploaded by sparse_storage_setup_s3.py.
 """
 
+import argparse
 import asyncio
 import time
 
@@ -16,6 +17,8 @@ from obstore.store import S3Store
 from zarr.storage import ObjectStore
 
 from lancell.batch_selection import ObstoreShardReader
+
+ALL_METHODS = ["one_table", "two_table", "zarr_obstore"]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -115,81 +118,101 @@ def bench(name: str, fn, queries: list[tuple[str, str]]):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Benchmark sparse storage strategies on S3")
+    parser.add_argument(
+        "--methods",
+        nargs="+",
+        choices=ALL_METHODS,
+        default=ALL_METHODS,
+        help=f"Methods to benchmark (default: all). Choices: {', '.join(ALL_METHODS)}",
+    )
+    args = parser.parse_args()
+    methods = set(args.methods)
+
+    print(f"Running methods: {', '.join(sorted(methods))}")
     print("Opening tables from S3...")
-    tbl1 = lancedb.connect(f"{S3_BASE}/approach1_blob").open_table("cells")
-    db2 = lancedb.connect(f"{S3_BASE}/approach2_two_tables")
-    meta2, blob2 = db2.open_table("metadata"), db2.open_table("blobs")
-    meta3 = lancedb.connect(f"{S3_BASE}/approach3_lance").open_table("metadata")
 
-    indices_store = ObjectStore(
-        S3Store("epiblast", prefix="lancell_data_structure_test/approach3_indices.zarr/", region="us-east-2"),
-        read_only=True,
-    )
-    counts_store = ObjectStore(
-        S3Store("epiblast", prefix="lancell_data_structure_test/approach3_counts.zarr/", region="us-east-2"),
-        read_only=True,
-    )
-    indices_arr = zarr.open_array(store=indices_store, mode="r")
-    counts_arr = zarr.open_array(store=counts_store, mode="r")
-    print(f"Zarr indices: shape={indices_arr.shape}, shards={indices_arr.shards}")
-    print(f"Zarr counts:  shape={counts_arr.shape}, shards={counts_arr.shards}")
+    all_benches = []
 
-    # Create obstore-based shard readers
-    indices_s3 = S3Store(
-        "epiblast",
-        prefix="lancell_data_structure_test/approach3_indices.zarr/",
-        region="us-east-2",
-    )
-    counts_s3 = S3Store(
-        "epiblast",
-        prefix="lancell_data_structure_test/approach3_counts.zarr/",
-        region="us-east-2",
-    )
-    reader_indices = ObstoreShardReader(indices_s3, indices_arr)
-    reader_counts = ObstoreShardReader(counts_s3, counts_arr)
+    if "one_table" in methods:
+        tbl1 = lancedb.connect(f"{S3_BASE}/approach1_blob").open_table("cells")
+        r1 = bench("blob_column", lambda w: query_blob_col(tbl1, w), QUERIES)
+        all_benches.append(("blob_col", r1))
+        print()
 
-    print(f"\n--- Benchmark ({N_REPEATS} repeats, median) ---\n")
-    r1 = bench("blob_column", lambda w: query_blob_col(tbl1, w), QUERIES)
-    print()
-    r2 = bench("two_tables", lambda w: query_two_tbl(meta2, blob2, w), QUERIES)
-    print()
-    r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w), QUERIES)
+    if "two_table" in methods:
+        db2 = lancedb.connect(f"{S3_BASE}/approach2_two_tables")
+        meta2, blob2 = db2.open_table("metadata"), db2.open_table("blobs")
+        r2 = bench("two_tables", lambda w: query_two_tbl(meta2, blob2, w), QUERIES)
+        all_benches.append(("two_tbl", r2))
+        print()
 
-    # Verify all approaches return identical results
-    all_benches = [("blob_col", r1), ("two_tbl", r2), ("zarr_obstore", r3)]
-    print("\n--- Verifying result consistency across all approaches ---")
-    for _, label in QUERIES:
-        ref_name, ref = all_benches[0]
-        ref_mat = ref[label]["mat"]
-        for cmp_name, cmp in all_benches[1:]:
-            cmp_mat = cmp[label]["mat"]
-            try:
-                assert ref_mat.shape == cmp_mat.shape, (
-                    f"[{label}] shape mismatch: {ref_name} {ref_mat.shape} vs {cmp_name} {cmp_mat.shape}"
-                )
-                diff = ref_mat - cmp_mat
-                assert diff.nnz == 0, (
-                    f"[{label}] data mismatch: {ref_name} vs {cmp_name} ({diff.nnz} differing elements)"
-                )
-                print(f"  {label}: {ref_name} == {cmp_name} OK ({ref_mat.shape[0]} cells)")
-            except AssertionError as e:
-                print(f"  {label}: {ref_name} != {cmp_name} FAIL: {e}")
+    if "zarr_obstore" in methods:
+        meta3 = lancedb.connect(f"{S3_BASE}/approach3_lance").open_table("metadata")
+        indices_store = ObjectStore(
+            S3Store("epiblast", prefix="lancell_data_structure_test/approach3_indices.zarr/", region="us-east-2"),
+            read_only=True,
+        )
+        counts_store = ObjectStore(
+            S3Store("epiblast", prefix="lancell_data_structure_test/approach3_counts.zarr/", region="us-east-2"),
+            read_only=True,
+        )
+        indices_arr = zarr.open_array(store=indices_store, mode="r")
+        counts_arr = zarr.open_array(store=counts_store, mode="r")
+        print(f"Zarr indices: shape={indices_arr.shape}, shards={indices_arr.shards}")
+        print(f"Zarr counts:  shape={counts_arr.shape}, shards={counts_arr.shards}")
 
-    # Summary
+        reader_indices = ObstoreShardReader(indices_arr)
+        reader_counts = ObstoreShardReader(counts_arr)
+        r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w), QUERIES)
+        all_benches.append(("zarr_obstore", r3))
+        print()
+
+    # Verify consistency across approaches that ran
+    if len(all_benches) > 1:
+        print("--- Verifying result consistency across all approaches ---")
+        for _, label in QUERIES:
+            ref_name, ref = all_benches[0]
+            ref_mat = ref[label]["mat"]
+            for cmp_name, cmp in all_benches[1:]:
+                cmp_mat = cmp[label]["mat"]
+                try:
+                    assert ref_mat.shape == cmp_mat.shape, (
+                        f"[{label}] shape mismatch: {ref_name} {ref_mat.shape} vs {cmp_name} {cmp_mat.shape}"
+                    )
+                    diff = ref_mat - cmp_mat
+                    assert diff.nnz == 0, (
+                        f"[{label}] data mismatch: {ref_name} vs {cmp_name} ({diff.nnz} differing elements)"
+                    )
+                    print(f"  {label}: {ref_name} == {cmp_name} OK ({ref_mat.shape[0]} cells)")
+                except AssertionError as e:
+                    print(f"  {label}: {ref_name} != {cmp_name} FAIL: {e}")
+
+    # Summary table
+    if not all_benches:
+        return
+
     labels = [label for _, label in QUERIES]
-    all_results = [("blob_col", r1), ("two_tbl", r2), ("zarr_obstore", r3)]
+    col_width = 24
+    header_names = [name for name, _ in all_benches]
 
-    print(f"\n{'='*96}")
-    print(f"{'':>26s} | {'blob_col':>24s} | {'two_tbl':>24s} | {'zarr_obstore':>24s}")
-    print(f"{'Query':<18s} {'N':>6s} | {'load':>8s} {'csr':>8s} {'total':>8s}| {'load':>8s} {'csr':>8s} {'total':>8s}| {'load':>8s} {'csr':>8s} {'total':>8s}")
-    print(f"{'-'*106}")
+    print(f"\n{'=' * (26 + (col_width + 3) * len(all_benches))}")
+    print(f"{'':>26s}", end="")
+    for name in header_names:
+        print(f" | {name:>{col_width}s}", end="")
+    print()
+    print(f"{'Query':<18s} {'N':>6s}", end="")
+    for _ in all_benches:
+        print(f" | {'load':>8s} {'csr':>8s} {'total':>8s}", end="")
+    print()
+    print(f"{'-' * (26 + (col_width + 3) * len(all_benches))}")
     for label in labels:
-        n = r1[label]["n"]
-        parts = []
-        for _, r in all_results:
+        n = all_benches[0][1][label]["n"]
+        print(f"{label:<18s} {n:>6d}", end="")
+        for _, r in all_benches:
             d = r[label]
-            parts.append(f"{d['load']:>7.4f}s {d['csr']:>7.4f}s {d['total']:>7.4f}s")
-        print(f"{label:<18s} {n:>6d} | {'| '.join(parts)}")
+            print(f" | {d['load']:>7.4f}s {d['csr']:>7.4f}s {d['total']:>7.4f}s", end="")
+        print()
 
 
 if __name__ == "__main__":
