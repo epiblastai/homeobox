@@ -54,10 +54,14 @@ struct RustBatchReader {
     subchunk_shape: Vec<NonZeroU64>,
     data_type: DataType,
     fill_value: FillValue,
-    /// Subchunk size in elements (1D)
+    /// Number of rows (axis-0 elements) per subchunk
     chunk_size: usize,
     chunks_per_shard: usize,
-    dtype_size: usize,
+    /// Bytes per row along axis 0: product(subchunk_shape[1:]) * dtype_size.
+    /// For 1D arrays this equals dtype_size.
+    element_stride: usize,
+    /// Number of dimensions (for chunk_key calls)
+    ndim: usize,
     /// Encoded size of shard index in bytes
     index_encoded_size: usize,
     /// Shard index cache: shard_idx -> flat Vec<u64> of [offset, size, offset, size, ...]
@@ -150,9 +154,12 @@ impl RustBatchReader {
                 let codec_options = self.codec_options.clone();
                 let chunks_per_shard = self.chunks_per_shard;
                 let index_encoded_size = self.index_encoded_size;
+                let ndim = self.ndim;
 
                 tokio::spawn(async move {
-                    let store_key = array.chunk_key(&[shard_idx as u64]);
+                    let mut shard_indices = vec![0u64; ndim];
+                    shard_indices[0] = shard_idx as u64;
+                    let store_key = array.chunk_key(&shard_indices);
                     let path = ObjectPath::from(store_key.to_string());
 
                     // Fetch or cache shard index
@@ -287,7 +294,7 @@ impl RustBatchReader {
         // Handle fill-value subchunks
         let fill_bytes = self.fill_value.as_ne_bytes();
         for (shard_idx, sc) in fill_subchunks {
-            let mut buf = vec![0u8; self.chunk_size * self.dtype_size];
+            let mut buf = vec![0u8; self.chunk_size * self.element_stride];
             for elem_buf in buf.chunks_exact_mut(fill_bytes.len()) {
                 elem_buf.copy_from_slice(fill_bytes);
             }
@@ -303,12 +310,12 @@ impl RustBatchReader {
         range_refs: &[Vec<SubchunkRef>],
         decoded_map: &HashMap<(usize, usize), Vec<u8>>,
     ) -> Result<(Vec<u8>, Vec<i64>), String> {
-        let dtype_size = self.dtype_size;
+        let stride = self.element_stride;
 
         let total_bytes: usize = range_refs
             .iter()
             .flat_map(|refs| refs.iter())
-            .map(|r| (r.elem_end - r.elem_start) * dtype_size)
+            .map(|r| (r.elem_end - r.elem_start) * stride)
             .sum();
         let mut flat = Vec::with_capacity(total_bytes);
         let mut lengths = Vec::with_capacity(range_refs.len());
@@ -326,8 +333,8 @@ impl RustBatchReader {
                             r.shard_idx, r.subchunk_in_shard
                         )
                     })?;
-                let byte_start = r.elem_start * dtype_size;
-                let byte_end = r.elem_end * dtype_size;
+                let byte_start = r.elem_start * stride;
+                let byte_end = r.elem_end * stride;
                 flat.extend_from_slice(&decoded[byte_start..byte_end]);
             }
         }
@@ -364,16 +371,26 @@ impl RustBatchReader {
         let data_type = array.data_type().clone();
         let fill_value = array.fill_value().clone();
 
+        let ndim = array.shape().len();
+        let zero_indices: Vec<u64> = vec![0; ndim];
         let shard_shape = array
-            .chunk_shape(&[0])
+            .chunk_shape(&zero_indices)
             .map_err(|e| PyRuntimeError::new_err(format!("chunk_shape: {e}")))?;
-        let shard_size = shard_shape[0].get() as usize;
 
         let subchunk_shape = array
             .subchunk_shape()
             .ok_or_else(|| PyRuntimeError::new_err("array is not sharded"))?;
         let chunk_size = subchunk_shape[0].get() as usize;
-        let chunks_per_shard = shard_size / chunk_size;
+        let chunks_per_shard: usize = shard_shape
+            .iter()
+            .zip(subchunk_shape.iter())
+            .map(|(s, c)| s.get() as usize / c.get() as usize)
+            .product();
+        let element_stride: usize = subchunk_shape[1..]
+            .iter()
+            .map(|d| d.get() as usize)
+            .product::<usize>()
+            * dtype_size;
 
         // 4. Extract inner codec chain from sharding configuration
         let codec_chain = array.codecs();
@@ -431,7 +448,8 @@ impl RustBatchReader {
             fill_value,
             chunk_size,
             chunks_per_shard,
-            dtype_size,
+            element_stride,
+            ndim,
             index_encoded_size,
             shard_index_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             runtime,
@@ -439,11 +457,11 @@ impl RustBatchReader {
         })
     }
 
-    /// Read element ranges from the sharded array.
+    /// Read ranges along axis 0 from the sharded array.
     ///
     /// Parameters
     /// ----------
-    /// starts, ends : 1-D int64 arrays of element start/end positions.
+    /// starts, ends : 1-D int64 arrays of axis-0 start/end positions.
     ///
     /// Returns
     /// -------
