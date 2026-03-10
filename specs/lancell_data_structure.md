@@ -8,6 +8,7 @@ By having a single manifest table for all cells we effectively remove the need f
 - Handling multimodal cells?
   - Just load the relevant zarr paths and feature space columns. Can construct the AnnDatas separately.
 - Handling chromosomes and bulk data?
+  - Store chromatin accessibility data in the SnapATAC2 format: indices are start positions then there are lengths with direction stored to denote the fragment end location, then optionally, for bulk, there is a counts array.
 - Linking perturbations directly to DNA (how possible is this from guide barcodes, what if we don't have the guides?)
   - This is great for some kinds of perturbations which target enhancers and promoters and it let's us query perturbations by genomic loci instead of plain gene name.
 - Reference genome arrays (or tables with 1 base per?)
