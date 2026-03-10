@@ -1,10 +1,12 @@
 # Lancell Data Structure
 
 Single table for cell metadata with columns for zarr group path and a uint64 blob storing the range (use morton order to get the set of ranges for a bounding box in a multidimensional array). Pattern for zarr group path and blob range columns is f`_zarr_path_{feature_space}` and f`_zarr_ranges_{feature_space}`. The schema can have columns for all of the feature spaces. In practice this should be a relatively small set. Even if there are hundreds, it's not bad.
-- Do we want to store icechunk version in addition to the group and ranges? Probably not now.
+- Do we want to store icechunk version in addition to the group and ranges? Probably not yet.
+
+By having a single manifest table for all cells we effectively remove the need for something like VirtualiZarr, which just creates a manifest effectively like what we have in the `_zarr_path` columns.
 
 - Handling multimodal cells?
-  - Just load the relevant zarr ath and feature space columns
+  - Just load the relevant zarr paths and feature space columns. Can construct the AnnDatas separately.
 - Handling chromosomes and bulk data?
 - Linking perturbations directly to DNA (how possible is this?)
   - This is great for some kinds of perturbations which target enhancers and promoters and let's us query perturbations by genomic loci instead of plain gene name.

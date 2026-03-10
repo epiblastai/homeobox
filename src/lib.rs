@@ -188,7 +188,9 @@ impl RustShardReader {
                                 .map_err(|e| format!("decode index shard {shard_idx}: {e}"))?;
                             let raw = decoded_index
                                 .into_fixed()
-                                .map_err(|e| format!("index into_fixed shard {shard_idx}: {e}"))?;
+                                .map_err(
+                                    |e| format!("index into_fixed shard {shard_idx}: {e}")
+                                )?;
                             let index_vec: Vec<u64> = raw
                                 .as_ref()
                                 .chunks_exact(8)
@@ -486,7 +488,9 @@ impl RustShardReader {
         let (flat_data, lengths_vec) = py
             .allow_threads(|| -> Result<(Vec<u8>, Vec<i64>), String> {
                 // Phase 2: Fetch compressed data from S3
-                let (compressed, fills) = runtime.block_on(self.fetch_shard_data(shard_subchunks))?;
+                let (compressed, fills) = runtime.block_on(
+                    self.fetch_shard_data(shard_subchunks)
+                )?;
 
                 // Phase 3: Decode subchunks in parallel
                 let decoded_map = self.decode_subchunks(&compressed, fills)?;
