@@ -1,11 +1,11 @@
 import uuid
-
-from lancedb.pydantic import LanceModel
 from types import UnionType
 from typing import Union, get_args, get_origin
+
+from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from lancell.group_specs import FeatureSpace
+from lancell.group_specs import ZARR_SPECS, FeatureSpace, PointerKind
 
 
 class SparseZarrPointer(LanceModel):
@@ -14,11 +14,31 @@ class SparseZarrPointer(LanceModel):
     start: int
     end: int
 
+    @model_validator(mode="after")
+    def _require_sparse_feature_space(self):
+        spec = ZARR_SPECS[self.feature_space]
+        if spec.pointer_kind is not PointerKind.SPARSE:
+            raise ValueError(
+                f"feature_space '{self.feature_space.value}' requires a "
+                f"{spec.pointer_kind.value} pointer, not a sparse pointer"
+            )
+        return self
+
 
 class DenseZarrPointer(LanceModel):
     feature_space: FeatureSpace
     zarr_group: str
     position: int
+
+    @model_validator(mode="after")
+    def _require_dense_feature_space(self):
+        spec = ZARR_SPECS[self.feature_space]
+        if spec.pointer_kind is not PointerKind.DENSE:
+            raise ValueError(
+                f"feature_space '{self.feature_space.value}' requires a "
+                f"{spec.pointer_kind.value} pointer, not a dense pointer"
+            )
+        return self
 
 
 # Placeholder for now, logic for loading hasn't been implemented yet
@@ -33,6 +53,12 @@ ZarrPointer = SparseZarrPointer | DenseZarrPointer
 
 
 class LancellBaseSchema(LanceModel):
+    """
+    Base schema for all lancell datasets. The only requirements are a uid string
+    that allows for safe parallel-write scenarios, and at least one ZarrPointer
+    into a feature space.
+    """
+
     uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
 
     def __init_subclass__(cls, **kwargs):
@@ -53,8 +79,7 @@ class LancellBaseSchema(LanceModel):
             ):
                 return  # found one, we're good
         raise TypeError(
-            f"{cls.__name__} must declare at least one "
-            f"SparseZarrPointer or DenseZarrPointer field"
+            f"{cls.__name__} must declare at least one SparseZarrPointer or DenseZarrPointer field"
         )
 
     @model_validator(mode="after")
@@ -64,6 +89,15 @@ class LancellBaseSchema(LanceModel):
             if isinstance(getattr(self, name), (SparseZarrPointer, DenseZarrPointer)):
                 return self
         raise ValueError(
-            f"{type(self).__name__} requires at least one "
-            f"populated zarr pointer field"
+            f"{type(self).__name__} requires at least one populated zarr pointer field"
         )
+
+
+class FeatureBaseSchema(LanceModel):
+    """
+    Minimal schema for a feature space. For example, this could be a gene expression feature space
+    with `gene_name` as a field. Only a uid is strictly required however. Each zarr group dataset
+    has a mapping from its local feature space to the global feature space.
+    """
+
+    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])

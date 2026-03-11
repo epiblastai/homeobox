@@ -1,6 +1,7 @@
 from enum import Enum
-from pydantic import BaseModel
+
 import zarr
+from pydantic import BaseModel
 
 
 class FeatureSpace(str, Enum):
@@ -21,8 +22,14 @@ class DTypeKind(str, Enum):
     FLOAT = "f"
 
 
+class PointerKind(str, Enum):
+    SPARSE = "sparse"
+    DENSE = "dense"
+
+
 class ArraySpec(BaseModel):
     """Expected properties of a single zarr array."""
+
     array_name: str
     dtype_kind: DTypeKind | None = None
     ndim: int | None = None
@@ -30,6 +37,7 @@ class ArraySpec(BaseModel):
 
 class SubgroupSpec(BaseModel):
     """Expected properties of a zarr subgroup with multiple arrays."""
+
     subgroup_name: str
     # If None, any arrays are allowed. If provided, these are the
     # minimum required arrays.
@@ -43,7 +51,9 @@ class SubgroupSpec(BaseModel):
 
 class ZarrGroupSpec(BaseModel):
     """Declarative spec for the expected layout of a zarr group."""
+
     feature_space: FeatureSpace
+    pointer_kind: PointerKind
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
 
@@ -66,10 +76,7 @@ class ZarrGroupSpec(BaseModel):
                 errors.append(
                     f"'{array_spec.array_name}' has ndim={arr.ndim}, expected {array_spec.ndim}"
                 )
-            if (
-                array_spec.dtype_kind is not None
-                and arr.dtype.kind != array_spec.dtype_kind.value
-            ):
+            if array_spec.dtype_kind is not None and arr.dtype.kind != array_spec.dtype_kind.value:
                 errors.append(
                     f"'{array_spec.array_name}' has dtype.kind='{arr.dtype.kind}', "
                     f"expected '{array_spec.dtype_kind.value}'"
@@ -119,9 +126,9 @@ class ZarrGroupSpec(BaseModel):
         return errors
 
 
-
 GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.GENE_EXPRESSION,
+    pointer_kind=PointerKind.SPARSE,
     required_arrays=[
         ArraySpec(array_name="indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
     ],
@@ -139,6 +146,7 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
 
 CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.CHROMATIN_FRAGMENT,
+    pointer_kind=PointerKind.SPARSE,
     required_arrays=[
         ArraySpec(array_name="fragment_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
         ArraySpec(array_name="fragment_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
@@ -148,6 +156,7 @@ CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
 
 CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.CHROMATIN_PEAK,
+    pointer_kind=PointerKind.SPARSE,
     required_arrays=[
         ArraySpec(array_name="peak_starts", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
         ArraySpec(array_name="peak_ends", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
@@ -156,6 +165,7 @@ CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
 
 PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.PROTEIN_ABUNDANCE,
+    pointer_kind=PointerKind.DENSE,
     required_arrays=[
         ArraySpec(array_name="data", ndim=2, dtype_kind=DTypeKind.FLOAT),
     ],
@@ -163,6 +173,7 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
 
 IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.IMAGE_FEATURES,
+    pointer_kind=PointerKind.DENSE,
     required_arrays=[
         ArraySpec(array_name="data", ndim=2, dtype_kind=DTypeKind.FLOAT),
     ],
@@ -170,6 +181,7 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
 
 IMAGE_TILES_SPEC = ZarrGroupSpec(
     feature_space=FeatureSpace.IMAGE_TILES,
+    pointer_kind=PointerKind.DENSE,
     required_arrays=[
         # Tile can be any dtype
         ArraySpec(array_name="data", ndim=4),  # (N, C, H, W)
