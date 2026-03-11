@@ -81,7 +81,7 @@ def _extract_pointer_fields(
                 # We use the field name (not t.feature_space) because t is
                 # the *type* SparseZarrPointer, not an instance — there's no
                 # .feature_space value to read at class-introspection time.
-                feature_space = _field_name_to_feature_space(name)
+                feature_space = FeatureSpace(name)
                 spec = ZARR_SPECS[feature_space]
                 pointer_kind = PointerKind.SPARSE if t is SparseZarrPointer else PointerKind.DENSE
                 if pointer_kind is not spec.pointer_kind:
@@ -97,17 +97,6 @@ def _extract_pointer_fields(
                 )
                 break
     return result
-
-
-def _field_name_to_feature_space(field_name: str) -> FeatureSpace:
-    """Map a schema field name to a FeatureSpace enum value."""
-    for fs in FeatureSpace:
-        if fs.value == field_name:
-            return fs
-    raise ValueError(
-        f"No FeatureSpace matches field name '{field_name}'. "
-        f"Valid values: {[fs.value for fs in FeatureSpace]}"
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +127,7 @@ def _schema_obs_fields(
 def validate_obs_columns(
     obs: pd.DataFrame,
     cell_schema: type[LancellBaseSchema],
+    obs_to_schema: dict[str, str] | None = None,
 ) -> list[str]:
     """Validate that obs columns match the cell schema.
 
@@ -147,6 +137,10 @@ def validate_obs_columns(
         The obs DataFrame from an AnnData.
     cell_schema:
         The schema class to validate against.
+    obs_to_schema:
+        Optional mapping from obs column names to schema field names.
+        Use this when obs columns have different names than the schema
+        expects, e.g. ``{"donor_id": "donor", "cell_type_ontology": "cell_type"}``.
 
     Returns
     -------
@@ -155,27 +149,33 @@ def validate_obs_columns(
     """
     errors: list[str] = []
     schema_fields = _schema_obs_fields(cell_schema)
+    obs_to_schema = obs_to_schema or {}
+
+    # Build the set of schema field names reachable from obs columns
+    # (either directly or via the mapping)
+    reverse_map = {v: k for k, v in obs_to_schema.items()}
     obs_cols = set(obs.columns)
 
     for field_name, required in schema_fields.items():
-        if required and field_name not in obs_cols:
+        # Field is satisfied if obs has it directly or via mapping
+        obs_col = reverse_map.get(field_name, field_name)
+        if required and obs_col not in obs_cols:
             errors.append(f"Missing required column '{field_name}'")
 
     return errors
 
 
-# TODO: I don't understand this function? I thought the purpose was to provide a mapping
-# of current adata.obs columns to their respective fields in cell_schema. This current function
-# just errors unless everything is already aligned. It only supports column dropping.
 def align_obs_to_schema(
     adata: ad.AnnData,
     cell_schema: type[LancellBaseSchema],
     *,
+    obs_to_schema: dict[str, str] | None = None,
     inplace: bool = False,
 ) -> ad.AnnData:
     """Align an AnnData's obs to match a cell schema.
 
-    - Raises if required fields are missing.
+    - Renames columns according to ``obs_to_schema``.
+    - Raises if required fields are missing (after renaming).
     - Adds ``None`` columns for optional fields not present.
     - Drops extra columns not in the schema.
 
@@ -185,6 +185,10 @@ def align_obs_to_schema(
         The AnnData to align.
     cell_schema:
         The schema class to align to.
+    obs_to_schema:
+        Optional mapping from obs column names to schema field names.
+        Use this when obs columns have different names than the schema
+        expects, e.g. ``{"donor_id": "donor", "cell_type_ontology": "cell_type"}``.
     inplace:
         If True, modify ``adata`` in place. Otherwise return a copy.
 
@@ -193,7 +197,7 @@ def align_obs_to_schema(
     ad.AnnData
         The aligned AnnData.
     """
-    errors = validate_obs_columns(adata.obs, cell_schema)
+    errors = validate_obs_columns(adata.obs, cell_schema, obs_to_schema)
     if errors:
         raise ValueError(
             f"Cannot align obs to schema: {errors}"
@@ -201,6 +205,10 @@ def align_obs_to_schema(
 
     if not inplace:
         adata = adata.copy()
+
+    # Rename obs columns according to mapping
+    if obs_to_schema:
+        adata.obs = adata.obs.rename(columns=obs_to_schema)
 
     schema_fields = _schema_obs_fields(cell_schema)
     obs_cols = set(adata.obs.columns)
