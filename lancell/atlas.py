@@ -273,9 +273,11 @@ class RaggedAtlas:
         db_uri: str,
         cell_table_name: str,
         cell_schema: type[LancellBaseSchema],
+        dataset_table_name: str,
+        dataset_schema: type[DatasetRecord],
         *,
         store: obstore.store.ObjectStore,
-        registry_schemas: dict[FeatureSpace, type[FeatureBaseSchema]] | None = None,
+        registry_schemas: dict[FeatureSpace, type[FeatureBaseSchema]],
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
 
@@ -287,22 +289,24 @@ class RaggedAtlas:
             Name for the cell table.
         cell_schema:
             A :class:`LancellBaseSchema` subclass declaring the pointer fields.
+        dataset_table_name:
+            Name for the dataset metadata table.
+        dataset_schema:
+            A :class:`DatasetRecord` subclass for the dataset schema.
         store:
             An obstore ObjectStore for zarr I/O.
         registry_schemas:
-            Optional mapping of feature spaces to their registry schema classes.
-            Tables are created for each. Default table name convention:
-            ``"{feature_space.value}_registry"``.
+            Mapping of feature spaces to their registry schema classes.
+            Table names default to ``"{feature_space.value}_registry"``.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
-        dataset_table = db.create_table("_datasets", schema=DatasetRecord)
+        dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
         registry_tables: dict[FeatureSpace, lancedb.table.Table] = {}
-        if registry_schemas:
-            for fs, schema_cls in registry_schemas.items():
-                table_name = f"{fs.value}_registry"
-                registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
+        for fs, schema_cls in registry_schemas.items():
+            table_name = f"{fs.value}_registry"
+            registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
 
@@ -321,11 +325,10 @@ class RaggedAtlas:
         db_uri: str,
         cell_table_name: str,
         cell_schema: type[LancellBaseSchema],
+        dataset_table_name: str,
         *,
         store: obstore.store.ObjectStore,
-        # TODO: I'd prefer to make these required and not to assign
-        # defaults like `f"{pf.feature_space.value}_registry"`
-        registry_tables: dict[FeatureSpace, str] | None = None,
+        registry_tables: dict[FeatureSpace, str],
     ) -> "RaggedAtlas":
         """Open an existing atlas.
 
@@ -337,32 +340,20 @@ class RaggedAtlas:
             Name of the cell table.
         cell_schema:
             The schema class (must match the table's schema).
+        dataset_table_name:
+            Name of the dataset metadata table.
         store:
             An obstore ObjectStore for zarr I/O.
         registry_tables:
-            Optional mapping of feature spaces to LanceDB table names.
-            Defaults to ``"{feature_space.value}_registry"`` for each
-            feature space that has ``has_var_df=True`` in its spec.
+            Mapping of feature spaces to LanceDB table names.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.open_table(cell_table_name)
-        # TODO: Require dataset_table_name and dataset_schema as arguments instead
-        # of hardcoding.
-        dataset_table = db.open_table("_datasets")
+        dataset_table = db.open_table(dataset_table_name)
 
-        # _extract_pointer_fields is called in __init__, but we need it here
-        # to resolve registry table names before constructing the atlas.
-        pointer_fields = _extract_pointer_fields(cell_schema)
         resolved_registries: dict[FeatureSpace, lancedb.table.Table] = {}
-        for pf in pointer_fields.values():
-            spec = ZARR_SPECS[pf.feature_space]
-            if not spec.has_var_df:
-                continue
-            if registry_tables and pf.feature_space in registry_tables:
-                table_name = registry_tables[pf.feature_space]
-            else:
-                table_name = f"{pf.feature_space.value}_registry"
-            resolved_registries[pf.feature_space] = db.open_table(table_name)
+        for fs, table_name in registry_tables.items():
+            resolved_registries[fs] = db.open_table(table_name)
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 

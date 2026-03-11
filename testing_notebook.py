@@ -20,6 +20,7 @@ from lancell.atlas import (
 )
 from lancell.group_specs import FeatureSpace
 from lancell.schema import (
+    DatasetRecord,
     DenseZarrPointer,
     FeatureBaseSchema,
     LancellBaseSchema,
@@ -138,6 +139,8 @@ def test_full_workflow():
                 FeatureSpace.GENE_EXPRESSION: GeneFeatureSchema,
                 FeatureSpace.PROTEIN_ABUNDANCE: FeatureBaseSchema,
             },
+            dataset_table_name="_datasets",
+            dataset_schema=DatasetRecord,
         )
 
         # 1. Register features
@@ -250,6 +253,8 @@ def test_layer_name_required_for_sparse():
             cell_schema=TestCellSchema,
             store=store,
             registry_schemas={FeatureSpace.GENE_EXPRESSION: GeneFeatureSchema},
+            dataset_table_name="_datasets",
+            dataset_schema=DatasetRecord,
         )
 
         gene_uids = ["g1", "g2", "g3"]
@@ -294,6 +299,8 @@ def test_obs_validation_before_write():
             cell_schema=StrictCellSchema,
             store=store,
             registry_schemas={FeatureSpace.GENE_EXPRESSION: GeneFeatureSchema},
+            dataset_table_name="_datasets",
+            dataset_schema=DatasetRecord,
         )
 
         gene_uids = ["g1", "g2"]
