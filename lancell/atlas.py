@@ -254,9 +254,6 @@ class RaggedAtlas:
         self._pointer_fields = _extract_pointer_fields(cell_schema)
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
-        # TODO: Which of these should be LRU caches?
-        self._remap_cache: dict[str, np.ndarray] = {}
-        self._batch_reader_cache: dict[str, BatchArray] = {}
 
         # TODO: We don't have to validate everything, but we 100% need
         # to validate that global_index is contiguous and unique for any
@@ -376,27 +373,15 @@ class RaggedAtlas:
 
     # -- Store helpers ------------------------------------------------------
 
+    @functools.lru_cache(maxsize=256)
     def _get_remap(self, zarr_group: str) -> np.ndarray:
-        """Load a remap array, using the cache."""
-        if zarr_group not in self._remap_cache:
-            self._remap_cache[zarr_group] = read_remap(self._store, zarr_group)
-        return self._remap_cache[zarr_group]
+        """Load a remap array, with LRU caching."""
+        return read_remap(self._store, zarr_group)
 
-    # Any reason not to use the built-in functools.lru_cache for this?
-    _BATCH_READER_CACHE_MAX = 64
-
+    @functools.lru_cache(maxsize=64)
     def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchArray:
         """Get a cached BatchArray reader for a zarr array."""
-        key = f"{zarr_group}/{array_name}"
-        if key not in self._batch_reader_cache:
-            if len(self._batch_reader_cache) >= self._BATCH_READER_CACHE_MAX:
-                # Evict oldest entry
-                oldest_key = next(iter(self._batch_reader_cache))
-                del self._batch_reader_cache[oldest_key]
-            self._batch_reader_cache[key] = BatchArray.from_array(
-                self._root[f"{zarr_group}/{array_name}"]
-            )
-        return self._batch_reader_cache[key]
+        return BatchArray.from_array(self._root[f"{zarr_group}/{array_name}"])
 
     # -- Query entry point --------------------------------------------------
 
