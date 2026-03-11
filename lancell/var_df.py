@@ -9,18 +9,15 @@ corresponds to local feature index *i* in the dataset's zarr arrays.
 """
 
 import io
-from typing import TYPE_CHECKING
 
+import lancedb
 import numpy as np
 import obstore
 import polars as pl
 import zarr
 from pydantic import BaseModel
 
-if TYPE_CHECKING:
-    import lancedb
-
-    from lancell.group_specs import ZarrGroupSpec
+from lancell.group_specs import ZarrGroupSpec
 
 VAR_DF_FILENAME = "var.parquet"
 REMAP_FILENAME = "local_to_global_index.parquet"

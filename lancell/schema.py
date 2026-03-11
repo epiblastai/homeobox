@@ -9,33 +9,35 @@ from lancell.group_specs import ZARR_SPECS, FeatureSpace, PointerKind
 
 
 class SparseZarrPointer(LanceModel):
-    feature_space: FeatureSpace
+    feature_space: str  # FeatureSpace value; stored as str for Arrow compat
     zarr_group: str
     start: int
     end: int
 
     @model_validator(mode="after")
     def _require_sparse_feature_space(self):
-        spec = ZARR_SPECS[self.feature_space]
+        fs = FeatureSpace(self.feature_space)
+        spec = ZARR_SPECS[fs]
         if spec.pointer_kind is not PointerKind.SPARSE:
             raise ValueError(
-                f"feature_space '{self.feature_space.value}' requires a "
+                f"feature_space '{self.feature_space}' requires a "
                 f"{spec.pointer_kind.value} pointer, not a sparse pointer"
             )
         return self
 
 
 class DenseZarrPointer(LanceModel):
-    feature_space: FeatureSpace
+    feature_space: str  # FeatureSpace value; stored as str for Arrow compat
     zarr_group: str
     position: int
 
     @model_validator(mode="after")
     def _require_dense_feature_space(self):
-        spec = ZARR_SPECS[self.feature_space]
+        fs = FeatureSpace(self.feature_space)
+        spec = ZARR_SPECS[fs]
         if spec.pointer_kind is not PointerKind.DENSE:
             raise ValueError(
-                f"feature_space '{self.feature_space.value}' requires a "
+                f"feature_space '{self.feature_space}' requires a "
                 f"{spec.pointer_kind.value} pointer, not a dense pointer"
             )
         return self
