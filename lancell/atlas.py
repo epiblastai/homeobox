@@ -756,13 +756,17 @@ class RaggedAtlas:
                 continue
             indexed = df.filter(pl.col("global_index").is_not_null())
             if indexed.is_empty():
-                errors.append(f"Registry '{fs.value}': no rows have global_index assigned")
+                errors.append(
+                    f"Registry '{fs.value}': no rows have global_index assigned. "
+                    f"Run reindex_registry(table) to fix."
+                )
                 continue
             indices = sorted(indexed["global_index"].to_list())
             expected = list(range(len(indices)))
             if indices != expected:
                 errors.append(
-                    f"Registry '{fs.value}': global_index is not contiguous 0..{len(indices)-1}"
+                    f"Registry '{fs.value}': global_index is not contiguous 0..{len(indices)-1}. "
+                    f"Run reindex_registry(table) to fix."
                 )
         return errors
 
