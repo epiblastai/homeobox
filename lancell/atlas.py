@@ -36,6 +36,7 @@ from lancell.var_df import (
     build_remap,
     read_remap_if_fresh,
     read_var_df,
+    reindex_registry,
     validate_var_df,
     write_remap,
     write_var_df,
@@ -727,6 +728,22 @@ class RaggedAtlas:
                 self._store, group, remap,
                 registry_version=registry_table.version,
             )
+
+    # -- Maintenance --------------------------------------------------------
+
+    def optimize(self) -> None:
+        """Compact tables and reindex feature registries.
+
+        Calls ``table.optimize()`` on the cell, dataset, and registry tables
+        to compact small Lance fragments, then assigns contiguous
+        ``global_index`` values on every registry via
+        :func:`~lancell.var_df.reindex_registry`.
+        """
+        self.cell_table.optimize()
+        self._dataset_table.optimize()
+        for table in self._registry_tables.values():
+            table.optimize()
+            reindex_registry(table)
 
     # -- Validation ---------------------------------------------------------
 

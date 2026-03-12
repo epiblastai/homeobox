@@ -441,11 +441,22 @@ def reindex_registry(
     int
         Number of features indexed.
     """
-    df = table.search().to_polars()
+    columns = ["uid", "global_index"]
+    if sort_by not in columns:
+        columns.append(sort_by)
+    df = table.search().select(columns).to_polars()
     if df.is_empty():
         return 0
 
+    # Skip if already contiguous 0..N-1 with no nulls and in canonical order
     df = df.sort(sort_by)
+    indices = df["global_index"]
+    if (
+        indices.null_count() == 0
+        and int(indices[0]) == 0
+        and int(indices.diff().drop_nulls().max()) <= 1
+    ):
+        return 0
     df = df.with_columns(pl.Series("global_index", range(len(df)), dtype=pl.Int64))
 
     (
