@@ -18,7 +18,7 @@ from lancell.atlas import (
     align_obs_to_schema,
     validate_obs_columns,
 )
-from lancell.group_specs import FeatureSpace, LayerName
+from lancell.ingestion import add_from_anndata
 from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -137,8 +137,8 @@ def test_full_workflow():
             cell_schema=TestCellSchema,
             store=store,
             registry_schemas={
-                FeatureSpace.GENE_EXPRESSION: GeneFeatureSchema,
-                FeatureSpace.PROTEIN_ABUNDANCE: FeatureBaseSchema,
+                "gene_expression": GeneFeatureSchema,
+                "protein_abundance": FeatureBaseSchema,
             },
             dataset_table_name="_datasets",
             dataset_schema=DatasetRecord,
@@ -150,24 +150,24 @@ def test_full_workflow():
             GeneFeatureSchema(uid=uid, gene_name=f"GENE{i}")
             for i, uid in enumerate(gene_uids)
         ]
-        n_registered = atlas.register_features(FeatureSpace.GENE_EXPRESSION, gene_records)
+        n_registered = atlas.register_features("gene_expression", gene_records)
         assert n_registered == 10, f"Expected 10 registered, got {n_registered}"
         print(f"  Registered {n_registered} gene features")
 
         # Register again — should be 0 new
-        n_dup = atlas.register_features(FeatureSpace.GENE_EXPRESSION, gene_records)
+        n_dup = atlas.register_features("gene_expression", gene_records)
         assert n_dup == 0, f"Expected 0 duplicates, got {n_dup}"
 
         # Register via DataFrame
         protein_uids = [f"protein_{i}" for i in range(5)]
         protein_df = pl.DataFrame({"uid": protein_uids})
-        n_prot = atlas.register_features(FeatureSpace.PROTEIN_ABUNDANCE, protein_df)
+        n_prot = atlas.register_features("protein_abundance", protein_df)
         assert n_prot == 5, f"Expected 5 proteins, got {n_prot}"
         print(f"  Registered {n_prot} protein features")
 
         # Assign contiguous global_index after all registrations
-        reindex_registry(atlas._registry_tables[FeatureSpace.GENE_EXPRESSION])
-        reindex_registry(atlas._registry_tables[FeatureSpace.PROTEIN_ABUNDANCE])
+        reindex_registry(atlas._registry_tables["gene_expression"])
+        reindex_registry(atlas._registry_tables["protein_abundance"])
 
         # 2. Create and align AnnDatas
         adata1 = make_sparse_adata(20, 10, gene_uids)
@@ -177,20 +177,22 @@ def test_full_workflow():
         adata2 = align_obs_to_schema(adata2, TestCellSchema)
 
         # 3. Add from anndata
-        n1 = atlas.add_from_anndata(
+        n1 = add_from_anndata(
+            atlas,
             adata1,
-            feature_space=FeatureSpace.GENE_EXPRESSION,
+            feature_space="gene_expression",
             zarr_group="dataset_1/gene_expression",
-            layer_name=LayerName.COUNTS,
+            layer_name="counts",
         )
         assert n1 == 20
         print(f"  Ingested dataset_1: {n1} cells")
 
-        n2 = atlas.add_from_anndata(
+        n2 = add_from_anndata(
+            atlas,
             adata2,
-            feature_space=FeatureSpace.GENE_EXPRESSION,
+            feature_space="gene_expression",
             zarr_group="dataset_2/gene_expression",
-            layer_name=LayerName.COUNTS,
+            layer_name="counts",
         )
         assert n2 == 15
         print(f"  Ingested dataset_2: {n2} cells")
@@ -198,11 +200,12 @@ def test_full_workflow():
         # Dense dataset
         adata_dense = make_dense_adata(10, 5, protein_uids)
         adata_dense = align_obs_to_schema(adata_dense, TestCellSchema)
-        n3 = atlas.add_from_anndata(
+        n3 = add_from_anndata(
+            atlas,
             adata_dense,
-            feature_space=FeatureSpace.PROTEIN_ABUNDANCE,
+            feature_space="protein_abundance",
             zarr_group="dataset_3/protein_abundance",
-            layer_name=LayerName.COUNTS,
+            layer_name="counts",
         )
         assert n3 == 10
         print(f"  Ingested dataset_3 (dense): {n3} cells")
@@ -223,19 +226,19 @@ def test_full_workflow():
         print(f"  Query returned {cells.height} cells")
 
         # 7. Query — to_anndata (first feature space = gene_expression)
-        adata_out = atlas.query().feature_spaces(FeatureSpace.GENE_EXPRESSION).to_anndata()
+        adata_out = atlas.query().feature_spaces("gene_expression").to_anndata()
         assert adata_out.n_obs == 35, f"Expected 35 obs, got {adata_out.n_obs}"
         assert adata_out.n_vars == 10, f"Expected 10 vars, got {adata_out.n_vars}"
         print(f"  Gene expression AnnData: {adata_out.n_obs} x {adata_out.n_vars}")
 
         # 8. Query — dense to_anndata
-        adata_prot = atlas.query().feature_spaces(FeatureSpace.PROTEIN_ABUNDANCE).to_anndata()
+        adata_prot = atlas.query().feature_spaces("protein_abundance").to_anndata()
         assert adata_prot.n_obs == 10, f"Expected 10 obs, got {adata_prot.n_obs}"
         assert adata_prot.n_vars == 5, f"Expected 5 vars, got {adata_prot.n_vars}"
         print(f"  Protein abundance AnnData: {adata_prot.n_obs} x {adata_prot.n_vars}")
 
         # 9. Batched query
-        batches = list(atlas.query().feature_spaces(FeatureSpace.GENE_EXPRESSION).to_batches(batch_size=10))
+        batches = list(atlas.query().feature_spaces("gene_expression").to_batches(batch_size=10))
         total_cells = sum(b.n_obs for b in batches)
         assert total_cells == 35, f"Batched total: {total_cells}"
         print(f"  Batched query: {len(batches)} batches, {total_cells} total cells")
@@ -258,14 +261,14 @@ def test_layer_name_required_for_sparse():
             cell_table_name="cells",
             cell_schema=TestCellSchema,
             store=store,
-            registry_schemas={FeatureSpace.GENE_EXPRESSION: GeneFeatureSchema},
+            registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="_datasets",
             dataset_schema=DatasetRecord,
         )
 
         gene_uids = ["g1", "g2", "g3"]
         atlas.register_features(
-            FeatureSpace.GENE_EXPRESSION,
+            "gene_expression",
             [GeneFeatureSchema(uid=u, gene_name=f"G{i}") for i, u in enumerate(gene_uids)],
         )
 
@@ -273,9 +276,10 @@ def test_layer_name_required_for_sparse():
         adata = align_obs_to_schema(adata, TestCellSchema)
 
         try:
-            atlas.add_from_anndata(
+            add_from_anndata(
+                atlas,
                 adata,
-                feature_space=FeatureSpace.GENE_EXPRESSION,
+                feature_space="gene_expression",
                 zarr_group="test_group",
                 layer_name=None,
             )
@@ -305,14 +309,14 @@ def test_obs_validation_before_write():
             cell_table_name="cells",
             cell_schema=StrictCellSchema,
             store=store,
-            registry_schemas={FeatureSpace.GENE_EXPRESSION: GeneFeatureSchema},
+            registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="_datasets",
             dataset_schema=DatasetRecord,
         )
 
         gene_uids = ["g1", "g2"]
         atlas.register_features(
-            FeatureSpace.GENE_EXPRESSION,
+            "gene_expression",
             [GeneFeatureSchema(uid=u, gene_name=f"G{i}") for i, u in enumerate(gene_uids)],
         )
 
@@ -320,11 +324,12 @@ def test_obs_validation_before_write():
         adata = make_sparse_adata(5, 2, gene_uids)
 
         try:
-            atlas.add_from_anndata(
+            add_from_anndata(
+                atlas,
                 adata,
-                feature_space=FeatureSpace.GENE_EXPRESSION,
+                feature_space="gene_expression",
                 zarr_group="test_group",
-                layer_name=LayerName.COUNTS,
+                layer_name="counts",
             )
             assert False, "Should have raised ValueError for missing required_field"
         except ValueError as e:

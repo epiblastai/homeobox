@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 import zarr
 
-from lancell.group_specs import ZARR_SPECS, FeatureSpace
+from lancell.group_specs import get_spec
 from lancell.schema import FeatureBaseSchema
 from lancell.var_df import (
     REMAP_FILENAME,
@@ -219,7 +219,7 @@ class TestBuildRemap:
 class TestValidateVarDf:
     def test_valid_dense(self, tmp_path):
         _, _, group = _make_store_and_group(tmp_path)
-        spec = ZARR_SPECS[FeatureSpace.PROTEIN_ABUNDANCE]
+        spec = get_spec("protein_abundance")
         df = pl.DataFrame({
             "global_feature_uid": [f"u{i}" for i in range(5)],
         })
@@ -228,14 +228,14 @@ class TestValidateVarDf:
 
     def test_wrong_row_count_dense(self, tmp_path):
         _, _, group = _make_store_and_group(tmp_path)
-        spec = ZARR_SPECS[FeatureSpace.PROTEIN_ABUNDANCE]
+        spec = get_spec("protein_abundance")
         df = pl.DataFrame({"global_feature_uid": ["u0", "u1"]})
         errors = validate_var_df(df, spec=spec, group=group)
         assert any("2 rows but expected 5" in e for e in errors)
 
     def test_explicit_feature_count_overrides_group(self, tmp_path):
         _, _, group = _make_store_and_group(tmp_path)
-        spec = ZARR_SPECS[FeatureSpace.PROTEIN_ABUNDANCE]
+        spec = get_spec("protein_abundance")
         df = pl.DataFrame({"global_feature_uid": ["u0", "u1", "u2"]})
         # group says 5, but explicit says 3 — explicit wins
         errors = validate_var_df(
@@ -244,20 +244,20 @@ class TestValidateVarDf:
         assert errors == []
 
     def test_sparse_needs_explicit_count(self, tmp_path):
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["u0", "u1"]})
         # no group, no explicit count → no row count error (can't check)
         errors = validate_var_df(df, spec=spec)
         assert errors == []
 
     def test_sparse_with_explicit_count(self, tmp_path):
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["u0", "u1"]})
         errors = validate_var_df(df, spec=spec, expected_feature_count=10)
         assert any("2 rows but expected 10" in e for e in errors)
 
     def test_missing_required_column(self):
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"feature_name": ["x"]})
         errors = validate_var_df(df, spec=spec)
         assert any("Missing required columns" in e for e in errors)
@@ -266,19 +266,19 @@ class TestValidateVarDf:
         class MySchema(VarDfColumnSchema):
             gene_name: str
 
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["u0"]})
         errors = validate_var_df(df, spec=spec, schema=MySchema)
         assert any("gene_name" in str(e) for e in errors)
 
     def test_null_uids(self):
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["u0", None, "u2"]})
         errors = validate_var_df(df, spec=spec)
         assert any("null" in e for e in errors)
 
     def test_duplicate_uids(self):
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["u0", "u0", "u2"]})
         errors = validate_var_df(df, spec=spec)
         assert any("duplicate" in e.lower() for e in errors)
@@ -286,14 +286,14 @@ class TestValidateVarDf:
     def test_registry_resolution(self, tmp_path):
         uids = ["uid_a", "uid_b", "uid_c"]
         registry = _make_registry(tmp_path, uids)
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
         errors = validate_var_df(df, spec=spec, registry_table=registry)
         assert errors == []
 
     def test_registry_unresolved(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_a"])
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_MISSING"]})
         errors = validate_var_df(df, spec=spec, registry_table=registry)
         assert any("not found in registry" in e for e in errors)
@@ -301,7 +301,7 @@ class TestValidateVarDf:
     def test_global_index_agreement(self, tmp_path):
         uids = ["uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids)
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         # correct indices
         df = pl.DataFrame({
             "global_feature_uid": ["uid_a", "uid_b"],
@@ -313,7 +313,7 @@ class TestValidateVarDf:
     def test_global_index_mismatch(self, tmp_path):
         uids = ["uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids)
-        spec = ZARR_SPECS[FeatureSpace.GENE_EXPRESSION]
+        spec = get_spec("gene_expression")
         # swapped indices
         df = pl.DataFrame({
             "global_feature_uid": ["uid_a", "uid_b"],

@@ -10,7 +10,7 @@ import polars as pl
 import scipy.sparse as sp
 
 from lancell.atlas import PointerFieldInfo, RaggedAtlas
-from lancell.group_specs import ZARR_SPECS, FeatureSpace, LayerName, PointerKind, ZarrGroupSpec
+from lancell.group_specs import PointerKind, ZarrGroupSpec, get_spec
 from lancell.reconstruction import (
     _build_obs_df,
     _build_obs_only_anndata,
@@ -29,8 +29,8 @@ class AtlasQuery:
         self._search_kwargs: dict = {}
         self._where_clause: str | None = None
         self._limit_n: int | None = None
-        self._feature_spaces: list[FeatureSpace] | None = None
-        self._layer_overrides: dict[FeatureSpace, list[LayerName]] = {}
+        self._feature_spaces: list[str] | None = None
+        self._layer_overrides: dict[str, list[str]] = {}
 
     def search(
         self,
@@ -74,12 +74,12 @@ class AtlasQuery:
         self._limit_n = n
         return self
 
-    def feature_spaces(self, *spaces: FeatureSpace) -> "AtlasQuery":
+    def feature_spaces(self, *spaces: str) -> "AtlasQuery":
         """Restrict reconstruction to specific feature spaces."""
         self._feature_spaces = list(spaces)
         return self
 
-    def layers(self, feature_space: FeatureSpace, names: list[LayerName]) -> "AtlasQuery":
+    def layers(self, feature_space: str, names: list[str]) -> "AtlasQuery":
         """Specify which layers to read for a given feature space."""
         self._layer_overrides[feature_space] = names
         return self
@@ -138,7 +138,7 @@ class AtlasQuery:
         for pf in active_pfs.values():
             adata = self._reconstruct_single_space(cells_pl, pf)
             if adata.n_obs > 0:
-                modalities[pf.feature_space.value] = adata
+                modalities[pf.feature_space] = adata
 
         return mu.MuData(modalities)
 
@@ -177,7 +177,7 @@ class AtlasQuery:
         pf: PointerFieldInfo,
     ) -> ad.AnnData:
         """Reconstruct an AnnData for a single feature space."""
-        spec = ZARR_SPECS[pf.feature_space]
+        spec = get_spec(pf.feature_space)
         if pf.pointer_kind is PointerKind.SPARSE:
             return self._reconstruct_sparse(cells_pl, pf, spec)
         else:
@@ -193,7 +193,7 @@ class AtlasQuery:
         # Determine index array name from spec's required_arrays
         if len(spec.required_arrays) != 1:
             raise NotImplementedError(
-                f"Sparse reconstruction for feature space '{pf.feature_space.value}' "
+                f"Sparse reconstruction for feature space '{pf.feature_space}' "
                 f"is not yet supported (requires {len(spec.required_arrays)} "
                 f"primary arrays: {[a.array_name for a in spec.required_arrays]})"
             )
@@ -213,10 +213,10 @@ class AtlasQuery:
             layer_names = list(spec.required_layers)
             if not layer_names:
                 raise ValueError(
-                    f"No layers specified and spec for '{pf.feature_space.value}' "
+                    f"No layers specified and spec for '{pf.feature_space}' "
                     f"has no required layers"
                 )
-        layers_to_read = [ln.value for ln in layer_names]
+        layers_to_read = layer_names
 
         # Process each zarr group
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
@@ -298,7 +298,7 @@ class AtlasQuery:
         layer_names = self._layer_overrides.get(pf.feature_space)
         if layer_names is None:
             layer_names = list(spec.required_layers)
-        layers_to_read = [ln.value for ln in layer_names] if layer_names else []
+        layers_to_read = layer_names if layer_names else []
 
         # Resolve array names: "layers/{ln}" for layered specs, "data" for plain
         array_names = [f"layers/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
@@ -349,11 +349,16 @@ class AtlasQuery:
         return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 
     def _build_var(
-        self, feature_space: FeatureSpace, union_globals: np.ndarray
+        self, feature_space: str, union_globals: np.ndarray
     ) -> pd.DataFrame:
         """Build a var DataFrame from the feature registry."""
-        if feature_space not in self._atlas._registry_tables or len(union_globals) == 0:
-            return pd.DataFrame(index=pd.RangeIndex(len(union_globals)))
+        if feature_space not in self._atlas._registry_tables:
+            raise ValueError(
+                f"No registry table for feature space '{feature_space}'. "
+                f"Available: {sorted(self._atlas._registry_tables.keys())}"
+            )
+        if len(union_globals) == 0:
+            return pd.DataFrame(index=pd.RangeIndex(0))
 
         registry_table = self._atlas._registry_tables[feature_space]
         registry_df = registry_table.search().to_polars()

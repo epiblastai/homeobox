@@ -18,11 +18,10 @@ import obstore
 import pandas as pd
 import polars as pl
 import pyarrow as pa
-import scipy.sparse as sp
 import zarr
 
 from lancell.batch_array import BatchArray
-from lancell.group_specs import ZARR_SPECS, FeatureSpace, LayerName, PointerKind
+from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -37,7 +36,6 @@ from lancell.var_df import (
     reindex_registry,
     validate_var_df,
     write_remap,
-    write_var_df,
 )
 
 
@@ -51,7 +49,7 @@ class PointerFieldInfo:
     """Metadata extracted from a single pointer field on a cell schema."""
 
     field_name: str
-    feature_space: FeatureSpace
+    feature_space: str
     pointer_kind: PointerKind
     pointer_type: type  # SparseZarrPointer or DenseZarrPointer
 
@@ -74,18 +72,15 @@ def _extract_pointer_fields(
             if t is type(None):
                 continue
             if t is SparseZarrPointer or t is DenseZarrPointer:
-                # Convention: field name == FeatureSpace value.
+                # Convention: field name == feature space name.
                 # Enforced at class-definition time in LancellBaseSchema.__init_subclass__.
-                # We use the field name (not t.feature_space) because t is
-                # the *type* SparseZarrPointer, not an instance — there's no
-                # .feature_space value to read at class-introspection time.
-                feature_space = FeatureSpace(name)
-                spec = ZARR_SPECS[feature_space]
+                feature_space = name
+                spec = get_spec(feature_space)
                 pointer_kind = PointerKind.SPARSE if t is SparseZarrPointer else PointerKind.DENSE
                 if pointer_kind is not spec.pointer_kind:
                     raise TypeError(
                         f"Field '{name}' uses {pointer_kind.value} pointer but "
-                        f"feature space '{feature_space.value}' requires {spec.pointer_kind.value}"
+                        f"feature space '{feature_space}' requires {spec.pointer_kind.value}"
                     )
                 result[name] = PointerFieldInfo(
                     field_name=name,
@@ -241,7 +236,7 @@ class RaggedAtlas:
         cell_table: lancedb.table.Table,
         cell_schema: type[LancellBaseSchema],
         root: zarr.Group,
-        registry_tables: dict[FeatureSpace, lancedb.table.Table],
+        registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
         *,
         update_feature_registries: bool = True,
@@ -256,7 +251,7 @@ class RaggedAtlas:
         self._dataset_table = dataset_table
 
         # Instance-level caches (version-aware for remaps)
-        self._remap_cache: dict[tuple[str, FeatureSpace], tuple[int, np.ndarray]] = {}
+        self._remap_cache: dict[tuple[str, str], tuple[int, np.ndarray]] = {}
         self._batch_reader_cache: dict[tuple[str, str], BatchArray] = {}
 
         # Validate that global_index is contiguous 0..N-1 within each
@@ -284,7 +279,7 @@ class RaggedAtlas:
         dataset_schema: type[DatasetRecord],
         *,
         store: obstore.store.ObjectStore,
-        registry_schemas: dict[FeatureSpace, type[FeatureBaseSchema]],
+        registry_schemas: dict[str, type[FeatureBaseSchema]],
         update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
@@ -304,8 +299,8 @@ class RaggedAtlas:
         store:
             An obstore ObjectStore for zarr I/O.
         registry_schemas:
-            Mapping of feature spaces to their registry schema classes.
-            Table names default to ``"{feature_space.value}_registry"``.
+            Mapping of feature space names to their registry schema classes.
+            Table names default to ``"{feature_space}_registry"``.
         update_feature_registries:
             If ``True`` (default), automatically run
             :func:`~lancell.var_df.reindex_registry` on any registry whose
@@ -316,9 +311,9 @@ class RaggedAtlas:
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
-        registry_tables: dict[FeatureSpace, lancedb.table.Table] = {}
+        registry_tables: dict[str, lancedb.table.Table] = {}
         for fs, schema_cls in registry_schemas.items():
-            table_name = f"{fs.value}_registry"
+            table_name = f"{fs}_registry"
             registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
@@ -342,7 +337,7 @@ class RaggedAtlas:
         dataset_table_name: str,
         *,
         store: obstore.store.ObjectStore,
-        registry_tables: dict[FeatureSpace, str],
+        registry_tables: dict[str, str],
         update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Open an existing atlas.
@@ -360,7 +355,7 @@ class RaggedAtlas:
         store:
             An obstore ObjectStore for zarr I/O.
         registry_tables:
-            Mapping of feature spaces to LanceDB table names.
+            Mapping of feature space names to LanceDB table names.
         update_feature_registries:
             If ``True`` (default), automatically run
             :func:`~lancell.var_df.reindex_registry` on any registry whose
@@ -371,7 +366,7 @@ class RaggedAtlas:
         cell_table = db.open_table(cell_table_name)
         dataset_table = db.open_table(dataset_table_name)
 
-        resolved_registries: dict[FeatureSpace, lancedb.table.Table] = {}
+        resolved_registries: dict[str, lancedb.table.Table] = {}
         for fs, table_name in registry_tables.items():
             resolved_registries[fs] = db.open_table(table_name)
 
@@ -389,7 +384,7 @@ class RaggedAtlas:
 
     # -- Store helpers ------------------------------------------------------
 
-    def _get_remap(self, zarr_group: str, feature_space: FeatureSpace) -> np.ndarray:
+    def _get_remap(self, zarr_group: str, feature_space: str) -> np.ndarray:
         """Load remap, recomputing and saving if the registry version has changed.
 
         Checks the registry table version on every call.  If the cached remap
@@ -441,12 +436,12 @@ class RaggedAtlas:
 
     def register_features(
         self,
-        feature_space: FeatureSpace,
+        feature_space: str,
         features: list[FeatureBaseSchema] | pl.DataFrame,
     ) -> int:
         """Register features in a feature registry.
 
-        Must be called before ``add_from_anndata`` for feature spaces that
+        Must be called before ingestion for feature spaces that
         have a registry (``has_var_df=True``).
 
         This method only inserts new feature rows — it does **not** assign
@@ -470,7 +465,7 @@ class RaggedAtlas:
         """
         if feature_space not in self._registry_tables:
             raise ValueError(
-                f"No registry table for feature space '{feature_space.value}'. "
+                f"No registry table for feature space '{feature_space}'. "
                 f"Ensure a registry schema was provided at create() time."
             )
         registry_table = self._registry_tables[feature_space]
@@ -496,257 +491,6 @@ class RaggedAtlas:
             .execute(new_records)
         )
         return registry_table.count_rows() - n_before
-
-    # -- Writing: add_from_anndata ------------------------------------------
-
-    def add_from_anndata(
-        self,
-        adata: ad.AnnData,
-        *,
-        feature_space: FeatureSpace,
-        zarr_group: str | None = None,
-        layer_name: LayerName | None,
-        chunk_size: int = 4096,
-        shard_size: int = 65536,
-    ) -> int:
-        """Ingest an AnnData into the atlas.
-
-        Writes zarr arrays, var_df sidecar, remap, and inserts cell records
-        into the cell table. Features must already be registered via
-        :meth:`register_features`, and ``adata.var`` must contain a
-        ``global_feature_uid`` column.
-
-        Parameters
-        ----------
-        adata:
-            The AnnData to ingest.
-        feature_space:
-            Which feature space this data belongs to.
-        zarr_group:
-            Zarr group path (relative to atlas store) for this ingestion.
-            If ``None`` (default), a UUID-based name is generated
-            automatically, which guarantees uniqueness across concurrent
-            writers.
-        layer_name:
-            Required for feature spaces with allowed_layers — the layer to
-            write (e.g. ``LayerName.COUNTS``). Unused for feature spaces
-            without layers (e.g. IMAGE_TILES), in which case set to None.
-        chunk_size:
-            Zarr chunk size for 1D arrays.
-        shard_size:
-            Zarr shard size for 1D arrays.
-
-        Returns
-        -------
-        int
-            Number of cells ingested.
-        """
-        spec = ZARR_SPECS[feature_space]
-
-        if spec.allowed_layers and layer_name is None:
-            raise ValueError(
-                f"layer_name is required for feature space '{feature_space.value}'. "
-                f"Allowed values: {[l.value for l in spec.allowed_layers]}"
-            )
-        if layer_name is not None and spec.allowed_layers and layer_name not in spec.allowed_layers:
-            raise ValueError(
-                f"layer_name '{layer_name.value}' is not allowed for feature space "
-                f"'{feature_space.value}'. Allowed: {[l.value for l in spec.allowed_layers]}"
-            )
-
-        # Pre-flight: validate obs columns match schema before any writes
-        obs_errors = validate_obs_columns(adata.obs, self._cell_schema)
-        if obs_errors:
-            raise ValueError(
-                f"obs columns do not match cell schema: {obs_errors}"
-            )
-
-        # Find the pointer field for this feature space
-        pointer_field = None
-        for pf in self._pointer_fields.values():
-            if pf.feature_space == feature_space:
-                pointer_field = pf
-                break
-        if pointer_field is None:
-            raise ValueError(
-                f"Schema {self._cell_schema.__name__} has no pointer field "
-                f"for feature space '{feature_space.value}'"
-            )
-
-        n_cells = adata.n_obs
-
-        # Create dataset record first (FK for cells)
-        # TODO: Dataset record shouldn't be hardcoded like this. We need more flexibility
-        # because dataset metadata can be more expansive, DatasetRecord as currently
-        # constructed is just a bare minimum and not actually intended for real use.
-        dataset_record = DatasetRecord(
-            zarr_group="",  # placeholder, overwritten below
-            feature_space=feature_space.value,
-            n_cells=n_cells,
-        )
-        # Default zarr_group to dataset_uid to prevent collisions between
-        # concurrent writers.  When a caller provides an explicit name we use
-        # it, but the UUID-based default is strongly preferred.
-        if zarr_group is None:
-            zarr_group = dataset_record.uid
-        dataset_record.zarr_group = zarr_group
-        dataset_arrow = pa.Table.from_pylist(
-            [dataset_record.model_dump()],
-            schema=DatasetRecord.to_arrow_schema(),
-        )
-        self._dataset_table.add(dataset_arrow)
-
-        # Write zarr arrays
-        if spec.pointer_kind is PointerKind.SPARSE:
-            starts, ends = self._write_sparse_zarr(
-                adata, zarr_group, layer_name, chunk_size, shard_size
-            )
-        else:
-            self._write_dense_zarr(adata, zarr_group, layer_name, chunk_size, shard_size)
-
-        # Write var_df sidecar
-        if spec.has_var_df:
-            self._write_var_sidecar(adata, feature_space, zarr_group)
-
-        # Build cell records from obs columns
-        obs_field_names = list(_schema_obs_fields(self._cell_schema).keys())
-        records = []
-        for i in range(n_cells):
-            if spec.pointer_kind is PointerKind.SPARSE:
-                pointer = SparseZarrPointer(
-                    feature_space=feature_space,
-                    zarr_group=zarr_group,
-                    start=int(starts[i]),
-                    end=int(ends[i]),
-                )
-            else:
-                pointer = DenseZarrPointer(
-                    feature_space=feature_space,
-                    zarr_group=zarr_group,
-                    position=i,
-                )
-
-            extra = {
-                col: adata.obs.iloc[i][col]
-                for col in obs_field_names
-                if col in adata.obs.columns
-            }
-            record_kwargs = {
-                pointer_field.field_name: pointer,
-                "dataset_uid": dataset_record.uid,
-                **extra,
-            }
-            records.append(self._cell_schema(**record_kwargs))
-
-        # TODO: This pattern is OK for now, but adding records with a generator
-        # in batches is preferred, especially for large datasets.
-        arrow_schema = self._cell_schema.to_arrow_schema()
-        arrow_table = pa.Table.from_pylist(
-            [r.model_dump() for r in records], schema=arrow_schema
-        )
-        self.cell_table.add(arrow_table)
-        return n_cells
-
-    # TODO: This function is inappropriate for all but toy datasets.
-    # A chief benefit of zarr is that we don't have to load the full
-    # dataset into memory all at once.
-    def _write_sparse_zarr(
-        self,
-        adata: ad.AnnData,
-        zarr_group: str,
-        layer_name: str,
-        chunk_size: int,
-        shard_size: int,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Write sparse (CSR) data to zarr arrays. Returns (starts, ends)."""
-        csr = sp.csr_matrix(adata.X)
-        flat_indices = csr.indices.astype(np.uint32)
-        flat_values = csr.data
-
-        starts = csr.indptr[:-1].astype(np.int64)
-        ends = csr.indptr[1:].astype(np.int64)
-
-        group = self._root.create_group(zarr_group)
-
-        group.create_array(
-            "indices",
-            data=flat_indices,
-            chunks=(chunk_size,),
-            shards=(shard_size,),
-        )
-
-        layers = group.create_group("layers")
-        layers.create_array(
-            layer_name,
-            data=flat_values,
-            chunks=(chunk_size,),
-            shards=(shard_size,),
-        )
-
-        return starts, ends
-
-    # TODO: Same problem as the sparse version
-    def _write_dense_zarr(
-        self,
-        adata: ad.AnnData,
-        zarr_group: str,
-        layer_name: LayerName | None,
-        chunk_size: int,
-        shard_size: int,
-    ) -> None:
-        """Write dense data to a 2D zarr array."""
-        data = np.asarray(adata.X, dtype=np.float32)
-
-        group = self._root.create_group(zarr_group)
-
-        n_cells, n_features = data.shape
-
-        if layer_name is not None:
-            layers_group = group.create_group("layers")
-            layers_group.create_array(
-                layer_name.value,
-                data=data,
-                chunks=(chunk_size, n_features),
-                shards=(shard_size, n_features),
-            )
-        else:
-            group.create_array(
-                "data",
-                data=data,
-                chunks=(chunk_size, n_features),
-                shards=(shard_size, n_features),
-            )
-
-    def _write_var_sidecar(
-        self,
-        adata: ad.AnnData,
-        feature_space: FeatureSpace,
-        zarr_group: str,
-    ) -> None:
-        """Write var.parquet and version-gated remap.parquet for a dataset.
-
-        Requires ``global_feature_uid`` in ``adata.var`` and features to
-        already be registered via :meth:`register_features`.  The remap is
-        tagged with the current registry table version so readers can detect
-        staleness.
-        """
-        var_df = pl.from_pandas(adata.var.reset_index())
-        if "global_feature_uid" not in var_df.columns:
-            raise ValueError(
-                "adata.var must have a 'global_feature_uid' column. "
-                "Set it before calling add_from_anndata()."
-            )
-
-        write_var_df(self._store, zarr_group, var_df)
-
-        if feature_space in self._registry_tables:
-            registry_table = self._registry_tables[feature_space]
-            remap = build_remap(var_df, registry_table)
-            group = self._root[zarr_group]
-            write_remap(
-                self._store, group, remap,
-                registry_version=registry_table.version,
-            )
 
     # -- Maintenance --------------------------------------------------------
 
@@ -788,7 +532,7 @@ class RaggedAtlas:
 
         # Schema validation
         for pf in self._pointer_fields.values():
-            spec = ZARR_SPECS[pf.feature_space]
+            spec = get_spec(pf.feature_space)
             if pf.pointer_kind is not spec.pointer_kind:
                 errors.append(
                     f"Field '{pf.field_name}': pointer_kind {pf.pointer_kind.value} "
@@ -809,17 +553,16 @@ class RaggedAtlas:
 
         return errors
 
-    def _collect_zarr_groups(self) -> dict[FeatureSpace, set[str]]:
+    def _collect_zarr_groups(self) -> dict[str, set[str]]:
         """Collect unique zarr groups per feature space from the dataset table."""
-        result: dict[FeatureSpace, set[str]] = defaultdict(set)
+        result: dict[str, set[str]] = defaultdict(set)
         datasets_df = self._dataset_table.search().select(
             ["feature_space", "zarr_group"]
         ).to_polars()
         if datasets_df.is_empty():
             return result
         for row in datasets_df.iter_rows(named=True):
-            fs = FeatureSpace(row["feature_space"])
-            result[fs].add(row["zarr_group"])
+            result[row["feature_space"]].add(row["zarr_group"])
         return result
 
     def list_datasets(self) -> pl.DataFrame:
@@ -835,7 +578,7 @@ class RaggedAtlas:
             null_count = df["global_index"].null_count()
             if null_count > 0:
                 errors.append(
-                    f"Registry '{fs.value}': {null_count} row(s) have no global_index. "
+                    f"Registry '{fs}': {null_count} row(s) have no global_index. "
                     f"Run reindex_registry(table) to fix."
                 )
                 continue
@@ -843,17 +586,17 @@ class RaggedAtlas:
             expected = list(range(len(indices)))
             if indices != expected:
                 errors.append(
-                    f"Registry '{fs.value}': global_index is not contiguous 0..{len(indices)-1}. "
+                    f"Registry '{fs}': global_index is not contiguous 0..{len(indices)-1}. "
                     f"Run reindex_registry(table) to fix."
                 )
         return errors
 
     def _validate_zarr_groups(
-        self, zarr_groups_by_space: dict[FeatureSpace, set[str]]
+        self, zarr_groups_by_space: dict[str, set[str]]
     ) -> list[str]:
         errors: list[str] = []
         for fs, groups in zarr_groups_by_space.items():
-            spec = ZARR_SPECS[fs]
+            spec = get_spec(fs)
             for zg in groups:
                 group = self._root[zg]
                 group_errors = spec.validate_group(group)
@@ -862,11 +605,11 @@ class RaggedAtlas:
         return errors
 
     def _validate_var_dfs(
-        self, zarr_groups_by_space: dict[FeatureSpace, set[str]]
+        self, zarr_groups_by_space: dict[str, set[str]]
     ) -> list[str]:
         errors: list[str] = []
         for fs, groups in zarr_groups_by_space.items():
-            spec = ZARR_SPECS[fs]
+            spec = get_spec(fs)
             if not spec.has_var_df:
                 continue
             registry = self._registry_tables.get(fs)

@@ -6,7 +6,7 @@ from typing import Union, get_args, get_origin
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from lancell.group_specs import ZARR_SPECS, FeatureSpace, PointerKind
+from lancell.group_specs import PointerKind, get_spec, registered_feature_spaces
 
 
 class SparseZarrPointer(LanceModel):
@@ -17,8 +17,7 @@ class SparseZarrPointer(LanceModel):
 
     @model_validator(mode="after")
     def _require_sparse_feature_space(self):
-        fs = FeatureSpace(self.feature_space)
-        spec = ZARR_SPECS[fs]
+        spec = get_spec(self.feature_space)
         if spec.pointer_kind is not PointerKind.SPARSE:
             raise ValueError(
                 f"feature_space '{self.feature_space}' requires a "
@@ -34,8 +33,7 @@ class DenseZarrPointer(LanceModel):
 
     @model_validator(mode="after")
     def _require_dense_feature_space(self):
-        fs = FeatureSpace(self.feature_space)
-        spec = ZARR_SPECS[fs]
+        spec = get_spec(self.feature_space)
         if spec.pointer_kind is not PointerKind.DENSE:
             raise ValueError(
                 f"feature_space '{self.feature_space}' requires a "
@@ -83,11 +81,11 @@ class LancellBaseSchema(LanceModel):
             ):
                 # Validate that the field name is a valid FeatureSpace value,
                 # because we use the field name to look up the registry.
-                valid_values = {fs.value for fs in FeatureSpace}
+                valid_values = registered_feature_spaces()
                 if name not in valid_values:
                     raise TypeError(
                         f"{cls.__name__}.{name}: pointer field name must match "
-                        f"a FeatureSpace value. Valid values: {sorted(valid_values)}"
+                        f"a registered feature space. Valid values: {sorted(valid_values)}"
                     )
                 return  # found one, we're good
         raise TypeError(

@@ -4,15 +4,6 @@ import zarr
 from pydantic import BaseModel
 
 
-class FeatureSpace(str, Enum):
-    GENE_EXPRESSION = "gene_expression"
-    PROTEIN_ABUNDANCE = "protein_abundance"
-    CHROMATIN_FRAGMENT = "chromatin_fragment"
-    CHROMATIN_PEAK = "chromatin_peak"
-    IMAGE_FEATURES = "image_features"
-    IMAGE_TILES = "image_tiles"
-
-
 class DTypeKind(str, Enum):
     """Structured dtype.kind values used by NumPy and Zarr arrays."""
 
@@ -25,16 +16,6 @@ class DTypeKind(str, Enum):
 class PointerKind(str, Enum):
     SPARSE = "sparse"
     DENSE = "dense"
-
-
-class LayerName(str, Enum):
-    RAW = "raw"
-    COUNTS = "counts"
-    LOG_NORMALIZED = "log_normalized"
-    TPM = "tpm"
-    CLR = "clr"
-    DSB = "dsb"
-    CTRL_STANDARDIZED = "ctrl_standardized"
 
 
 class ArraySpec(BaseModel):
@@ -62,13 +43,13 @@ class SubgroupSpec(BaseModel):
 class ZarrGroupSpec(BaseModel):
     """Declarative spec for the expected layout of a zarr group."""
 
-    feature_space: FeatureSpace
+    feature_space: str
     pointer_kind: PointerKind
     has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
     required_subgroups: list[SubgroupSpec] = []
-    required_layers: list[LayerName] = []
-    allowed_layers: list[LayerName] = []
+    required_layers: list[str] = []
+    allowed_layers: list[str] = []
 
     def validate_group(self, group: zarr.Group) -> list[str]:
         """Validate a zarr group against this spec. Returns a list of errors."""
@@ -141,17 +122,17 @@ class ZarrGroupSpec(BaseModel):
             if "layers" not in group or not isinstance(group["layers"], zarr.Group):
                 errors.append(
                     f"Missing required 'layers' subgroup "
-                    f"(required layers: {[l.value for l in self.required_layers]})"
+                    f"(required layers: {self.required_layers})"
                 )
             else:
                 layers_group = group["layers"]
                 for layer_name in self.required_layers:
-                    if layer_name.value not in layers_group:
-                        errors.append(f"Missing required layer '{layer_name.value}'")
+                    if layer_name not in layers_group:
+                        errors.append(f"Missing required layer '{layer_name}'")
 
         # Check allowed layers (flag unknown arrays in layers/)
         if self.allowed_layers and "layers" in group and isinstance(group["layers"], zarr.Group):
-            allowed_values = {l.value for l in self.allowed_layers}
+            allowed_values = set(self.allowed_layers)
             for name, _ in group["layers"].arrays():
                 if name not in allowed_values:
                     errors.append(
@@ -162,8 +143,43 @@ class ZarrGroupSpec(BaseModel):
         return errors
 
 
+# ---------------------------------------------------------------------------
+# Spec registry
+# ---------------------------------------------------------------------------
+
+_SPEC_REGISTRY: dict[str, ZarrGroupSpec] = {}
+
+
+def register_spec(spec: ZarrGroupSpec) -> None:
+    """Register a new ZarrGroupSpec. Raises if already registered."""
+    if spec.feature_space in _SPEC_REGISTRY:
+        raise ValueError(
+            f"Feature space '{spec.feature_space}' is already registered"
+        )
+    _SPEC_REGISTRY[spec.feature_space] = spec
+
+
+def get_spec(feature_space: str) -> ZarrGroupSpec:
+    """Look up a spec by feature space name."""
+    if feature_space not in _SPEC_REGISTRY:
+        raise KeyError(
+            f"No spec registered for feature space '{feature_space}'. "
+            f"Registered: {sorted(_SPEC_REGISTRY.keys())}"
+        )
+    return _SPEC_REGISTRY[feature_space]
+
+
+def registered_feature_spaces() -> set[str]:
+    """Return the set of all registered feature space names."""
+    return set(_SPEC_REGISTRY.keys())
+
+
+# ---------------------------------------------------------------------------
+# Built-in specs
+# ---------------------------------------------------------------------------
+
 GENE_EXPRESSION_SPEC = ZarrGroupSpec(
-    feature_space=FeatureSpace.GENE_EXPRESSION,
+    feature_space="gene_expression",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
@@ -176,12 +192,12 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
             match_shape_of="indices",
         ),
     ],
-    required_layers=[LayerName.COUNTS],
-    allowed_layers=[LayerName.COUNTS, LayerName.LOG_NORMALIZED, LayerName.TPM],
+    required_layers=["counts"],
+    allowed_layers=["counts", "log_normalized", "tpm"],
 )
 
 CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
-    feature_space=FeatureSpace.CHROMATIN_FRAGMENT,
+    feature_space="chromatin_fragment",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=False,
     required_arrays=[
@@ -192,7 +208,7 @@ CHROMATIN_FRAGMENT_SPEC = ZarrGroupSpec(
 
 
 CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
-    feature_space=FeatureSpace.CHROMATIN_PEAK,
+    feature_space="chromatin_peak",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
@@ -202,7 +218,7 @@ CHROMATIN_PEAK_SPEC = ZarrGroupSpec(
 )
 
 PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
-    feature_space=FeatureSpace.PROTEIN_ABUNDANCE,
+    feature_space="protein_abundance",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     required_subgroups=[
@@ -211,12 +227,12 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
             uniform_shape=True,
         ),
     ],
-    required_layers=[LayerName.COUNTS],
-    allowed_layers=[LayerName.COUNTS, LayerName.CLR, LayerName.DSB, LayerName.LOG_NORMALIZED],
+    required_layers=["counts"],
+    allowed_layers=["counts", "clr", "dsb", "log_normalized"],
 )
 
 IMAGE_FEATURES_SPEC = ZarrGroupSpec(
-    feature_space=FeatureSpace.IMAGE_FEATURES,
+    feature_space="image_features",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     required_subgroups=[
@@ -225,12 +241,12 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
             uniform_shape=True,
         ),
     ],
-    required_layers=[LayerName.RAW],
-    allowed_layers=[LayerName.RAW, LayerName.LOG_NORMALIZED, LayerName.CTRL_STANDARDIZED],
+    required_layers=["raw"],
+    allowed_layers=["raw", "log_normalized", "ctrl_standardized"],
 )
 
 IMAGE_TILES_SPEC = ZarrGroupSpec(
-    feature_space=FeatureSpace.IMAGE_TILES,
+    feature_space="image_tiles",
     pointer_kind=PointerKind.DENSE,
     required_arrays=[
         # Tile can be any dtype
@@ -238,15 +254,13 @@ IMAGE_TILES_SPEC = ZarrGroupSpec(
     ],
 )
 
-# Registry for lookup by feature space
-ZARR_SPECS: dict[FeatureSpace, ZarrGroupSpec] = {
-    spec.feature_space: spec
-    for spec in [
-        GENE_EXPRESSION_SPEC,
-        CHROMATIN_FRAGMENT_SPEC,
-        CHROMATIN_PEAK_SPEC,
-        PROTEIN_ABUNDANCE_SPEC,
-        IMAGE_FEATURES_SPEC,
-        IMAGE_TILES_SPEC,
-    ]
-}
+# Register all built-in specs
+for _spec in [
+    GENE_EXPRESSION_SPEC,
+    CHROMATIN_FRAGMENT_SPEC,
+    CHROMATIN_PEAK_SPEC,
+    PROTEIN_ABUNDANCE_SPEC,
+    IMAGE_FEATURES_SPEC,
+    IMAGE_TILES_SPEC,
+]:
+    register_spec(_spec)
