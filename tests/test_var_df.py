@@ -6,6 +6,7 @@ from pathlib import Path
 
 import lancedb
 import numpy as np
+import obstore
 import polars as pl
 import pytest
 import zarr
@@ -18,10 +19,10 @@ from lancell.var_df import (
     VarDfColumnSchema,
     build_remap,
     read_remap,
+    read_remap_if_fresh,
     read_var_df,
     reindex_registry,
     remap_path,
-    validate_remap,
     validate_var_df,
     var_df_path,
     write_remap,
@@ -171,15 +172,17 @@ class TestWriteRead:
 
     def test_remap_roundtrip(self, tmp_path):
         store, group_prefix, _ = _make_store_and_group(tmp_path)
+        group = zarr.open_group(str(tmp_path), mode="a")[group_prefix]
         remap = np.array([10, 20, 30, 40, 50], dtype=np.int32)
-        write_remap(store, group_prefix, remap)
+        write_remap(store, group, remap, registry_version=1)
         result = read_remap(store, group_prefix)
         np.testing.assert_array_equal(result, remap)
 
     def test_write_remap_rejects_2d(self, tmp_path):
         store, group_prefix, _ = _make_store_and_group(tmp_path)
+        group = zarr.open_group(str(tmp_path), mode="a")[group_prefix]
         with pytest.raises(ValueError, match="1-D"):
-            write_remap(store, group_prefix, np.zeros((2, 3), dtype=np.int32))
+            write_remap(store, group, np.zeros((2, 3), dtype=np.int32), registry_version=1)
 
 
 # ---------------------------------------------------------------------------
@@ -321,34 +324,43 @@ class TestValidateVarDf:
 
 
 # ---------------------------------------------------------------------------
-# validate_remap
+# read_remap_if_fresh
 # ---------------------------------------------------------------------------
 
 
-class TestValidateRemap:
-    def test_valid(self, tmp_path):
-        uids = ["uid_a", "uid_b", "uid_c"]
-        registry = _make_registry(tmp_path, uids)
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
-        remap = np.array([2, 0], dtype=np.int32)
-        errors = validate_remap(remap, var_df=var_df, registry_table=registry)
-        assert errors == []
+class TestReadRemapIfFresh:
+    def test_fresh_version_returns_data(self, tmp_path):
+        store, group_prefix, _ = _make_store_and_group(tmp_path)
+        group = zarr.open_group(str(tmp_path), mode="a")[group_prefix]
+        remap = np.array([10, 20, 30, 40, 50], dtype=np.int32)
+        write_remap(store, group, remap, registry_version=5)
 
-    def test_length_mismatch(self):
-        var_df = pl.DataFrame({"global_feature_uid": ["a", "b", "c"]})
-        remap = np.array([0, 1], dtype=np.int32)
-        errors = validate_remap(remap, var_df=var_df)
-        assert any("length" in e for e in errors)
+        result = read_remap_if_fresh(store, group, current_registry_version=5)
+        assert result is not None
+        np.testing.assert_array_equal(result, remap)
 
-    def test_invalid_index(self, tmp_path):
-        registry = _make_registry(tmp_path, ["uid_a"])  # only global_index=0
-        remap = np.array([0, 999], dtype=np.int32)
-        errors = validate_remap(remap, registry_table=registry)
-        assert any("not in registry" in e for e in errors)
+    def test_stale_version_returns_none(self, tmp_path):
+        store, group_prefix, _ = _make_store_and_group(tmp_path)
+        group = zarr.open_group(str(tmp_path), mode="a")[group_prefix]
+        remap = np.array([10, 20, 30, 40, 50], dtype=np.int32)
+        write_remap(store, group, remap, registry_version=5)
 
-    def test_rejects_2d(self):
-        errors = validate_remap(np.zeros((2, 3), dtype=np.int32))
-        assert any("1-D" in e for e in errors)
+        result = read_remap_if_fresh(store, group, current_registry_version=6)
+        assert result is None
+
+    def test_missing_version_attr_returns_none(self, tmp_path):
+        store, group_prefix, _ = _make_store_and_group(tmp_path)
+        group = zarr.open_group(str(tmp_path), mode="a")[group_prefix]
+        # Simulate a legacy remap written without version gating by
+        # writing the parquet file directly (no attrs).
+        import io
+        remap = np.array([10, 20, 30, 40, 50], dtype=np.int32)
+        buf = io.BytesIO()
+        pl.DataFrame({"global_index": remap}).write_parquet(buf)
+        obstore.put(store, remap_path(group_prefix), buf.getvalue())
+
+        result = read_remap_if_fresh(store, group, current_registry_version=1)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

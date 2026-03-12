@@ -34,9 +34,8 @@ from lancell.schema import (
 )
 from lancell.var_df import (
     build_remap,
-    read_remap,
+    read_remap_if_fresh,
     read_var_df,
-    validate_remap,
     validate_var_df,
     write_remap,
     write_var_df,
@@ -369,9 +368,20 @@ class RaggedAtlas:
     # -- Store helpers ------------------------------------------------------
 
     @functools.lru_cache(maxsize=256)
-    def _get_remap(self, zarr_group: str) -> np.ndarray:
-        """Load a remap array, with LRU caching."""
-        return read_remap(self._store, zarr_group)
+    def _get_remap(self, zarr_group: str, feature_space: FeatureSpace) -> np.ndarray:
+        """Load remap, recomputing and saving if the registry version has changed."""
+        registry_table = self._registry_tables[feature_space]
+        current_version = registry_table.version
+
+        group = self._root[zarr_group]
+        cached = read_remap_if_fresh(self._store, group, current_version)
+        if cached is not None:
+            return cached
+
+        var_df = read_var_df(self._store, zarr_group)
+        remap = build_remap(var_df, registry_table)
+        write_remap(self._store, group, remap, registry_version=current_version)
+        return remap
 
     @functools.lru_cache(maxsize=64)
     def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchArray:
@@ -475,7 +485,7 @@ class RaggedAtlas:
         *,
         feature_space: FeatureSpace,
         zarr_group: str,
-        layer_name: LayerName | None = None,
+        layer_name: LayerName | None,
         chunk_size: int = 4096,
         shard_size: int = 65536,
     ) -> int:
@@ -498,7 +508,7 @@ class RaggedAtlas:
         layer_name:
             Required for feature spaces with allowed_layers — the layer to
             write (e.g. ``LayerName.COUNTS``). Unused for feature spaces
-            without layers (e.g. IMAGE_TILES).
+            without layers (e.g. IMAGE_TILES), in which case set to None.
         chunk_size:
             Zarr chunk size for 1D arrays.
         shard_size:
@@ -544,6 +554,9 @@ class RaggedAtlas:
         n_cells = adata.n_obs
 
         # Create dataset record first (FK for cells)
+        # TODO: Dataset record shouldn't be hardcoded like this. We need more flexibility
+        # because dataset metadata can be more expansive, DatasetRecord as currently
+        # constructed is just a bare minimum and not actually intended for real use.
         dataset_record = DatasetRecord(
             zarr_group=zarr_group,
             feature_space=feature_space.value,
@@ -597,6 +610,8 @@ class RaggedAtlas:
             }
             records.append(self._cell_schema(**record_kwargs))
 
+        # TODO: This pattern is OK for now, but adding records with a generator
+        # in batches is preferred, especially for large datasets.
         arrow_schema = self._cell_schema.to_arrow_schema()
         arrow_table = pa.Table.from_pylist(
             [r.model_dump() for r in records], schema=arrow_schema
@@ -604,6 +619,9 @@ class RaggedAtlas:
         self.cell_table.add(arrow_table)
         return n_cells
 
+    # TODO: This function is inappropriate for all but toy datasets.
+    # A chief benefit of zarr is that we don't have to load the full
+    # dataset into memory all at once.
     def _write_sparse_zarr(
         self,
         adata: ad.AnnData,
@@ -639,6 +657,7 @@ class RaggedAtlas:
 
         return starts, ends
 
+    # TODO: Same problem as the sparse version
     def _write_dense_zarr(
         self,
         adata: ad.AnnData,
@@ -676,10 +695,12 @@ class RaggedAtlas:
         feature_space: FeatureSpace,
         zarr_group: str,
     ) -> None:
-        """Write var.parquet and remap.parquet for a dataset.
+        """Write var.parquet and version-gated remap.parquet for a dataset.
 
         Requires ``global_feature_uid`` in ``adata.var`` and features to
-        already be registered via :meth:`register_features`.
+        already be registered via :meth:`register_features`.  The remap is
+        tagged with the current registry table version so readers can detect
+        staleness.
         """
         var_df = pl.from_pandas(adata.var.reset_index())
         if "global_feature_uid" not in var_df.columns:
@@ -693,7 +714,11 @@ class RaggedAtlas:
         if feature_space in self._registry_tables:
             registry_table = self._registry_tables[feature_space]
             remap = build_remap(var_df, registry_table)
-            write_remap(self._store, zarr_group, remap)
+            group = self._root[zarr_group]
+            write_remap(
+                self._store, group, remap,
+                registry_version=registry_table.version,
+            )
 
     # -- Validation ---------------------------------------------------------
 
@@ -701,7 +726,7 @@ class RaggedAtlas:
         self,
         *,
         check_zarr: bool = True,
-        check_remaps: bool = True,
+        check_var_dfs: bool = True,
         check_registries: bool = True,
     ) -> list[str]:
         """Validate atlas consistency. Returns a list of error strings.
@@ -710,8 +735,8 @@ class RaggedAtlas:
         ----------
         check_zarr:
             Open each unique zarr group and validate against its spec.
-        check_remaps:
-            For feature spaces with var_df, validate sidecars and remaps.
+        check_var_dfs:
+            For feature spaces with var_df, validate sidecars.
         check_registries:
             Check that registry tables exist and global_index is contiguous.
         """
@@ -729,21 +754,23 @@ class RaggedAtlas:
         if check_registries:
             errors.extend(self._validate_registries())
 
-        # Collect unique zarr groups from cell table
+        # Collect unique zarr groups from dataset table
         zarr_groups_by_space = self._collect_zarr_groups()
 
         if check_zarr:
             errors.extend(self._validate_zarr_groups(zarr_groups_by_space))
 
-        if check_remaps:
-            errors.extend(self._validate_remaps(zarr_groups_by_space))
+        if check_var_dfs:
+            errors.extend(self._validate_var_dfs(zarr_groups_by_space))
 
         return errors
 
     def _collect_zarr_groups(self) -> dict[FeatureSpace, set[str]]:
         """Collect unique zarr groups per feature space from the dataset table."""
         result: dict[FeatureSpace, set[str]] = defaultdict(set)
-        datasets_df = self._dataset_table.search().to_polars()
+        datasets_df = self._dataset_table.search().select(
+            ["feature_space", "zarr_group"]
+        ).to_polars()
         if datasets_df.is_empty():
             return result
         for row in datasets_df.iter_rows(named=True):
@@ -761,6 +788,7 @@ class RaggedAtlas:
             df = table.search().select(["uid", "global_index"]).to_polars()
             if df.is_empty():
                 continue
+            # TODO: Actually we should be asserting that no rows have a null global_index
             indexed = df.filter(pl.col("global_index").is_not_null())
             if indexed.is_empty():
                 errors.append(
@@ -790,10 +818,7 @@ class RaggedAtlas:
                     errors.append(f"zarr group '{zg}': {e}")
         return errors
 
-    # TODO: The more I think about it the less I like storing `global_index` anywhere but
-    # in the registry table. We can compute it pretty easily when we need to. The risk of
-    # drift and contamination from parallel writes to the registry table is just too high.
-    def _validate_remaps(
+    def _validate_var_dfs(
         self, zarr_groups_by_space: dict[FeatureSpace, set[str]]
     ) -> list[str]:
         errors: list[str] = []
@@ -803,18 +828,11 @@ class RaggedAtlas:
                 continue
             registry = self._registry_tables.get(fs)
             for zg in groups:
-                # Validate var_df
                 var_df = read_var_df(self._store, zg)
                 group = self._root[zg]
                 vd_errors = validate_var_df(var_df, spec=spec, group=group, registry_table=registry)
                 for e in vd_errors:
                     errors.append(f"var_df '{zg}': {e}")
-
-                # Validate remap
-                remap = read_remap(self._store, zg)
-                rm_errors = validate_remap(remap, var_df=var_df, registry_table=registry)
-                for e in rm_errors:
-                    errors.append(f"remap '{zg}': {e}")
         return errors
 
 
@@ -1206,7 +1224,7 @@ def _load_remaps_and_union(
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
         for zg in groups:
-            group_remaps[zg] = atlas._get_remap(zg)
+            group_remaps[zg] = atlas._get_remap(zg, spec.feature_space)
 
     if group_remaps:
         union_globals, group_remap_to_union = _build_union_feature_space(group_remaps)

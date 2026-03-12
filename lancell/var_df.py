@@ -121,28 +121,39 @@ def write_var_df(
 
 def write_remap(
     store: obstore.store.ObjectStore,
-    zarr_group: str,
+    group: zarr.Group,
     remap: np.ndarray,
+    *,
+    registry_version: int,
 ) -> None:
     """Write a compiled ``local_to_global_index`` array as a single-column parquet.
+
+    Also stores ``remap_registry_version`` in the group's attrs so readers can
+    detect stale remaps.
 
     Parameters
     ----------
     store:
         An obstore ObjectStore.
-    zarr_group:
-        Zarr group path prefix.
+    group:
+        The dataset zarr group.  The parquet file is written next to it and the
+        registry version is stored in ``group.attrs``.
     remap:
         1-D int32/int64 array where ``remap[i]`` is the global_index of local
         feature *i*.
+    registry_version:
+        The LanceDB table version of the registry used to build this remap.
+        Stored in the group's attrs for freshness checks.
     """
     remap = np.asarray(remap)
     if remap.ndim != 1:
         raise ValueError(f"remap must be 1-D, got ndim={remap.ndim}")
+    zarr_group = group.store_path.path
     df = pl.DataFrame({"global_index": remap})
     buf = io.BytesIO()
     df.write_parquet(buf)
     obstore.put(store, remap_path(zarr_group), buf.getvalue())
+    group.attrs["remap_registry_version"] = registry_version
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +178,25 @@ def read_remap(
     data = obstore.get(store, remap_path(zarr_group)).bytes()
     df = pl.read_parquet(io.BytesIO(data))
     return df["global_index"].to_numpy().astype(np.int32, copy=False)
+
+
+def read_remap_if_fresh(
+    store: obstore.store.ObjectStore,
+    group: zarr.Group,
+    current_registry_version: int,
+) -> np.ndarray | None:
+    """Read stored remap if its registry version matches *current_registry_version*.
+
+    Returns ``None`` if the stored version is missing, stale, or the remap
+    file cannot be read.
+    """
+    stored_version = group.attrs.get("remap_registry_version")
+    if stored_version is None or stored_version != current_registry_version:
+        return None
+    try:
+        return read_remap(store, group.store_path.path)
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -375,58 +405,6 @@ def validate_var_df(
                     f"global_index mismatch for {len(mismatches)} row(s). "
                     f"First 3: {mismatches[:3]}"
                 )
-
-    return errors
-
-
-def validate_remap(
-    remap: np.ndarray,
-    *,
-    var_df: pl.DataFrame | None = None,
-    registry_table: lancedb.table.Table | None = None,
-) -> list[str]:
-    """Validate a compiled ``local_to_global_index`` array.
-
-    Parameters
-    ----------
-    remap:
-        The 1-D integer array to validate.
-    var_df:
-        If provided, checks that remap length matches var_df length.
-    registry_table:
-        If provided, checks that all remap values are valid global_index
-        values in the registry.
-
-    Returns
-    -------
-    list[str]
-        List of validation error messages.  Empty means valid.
-    """
-    errors: list[str] = []
-
-    if remap.ndim != 1:
-        errors.append(f"remap must be 1-D, got ndim={remap.ndim}")
-        return errors
-
-    if var_df is not None and len(remap) != len(var_df):
-        errors.append(
-            f"remap length ({len(remap)}) != var_df length ({len(var_df)})"
-        )
-
-    if registry_table is not None:
-        registry_df = (
-            registry_table.search()
-            .select(["global_index"])
-            .to_polars()
-        )
-        valid_indices = set(registry_df["global_index"].to_list())
-        remap_set = set(remap.tolist())
-        invalid = remap_set - valid_indices
-        if invalid:
-            errors.append(
-                f"{len(invalid)} remap value(s) not in registry. "
-                f"First 5: {sorted(invalid)[:5]}"
-            )
 
     return errors
 
