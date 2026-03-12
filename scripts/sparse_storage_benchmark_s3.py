@@ -16,7 +16,7 @@ import zarr
 from obstore.store import S3Store
 from zarr.storage import ObjectStore
 
-from lancell.batch_selection import BatchAsyncArray
+from lancell.batch_array import BatchAsyncArray
 
 ALL_METHODS = ["one_table", "two_table", "zarr_obstore"]
 
