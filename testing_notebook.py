@@ -26,6 +26,7 @@ from lancell.schema import (
     LancellBaseSchema,
     SparseZarrPointer,
 )
+from lancell.var_df import reindex_registry
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +164,10 @@ def test_full_workflow():
         n_prot = atlas.register_features(FeatureSpace.PROTEIN_ABUNDANCE, protein_df)
         assert n_prot == 5, f"Expected 5 proteins, got {n_prot}"
         print(f"  Registered {n_prot} protein features")
+
+        # Assign contiguous global_index after all registrations
+        reindex_registry(atlas._registry_tables[FeatureSpace.GENE_EXPRESSION])
+        reindex_registry(atlas._registry_tables[FeatureSpace.PROTEIN_ABUNDANCE])
 
         # 2. Create and align AnnDatas
         adata1 = make_sparse_adata(20, 10, gene_uids)

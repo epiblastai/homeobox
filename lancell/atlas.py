@@ -429,6 +429,12 @@ class RaggedAtlas:
         Must be called before ``add_from_anndata`` for feature spaces that
         have a registry (``has_var_df=True``).
 
+        This method only inserts new feature rows — it does **not** assign
+        ``global_index``.  Call :func:`~lancell.var_df.reindex_registry`
+        on the registry table after all registrations are complete to assign
+        contiguous indices.  This two-step approach avoids index races when
+        multiple writers register features concurrently.
+
         Parameters
         ----------
         feature_space:
@@ -456,49 +462,20 @@ class RaggedAtlas:
         else:
             features_df = pl.DataFrame([f.model_dump() for f in features])
 
-        uids = features_df["uid"].to_list()
+        # Deduplicate within the input batch; merge_insert(on="uid") with
+        # when_not_matched_insert_all handles skipping rows that already
+        # exist in the registry.  global_index is NOT assigned here — call
+        # reindex_registry() after all registrations to assign contiguous
+        # indices, avoiding races between concurrent writers.
+        new_records = features_df.unique(subset=["uid"], keep="first")
 
-        # Load existing registry
-        existing_df = registry_table.search().select(["uid", "global_index"]).to_polars()
-        if existing_df.is_empty():
-            existing_uids: set[str] = set()
-            next_index = 0
-        else:
-            existing_uids = set(existing_df["uid"].to_list())
-            indexed = existing_df.filter(pl.col("global_index").is_not_null())
-            next_index = int(indexed["global_index"].max()) + 1 if not indexed.is_empty() else 0
-
-        new_uids = [u for u in uids if u not in existing_uids]
-        if not new_uids:
-            return 0
-
-        # Deduplicate preserving first occurrence
-        seen: set[str] = set()
-        unique_new: list[str] = []
-        for u in new_uids:
-            if u not in seen:
-                unique_new.append(u)
-                seen.add(u)
-
-        # Filter input to new unique uids, assign global_index
-        new_records = features_df.filter(pl.col("uid").is_in(unique_new)).unique(
-            subset=["uid"], keep="first"
-        )
-        # Sort to match unique_new order for index assignment
-        uid_order = {uid: i for i, uid in enumerate(unique_new)}
-        new_records = new_records.with_columns(
-            pl.col("uid").replace_strict(uid_order, return_dtype=pl.Int64).alias("_order")
-        ).sort("_order").drop("_order")
-        new_records = new_records.with_columns(
-            pl.Series("global_index", list(range(next_index, next_index + len(unique_new))))
-        )
-
+        n_before = registry_table.count_rows()
         (
             registry_table.merge_insert(on="uid")
             .when_not_matched_insert_all()
             .execute(new_records)
         )
-        return len(unique_new)
+        return registry_table.count_rows() - n_before
 
     # -- Writing: add_from_anndata ------------------------------------------
 
@@ -507,7 +484,7 @@ class RaggedAtlas:
         adata: ad.AnnData,
         *,
         feature_space: FeatureSpace,
-        zarr_group: str,
+        zarr_group: str | None = None,
         layer_name: LayerName | None,
         chunk_size: int = 4096,
         shard_size: int = 65536,
@@ -527,7 +504,9 @@ class RaggedAtlas:
             Which feature space this data belongs to.
         zarr_group:
             Zarr group path (relative to atlas store) for this ingestion.
-            Must be unique per ingestion call.
+            If ``None`` (default), a UUID-based name is generated
+            automatically, which guarantees uniqueness across concurrent
+            writers.
         layer_name:
             Required for feature spaces with allowed_layers — the layer to
             write (e.g. ``LayerName.COUNTS``). Unused for feature spaces
@@ -581,10 +560,16 @@ class RaggedAtlas:
         # because dataset metadata can be more expansive, DatasetRecord as currently
         # constructed is just a bare minimum and not actually intended for real use.
         dataset_record = DatasetRecord(
-            zarr_group=zarr_group,
+            zarr_group="",  # placeholder, overwritten below
             feature_space=feature_space.value,
             n_cells=n_cells,
         )
+        # Default zarr_group to dataset_uid to prevent collisions between
+        # concurrent writers.  When a caller provides an explicit name we use
+        # it, but the UUID-based default is strongly preferred.
+        if zarr_group is None:
+            zarr_group = dataset_record.uid
+        dataset_record.zarr_group = zarr_group
         dataset_arrow = pa.Table.from_pylist(
             [dataset_record.model_dump()],
             schema=DatasetRecord.to_arrow_schema(),
