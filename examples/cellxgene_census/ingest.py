@@ -9,6 +9,7 @@ Designed to be run in parallel for multiple h5ad files against the same atlas.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import anndata as ad
@@ -40,8 +41,11 @@ def make_store(atlas_dir: str) -> obstore.store.ObjectStore:
         from urllib.parse import urlparse
         parsed = urlparse(atlas_dir)
         bucket = parsed.netloc
-        prefix = parsed.path.lstrip("/") + "/zarr_store/"
-        return obstore.store.S3Store(bucket, prefix=prefix)
+        prefix = os.path.join(parsed.path.strip("/"), "zarr_store")
+        region = os.environ.get("AWS_REGION")
+        if not region:
+            raise ValueError("AWS_REGION environment variable must be set for S3 access")
+        return obstore.store.S3Store(bucket, prefix=prefix, region=region)
     else:
         zarr_path = Path(atlas_dir) / "zarr_store"
         zarr_path.mkdir(parents=True, exist_ok=True)
