@@ -77,8 +77,13 @@ def _load_remaps_and_features(
     groups: list[str],
     spec: ZarrGroupSpec,
     feature_join: Literal["union", "intersection"] = "union",
+    wanted_globals: np.ndarray | None = None,
 ) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, np.ndarray], int]:
     """Load remaps for groups, build joined feature space.
+
+    When *wanted_globals* is provided, skip the union/intersection step and
+    use the requested global indices directly, applying intersection-style
+    masking for each group.
 
     Returns (group_remaps, joined_globals, group_remap_to_joined, n_features).
     """
@@ -87,7 +92,16 @@ def _load_remaps_and_features(
         for zg in groups:
             group_remaps[zg] = atlas._get_remap(zg, spec.feature_space)
 
-    if group_remaps:
+    if wanted_globals is not None:
+        joined_globals = wanted_globals
+        group_remap_to_joined: dict[str, np.ndarray] = {}
+        for zg, remap in group_remaps.items():
+            positions = np.searchsorted(wanted_globals, remap).astype(np.int32)
+            mask = np.isin(remap, wanted_globals)
+            positions[~mask] = -1
+            group_remap_to_joined[zg] = positions
+        n_features = len(wanted_globals)
+    elif group_remaps:
         joined_globals, group_remap_to_joined = _build_feature_space(group_remaps, feature_join)
         n_features = len(joined_globals)
     else:
@@ -247,6 +261,7 @@ class SparseCSRReconstructor:
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
+        wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
         # Determine index array name from spec's required_arrays
         if len(spec.required_arrays) != 1:
@@ -262,7 +277,7 @@ class SparseCSRReconstructor:
             return ad.AnnData()
 
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
-            atlas, groups, spec, feature_join
+            atlas, groups, spec, feature_join, wanted_globals
         )
 
         # Determine which layers to read
@@ -316,8 +331,8 @@ class SparseCSRReconstructor:
             else:
                 joined_indices = flat_indices.astype(np.int32)
 
-            # For intersection, filter out features not in the joined space
-            if feature_join == "intersection" and zg in group_remap_to_joined:
+            # For intersection or feature filter, filter out features not in the joined space
+            if (feature_join == "intersection" or wanted_globals is not None) and zg in group_remap_to_joined:
                 keep_mask = joined_indices >= 0
                 joined_indices = joined_indices[keep_mask]
                 # Recompute per-cell lengths after filtering
@@ -374,13 +389,14 @@ class DenseReconstructor:
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
+        wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
         if not groups:
             return ad.AnnData()
 
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
-            atlas, groups, spec, feature_join
+            atlas, groups, spec, feature_join, wanted_globals
         )
 
         # Determine which layers to read
@@ -437,7 +453,7 @@ class DenseReconstructor:
 
                 if zg in group_remap_to_joined:
                     joined_cols = group_remap_to_joined[zg]
-                    if feature_join == "intersection":
+                    if feature_join == "intersection" or wanted_globals is not None:
                         valid = joined_cols >= 0
                         all_layers[out_key][offset : offset + n_cells_group][
                             :, joined_cols[valid]

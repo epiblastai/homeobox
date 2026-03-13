@@ -32,6 +32,7 @@ class AtlasQuery:
         self._feature_spaces: list[str] | None = None
         self._layer_overrides: dict[str, list[str]] = {}
         self._feature_join: Literal["union", "intersection"] = "union"
+        self._feature_filter: dict[str, list[str]] = {}
 
     def search(
         self,
@@ -98,6 +99,16 @@ class AtlasQuery:
     def layers(self, feature_space: str, names: list[str]) -> "AtlasQuery":
         """Specify which layers to read for a given feature space."""
         self._layer_overrides[feature_space] = names
+        return self
+
+    def features(self, uids: list[str], feature_space: str) -> "AtlasQuery":
+        """Filter output to specific features by global UID.
+
+        When set, reconstruction for this feature space returns only the
+        requested features. The ``feature_join`` setting is ignored for
+        filtered feature spaces; intersection semantics are used.
+        """
+        self._feature_filter[feature_space] = list(uids)
         return self
 
     def feature_join(self, join: Literal["union", "intersection"]) -> "AtlasQuery":
@@ -235,6 +246,15 @@ class AtlasQuery:
         from lancell.dataloader import CellDataset
 
         cells_pl = self._build_scanner().to_polars()
+
+        wanted_globals = None
+        if feature_space in self._feature_filter:
+            from lancell.var_df import resolve_feature_uids_to_global_indices
+            wanted_globals = resolve_feature_uids_to_global_indices(
+                self._atlas._registry_tables[feature_space],
+                self._feature_filter[feature_space],
+            )
+
         return CellDataset(
             atlas=self._atlas,
             cells_pl=cells_pl,
@@ -245,6 +265,7 @@ class AtlasQuery:
             seed=seed,
             drop_last=drop_last,
             metadata_columns=metadata_columns,
+            wanted_globals=wanted_globals,
         )
 
     def to_dataloader(
@@ -292,6 +313,15 @@ class AtlasQuery:
         spec = get_spec(pf.feature_space)
         if spec.reconstructor is None:
             raise ValueError(f"No reconstructor registered for feature space '{pf.feature_space}'")
+
+        wanted_globals = None
+        if pf.feature_space in self._feature_filter:
+            from lancell.var_df import resolve_feature_uids_to_global_indices
+            wanted_globals = resolve_feature_uids_to_global_indices(
+                self._atlas._registry_tables[pf.feature_space],
+                self._feature_filter[pf.feature_space],
+            )
+
         return spec.reconstructor.as_anndata(
             self._atlas,
             cells_pl,
@@ -299,4 +329,5 @@ class AtlasQuery:
             spec,
             layer_overrides=self._layer_overrides.get(pf.feature_space),
             feature_join=self._feature_join,
+            wanted_globals=wanted_globals,
         )

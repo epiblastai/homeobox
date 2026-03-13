@@ -268,6 +268,65 @@ def build_remap(
 
 
 # ---------------------------------------------------------------------------
+# Feature UID resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_feature_uids_to_global_indices(
+    registry_table: lancedb.table.Table,
+    feature_uids: list[str],
+) -> np.ndarray:
+    """Resolve feature UIDs to sorted global indices.
+
+    Parameters
+    ----------
+    registry_table:
+        A LanceDB table with ``uid`` and ``global_index`` columns.
+    feature_uids:
+        List of feature UIDs to resolve.
+
+    Returns
+    -------
+    numpy.ndarray
+        Sorted int32 array of global indices.
+
+    Raises
+    ------
+    ValueError
+        If any UID is missing from the registry, or has ``global_index = None``.
+    """
+    if not feature_uids:
+        return np.array([], dtype=np.int32)
+
+    registry_df = (
+        registry_table.search()
+        .select(["uid", "global_index"])
+        .to_polars()
+    )
+    requested = set(feature_uids)
+    registry_uids = set(registry_df["uid"].to_list())
+
+    missing = requested - registry_uids
+    if missing:
+        raise ValueError(
+            f"{len(missing)} UID(s) not found in registry. "
+            f"First 5: {sorted(missing)[:5]}"
+        )
+
+    matched = registry_df.filter(pl.col("uid").is_in(list(requested)))
+    unindexed = matched.filter(pl.col("global_index").is_null())["uid"].to_list()
+    if unindexed:
+        raise ValueError(
+            f"{len(unindexed)} UID(s) have global_index = None "
+            f"(run reindex_registry first). First 5: {unindexed[:5]}"
+        )
+
+    return matched["global_index"].to_numpy().astype(np.int32, copy=False)[
+        np.argsort(matched["global_index"].to_numpy())
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Feature search across datasets
 # ---------------------------------------------------------------------------
 

@@ -68,7 +68,14 @@ async def _take_group_sparse(
         index_reader.read_ranges(starts, ends),
         layer_reader.read_ranges(starts, ends),
     )
-    return remap[flat_indices.astype(np.intp)], flat_values, lengths
+    remapped = remap[flat_indices.astype(np.intp)]
+    mask = remapped >= 0
+    if not mask.all():
+        cell_ids = np.repeat(np.arange(len(lengths)), lengths)
+        remapped = remapped[mask]
+        flat_values = flat_values[mask]
+        lengths = np.bincount(cell_ids[mask], minlength=len(lengths)).astype(np.int64)
+    return remapped, flat_values, lengths
 
 
 async def _take_sparse(
@@ -190,6 +197,7 @@ class CellDataset:
         seed: int | None = None,
         drop_last: bool = False,
         metadata_columns: list[str] | None = None,
+        wanted_globals: np.ndarray | None = None,
     ) -> None:
         self._batch_size = batch_size
         self._shuffle = shuffle
@@ -227,7 +235,7 @@ class CellDataset:
             self._index_readers: dict[str, BatchAsyncArray] = {}
             self._layer_readers: dict[str, BatchAsyncArray] = {}
             self._remaps: dict[str, np.ndarray] = {}
-            self._n_features = 0
+            self._n_features = len(wanted_globals) if wanted_globals is not None else 0
             self._metadata_arrays: dict[str, np.ndarray] | None = None
             self._loop = asyncio.new_event_loop()
             self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
@@ -250,13 +258,23 @@ class CellDataset:
 
         for zg in groups:
             # REVIEW: Should we save these as memmaps to avoid taking up too much RAM?
-            self._remaps[zg] = atlas._get_remap(zg, feature_space)
+            raw_remap = atlas._get_remap(zg, feature_space)
+            if wanted_globals is not None:
+                positions = np.searchsorted(wanted_globals, raw_remap).astype(np.int32)
+                mask = np.isin(raw_remap, wanted_globals)
+                positions[~mask] = -1
+                self._remaps[zg] = positions
+            else:
+                self._remaps[zg] = raw_remap
             self._index_readers[zg] = atlas._get_batch_reader(zg, index_array_name)
             self._layer_readers[zg] = atlas._get_batch_reader(zg, f"layers/{layer}")
 
         # Global feature count from registry (stable across batches/epochs)
-        registry_table = atlas._registry_tables[feature_space]
-        self._n_features = registry_table.count_rows()
+        if wanted_globals is not None:
+            self._n_features = len(wanted_globals)
+        else:
+            registry_table = atlas._registry_tables[feature_space]
+            self._n_features = registry_table.count_rows()
 
         # Extract metadata as numpy arrays
         # REVIEW: Ditto about memmaps, either as numpy arrays or as pyarrow

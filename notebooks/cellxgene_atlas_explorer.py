@@ -157,7 +157,7 @@ def _(mo):
     limit_input = mo.ui.slider(
         start=10,
         stop=5000,
-        value=100,
+        value=1500,
         step=10,
         label="Limit",
     )
@@ -265,6 +265,111 @@ def _(mo):
 @app.cell
 def _(adata):
     adata.obs["cell_type"].value_counts()
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Feature-Filtered Query
+
+    `.features(uids, feature_space)` requests a specific subset of genes by
+    global UID. The filter composes naturally with `.where()` and `.limit()`.
+    Reconstruction memory is proportional to the requested feature set, not
+    the full gene space — I/O is unchanged (full cell ranges are still read,
+    the filter is applied during remapping).
+    """)
+    return
+
+
+@app.cell
+def _(adata, np):
+    # Seed the text area with the top-5 expressed genes from the full query
+    _mean_expr = np.asarray(adata.X.mean(axis=0)).ravel()
+    _top_idx = np.argsort(_mean_expr)[::-1][:5]
+    default_feature_uids = [adata.var.index[i] for i in _top_idx]
+    return (default_feature_uids,)
+
+
+@app.cell
+def _(default_feature_uids, mo):
+    feature_uid_input = mo.ui.text_area(
+        value="\n".join(default_feature_uids),
+        label="Feature UIDs to request (one per line)",
+        rows=6,
+        full_width=True,
+    )
+    feature_uid_input
+    return (feature_uid_input,)
+
+
+@app.cell
+def _(atlas, feature_uid_input, limit_input, where_input):
+    selected_uids = [
+        u.strip()
+        for u in feature_uid_input.value.strip().splitlines()
+        if u.strip()
+    ]
+    filtered_adata = (
+        atlas.query()
+        .where(where_input.value)
+        .limit(limit_input.value)
+        .features(selected_uids, "gene_expression")
+        .to_anndata()
+    )
+    filtered_adata
+    return filtered_adata, selected_uids
+
+
+@app.cell
+def _(adata, filtered_adata, mo, selected_uids):
+    mo.md(f"""
+    **Feature filter result**
+
+    | | Value |
+    |---|---|
+    | Requested UIDs | `{len(selected_uids)}` |
+    | `filtered_adata.n_vars` | `{filtered_adata.n_vars}` |
+    | Full atlas `n_vars` | `{adata.n_vars:,}` |
+    | `filtered_adata.X.shape` | `{filtered_adata.X.shape}` |
+    | `filtered_adata.X.nnz` | `{filtered_adata.X.nnz:,}` |
+
+    `var` index: `{filtered_adata.var.index.tolist()}`
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md("""
+    ### Feature filter + ML dataloader
+
+    The same `.features()` call works on `to_cell_dataset()`.
+    `CellDataset.n_features` reflects the filtered count and batch
+    `indices` are bounded by that value.
+    """)
+    return
+
+
+@app.cell
+def _(atlas, feature_uid_input, where_input):
+    _selected = [
+        u.strip()
+        for u in feature_uid_input.value.strip().splitlines()
+        if u.strip()
+    ]
+    filtered_ds = (
+        atlas.query()
+        .where(where_input.value)
+        .features(_selected, "gene_expression")
+        .to_cell_dataset(layer="counts", batch_size=256, shuffle=False)
+    )
+    _first = next(iter(filtered_ds))
+    print(f"n_features (filtered) : {filtered_ds.n_features}")
+    print(f"indices range         : [{_first.indices.min() if len(_first.indices) else 'n/a'}, "
+          f"{_first.indices.max() if len(_first.indices) else 'n/a'}]")
+    print(f"indices (first 20)    : {_first.indices[:20]}")
+    print(f"values  (first 20)    : {_first.values[:20]}")
     return
 
 
@@ -445,11 +550,6 @@ def _(q):
     print(f"to_batches() (AnnData):    {anndata_time:.3f}s")
     print(f"to_cell_dataset() (raw):   {dataset_time:.3f}s")
     print(f"Speedup:                   {speedup:.1f}x")
-    return
-
-
-@app.cell
-def _():
     return
 
 
