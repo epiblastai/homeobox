@@ -2,6 +2,12 @@
 
 S3 equivalent of sparse_storage_benchmark.py.
 Reads data already uploaded by sparse_storage_setup_s3.py.
+
+Approaches:
+  one_table     — Approach 1: single LanceDB table with blob columns
+  two_table     — Approach 2: metadata + blob tables with row offset lookup
+  zarr_obstore  — Approach 3: LanceDB metadata + zarr arrays (zstd codec)
+  zarr_bitpacked — Approach 4: LanceDB metadata + zarr arrays (bitpacking codec, delta indices)
 """
 
 import argparse
@@ -17,8 +23,9 @@ from obstore.store import S3Store
 from zarr.storage import ObjectStore
 
 from lancell.batch_array import BatchAsyncArray
+import lancell.codecs.bitpacking  # noqa: F401  # register codec before opening arrays
 
-ALL_METHODS = ["one_table", "two_table", "zarr_obstore"]
+ALL_METHODS = ["one_table", "two_table", "zarr_obstore", "zarr_bitpacked"]
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -52,8 +59,8 @@ def reconstruct_csr(all_indices: list[np.ndarray], all_values: list[np.ndarray])
 def query_blob_col(tbl, where: str) -> tuple[pd.DataFrame, list, list]:
     result = tbl.search().where(where).select(METADATA_COLS + ["gene_indices", "counts"]).to_arrow().to_pydict()
     obs = pd.DataFrame({c: result[c] for c in METADATA_COLS})
-    gi = [np.frombuffer(b, dtype=np.int32) for b in result["gene_indices"]]
-    cv = [np.frombuffer(b, dtype=np.float32) for b in result["counts"]]
+    gi = [np.frombuffer(b, dtype=np.uint32) for b in result["gene_indices"]]
+    cv = [np.frombuffer(b, dtype=np.uint32) for b in result["counts"]]
     return obs, gi, cv
 
 
@@ -61,12 +68,33 @@ def query_two_tbl(meta_tbl, blob_tbl, where: str) -> tuple[pd.DataFrame, list, l
     meta = meta_tbl.search().where(where).select(METADATA_COLS + ["blob_row_offset"]).to_arrow().to_pydict()
     obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
     blob = blob_tbl.to_lance().take(meta["blob_row_offset"], columns=["gene_indices", "counts"]).to_pydict()
-    gi = [np.frombuffer(b, dtype=np.int32) for b in blob["gene_indices"]]
-    cv = [np.frombuffer(b, dtype=np.float32) for b in blob["counts"]]
+    gi = [np.frombuffer(b, dtype=np.uint32) for b in blob["gene_indices"]]
+    cv = [np.frombuffer(b, dtype=np.uint32) for b in blob["counts"]]
     return obs, gi, cv
 
 
 def query_zarr_obstore(meta_tbl, reader_indices, reader_counts, where: str) -> tuple[pd.DataFrame, list, list]:
+    meta = meta_tbl.search().where(where).select(
+        METADATA_COLS + ["zarr_start", "zarr_end"]
+    ).to_arrow().to_pydict()
+    obs = pd.DataFrame({c: meta[c] for c in METADATA_COLS})
+
+    starts = np.array(meta["zarr_start"], dtype=np.int64)
+    ends = np.array(meta["zarr_end"], dtype=np.int64)
+
+    async def _fetch():
+        return await asyncio.gather(
+            reader_indices.read_ranges(starts, ends),
+            reader_counts.read_ranges(starts, ends),
+        )
+    (gi_flat, gi_lengths), (cv_flat, cv_lengths) = asyncio.run(_fetch())
+
+    gi_list = np.split(gi_flat, np.cumsum(gi_lengths)[:-1])
+    cv_list = np.split(cv_flat, np.cumsum(cv_lengths)[:-1])
+    return obs, gi_list, cv_list
+
+
+def query_zarr_bitpacked(meta_tbl, reader_indices, reader_counts, where: str) -> tuple[pd.DataFrame, list, list]:
     meta = meta_tbl.search().where(where).select(
         METADATA_COLS + ["zarr_start", "zarr_end"]
     ).to_arrow().to_pydict()
@@ -166,6 +194,27 @@ def main():
         reader_counts = BatchAsyncArray.from_array(counts_arr)
         r3 = bench("zarr_obstore", lambda w: query_zarr_obstore(meta3, reader_indices, reader_counts, w), QUERIES)
         all_benches.append(("zarr_obstore", r3))
+        print()
+
+    if "zarr_bitpacked" in methods:
+        meta4 = lancedb.connect(f"{S3_BASE}/approach4_lance").open_table("metadata")
+        bp_indices_store = ObjectStore(
+            S3Store("epiblast", prefix="lancell_data_structure_test/approach4_indices.zarr/", region="us-east-2"),
+            read_only=True,
+        )
+        bp_counts_store = ObjectStore(
+            S3Store("epiblast", prefix="lancell_data_structure_test/approach4_counts.zarr/", region="us-east-2"),
+            read_only=True,
+        )
+        bp_indices_arr = zarr.open_array(store=bp_indices_store, mode="r")
+        bp_counts_arr = zarr.open_array(store=bp_counts_store, mode="r")
+        print(f"Bitpacked indices: shape={bp_indices_arr.shape}, shards={bp_indices_arr.shards}")
+        print(f"Bitpacked counts:  shape={bp_counts_arr.shape}, shards={bp_counts_arr.shards}")
+
+        bp_reader_indices = BatchAsyncArray.from_array(bp_indices_arr)
+        bp_reader_counts = BatchAsyncArray.from_array(bp_counts_arr)
+        r4 = bench("zarr_bitpacked", lambda w: query_zarr_bitpacked(meta4, bp_reader_indices, bp_reader_counts, w), QUERIES)
+        all_benches.append(("zarr_bitpacked", r4))
         print()
 
     # Verify consistency across approaches that ran

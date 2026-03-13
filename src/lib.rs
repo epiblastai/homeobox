@@ -1,8 +1,11 @@
+mod bitpack_codec;
+mod bitpacking;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::PyRuntimeError;
@@ -10,6 +13,16 @@ use pyo3::prelude::*;
 use pyo3_object_store::AnyObjectStore;
 use rayon::prelude::*;
 use tokio::runtime::Runtime;
+
+use zarrs::array::codec::api::CodecRuntimeRegistryHandleV3;
+
+/// Global handle for the bitpacking codec registration.
+/// Kept alive for the lifetime of the process so the codec stays registered.
+static BITPACK_CODEC_HANDLE: OnceLock<CodecRuntimeRegistryHandleV3> = OnceLock::new();
+
+fn ensure_bitpack_codec_registered() {
+    BITPACK_CODEC_HANDLE.get_or_init(bitpack_codec::register_bitpack_codec);
+}
 
 use zarrs::array::codec::{CodecChain, ShardingCodecConfiguration};
 use zarrs::array::{
@@ -347,6 +360,9 @@ impl RustBatchReader {
 impl RustBatchReader {
     #[new]
     fn new(py_zarr_array: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // 0. Ensure bitpacking codec is registered before opening any arrays
+        ensure_bitpack_codec_registered();
+
         // 1. Extract obstore from zarr array and convert to Arc<dyn ObjectStore>
         let store_wrapper = py_zarr_array.getattr("store")?;
         let obstore = store_wrapper.getattr("store")?;
@@ -524,8 +540,75 @@ impl RustBatchReader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bitpacking pyo3 exports (for the Python write path)
+// ---------------------------------------------------------------------------
+
+/// Encode raw bytes (little-endian uint32) using BP-128 bitpacking.
+///
+/// Parameters
+/// ----------
+/// data : bytes
+///     Raw little-endian uint32 data (length must be a multiple of 4).
+/// transform : str
+///     "none" or "delta".
+///
+/// Returns
+/// -------
+/// numpy array of encoded bytes.
+#[pyfunction]
+fn bitpack_encode<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    transform: &str,
+) -> PyResult<Py<PyArray1<u8>>> {
+    if data.len() % 4 != 0 {
+        return Err(PyRuntimeError::new_err(format!(
+            "bitpack_encode: input length {} is not a multiple of 4",
+            data.len()
+        )));
+    }
+    let t = bitpacking::Transform::from_str(transform)
+        .map_err(|e| PyRuntimeError::new_err(e))?;
+
+    let values: Vec<u32> = data
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+
+    let encoded = bitpacking::encode(&values, t);
+    Ok(PyArray1::from_vec(py, encoded).into())
+}
+
+/// Decode BP-128 bitpacked data back to raw bytes (little-endian uint32).
+///
+/// Parameters
+/// ----------
+/// data : bytes
+///     Bitpacked encoded data.
+///
+/// Returns
+/// -------
+/// numpy array of decoded bytes (little-endian uint32).
+#[pyfunction]
+fn bitpack_decode<'py>(
+    py: Python<'py>,
+    data: &[u8],
+) -> PyResult<Py<PyArray1<u8>>> {
+    let values = bitpacking::decode(data)
+        .map_err(|e| PyRuntimeError::new_err(e))?;
+
+    let mut out = Vec::with_capacity(values.len() * 4);
+    for v in &values {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(PyArray1::from_vec(py, out).into())
+}
+
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustBatchReader>()?;
+    m.add_function(wrap_pyfunction!(bitpack_encode, m)?)?;
+    m.add_function(wrap_pyfunction!(bitpack_decode, m)?)?;
     Ok(())
 }

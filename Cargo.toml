@@ -18,3 +18,8 @@ zarrs = { version = "0.23", default-features = false, features = ["async", "shar
 zarrs_object_store = "0.6"
 # Accept any object_store backend from Python via obstore
 pyo3-object_store = "0.8"
+
+# Bitpacking codec
+bitpacking = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

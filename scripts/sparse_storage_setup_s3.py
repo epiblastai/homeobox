@@ -1,13 +1,16 @@
-"""Setup script: generate synthetic sparse single-cell data and write to three storage backends on S3.
+"""Setup script: generate synthetic sparse single-cell data and write to four storage backends on S3.
 
 S3 equivalent of sparse_storage_setup.py.
 
-Approach 1 — Blob column: metadata + raw sparse data in a single LanceDB row.
-Approach 2 — Two tables: metadata in one LanceDB table, blobs in another.
+Approach 1 -- Blob column: metadata + raw sparse data in a single LanceDB row.
+Approach 2 -- Two tables: metadata in one LanceDB table, blobs in another.
              Row offsets stored in the metadata table for O(1) blob lookups.
-Approach 3 — Zarr pointer: metadata in LanceDB, sparse COO data in two separate
-             1D Zarr arrays (gene_indices as int32, counts as float32).
+Approach 3 -- Zarr pointer: metadata in LanceDB, sparse COO data in two separate
+             1D Zarr arrays (gene_indices as uint32, counts as uint32) with zstd.
              LanceDB stores (start, end) positions into the Zarr arrays.
+Approach 4 -- Zarr + bitpacking: same layout as approach 3, but both arrays use
+             BP-128 bitpacking codec (SIMD, ~8 GB/s decode) instead of zstd.
+             Indices use delta transform (sorted within each cell), counts use none.
 
 Run this once to create the data, then use sparse_storage_benchmark_s3.py to benchmark.
 """
@@ -72,11 +75,15 @@ def _dict_to_arrow_table(data: dict) -> pa.Table:
 # ---------------------------------------------------------------------------
 
 def generate_sparse_cell(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
-    """Generate one sparse cell with variable sparsity: sorted gene indices and float32 counts."""
+    """Generate one sparse cell with variable sparsity: sorted gene indices and uint32 counts.
+
+    Uses uint32 for both indices and counts to match real scRNA-seq UMI count
+    matrices, where counts are always non-negative integers (typically 1-20).
+    """
     nnz = int(rng.normal(MEAN_NNZ_PER_CELL, NNZ_STD))
     nnz = max(1, min(nnz, N_GENES))  # clamp to [1, N_GENES]
-    indices = np.sort(rng.choice(N_GENES, size=nnz, replace=False)).astype(np.int32)
-    values = rng.exponential(2.0, size=nnz).astype(np.float32)
+    indices = np.sort(rng.choice(N_GENES, size=nnz, replace=False)).astype(np.uint32)
+    values = np.maximum(1, rng.poisson(2.0, size=nnz)).astype(np.uint32)
     return indices, values
 
 
@@ -168,8 +175,8 @@ def setup_approach3(all_gene_indices, all_counts, metadata):
     print(f"  Total NNZ entries: {total_nnz:,}")
 
     # Pre-allocate flat arrays
-    coo_gene_ids = np.empty(total_nnz, dtype=np.int32)
-    coo_values = np.empty(total_nnz, dtype=np.float32)
+    coo_gene_ids = np.empty(total_nnz, dtype=np.uint32)
+    coo_values = np.empty(total_nnz, dtype=np.uint32)
 
     starts = np.empty(N_CELLS, dtype=np.int64)
     ends = np.empty(N_CELLS, dtype=np.int64)
@@ -182,7 +189,7 @@ def setup_approach3(all_gene_indices, all_counts, metadata):
         coo_values[offset:offset + n] = all_counts[i]
         offset += n
 
-    print("  Writing approach 3 (Zarr COO, separate 1D arrays)...")
+    print("  Writing approach 3 (Zarr COO, separate 1D arrays, zstd)...")
     t0 = time.perf_counter()
 
     indices_store = zarr.storage.ObjectStore(
@@ -229,6 +236,82 @@ def setup_approach3(all_gene_indices, all_counts, metadata):
 
 
 # ---------------------------------------------------------------------------
+# Approach 4: Zarr COO pointer + bitpacking codec
+# ---------------------------------------------------------------------------
+
+def setup_approach4(all_gene_indices, all_counts, metadata):
+    from lancell.codecs.bitpacking import BitpackingCodec
+
+    lance_path = f"{S3_BASE}/approach4_lance"
+    db = lancedb.connect(lance_path)
+
+    total_nnz = sum(len(gi) for gi in all_gene_indices)
+    print(f"  Total NNZ entries: {total_nnz:,}")
+
+    # Pre-allocate flat arrays — both uint32 for bitpacking
+    coo_gene_ids = np.empty(total_nnz, dtype=np.uint32)
+    coo_values = np.empty(total_nnz, dtype=np.uint32)
+
+    starts = np.empty(N_CELLS, dtype=np.int64)
+    ends = np.empty(N_CELLS, dtype=np.int64)
+    offset = 0
+    for i in range(N_CELLS):
+        n = len(all_gene_indices[i])
+        starts[i] = offset
+        ends[i] = offset + n
+        coo_gene_ids[offset:offset + n] = all_gene_indices[i]
+        coo_values[offset:offset + n] = all_counts[i]
+        offset += n
+
+    print("  Writing approach 4 (Zarr COO + bitpacking for both arrays)...")
+    t0 = time.perf_counter()
+
+    indices_store = zarr.storage.ObjectStore(
+        S3Store("epiblast", prefix="lancell_data_structure_test/approach4_indices.zarr/", region="us-east-2"),
+    )
+    counts_store = zarr.storage.ObjectStore(
+        S3Store("epiblast", prefix="lancell_data_structure_test/approach4_counts.zarr/", region="us-east-2"),
+    )
+    zarr.create_array(
+        indices_store,
+        data=coo_gene_ids,
+        chunks=(5_000,),
+        shards=(50_000_000,),
+        compressors=BitpackingCodec(transform="delta"),
+        overwrite=True,
+    )
+    zarr.create_array(
+        counts_store,
+        data=coo_values,
+        chunks=(5_000,),
+        shards=(50_000_000,),
+        compressors=BitpackingCodec(transform="none"),
+        overwrite=True,
+    )
+    t_zarr_write = time.perf_counter() - t0
+
+    meta_data = {
+        **metadata,
+        "zarr_start": starts.tolist(),
+        "zarr_end": ends.tolist(),
+    }
+
+    t1 = time.perf_counter()
+    db.create_table("metadata", data=_dict_to_arrow_table(meta_data)).optimize()
+    t_lance_write = time.perf_counter() - t1
+
+    indices_zarr_path = f"{S3_BASE}/approach4_indices.zarr"
+    counts_zarr_path = f"{S3_BASE}/approach4_counts.zarr"
+    indices_size = get_s3_size_mb(indices_zarr_path)
+    counts_size = get_s3_size_mb(counts_zarr_path)
+    lance_size = get_s3_size_mb(lance_path)
+    total_size = lance_size + indices_size + counts_size
+    print(f"  Written in {t_zarr_write + t_lance_write:.1f}s "
+          f"(indices zarr: {indices_size:.1f} MB, counts zarr: {counts_size:.1f} MB, "
+          f"lance: {lance_size:.1f} MB, total: {total_size:.1f} MB)")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -242,6 +325,7 @@ def main():
     setup_approach1(all_gene_indices, all_counts, metadata)
     setup_approach2(all_gene_indices, all_counts, metadata)
     setup_approach3(all_gene_indices, all_counts, metadata)
+    setup_approach4(all_gene_indices, all_counts, metadata)
 
     print(f"\nStorage sizes:")
     print(f"  Approach 1 (blob column):  {get_s3_size_mb(f'{S3_BASE}/approach1_blob'):.1f} MB")
@@ -251,6 +335,11 @@ def main():
     a3_cnt = get_s3_size_mb(f"{S3_BASE}/approach3_counts.zarr")
     print(f"  Approach 3 (zarr pointer): {a3_lance + a3_idx + a3_cnt:.1f} MB "
           f"(lance: {a3_lance:.1f}, indices: {a3_idx:.1f}, counts: {a3_cnt:.1f})")
+    a4_lance = get_s3_size_mb(f"{S3_BASE}/approach4_lance")
+    a4_idx = get_s3_size_mb(f"{S3_BASE}/approach4_indices.zarr")
+    a4_cnt = get_s3_size_mb(f"{S3_BASE}/approach4_counts.zarr")
+    print(f"  Approach 4 (zarr+bitpack): {a4_lance + a4_idx + a4_cnt:.1f} MB "
+          f"(lance: {a4_lance:.1f}, indices: {a4_idx:.1f}, counts: {a4_cnt:.1f})")
     print(f"\nData written to {S3_BASE}")
 
 
