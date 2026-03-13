@@ -31,6 +31,7 @@ from lancell.schema import (
 )
 from lancell.var_df import (
     build_remap,
+    find_datasets_with_features,
     read_remap_if_fresh,
     read_var_df,
     reindex_registry,
@@ -568,6 +569,33 @@ class RaggedAtlas:
     def list_datasets(self) -> pl.DataFrame:
         """Return a Polars DataFrame of all ingested datasets."""
         return self._dataset_table.search().to_polars()
+
+    def datasets_with_features(
+        self,
+        feature_uids: str | list[str],
+        feature_space: str,
+    ) -> pl.DataFrame:
+        """Find datasets that measured specific features.
+
+        Uses DuckDB to query across var_df sidecars.  See
+        :func:`~lancell.var_df.find_datasets_with_features` for details.
+
+        Parameters
+        ----------
+        feature_uids:
+            One or more ``global_feature_uid`` values to search for.
+        feature_space:
+            Which feature space to search within (e.g. ``"gene_expression"``).
+
+        Returns
+        -------
+        polars.DataFrame
+            One row per (zarr_group, feature) match with columns
+            ``zarr_group``, ``global_feature_uid``, plus dataset metadata.
+        """
+        return find_datasets_with_features(
+            self._store, self._dataset_table, feature_uids, feature_space
+        )
 
     def _validate_registries(self) -> list[str]:
         errors: list[str] = []
