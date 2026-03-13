@@ -9,7 +9,7 @@ import polars as pl
 
 from lancell.atlas import PointerFieldInfo, RaggedAtlas
 from lancell.group_specs import get_spec
-from lancell.reconstruction import _build_obs_only_anndata
+from lancell.reconstruction import _build_obs_only_anndata, _get_pointer_columns
 
 
 class AtlasQuery:
@@ -21,6 +21,7 @@ class AtlasQuery:
         self._search_kwargs: dict = {}
         self._where_clause: str | None = None
         self._limit_n: int | None = None
+        self._select_columns: list[str] | None = None
         self._feature_spaces: list[str] | None = None
         self._layer_overrides: dict[str, list[str]] = {}
 
@@ -56,6 +57,21 @@ class AtlasQuery:
         }
         return self
 
+    def select(self, columns: list[str]) -> "AtlasQuery":
+        """Select specific metadata columns to return.
+
+        Pointer columns required for AnnData reconstruction are always
+        loaded internally, even if not listed here.
+
+        Parameters
+        ----------
+        columns:
+            Column names to include in the results.
+        """
+        assert isinstance(columns, list), "Columns must be a list"
+        self._select_columns = columns
+        return self
+
     def where(self, condition: str) -> "AtlasQuery":
         """Add a SQL WHERE filter (LanceDB syntax)."""
         self._where_clause = condition
@@ -81,6 +97,10 @@ class AtlasQuery:
     def _build_scanner(self) -> lancedb.table.Table:
         """Build a LanceDB query from the current state."""
         q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        if self._select_columns is not None:
+            pointer_cols = list(self._atlas._pointer_fields.keys())
+            columns = list(dict.fromkeys(self._select_columns + pointer_cols))
+            q = q.select(columns)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._limit_n is not None:
@@ -96,7 +116,12 @@ class AtlasQuery:
 
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of cell metadata."""
-        return self._build_scanner().to_polars()
+        result = self._build_scanner().to_polars()
+        if self._select_columns is not None:
+            pointer_cols = _get_pointer_columns(result)
+            keep = [c for c in result.columns if c not in pointer_cols]
+            result = result.select(keep)
+        return result
 
     def to_anndata(self) -> ad.AnnData:
         """Execute the query and reconstruct an AnnData.
@@ -141,25 +166,21 @@ class AtlasQuery:
         and remap arrays are cached on the atlas for reuse across batches.
         """
         q = self._build_scanner()
-        arrow_table = q.to_arrow()
-        n_total = arrow_table.num_rows
-        if n_total == 0:
-            return
+        reader = q.to_batches(batch_size=batch_size)
 
         active_pfs = self._active_pointer_fields()
         if not active_pfs:
-            # Obs-only batches
-            for start in range(0, n_total, batch_size):
-                batch_arrow = arrow_table.slice(start, batch_size)
-                batch_pl = pl.from_arrow(batch_arrow)
-                yield _build_obs_only_anndata(batch_pl)
+            for batch in reader:
+                if batch.num_rows == 0:
+                    continue
+                yield _build_obs_only_anndata(pl.from_arrow(batch))
             return
 
         pf = next(iter(active_pfs.values()))
-        for start in range(0, n_total, batch_size):
-            batch_arrow = arrow_table.slice(start, batch_size)
-            batch_pl = pl.from_arrow(batch_arrow)
-            yield self._reconstruct_single_space_anndata(batch_pl, pf)
+        for batch in reader:
+            if batch.num_rows == 0:
+                continue
+            yield self._reconstruct_single_space_anndata(pl.from_arrow(batch), pf)
 
     # -- Reconstruction internals -------------------------------------------
 

@@ -21,6 +21,7 @@ __all__ = [
     "Reconstructor",
     "SparseCSRReconstructor",
     "DenseReconstructor",
+    "_get_pointer_columns",
 ]
 
 
@@ -130,6 +131,17 @@ def _build_obs_df(cells_pl: pl.DataFrame) -> pd.DataFrame:
     if "uid" in obs.columns:
         obs = obs.set_index("uid")
     return obs
+
+
+def _get_pointer_columns(cells_pl: pl.DataFrame) -> list[str]:
+    """Return the names of zarr pointer struct columns.
+
+    Inverse of :func:`_build_obs_only_anndata` which strips pointer columns
+    and keeps only obs. This is used to ensure pointer columns are always
+    loaded from the database even when a user-level ``select`` restricts
+    the returned metadata columns.
+    """
+    return [c for c in cells_pl.columns if cells_pl[c].dtype == pl.Struct]
 
 
 def _build_obs_only_anndata(cells_pl: pl.DataFrame) -> ad.AnnData:
