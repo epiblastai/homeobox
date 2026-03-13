@@ -7,6 +7,7 @@ the full API — no manifest file to maintain.
 """
 
 import dataclasses
+import json
 from collections import defaultdict
 from types import UnionType
 from typing import TYPE_CHECKING, Union, get_args, get_origin
@@ -25,6 +26,7 @@ import zarr
 from lancell.batch_array import BatchAsyncArray
 from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import (
+    AtlasVersionRecord,
     DatasetRecord,
     DenseZarrPointer,
     FeatureBaseSchema,
@@ -239,6 +241,7 @@ class RaggedAtlas:
         registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
         *,
+        version_table: lancedb.table.Table | None = None,
         update_feature_registries: bool = True,
     ) -> None:
         self.db = db
@@ -249,6 +252,7 @@ class RaggedAtlas:
         self._pointer_fields = _extract_pointer_fields(cell_schema)
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
+        self._version_table = version_table
 
         # Instance-level caches (version-aware for remaps)
         self._remap_cache: dict[tuple[str, str], tuple[int, np.ndarray]] = {}
@@ -278,6 +282,7 @@ class RaggedAtlas:
         *,
         store: obstore.store.ObjectStore,
         registry_schemas: dict[str, type[FeatureBaseSchema]],
+        version_table_name: str = "atlas_versions",
         update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
@@ -299,6 +304,8 @@ class RaggedAtlas:
         registry_schemas:
             Mapping of feature space names to their registry schema classes.
             Table names default to ``"{feature_space}_registry"``.
+        version_table_name:
+            Name for the version tracking table.
         update_feature_registries:
             If ``True`` (default), automatically run
             :func:`~lancell.var_df.reindex_registry` on any registry whose
@@ -314,6 +321,8 @@ class RaggedAtlas:
             table_name = f"{fs}_registry"
             registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
 
+        version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
+
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
 
         return cls(
@@ -323,6 +332,7 @@ class RaggedAtlas:
             root=root,
             registry_tables=registry_tables,
             dataset_table=dataset_table,
+            version_table=version_table,
             update_feature_registries=update_feature_registries,
         )
 
@@ -336,6 +346,7 @@ class RaggedAtlas:
         *,
         store: obstore.store.ObjectStore,
         registry_tables: dict[str, str],
+        version_table_name: str = "atlas_versions",
         update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Open an existing atlas.
@@ -354,6 +365,8 @@ class RaggedAtlas:
             An obstore ObjectStore for zarr I/O.
         registry_tables:
             Mapping of feature space names to LanceDB table names.
+        version_table_name:
+            Name of the version tracking table.
         update_feature_registries:
             If ``True`` (default), automatically run
             :func:`~lancell.var_df.reindex_registry` on any registry whose
@@ -368,6 +381,11 @@ class RaggedAtlas:
         for fs, table_name in registry_tables.items():
             resolved_registries[fs] = db.open_table(table_name)
 
+        try:
+            version_table: lancedb.table.Table | None = db.open_table(version_table_name)
+        except Exception:
+            version_table = None
+
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 
         return cls(
@@ -377,6 +395,7 @@ class RaggedAtlas:
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
+            version_table=version_table,
             update_feature_registries=update_feature_registries,
         )
 
@@ -638,3 +657,126 @@ class RaggedAtlas:
                 for e in vd_errors:
                     errors.append(f"var_df '{zg}': {e}")
         return errors
+
+    # -- Versioning ---------------------------------------------------------
+
+    def snapshot(self) -> int:
+        """Record a consistent snapshot of all table versions.
+
+        Returns the new atlas version number (0-indexed, monotonically increasing).
+        Raises ``ValueError`` if the atlas was created without a version table.
+        """
+        if self._version_table is None:
+            raise ValueError(
+                "This atlas has no version table. Re-create it with RaggedAtlas.create() "
+                "to enable versioning."
+            )
+
+        existing = self._version_table.search().select(["version"]).to_polars()
+        if existing.is_empty():
+            next_version = 0
+        else:
+            next_version = existing["version"].max() + 1
+
+        registry_names = {fs: t.name for fs, t in self._registry_tables.items()}
+        registry_versions = {fs: t.version for fs, t in self._registry_tables.items()}
+
+        record = AtlasVersionRecord(
+            version=next_version,
+            cell_table_name=self.cell_table.name,
+            cell_table_version=self.cell_table.version,
+            dataset_table_name=self._dataset_table.name,
+            dataset_table_version=self._dataset_table.version,
+            registry_table_names=json.dumps(registry_names),
+            registry_table_versions=json.dumps(registry_versions),
+            total_cells=self.cell_table.count_rows(),
+        )
+        self._version_table.add([record])
+        return next_version
+
+    @classmethod
+    def list_versions(
+        cls,
+        db_uri: str,
+        *,
+        version_table_name: str = "atlas_versions",
+    ) -> pl.DataFrame:
+        """Return a DataFrame of all recorded snapshots, sorted by version.
+
+        Parameters
+        ----------
+        db_uri:
+            LanceDB connection URI.
+        version_table_name:
+            Name of the version tracking table.
+        """
+        db = lancedb.connect(db_uri)
+        version_table = db.open_table(version_table_name)
+        return version_table.search().to_polars().sort("version")
+
+    @classmethod
+    def checkout(
+        cls,
+        db_uri: str,
+        version: int,
+        cell_schema: type[LancellBaseSchema],
+        store: obstore.store.ObjectStore,
+        *,
+        version_table_name: str = "atlas_versions",
+    ) -> "RaggedAtlas":
+        """Open a read-only atlas pinned to a specific snapshot version.
+
+        Parameters
+        ----------
+        db_uri:
+            LanceDB connection URI.
+        version:
+            Atlas version number (as returned by :meth:`snapshot`).
+        cell_schema:
+            The schema class used when the atlas was created.
+        store:
+            An obstore ObjectStore for zarr I/O.
+        version_table_name:
+            Name of the version tracking table.
+        """
+        db = lancedb.connect(db_uri)
+        version_table = db.open_table(version_table_name)
+
+        records = (
+            version_table.search()
+            .where(f"version = {version}", prefilter=True)
+            .to_polars()
+        )
+        if records.is_empty():
+            raise ValueError(
+                f"Atlas version {version} not found. "
+                f"Use RaggedAtlas.list_versions('{db_uri}') to see available versions."
+            )
+        row = records.row(0, named=True)
+
+        cell_table = db.open_table(row["cell_table_name"])
+        cell_table.checkout(row["cell_table_version"])
+
+        dataset_table = db.open_table(row["dataset_table_name"])
+        dataset_table.checkout(row["dataset_table_version"])
+
+        registry_names: dict[str, str] = json.loads(row["registry_table_names"])
+        registry_versions: dict[str, int] = json.loads(row["registry_table_versions"])
+        resolved_registries: dict[str, lancedb.table.Table] = {}
+        for fs, table_name in registry_names.items():
+            t = db.open_table(table_name)
+            t.checkout(registry_versions[fs])
+            resolved_registries[fs] = t
+
+        root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
+
+        return cls(
+            db=db,
+            cell_table=cell_table,
+            cell_schema=cell_schema,
+            root=root,
+            registry_tables=resolved_registries,
+            dataset_table=dataset_table,
+            version_table=version_table,
+            update_feature_registries=False,
+        )

@@ -136,3 +136,19 @@ class DatasetRecord(LanceModel):
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
+
+
+class AtlasVersionRecord(LanceModel):
+    """One row per atlas snapshot created by RaggedAtlas.snapshot()."""
+
+    version: int
+    cell_table_name: str
+    cell_table_version: int
+    dataset_table_name: str
+    dataset_table_version: int
+    registry_table_names: str    # JSON: {"feature_space": "table_name", ...}
+    registry_table_versions: str  # JSON: {"feature_space": version_int, ...}
+    total_cells: int
+    created_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
