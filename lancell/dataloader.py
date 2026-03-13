@@ -1,22 +1,26 @@
 """Fast batch dataloader for ML training from lancell atlases.
 
-Separates planning (once: resolve remaps, plan batches) from execution
-(per batch: just fetch + remap + return raw arrays). Designed for the
-``query -> CellDataset -> SparseBatch -> collate_fn -> GPU`` pipeline.
+:class:`CellDataset` is a pure data-access object: it resolves zarr
+remaps and exposes ``__getitems__`` for batched async I/O.  Batch
+planning (shuffle, worker-locality, balancing) lives in
+:mod:`lancell.sampler`.
 
-CellDataset is a map-style dataset (``__getitem__`` + ``__len__``) so
-PyTorch's DataLoader can distribute indices to workers automatically.
-Reader initialization is deferred to the worker process, making the
-dataset safely picklable for spawn-based multiprocessing.
+Designed for the ``query -> CellDataset + Sampler -> SparseBatch ->
+collate_fn -> GPU`` pipeline.  Reader initialisation is deferred to the
+worker process, making the dataset safely picklable for spawn-based
+multiprocessing.
 
 Usage::
 
-    dataset = CellDataset(atlas, cells_pl, ..., num_workers=4)
+    dataset = atlas.query().to_cell_dataset(metadata_columns=["cell_type"])
+    sampler = CellSampler(dataset.groups_np, batch_size=256,
+                          shuffle=True, seed=42, num_workers=4)
+
     for epoch in range(n_epochs):
-        dataset.set_epoch(epoch)
-        loader = make_loader(dataset)
+        sampler.set_epoch(epoch)
+        loader = make_loader(dataset, sampler)
         for batch in loader:
-            ...
+            X = sparse_to_dense_collate(batch)["X"]
 """
 
 import asyncio
@@ -32,6 +36,10 @@ if TYPE_CHECKING:
 from lancell.batch_array import BatchAsyncArray
 from lancell.group_specs import PointerKind, get_spec
 from lancell.reconstruction import _prepare_sparse_cells
+
+
+def _identity_collate(x):
+    return x
 
 
 @dataclass
@@ -60,122 +68,6 @@ class SparseBatch:
     offsets: np.ndarray
     n_features: int
     metadata: dict[str, np.ndarray] | None = None
-
-
-@dataclass
-class BatchDescriptor:
-    """Descriptor for a single pre-planned batch.
-
-    Attributes
-    ----------
-    cell_indices:
-        int64, indices into the global ``_starts``/``_ends``/``_groups_np``
-        arrays stored on ``CellDataset``.
-    """
-
-    cell_indices: np.ndarray
-
-
-# ---------------------------------------------------------------------------
-# Batch planning
-# ---------------------------------------------------------------------------
-
-
-def _plan_batches(
-    epoch: int,
-    num_workers: int,
-    batch_size: int,
-    drop_last: bool,
-    shuffle: bool,
-    seed: int | None,
-    groups_np: np.ndarray,
-    n_cells: int,
-) -> list[BatchDescriptor]:
-    """Plan all batches for one epoch, partitioned across workers.
-
-    Groups are bin-packed across workers by cell count so each worker
-    warms a small, stable reader cache. Batches are then interleaved
-    column-major so PyTorch's round-robin distribution sends consecutive
-    batches from the same group to the same worker.
-
-    Parameters
-    ----------
-    epoch:
-        Epoch index, mixed into the RNG seed.
-    num_workers:
-        Number of DataLoader workers. 0 is treated as 1.
-    batch_size:
-        Cells per batch.
-    drop_last:
-        Drop the trailing incomplete batch for each worker.
-    shuffle:
-        Shuffle cell order within each worker's partition.
-    seed:
-        Base random seed. ``seed + epoch`` is used per epoch.
-        ``None`` means non-reproducible shuffle.
-    groups_np:
-        Integer group id for each cell (length = n_cells).
-    n_cells:
-        Total number of cells.
-
-    Returns
-    -------
-    list[BatchDescriptor]
-        Flat list of batch descriptors in interleaved worker order.
-    """
-    if n_cells == 0:
-        return []
-
-    effective_workers = max(1, num_workers)
-
-    # Step 1: Bin-pack groups across workers (greedy, largest-first)
-    unique_gids, counts = np.unique(groups_np, return_counts=True)
-    sort_idx = np.argsort(-counts)  # descending
-    unique_gids = unique_gids[sort_idx]
-    counts = counts[sort_idx]
-
-    worker_cell_lists: list[list[np.ndarray]] = [[] for _ in range(effective_workers)]
-    worker_totals = np.zeros(effective_workers, dtype=np.int64)
-
-    for gid, count in zip(unique_gids, counts, strict=False):
-        w = int(np.argmin(worker_totals))
-        cell_indices = np.where(groups_np == gid)[0].astype(np.int64)
-        worker_cell_lists[w].append(cell_indices)
-        worker_totals[w] += count
-
-    # Step 2 & 3: Shuffle (if requested) and chunk into batches per worker
-    rng_seed = (seed + epoch) if seed is not None else None
-    rng = np.random.default_rng(rng_seed)
-
-    worker_batches: list[list[BatchDescriptor]] = []
-    for w in range(effective_workers):
-        if not worker_cell_lists[w]:
-            worker_batches.append([])
-            continue
-
-        cells = np.concatenate(worker_cell_lists[w])
-        if shuffle:
-            rng.shuffle(cells)
-
-        batches: list[BatchDescriptor] = []
-        for start in range(0, len(cells), batch_size):
-            chunk = cells[start : start + batch_size]
-            if drop_last and len(chunk) < batch_size:
-                continue
-            batches.append(BatchDescriptor(cell_indices=chunk))
-        worker_batches.append(batches)
-
-    # Step 4: Interleave across workers (column-major)
-    # Batch b from worker w is at position b * effective_workers + w, so
-    # PyTorch's round-robin assignment routes it to worker w.
-    result: list[BatchDescriptor] = []
-    max_batches = max((len(wb) for wb in worker_batches), default=0)
-    for b in range(max_batches):
-        for w in range(effective_workers):
-            if b < len(worker_batches[w]):
-                result.append(worker_batches[w][b])
-
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -262,7 +154,6 @@ async def _take_sparse(
     results = await asyncio.gather(*tasks)
 
     # Assemble: concatenate in group order
-    # REVIEW: We know lengths upfront, so we could pre-allocate and write into the right spots instead of concatenating?
     all_indices = []
     all_values = []
     all_lengths = []
@@ -302,13 +193,10 @@ async def _take_sparse(
 class CellDataset:
     """Map-style dataset for fast batch access over an atlas query.
 
-    Separates planning (done once in ``__init__`` and ``set_epoch``) from
-    execution (per-batch in ``__getitem__``), yielding :class:`SparseBatch`
-    objects with minimal overhead.
-
-    Groups are bin-packed across workers so each worker's reader cache
-    stays warm. Use :class:`GroupLocalSampler` with PyTorch's DataLoader
-    to preserve this locality.
+    Pure data-access object: resolves zarr remaps and exposes
+    :meth:`__getitems__` for batched async I/O.  Batch planning lives in
+    :mod:`lancell.sampler`.  Use :func:`make_loader` to wire dataset and
+    sampler into a ``torch.utils.data.DataLoader``.
 
     Parameters
     ----------
@@ -320,19 +208,12 @@ class CellDataset:
         Which feature space to read.
     layer:
         Which layer to read within the feature space.
-    batch_size:
-        Number of cells per batch.
-    shuffle:
-        Whether to shuffle cells each epoch.
-    seed:
-        Random seed for reproducibility. Combined with epoch number.
-    drop_last:
-        Whether to drop the last incomplete batch.
     metadata_columns:
         Obs column names to include as metadata on each SparseBatch.
-    num_workers:
-        Number of DataLoader workers this dataset will be used with.
-        Used to partition groups across workers during batch planning.
+    wanted_globals:
+        Optional sorted int64 array of global feature indices to keep.
+        When set, :attr:`n_features` reflects the filtered count and
+        batch ``indices`` are bounded by that value.
     """
 
     def __init__(
@@ -341,20 +222,9 @@ class CellDataset:
         cells_pl: pl.DataFrame,
         feature_space: str = "gene_expression",
         layer: str = "counts",
-        batch_size: int = 1024,
-        shuffle: bool = True,
-        seed: int | None = None,
-        drop_last: bool = False,
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
-        num_workers: int = 1,
     ) -> None:
-        self._batch_size = batch_size
-        self._shuffle = shuffle
-        self._seed = seed
-        self._drop_last = drop_last
-        self._num_workers = num_workers
-
         # Resolve feature space
         pf = atlas._pointer_fields[feature_space]
         spec = get_spec(feature_space)
@@ -383,6 +253,7 @@ class CellDataset:
 
         self._n_cells = cells_pl.height
         if self._n_cells == 0:
+            self.cells_pl = cells_pl
             self._unique_groups: list[str] = []
             self._groups_np = np.array([], dtype=np.int32)
             self._starts = np.array([], dtype=np.int64)
@@ -390,13 +261,14 @@ class CellDataset:
             self._remaps: dict[str, np.ndarray] = {}
             self._n_features = len(wanted_globals) if wanted_globals is not None else 0
             self._metadata_arrays: dict[str, np.ndarray] | None = None
-            self._batches: list[BatchDescriptor] = []
             self._local_readers: dict | None = None
             self._loop: asyncio.AbstractEventLoop | None = None
             self._loop_thread: threading.Thread | None = None
             self._zarr_root = None
-            self._iter_epoch = 0
             return
+
+        # Store the post-prepare DataFrame (has _zg, _start, _end + obs cols)
+        self.cells_pl = cells_pl
 
         # Map group strings to integer ids for fast numpy operations
         self._unique_groups = groups
@@ -434,25 +306,11 @@ class CellDataset:
                 if col in cells_pl.columns:
                     self._metadata_arrays[col] = cells_pl[col].to_numpy()
 
-        # Plan batches for epoch 0
-        self._batches = _plan_batches(
-            epoch=0,
-            num_workers=self._num_workers,
-            batch_size=self._batch_size,
-            drop_last=self._drop_last,
-            shuffle=self._shuffle,
-            seed=self._seed,
-            groups_np=self._groups_np,
-            n_cells=self._n_cells,
-        )
-
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._local_readers = None
         self._loop = None
         self._loop_thread = None
         self._zarr_root = None
-        # Epoch counter used by __iter__ for simple for-loop usage
-        self._iter_epoch = 0
 
     @property
     def n_cells(self) -> int:
@@ -462,54 +320,26 @@ class CellDataset:
     def n_features(self) -> int:
         return self._n_features
 
-    def set_epoch(self, epoch: int) -> None:
-        """Re-plan batches for a new epoch (new shuffle).
+    @property
+    def groups_np(self) -> np.ndarray:
+        """Integer group id for each cell (length = n_cells)."""
+        return self._groups_np
 
-        Must be called before creating a new DataLoader iterator each epoch.
-        Incompatible with ``persistent_workers=True``.
+    def __getitems__(self, cell_indices: list[int]) -> SparseBatch:
+        """Fetch a batch of cells by index as a :class:`SparseBatch`.
+
+        Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
+        indices (PyTorch ≥ 2.0 ``__getitems__`` protocol).
 
         Parameters
         ----------
-        epoch:
-            Epoch index, mixed into the RNG seed for deterministic shuffles.
+        cell_indices:
+            List of 0-based cell indices into this dataset's cell arrays.
         """
-        self._batches = _plan_batches(
-            epoch=epoch,
-            num_workers=self._num_workers,
-            batch_size=self._batch_size,
-            drop_last=self._drop_last,
-            shuffle=self._shuffle,
-            seed=self._seed,
-            groups_np=self._groups_np,
-            n_cells=self._n_cells,
-        )
-
-    def __len__(self) -> int:
-        """Number of batches in the current epoch plan."""
-        return len(self._batches)
-
-    def __iter__(self):
-        """Iterate over all batches for one epoch, advancing the epoch counter.
-
-        Convenience for simple ``for batch in dataset:`` usage. Calls
-        :meth:`set_epoch` with an internal counter so successive iterations
-        produce differently-shuffled epochs.
-
-        For multi-worker DataLoader training, prefer :class:`GroupLocalSampler`
-        and explicit :meth:`set_epoch` calls instead.
-        """
-        self.set_epoch(self._iter_epoch)
-        self._iter_epoch += 1
-        for i in range(len(self)):
-            yield self[i]
-
-    def __getitem__(self, idx: int) -> SparseBatch:
-        """Fetch batch ``idx`` as a :class:`SparseBatch`."""
         self._ensure_initialized()
-        desc = self._batches[idx]
         future = asyncio.run_coroutine_threadsafe(
             _take_sparse(
-                desc.cell_indices,
+                np.array(cell_indices, dtype=np.int64),
                 self._groups_np,
                 self._starts,
                 self._ends,
@@ -525,6 +355,10 @@ class CellDataset:
             self._loop,
         )
         return future.result()
+
+    def __getitem__(self, idx: int) -> SparseBatch:
+        """Fetch a single cell as a :class:`SparseBatch`."""
+        return self.__getitems__([idx])
 
     def _ensure_initialized(self) -> None:
         """Start the background event loop and reader cache if not yet done.
@@ -546,7 +380,7 @@ class CellDataset:
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
         # Drop worker-local state so the dataset is safely picklable for spawn.
-        # Workers call _ensure_initialized() on their first __getitem__.
+        # Workers call _ensure_initialized() on their first __getitems__.
         state["_local_readers"] = None
         state["_loop"] = None
         state["_loop_thread"] = None
@@ -624,68 +458,22 @@ def sparse_to_csr_collate(batch: SparseBatch) -> dict:
 # ---------------------------------------------------------------------------
 
 
-class GroupLocalSampler:
-    """Sequential sampler for use with :class:`CellDataset` and PyTorch.
-
-    Emits indices ``0..N-1`` in order. Since :func:`_plan_batches`
-    already interleaves batches column-major across workers, sequential
-    emission causes PyTorch's round-robin distribution to route each
-    batch to the worker that owns its groups.
-
-    Parameters
-    ----------
-    dataset:
-        A :class:`CellDataset` instance.
-    """
-
-    def __init__(self, dataset: CellDataset) -> None:
-        if not hasattr(dataset, "_num_workers"):
-            raise TypeError("dataset must be a CellDataset")
-        self._dataset = dataset
-
-    def __len__(self) -> int:
-        return len(self._dataset)
-
-    def __iter__(self):
-        return iter(range(len(self._dataset)))
-
-
-class TorchCellDataset:
-    """Picklable map-style dataset wrapper for use with torch DataLoader.
-
-    PyTorch's DataLoader only checks ``isinstance(dataset, IterableDataset)``
-    to select the iteration strategy; any object with ``__getitem__`` and
-    ``__len__`` works as a map-style dataset. Being a plain module-level class
-    (not a local class) makes this safely picklable for
-    ``multiprocessing_context="spawn"``.
-
-    Use with :func:`make_loader` (or manually with ``batch_size=None``,
-    ``sampler=GroupLocalSampler(dataset)``, ``multiprocessing_context="spawn"``,
-    ``persistent_workers=False``).
-    """
-
-    def __init__(self, dataset: CellDataset) -> None:
-        self._dataset = dataset
-
-    def __len__(self) -> int:
-        return len(self._dataset)
-
-    def __getitem__(self, idx: int) -> SparseBatch:
-        return self._dataset[idx]
-
-
-def make_loader(dataset: CellDataset, **kwargs):
+def make_loader(dataset: CellDataset, sampler, **kwargs):
     """Create a DataLoader with the right defaults for CellDataset.
 
-    Sets ``batch_size=None``, ``sampler=GroupLocalSampler``,
-    ``num_workers=dataset._num_workers``, ``collate_fn=lambda x: x``,
-    ``multiprocessing_context="spawn"``, and ``persistent_workers=False``.
+    Uses ``batch_sampler`` so PyTorch calls ``dataset.__getitems__(indices)``
+    for each batch yielded by ``sampler``.  Defaults:
+    ``collate_fn=_identity_collate``, ``num_workers=sampler.num_workers``,
+    ``multiprocessing_context="spawn"``, ``persistent_workers=False``.
     Any of these can be overridden via ``kwargs``.
 
     Parameters
     ----------
     dataset:
         A :class:`CellDataset` instance.
+    sampler:
+        A :class:`~lancell.sampler.CellSampler` or
+        :class:`~lancell.sampler.BalancedCellSampler` instance.
     **kwargs:
         Forwarded to ``torch.utils.data.DataLoader``, overriding defaults.
 
@@ -696,17 +484,13 @@ def make_loader(dataset: CellDataset, **kwargs):
     from torch.utils.data import DataLoader
 
     defaults = dict(
-        batch_size=None,
-        sampler=GroupLocalSampler(dataset),
-        num_workers=dataset._num_workers,
-        collate_fn=None,
+        batch_sampler=sampler,
+        num_workers=sampler.num_workers,
+        collate_fn=_identity_collate,
         multiprocessing_context="spawn",
         persistent_workers=False,
     )
     defaults.update(kwargs)
-    # Recompute multiprocessing_context after kwargs merge: spawn is invalid
-    # when num_workers=0 and the caller didn't explicitly override it.
     if defaults["num_workers"] == 0 and "multiprocessing_context" not in kwargs:
         defaults["multiprocessing_context"] = None
-    torch_dataset = TorchCellDataset(dataset)
-    return DataLoader(torch_dataset, **defaults)
+    return DataLoader(dataset, **defaults)

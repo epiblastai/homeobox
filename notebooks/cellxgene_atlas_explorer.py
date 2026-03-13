@@ -8,6 +8,7 @@
 #     "polars",
 #     "anndata",
 #     "scanpy",
+#     "torch",
 # ]
 # ///
 
@@ -32,7 +33,7 @@ def _():
     return mo, os, tqdm
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     # CellxGene Census Atlas Explorer
@@ -99,7 +100,7 @@ def _(db_uri, store):
     return (atlas,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ## Datasets
@@ -114,7 +115,7 @@ def _(atlas):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ## Gene Registry
@@ -130,7 +131,7 @@ def _(atlas):
     return (genes_df,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(atlas, genes_df, mo):
     mo.md(f"""
     **{genes_df.height:,}** genes registered across
@@ -139,7 +140,7 @@ def _(atlas, genes_df, mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ## Query Cells
@@ -177,7 +178,7 @@ def _(atlas, limit_input, where_input):
     return (cells_df,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(cells_df, mo):
     mo.md(f"""
     Returned **{cells_df.height:,}** cells.
@@ -196,7 +197,7 @@ def _(atlas):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Reconstruct AnnData
@@ -220,7 +221,7 @@ def _(atlas, limit_input, where_input):
     return (adata,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(adata, mo):
     mo.md(f"""
     **Reconstructed AnnData**: {adata.n_obs:,} cells x {adata.n_vars:,} genes
@@ -232,7 +233,7 @@ def _(adata, mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ### Top expressed genes
@@ -254,7 +255,7 @@ def _(adata):
     return np, pl
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ### Cell type distribution in query results
@@ -268,7 +269,7 @@ def _(adata):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Feature-Filtered Query
@@ -321,7 +322,7 @@ def _(atlas, feature_uid_input, limit_input, where_input):
     return filtered_adata, selected_uids
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(adata, filtered_adata, mo, selected_uids):
     mo.md(f"""
     **Feature filter result**
@@ -339,7 +340,7 @@ def _(adata, filtered_adata, mo, selected_uids):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md("""
     ### Feature filter + ML dataloader
@@ -353,6 +354,8 @@ def _(mo):
 
 @app.cell
 def _(atlas, feature_uid_input, where_input):
+    from lancell.sampler import CellSampler as _CellSampler
+
     _selected = [
         u.strip()
         for u in feature_uid_input.value.strip().splitlines()
@@ -362,14 +365,16 @@ def _(atlas, feature_uid_input, where_input):
         atlas.query()
         .where(where_input.value)
         .features(_selected, "gene_expression")
-        .to_cell_dataset(layer="counts", batch_size=256, shuffle=False)
+        .to_cell_dataset(layer="counts")
     )
-    _first = next(iter(filtered_ds))
+    _sampler = _CellSampler(filtered_ds.groups_np, batch_size=256, shuffle=False)
+    _first_batch = filtered_ds.__getitems__(next(iter(_sampler)))
     print(f"n_features (filtered) : {filtered_ds.n_features}")
-    print(f"indices range         : [{_first.indices.min() if len(_first.indices) else 'n/a'}, "
-          f"{_first.indices.max() if len(_first.indices) else 'n/a'}]")
-    print(f"indices (first 20)    : {_first.indices[:20]}")
-    print(f"values  (first 20)    : {_first.values[:20]}")
+    print(f"n_batches             : {len(_sampler)}")
+    print(f"indices range         : [{_first_batch.indices.min() if len(_first_batch.indices) else 'n/a'}, "
+          f"{_first_batch.indices.max() if len(_first_batch.indices) else 'n/a'}]")
+    print(f"indices (first 20)    : {_first_batch.indices[:20]}")
+    print(f"values  (first 20)    : {_first_batch.values[:20]}")
     return
 
 
@@ -394,7 +399,7 @@ def _(atlas, limit_input, where_input):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Fast ML Dataloader
@@ -408,43 +413,43 @@ def _(mo):
 
 
 @app.cell
-def _(atlas, tqdm):
+def _(atlas, tqdm, where_input):
     import time
+    from lancell.sampler import CellSampler as _CellSampler2
 
     q = (
         atlas.query()
-        # .where(where_input.value)
-        .where("sex == 'male'")
-        # .limit(10_000)
+        .where(where_input.value)
+        .limit(10_000)
     )
 
     cell_dataset = q.to_cell_dataset(
         feature_space="gene_expression",
         layer="counts",
-        batch_size=256,
-        shuffle=True,
-        seed=42,
         metadata_columns=["cell_type", "tissue"],
+    )
+    cell_sampler = _CellSampler2(
+        cell_dataset.groups_np, batch_size=256, shuffle=True, seed=42
     )
 
     print(f"CellDataset: {cell_dataset.n_cells:,} cells, "
           f"{cell_dataset.n_features:,} features, "
-          f"{len(cell_dataset)} batches")
+          f"{len(cell_sampler)} batches")
 
     t0 = time.perf_counter()
-    for batch in tqdm(cell_dataset):
-        pass  # consume one epoch
+    for _indices in tqdm(cell_sampler):
+        cell_dataset.__getitems__(_indices)  # consume one epoch
     elapsed = time.perf_counter() - t0
 
     print(f"Epoch time: {elapsed:.3f}s "
-          f"({elapsed / max(len(cell_dataset), 1) * 1000:.1f} ms/batch)")
-    return cell_dataset, q
+          f"({elapsed / max(len(cell_sampler), 1) * 1000:.1f} ms/batch)")
+    return cell_dataset, cell_sampler, q
 
 
 @app.cell
-def _(cell_dataset, mo):
+def _(cell_dataset, cell_sampler, mo):
     # Grab first batch for inspection
-    first_batch = next(iter(cell_dataset))
+    first_batch = cell_dataset.__getitems__(next(iter(cell_sampler)))
     n_cells = len(first_batch.offsets) - 1
     nnz = int(first_batch.offsets[-1])
 
@@ -488,7 +493,7 @@ def _(first_batch, mo, np, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ### Dense collate
@@ -517,7 +522,7 @@ def _(first_batch, pl):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ### Comparison: `to_batches()` vs `to_cell_dataset()`
@@ -532,6 +537,7 @@ def _(mo):
 @app.cell
 def _(q):
     import time as _time
+    from lancell.sampler import CellSampler as _CellSampler3
 
     # AnnData path
     _t0 = _time.perf_counter()
@@ -540,16 +546,344 @@ def _(q):
     anndata_time = _time.perf_counter() - _t0
 
     # CellDataset path
-    _ds = q.to_cell_dataset(batch_size=256, shuffle=False)
+    _ds = q.to_cell_dataset()
+    _s = _CellSampler3(_ds.groups_np, batch_size=256, shuffle=False)
     _t0 = _time.perf_counter()
-    for _batch in _ds:
-        pass
+    for _idx in _s:
+        _ds.__getitems__(_idx)
     dataset_time = _time.perf_counter() - _t0
 
     speedup = anndata_time / max(dataset_time, 1e-9)
     print(f"to_batches() (AnnData):    {anndata_time:.3f}s")
     print(f"to_cell_dataset() (raw):   {dataset_time:.3f}s")
     print(f"Speedup:                   {speedup:.1f}x")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Map-style DataLoader (multi-worker)
+
+    `CellDataset` owns data access; `CellSampler` owns batch planning.
+    Use `make_loader(dataset, sampler)` to wire them into a DataLoader.
+
+    Key APIs:
+    - **`CellSampler(groups_np, batch_size, num_workers)`** — bin-packs zarr
+      groups across workers, keeping each worker's reader cache warm.
+    - **`sampler.set_epoch(epoch)`** — re-shuffles the batch plan for the new
+      epoch.  Call it before each DataLoader iteration.
+    - **`make_loader(dataset, sampler)`** — sets `batch_sampler`, `collate_fn`,
+      `multiprocessing_context="spawn"`, and `persistent_workers=False`.
+    """)
+    return
+
+
+@app.cell
+def _(atlas, mo):
+    from lancell.dataloader import CellDataset, make_loader
+    from lancell.sampler import CellSampler
+
+    _num_workers = 2
+    mw_dataset = CellDataset(
+        atlas=atlas,
+        cells_pl=(
+            atlas.query()
+            .where("sex == 'male'")
+            .limit(10_000)
+            .to_polars()
+        ),
+        feature_space="gene_expression",
+        layer="counts",
+        metadata_columns=["cell_type"],
+    )
+    mw_sampler = CellSampler(
+        mw_dataset.groups_np,
+        batch_size=256,
+        shuffle=True,
+        seed=0,
+        num_workers=_num_workers,
+    )
+
+    mo.md(f"""
+    **Dataset summary**
+
+    | | |
+    |---|---|
+    | cells | `{mw_dataset.n_cells:,}` |
+    | features | `{mw_dataset.n_features:,}` |
+    | batches (epoch 0) | `{len(mw_sampler)}` |
+    | `num_workers` | `{_num_workers}` |
+    """)
+    return make_loader, mw_dataset, mw_sampler
+
+
+@app.cell
+def _(make_loader, mo, mw_dataset, mw_sampler):
+    import time as _time
+
+    _n_epochs = 2
+    _epoch_times = []
+
+    for _epoch in range(_n_epochs):
+        mw_sampler.set_epoch(_epoch)
+        # For this notebook we override num_workers=0 (no subprocess spawn needed)
+        _loader = make_loader(mw_dataset, mw_sampler, num_workers=0)
+
+        _t0 = _time.perf_counter()
+        _total_cells = 0
+        for _batch in _loader:
+            _total_cells += len(_batch.offsets) - 1
+        _epoch_times.append(_time.perf_counter() - _t0)
+
+        print(f"epoch {_epoch}: {_total_cells:,} cells in {_epoch_times[-1]:.3f}s "
+              f"({_epoch_times[-1] / max(len(mw_sampler), 1) * 1000:.1f} ms/batch)")
+
+    mo.md(f"""
+    ### Multi-epoch results
+
+    | Epoch | Time (s) | ms/batch |
+    |-------|----------|----------|
+    {"".join(f"| {e} | {t:.3f} | {t / max(len(mw_sampler), 1) * 1000:.1f} |" + chr(10) for e, t in enumerate(_epoch_times))}
+
+    Each epoch covers all **{mw_dataset.n_cells:,}** cells exactly once.
+    `set_epoch` re-shuffles with a new seed (`seed + epoch`) so the cell
+    order differs every epoch.
+    """)
+    return
+
+
+@app.cell
+def _(mo, mw_dataset, mw_sampler):
+    import pickle
+
+    # Show that epoch 0 and epoch 1 produce different orderings
+    _s = mw_sampler
+    _s.set_epoch(0)
+    _batch0_e0 = mw_dataset.__getitems__(next(iter(_s)))
+    _first_nnz_e0 = int(_batch0_e0.offsets[-1])
+
+    _s.set_epoch(1)
+    _batch0_e1 = mw_dataset.__getitems__(next(iter(_s)))
+    _first_nnz_e1 = int(_batch0_e1.offsets[-1])
+
+    # Verify pickle safety (required for spawn-based multiprocessing)
+    _pickled = pickle.dumps(mw_dataset)
+    _restored = pickle.loads(_pickled)
+    _pickle_ok = _restored._local_readers is None
+
+    mo.md(f"""
+    ### Epoch shuffle verification
+
+    Batch 0 nnz — epoch 0: **{_first_nnz_e0:,}** / epoch 1: **{_first_nnz_e1:,}**
+    *(different batches contain different cells)*
+
+    **Pickle safety**: `{'✓ dataset pickles cleanly (worker-local state stripped)' if _pickle_ok else '✗ pickle failed'}`
+
+    ---
+
+    ### Usage with real multi-worker training
+
+    ```python
+    dataset = atlas.query().to_cell_dataset(metadata_columns=["cell_type"])
+    sampler = CellSampler(dataset.groups_np, batch_size=256,
+                          shuffle=True, seed=42, num_workers=4)
+
+    for epoch in range(n_epochs):
+        sampler.set_epoch(epoch)
+        loader = make_loader(dataset, sampler)   # sets spawn, batch_sampler, etc.
+        for batch in loader:
+            X = sparse_to_dense_collate(batch)["X"]   # (B, n_features) float32
+            loss = model(X).loss
+            loss.backward()
+    ```
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Balanced Sampling
+
+    By default, `CellSampler` shuffles cells randomly — batches reflect the
+    natural class imbalance in the data.  Rare cell types can be swamped by
+    common ones and may barely appear in any single batch.
+
+    `BalancedCellSampler` fixes this: every batch draws exactly
+    `batch_size // n_categories` cells from each unique value.  The epoch
+    length is bounded by the smallest category; cells from larger categories
+    beyond `cells_per_cat × n_batches` are skipped and sampled again in
+    future epochs.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    balance_col_input = mo.ui.dropdown(
+        options=["cell_type", "dataset_uid", "tissue"],
+        value="cell_type",
+        label="Balance on column",
+    )
+    balance_batch_size_input = mo.ui.slider(
+        64, 512, value=128, step=64, label="Batch size"
+    )
+    mo.hstack([balance_col_input, balance_batch_size_input])
+    return balance_batch_size_input, balance_col_input
+
+
+@app.cell
+def _(atlas, balance_col_input):
+    _balance_col = balance_col_input.value
+    bal_cells_pl = atlas.query().where("sex == 'male'").to_polars()
+
+    category_counts = (
+        bal_cells_pl[_balance_col].value_counts().sort("count", descending=True)
+    )
+    category_counts
+    return (bal_cells_pl,)
+
+
+@app.cell
+def _(atlas, bal_cells_pl, balance_batch_size_input, balance_col_input, mo):
+    from lancell.dataloader import CellDataset as _CellDataset
+    from lancell.sampler import BalancedCellSampler
+
+    _balance_col = balance_col_input.value
+    _batch_size = balance_batch_size_input.value
+    balanced_ds = _CellDataset(
+        atlas=atlas,
+        cells_pl=bal_cells_pl,
+        feature_space="gene_expression",
+        layer="counts",
+        metadata_columns=[_balance_col],
+    )
+    balanced_sampler = BalancedCellSampler.from_column(
+        balanced_ds.cells_pl,
+        _balance_col,
+        batch_size=_batch_size,
+        shuffle=True,
+        seed=42,
+        drop_last=True,
+    )
+
+    _n_cats = len(bal_cells_pl[_balance_col].unique())
+    _per_cat = max(1, _batch_size // _n_cats)
+
+    mo.md(f"""
+    **Balanced `BalancedCellSampler`** — `column={_balance_col!r}`
+
+    | | |
+    |---|---|
+    | Categories (`n_cats`) | `{_n_cats}` |
+    | Cells / category / batch | `{_per_cat}` (`{_batch_size}` ÷ `{_n_cats}`) |
+    | Batches / epoch | `{len(balanced_sampler)}` |
+
+    *Epoch bounded by the smallest category.  Larger categories contribute
+    only `{_per_cat} × {len(balanced_sampler)}` = `{_per_cat * len(balanced_sampler):,}` cells.*
+    """)
+    return balanced_ds, balanced_sampler
+
+
+@app.cell
+def _(balance_col_input, balanced_ds, balanced_sampler, mo, tqdm):
+    import numpy as _np
+    import polars as _pl
+
+    _balance_col = balance_col_input.value
+
+    # Collect per-batch category counts over one epoch
+    _rows = []
+    for _i, _indices in tqdm(enumerate(balanced_sampler)):
+        _batch = balanced_ds.__getitems__(_indices)
+        if _batch.metadata is None:
+            break
+        _vals = _batch.metadata[_balance_col]
+        for _cat, _cnt in zip(*_np.unique(_vals, return_counts=True)):
+            _rows.append({"batch": _i, "category": str(_cat), "count": int(_cnt)})
+
+    _stats = (
+        _pl.DataFrame(_rows)
+        .group_by("category")
+        .agg(
+            _pl.col("count").min().alias("min / batch"),
+            _pl.col("count").mean().round(1).alias("mean / batch"),
+            _pl.col("count").max().alias("max / batch"),
+        )
+        .sort("mean / batch", descending=True)
+    )
+
+    mo.md(f"""
+    ### Per-category representation across {len(balanced_sampler)} batches
+
+    {mo.as_html(_stats)}
+
+    `min` ≈ `max` confirms every batch saw a balanced draw.
+    Variation in the last batch (`drop_last=False`) accounts for any difference.
+    """)
+    return
+
+
+@app.cell
+def _(bal_cells_pl, balance_col_input, balanced_sampler, mo):
+    _balance_col = balance_col_input.value
+
+    # Unbalanced: natural frequency of each category
+    _natural = bal_cells_pl[_balance_col].value_counts().sort("count", descending=True)
+    _total = bal_cells_pl.height
+    _n_cats2 = _natural.height
+
+    # Balanced: equal cells per category
+    _cells_per_cat = max(1, balanced_sampler.batch_size // _n_cats2)
+    _balanced_epoch_cells = _cells_per_cat * len(balanced_sampler)
+
+    _rows2 = []
+    for _row in _natural.iter_rows(named=True):
+        _cat = _row[_balance_col]
+        _nat_pct = _row["count"] / _total * 100
+        _bal_pct = 100.0 / _n_cats2
+        _rows2.append({
+            "category": str(_cat),
+            "natural %": round(_nat_pct, 1),
+            "balanced %": round(_bal_pct, 1),
+        })
+
+    import polars as _pl2
+    _comparison = _pl2.DataFrame(_rows2)
+
+    mo.md(f"""
+    ### Natural vs balanced per-batch frequency
+
+    {mo.as_html(_comparison)}
+
+    With `column={_balance_col!r}`, every category appears in
+    **{round(100.0 / _n_cats2, 1)}%** of each batch regardless of its natural
+    frequency in the atlas.
+
+    ---
+
+    ### Usage
+
+    ```python
+    dataset = atlas.query().to_cell_dataset(metadata_columns=["cell_type"])
+    sampler = BalancedCellSampler.from_column(
+        dataset.cells_pl, "cell_type", batch_size=256
+    )
+
+    for epoch in range(n_epochs):
+        sampler.set_epoch(epoch)
+        loader = make_loader(dataset, sampler)
+        for batch in loader:
+            # batch.metadata["cell_type"] has equal counts per type
+            X = sparse_to_dense_collate(batch)["X"]
+    ```
+    """)
+    return
+
+
+@app.cell
+def _():
     return
 
 

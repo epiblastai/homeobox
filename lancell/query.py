@@ -214,17 +214,18 @@ class AtlasQuery:
         self,
         feature_space: str = "gene_expression",
         layer: str = "counts",
-        batch_size: int = 1024,
-        shuffle: bool = True,
-        seed: int | None = None,
-        drop_last: bool = False,
         metadata_columns: list[str] | None = None,
     ) -> "CellDataset":
         """Create a CellDataset for fast ML training iteration.
 
         Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
         this returns a :class:`~lancell.dataloader.CellDataset` that yields
-        lightweight :class:`~lancell.dataloader.SparseBatch` objects.
+        lightweight :class:`~lancell.dataloader.SparseBatch` objects via
+        :meth:`~lancell.dataloader.CellDataset.__getitems__`.
+
+        Pair with a :class:`~lancell.sampler.CellSampler` or
+        :class:`~lancell.sampler.BalancedCellSampler` for batch planning, then
+        use :func:`~lancell.dataloader.make_loader` to create the DataLoader.
 
         Parameters
         ----------
@@ -232,14 +233,6 @@ class AtlasQuery:
             Which feature space to read.
         layer:
             Which layer to read within the feature space.
-        batch_size:
-            Number of cells per batch.
-        shuffle:
-            Whether to shuffle cells each epoch.
-        seed:
-            Random seed for reproducibility.
-        drop_last:
-            Whether to drop the last incomplete batch.
         metadata_columns:
             Obs column names to include as metadata on each SparseBatch.
         """
@@ -250,6 +243,7 @@ class AtlasQuery:
         wanted_globals = None
         if feature_space in self._feature_filter:
             from lancell.var_df import resolve_feature_uids_to_global_indices
+
             wanted_globals = resolve_feature_uids_to_global_indices(
                 self._atlas._registry_tables[feature_space],
                 self._feature_filter[feature_space],
@@ -260,10 +254,6 @@ class AtlasQuery:
             cells_pl=cells_pl,
             feature_space=feature_space,
             layer=layer,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            seed=seed,
-            drop_last=drop_last,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
         )
@@ -271,13 +261,18 @@ class AtlasQuery:
     def to_dataloader(
         self,
         collate_fn=None,
+        batch_size: int = 1024,
+        shuffle: bool = True,
+        seed: int | None = None,
+        drop_last: bool = False,
+        num_workers: int = 0,
         **cell_dataset_kwargs,
     ) -> "torch.utils.data.DataLoader":
         """Create a torch DataLoader for fast ML training.
 
-        Wraps :meth:`to_cell_dataset` in a
-        ``torch.utils.data.IterableDataset``, configured for single-process
-        iteration (``num_workers=0``, ``batch_size=None``).
+        Convenience wrapper: creates a :class:`~lancell.dataloader.CellDataset`,
+        a :class:`~lancell.sampler.CellSampler`, and calls
+        :func:`~lancell.dataloader.make_loader`.
 
         Parameters
         ----------
@@ -285,22 +280,36 @@ class AtlasQuery:
             Optional function to transform each :class:`SparseBatch`.
             See :func:`~lancell.dataloader.sparse_to_dense_collate` and
             :func:`~lancell.dataloader.sparse_to_csr_collate`.
+        batch_size:
+            Cells per batch.
+        shuffle:
+            Whether to shuffle cells each epoch.
+        seed:
+            Random seed for reproducibility.
+        drop_last:
+            Whether to drop the last incomplete batch.
+        num_workers:
+            Number of DataLoader workers.
         **cell_dataset_kwargs:
-            Forwarded to :meth:`to_cell_dataset`.
+            Forwarded to :meth:`to_cell_dataset`
+            (``feature_space``, ``layer``, ``metadata_columns``).
         """
-        from torch.utils.data import DataLoader
-
-        from lancell.dataloader import TorchCellDataset
+        from lancell.dataloader import make_loader
+        from lancell.sampler import CellSampler
 
         dataset = self.to_cell_dataset(**cell_dataset_kwargs)
-        torch_dataset = TorchCellDataset(dataset)
-
-        return DataLoader(
-            torch_dataset,
-            batch_size=None,
-            collate_fn=collate_fn,
-            num_workers=0,
+        sampler = CellSampler(
+            dataset.groups_np,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            seed=seed,
+            drop_last=drop_last,
+            num_workers=num_workers,
         )
+        loader_kwargs = {}
+        if collate_fn is not None:
+            loader_kwargs["collate_fn"] = collate_fn
+        return make_loader(dataset, sampler, **loader_kwargs)
 
     # -- Reconstruction internals -------------------------------------------
 
@@ -317,6 +326,7 @@ class AtlasQuery:
         wanted_globals = None
         if pf.feature_space in self._feature_filter:
             from lancell.var_df import resolve_feature_uids_to_global_indices
+
             wanted_globals = resolve_feature_uids_to_global_indices(
                 self._atlas._registry_tables[pf.feature_space],
                 self._feature_filter[pf.feature_space],
