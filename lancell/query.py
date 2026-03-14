@@ -15,9 +15,8 @@ import numpy as np
 import polars as pl
 
 from lancell.atlas import PointerFieldInfo, RaggedAtlas
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import get_spec
 from lancell.reconstruction import (
-    FeatureCSCReconstructor,
     _build_obs_only_anndata,
     _get_pointer_columns,
 )
@@ -369,13 +368,7 @@ class AtlasQuery:
                 self._feature_filter[pf.feature_space],
             )
 
-        # Use CSC reconstructor for feature-filtered sparse queries (per-group fallback to CSR)
-        if wanted_globals is not None and spec.pointer_kind is PointerKind.SPARSE:
-            reconstructor = FeatureCSCReconstructor()
-        else:
-            reconstructor = spec.reconstructor
-
-        return reconstructor.as_anndata(
+        return spec.reconstructor.as_anndata(
             self._atlas,
             cells_pl,
             pf,

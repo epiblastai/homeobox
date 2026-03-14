@@ -268,6 +268,11 @@ class SparseCSRReconstructor:
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        if wanted_globals is not None:
+            return FeatureCSCReconstructor().as_anndata(
+                atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
+            )
+
         # Determine index array name from spec's required_arrays
         if len(spec.required_arrays) != 1:
             raise NotImplementedError(
@@ -337,7 +342,9 @@ class SparseCSRReconstructor:
                 joined_indices = flat_indices.astype(np.int32)
 
             # For intersection or feature filter, filter out features not in the joined space
-            if (feature_join == "intersection" or wanted_globals is not None) and zg in group_remap_to_joined:
+            if (
+                feature_join == "intersection" or wanted_globals is not None
+            ) and zg in group_remap_to_joined:
                 keep_mask = joined_indices >= 0
                 joined_indices = joined_indices[keep_mask]
                 # Recompute per-cell lengths after filtering
@@ -521,7 +528,9 @@ class FeatureCSCReconstructor:
             return ad.AnnData()
 
         n_features = len(wanted_globals)
-        layers_to_read = layer_overrides if layer_overrides is not None else list(spec.required_layers)
+        layers_to_read = (
+            layer_overrides if layer_overrides is not None else list(spec.required_layers)
+        )
         if not layers_to_read:
             raise ValueError(f"No layers specified for feature space '{pf.feature_space}'")
 
@@ -541,7 +550,9 @@ class FeatureCSCReconstructor:
                 remap = atlas._get_remap(zg, spec.feature_space)
 
                 # Build global_index -> local_index inverse map
-                remap_inv = np.full(int(remap.max()) + 1 if len(remap) > 0 else 0, -1, dtype=np.int64)
+                remap_inv = np.full(
+                    int(remap.max()) + 1 if len(remap) > 0 else 0, -1, dtype=np.int64
+                )
                 for local_i, global_i in enumerate(remap):
                     remap_inv[int(global_i)] = local_i
 
@@ -574,26 +585,34 @@ class FeatureCSCReconstructor:
                 starts = np.array(csc_starts_list, dtype=np.int64)
                 ends = np.array(csc_ends_list, dtype=np.int64)
                 idx_reader = atlas._get_batch_reader(zg, "csc/indices")
-                lyr_readers = [atlas._get_batch_reader(zg, f"csc/layers/{ln}") for ln in layers_to_read]
+                lyr_readers = [
+                    atlas._get_batch_reader(zg, f"csc/layers/{ln}") for ln in layers_to_read
+                ]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
-                group_info.append({
-                    "mode": "csc",
-                    "group_cells": group_cells,
-                    "feat_col_indices": feat_col_indices,
-                    "zr_to_rank": zr_to_rank,
-                })
+                group_info.append(
+                    {
+                        "mode": "csc",
+                        "group_cells": group_cells,
+                        "feat_col_indices": feat_col_indices,
+                        "zr_to_rank": zr_to_rank,
+                    }
+                )
 
             else:
                 starts = group_cells["_start"].to_numpy().astype(np.int64)
                 ends = group_cells["_end"].to_numpy().astype(np.int64)
                 idx_reader = atlas._get_batch_reader(zg, csr_index_name)
-                lyr_readers = [atlas._get_batch_reader(zg, f"csr/layers/{ln}") for ln in layers_to_read]
+                lyr_readers = [
+                    atlas._get_batch_reader(zg, f"csr/layers/{ln}") for ln in layers_to_read
+                ]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
-                group_info.append({
-                    "mode": "csr",
-                    "group_cells": group_cells,
-                    "zg": zg,
-                })
+                group_info.append(
+                    {
+                        "mode": "csr",
+                        "group_cells": group_cells,
+                        "zg": zg,
+                    }
+                )
 
         async def _read_all():
             return await asyncio.gather(*read_coroutines)
@@ -607,7 +626,7 @@ class FeatureCSCReconstructor:
         obs_parts: list[pl.DataFrame] = []
         cell_offset = 0
 
-        for info, (idx_result, layer_results) in zip(group_info, all_results):
+        for info, (idx_result, layer_results) in zip(group_info, all_results, strict=False):
             group_cells = info["group_cells"]
             n_cells_group = group_cells.height
             flat_indices, lengths = idx_result
@@ -617,11 +636,11 @@ class FeatureCSCReconstructor:
                 zr_to_rank = info["zr_to_rank"]
 
                 offset = 0
-                for length, col_idx in zip(lengths, feat_col_indices):
+                for length, col_idx in zip(lengths, feat_col_indices, strict=False):
                     if length == 0:
                         offset += length
                         continue
-                    zr_seg = flat_indices[offset:offset + length].astype(np.int64)
+                    zr_seg = flat_indices[offset : offset + length].astype(np.int64)
                     # Two-step: numpy & doesn't short-circuit, so indexing zr_to_rank
                     # with out-of-bounds zr_seg values would raise even if the bounds
                     # mask would have excluded them.
@@ -635,7 +654,7 @@ class FeatureCSCReconstructor:
                         cols_parts.append(np.full(len(kept_zr), col_idx, dtype=np.int64))
                         for ln_i, ln in enumerate(layers_to_read):
                             flat_vals, _ = layer_results[ln_i]
-                            val_seg = flat_vals[offset:offset + length]
+                            val_seg = flat_vals[offset : offset + length]
                             layer_vals_parts[ln].append(val_seg[valid_mask])
                     offset += length
 
@@ -658,12 +677,16 @@ class FeatureCSCReconstructor:
                 else:
                     lengths_filtered = lengths
 
-                cell_local_ids = np.repeat(np.arange(n_cells_group, dtype=np.int64), lengths_filtered)
+                cell_local_ids = np.repeat(
+                    np.arange(n_cells_group, dtype=np.int64), lengths_filtered
+                )
                 rows_parts.append(cell_offset + cell_local_ids)
                 cols_parts.append(joined_indices_kept.astype(np.int64))
                 for ln_i, ln in enumerate(layers_to_read):
                     flat_vals, _ = layer_results[ln_i]
-                    layer_vals_parts[ln].append(flat_vals[keep_mask] if keep_mask is not None else flat_vals)
+                    layer_vals_parts[ln].append(
+                        flat_vals[keep_mask] if keep_mask is not None else flat_vals
+                    )
 
             obs_parts.append(group_cells)
             cell_offset += n_cells_group
