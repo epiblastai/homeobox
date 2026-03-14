@@ -139,6 +139,13 @@ class DatasetRecord(LanceModel):
     )
 
 
+class FeatureDatasetPair(LanceModel):
+    """Inverted index entry mapping a feature UID to the dataset that measured it."""
+
+    feature_uid: str   # from any feature space registry (globally unique)
+    dataset_uid: str   # from DatasetRecord.uid
+
+
 class AtlasVersionRecord(LanceModel):
     """One row per atlas snapshot created by RaggedAtlas.snapshot()."""
 

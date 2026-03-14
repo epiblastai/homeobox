@@ -30,6 +30,7 @@ from lancell.schema import (
     DatasetRecord,
     DenseZarrPointer,
     FeatureBaseSchema,
+    FeatureDatasetPair,
     LancellBaseSchema,
     SparseZarrPointer,
 )
@@ -243,6 +244,7 @@ class RaggedAtlas:
         dataset_table: lancedb.table.Table,
         *,
         version_table: lancedb.table.Table | None = None,
+        feature_dataset_table: lancedb.table.Table | None = None,
         update_feature_registries: bool = True,
     ) -> None:
         self.db = db
@@ -254,6 +256,7 @@ class RaggedAtlas:
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
+        self._feature_dataset_table = feature_dataset_table
 
         # Instance-level caches (version-aware for remaps)
         self._remap_cache: dict[tuple[str, str], tuple[int, np.ndarray]] = {}
@@ -325,6 +328,11 @@ class RaggedAtlas:
 
         version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
 
+        feature_dataset_table = db.create_table(
+            "_feature_dataset_pairs", schema=FeatureDatasetPair
+        )
+        feature_dataset_table.create_fts_index("feature_uid")
+
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
 
         return cls(
@@ -335,6 +343,7 @@ class RaggedAtlas:
             registry_tables=registry_tables,
             dataset_table=dataset_table,
             version_table=version_table,
+            feature_dataset_table=feature_dataset_table,
             update_feature_registries=update_feature_registries,
         )
 
@@ -388,6 +397,13 @@ class RaggedAtlas:
         except Exception:
             version_table = None
 
+        try:
+            feature_dataset_table: lancedb.table.Table | None = db.open_table(
+                "_feature_dataset_pairs"
+            )
+        except Exception:
+            feature_dataset_table = None
+
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 
         return cls(
@@ -398,6 +414,7 @@ class RaggedAtlas:
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
             version_table=version_table,
+            feature_dataset_table=feature_dataset_table,
             update_feature_registries=update_feature_registries,
         )
 
@@ -518,6 +535,25 @@ class RaggedAtlas:
         (registry_table.merge_insert(on="uid").when_not_matched_insert_all().execute(new_records))
         return registry_table.count_rows() - n_before
 
+    # -- Feature-dataset index ----------------------------------------------
+
+    def add_feature_dataset_pairs(self, var_df: pl.DataFrame, dataset_uid: str) -> None:
+        """Index all (feature_uid, dataset_uid) pairs for a newly ingested dataset.
+
+        Call once per dataset after write_var_df, before or after write_remap.
+        var_df must contain a 'global_feature_uid' column.
+        No-op if this atlas has no _feature_dataset_pairs table (old atlas opened
+        via RaggedAtlas.open() before the table existed).
+        """
+        if self._feature_dataset_table is None:
+            return
+        feature_uids = var_df["global_feature_uid"].to_list()
+        pairs = pl.DataFrame({
+            "feature_uid": feature_uids,
+            "dataset_uid": [dataset_uid] * len(feature_uids),
+        })
+        self._feature_dataset_table.add(pairs)
+
     # -- Maintenance --------------------------------------------------------
 
     def optimize(self) -> None:
@@ -533,6 +569,9 @@ class RaggedAtlas:
         for table in self._registry_tables.values():
             table.optimize()
             reindex_registry(table)
+        if self._feature_dataset_table is not None:
+            self._feature_dataset_table.optimize()
+            self._feature_dataset_table.create_fts_index("feature_uid", replace=True)
 
     # -- Validation ---------------------------------------------------------
 
@@ -602,8 +641,10 @@ class RaggedAtlas:
     ) -> pl.DataFrame:
         """Find datasets that measured specific features.
 
-        Uses DuckDB to query across var_df sidecars.  See
-        :func:`~lancell.var_df.find_datasets_with_features` for details.
+        Uses the LanceDB FTS index on ``_feature_dataset_pairs`` when available,
+        falling back to DuckDB var_df scanning for old atlases that pre-date this
+        table. Note: rows added after the last FTS index build are not yet indexed;
+        call ``optimize()`` after bulk ingestion to refresh.
 
         Parameters
         ----------
@@ -618,8 +659,46 @@ class RaggedAtlas:
             One row per (zarr_group, feature) match with columns
             ``zarr_group``, ``global_feature_uid``, plus dataset metadata.
         """
+        if isinstance(feature_uids, str):
+            feature_uids = [feature_uids]
+        if self._feature_dataset_table is not None and self._has_fts_index():
+            return self._datasets_with_features_fast(feature_uids, feature_space)
         return find_datasets_with_features(
             self._store, self._dataset_table, feature_uids, feature_space
+        )
+
+    def _has_fts_index(self) -> bool:
+        return any(
+            idx.get("type") == "FTS"
+            for idx in self._feature_dataset_table.list_indices()
+        )
+
+    def _datasets_with_features_fast(
+        self, feature_uids: list[str], feature_space: str
+    ) -> pl.DataFrame:
+        from lancedb.query import MatchQuery
+
+        query_str = " ".join(feature_uids)
+        n_datasets = self._dataset_table.count_rows()
+        limit = max(len(feature_uids) * n_datasets, 1)
+
+        pairs = (
+            self._feature_dataset_table
+            .search(MatchQuery(query_str), query_type="fts")
+            .limit(limit)
+            .to_polars()
+        )
+        if pairs.is_empty():
+            return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
+
+        datasets_df = self._dataset_table.search().to_polars()
+        datasets_df = datasets_df.filter(pl.col("feature_space") == feature_space)
+
+        return (
+            pairs
+            .rename({"feature_uid": "global_feature_uid"})
+            .join(datasets_df, left_on="dataset_uid", right_on="uid", how="inner")
+            .drop("dataset_uid")
         )
 
     def _validate_registries(self) -> list[str]:

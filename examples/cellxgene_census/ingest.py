@@ -237,6 +237,7 @@ def ingest_backed(
     var_df = pl.from_pandas(adata.var.reset_index())
     var_df = var_df.with_columns(pl.Series("global_feature_uid", global_feature_uids))
     write_var_df(atlas._store, zarr_group, var_df)
+    atlas.add_feature_dataset_pairs(var_df, dataset_record.uid)
 
     # Build and write remap
     registry_table = atlas._registry_tables[FEATURE_SPACE]
