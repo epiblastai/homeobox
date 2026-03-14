@@ -10,6 +10,7 @@ corresponds to local feature index *i* in the dataset's zarr arrays.
 
 import io
 
+import duckdb
 import lancedb
 import numpy as np
 import obstore
@@ -43,6 +44,8 @@ class VarDfColumnSchema(BaseModel):
     """
 
     global_feature_uid: str
+    csc_start: int | None = None  # offset into csc/indices where this feature's cells begin
+    csc_end: int | None = None    # exclusive end offset (populated by add_csc)
 
     @classmethod
     def required_columns(cls) -> set[str]:
@@ -76,6 +79,16 @@ def var_df_path(zarr_group: str) -> str:
 
 def remap_path(zarr_group: str) -> str:
     return f"{zarr_group.rstrip('/')}/{REMAP_FILENAME}"
+
+
+def has_csc(var_df: pl.DataFrame) -> bool:
+    """Return True if *var_df* has fully populated ``csc_start`` and ``csc_end`` columns."""
+    return (
+        "csc_start" in var_df.columns
+        and "csc_end" in var_df.columns
+        and var_df["csc_start"].null_count() == 0
+        and var_df["csc_end"].null_count() == 0
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +277,194 @@ def build_remap(
             f"(run reindex_registry first). First 5: {unindexed[:5]}"
         )
     return remap
+
+
+# ---------------------------------------------------------------------------
+# Feature UID resolution
+# ---------------------------------------------------------------------------
+
+
+def resolve_feature_uids_to_global_indices(
+    registry_table: lancedb.table.Table,
+    feature_uids: list[str],
+) -> np.ndarray:
+    """Resolve feature UIDs to sorted global indices.
+
+    Parameters
+    ----------
+    registry_table:
+        A LanceDB table with ``uid`` and ``global_index`` columns.
+    feature_uids:
+        List of feature UIDs to resolve.
+
+    Returns
+    -------
+    numpy.ndarray
+        Sorted int32 array of global indices.
+
+    Raises
+    ------
+    ValueError
+        If any UID is missing from the registry, or has ``global_index = None``.
+    """
+    if not feature_uids:
+        return np.array([], dtype=np.int32)
+
+    registry_df = (
+        registry_table.search()
+        .select(["uid", "global_index"])
+        .to_polars()
+    )
+    requested = set(feature_uids)
+    registry_uids = set(registry_df["uid"].to_list())
+
+    missing = requested - registry_uids
+    if missing:
+        raise ValueError(
+            f"{len(missing)} UID(s) not found in registry. "
+            f"First 5: {sorted(missing)[:5]}"
+        )
+
+    matched = registry_df.filter(pl.col("uid").is_in(list(requested)))
+    unindexed = matched.filter(pl.col("global_index").is_null())["uid"].to_list()
+    if unindexed:
+        raise ValueError(
+            f"{len(unindexed)} UID(s) have global_index = None "
+            f"(run reindex_registry first). First 5: {unindexed[:5]}"
+        )
+
+    return matched["global_index"].to_numpy().astype(np.int32, copy=False)[
+        np.argsort(matched["global_index"].to_numpy())
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Feature search across datasets
+# ---------------------------------------------------------------------------
+
+
+def _store_uri_prefix(store: obstore.store.ObjectStore) -> str | None:
+    """Return a URI prefix that DuckDB can use to read files from *store*.
+
+    Returns ``None`` for store types DuckDB cannot reach directly (e.g.
+    MemoryStore), in which case callers should fall back to reading via
+    obstore.
+    """
+    name = type(store).__name__
+    if name == "LocalStore":
+        return str(store.prefix)
+    if name == "S3Store":
+        bucket = store.config.get("bucket", "")
+        prefix = store.prefix
+        base = f"s3://{bucket}"
+        return f"{base}/{prefix}".rstrip("/") if prefix else base
+    if name == "GCSStore":
+        bucket = store.config.get("bucket", "")
+        prefix = store.prefix
+        base = f"gs://{bucket}"
+        return f"{base}/{prefix}".rstrip("/") if prefix else base
+    return None
+
+
+def find_datasets_with_features(
+    store: obstore.store.ObjectStore,
+    dataset_table: lancedb.table.Table,
+    feature_uids: str | list[str],
+    feature_space: str,
+) -> pl.DataFrame:
+    """Find datasets that measured specific features.
+
+    Uses DuckDB to query var_df parquet sidecars directly for one or more
+    ``global_feature_uid`` values within a given feature space.  When the
+    store is local or cloud-backed (S3/GCS), DuckDB reads the parquet files
+    natively with predicate pushdown.  For other stores (e.g. MemoryStore)
+    it falls back to reading via obstore.
+
+    Parameters
+    ----------
+    store:
+        An obstore ObjectStore for reading var_df sidecars.
+    dataset_table:
+        The atlas dataset table (rows are :class:`~lancell.schema.DatasetRecord`).
+    feature_uids:
+        One or more ``global_feature_uid`` values to search for.
+    feature_space:
+        Which feature space to search within (e.g. ``"gene_expression"``).
+
+    Returns
+    -------
+    polars.DataFrame
+        One row per (zarr_group, feature) match with columns
+        ``zarr_group``, ``global_feature_uid``, plus all columns from the
+        dataset table.
+    """
+    if isinstance(feature_uids, str):
+        feature_uids = [feature_uids]
+
+    datasets_df = dataset_table.search().to_polars()
+    datasets_df = datasets_df.filter(pl.col("feature_space") == feature_space)
+    if datasets_df.is_empty():
+        return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
+
+    zarr_groups = datasets_df["zarr_group"].unique().to_list()
+    feature_list = pl.DataFrame({"uid": feature_uids})
+
+    uri_prefix = _store_uri_prefix(store)
+    if uri_prefix is not None:
+        matches = _query_var_dfs_direct(uri_prefix, zarr_groups, feature_list)
+    else:
+        matches = _query_var_dfs_via_obstore(store, zarr_groups, feature_list)
+
+    if matches.is_empty():
+        return matches
+
+    return matches.join(datasets_df, on="zarr_group", how="left")
+
+
+def _query_var_dfs_direct(
+    uri_prefix: str,
+    zarr_groups: list[str],
+    feature_list: pl.DataFrame,
+) -> pl.DataFrame:
+    """Query var_df sidecars directly via DuckDB ``read_parquet``.
+
+    DuckDB reads the parquet files natively, applying predicate pushdown on
+    ``global_feature_uid``.  The ``filename=true`` option tags each row with
+    its source file, which we join against a path→zarr_group lookup table
+    to recover dataset identity.
+    """
+    paths = [f"{uri_prefix}/{var_df_path(zg)}" for zg in zarr_groups]
+    path_map = pl.DataFrame({"filepath": paths, "zarr_group": zarr_groups})
+    paths_sql = "[" + ", ".join(f"'{p}'" for p in paths) + "]"
+
+    return duckdb.sql(f"""
+        SELECT DISTINCT m.zarr_group, v.global_feature_uid
+        FROM read_parquet({paths_sql}, filename=true) v
+        JOIN path_map m ON v.filename = m.filepath
+        SEMI JOIN feature_list f ON v.global_feature_uid = f.uid
+    """).pl()
+
+
+def _query_var_dfs_via_obstore(
+    store: obstore.store.ObjectStore,
+    zarr_groups: list[str],
+    feature_list: pl.DataFrame,
+) -> pl.DataFrame:
+    """Fallback: read sidecars via obstore, then query with DuckDB."""
+    var_dfs: list[pl.DataFrame] = []
+    for zg in zarr_groups:
+        vdf = read_var_df(store, zg)
+        vdf = vdf.select("global_feature_uid").with_columns(
+            pl.lit(zg).alias("zarr_group")
+        )
+        var_dfs.append(vdf)
+
+    all_var = pl.concat(var_dfs)
+    return duckdb.sql("""
+        SELECT DISTINCT v.zarr_group, v.global_feature_uid
+        FROM all_var v
+        SEMI JOIN feature_list f ON v.global_feature_uid = f.uid
+    """).pl()
 
 
 # ---------------------------------------------------------------------------

@@ -1,9 +1,10 @@
 """Protocols for extensible lancell components."""
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import anndata as ad
+    import numpy as np
     import polars as pl
 
     from lancell.atlas import PointerFieldInfo, RaggedAtlas
@@ -25,4 +26,6 @@ class Reconstructor(Protocol):
         pf: "PointerFieldInfo",
         spec: "ZarrGroupSpec",
         layer_overrides: "list[str] | None" = None,
+        feature_join: "Literal['union', 'intersection']" = "union",
+        wanted_globals: "np.ndarray | None" = None,
     ) -> "ad.AnnData": ...

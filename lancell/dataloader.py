@@ -1,0 +1,497 @@
+"""Fast batch dataloader for ML training from lancell atlases.
+
+:class:`CellDataset` is a pure data-access object: it resolves zarr
+remaps and exposes ``__getitems__`` for batched async I/O.  Batch
+planning (shuffle, worker-locality, balancing) lives in
+:mod:`lancell.sampler`.
+
+Designed for the ``query -> CellDataset + Sampler -> SparseBatch ->
+collate_fn -> GPU`` pipeline.  Reader initialisation is deferred to the
+worker process, making the dataset safely picklable for spawn-based
+multiprocessing.
+
+Usage::
+
+    dataset = atlas.query().to_cell_dataset(metadata_columns=["cell_type"])
+    sampler = CellSampler(dataset.groups_np, batch_size=256,
+                          shuffle=True, seed=42, num_workers=4)
+
+    for epoch in range(n_epochs):
+        sampler.set_epoch(epoch)
+        loader = make_loader(dataset, sampler)
+        for batch in loader:
+            X = sparse_to_dense_collate(batch)["X"]
+"""
+
+import asyncio
+import threading
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+import numpy as np
+import polars as pl
+
+if TYPE_CHECKING:
+    from lancell.atlas import RaggedAtlas
+from lancell.batch_array import BatchAsyncArray
+from lancell.group_reader import GroupReader
+from lancell.group_specs import PointerKind, get_spec
+from lancell.reconstruction import _prepare_sparse_cells
+
+
+def _identity_collate(x):
+    return x
+
+
+@dataclass
+class SparseBatch:
+    """Minimal sparse batch for ML training.
+
+    Represents a batch of cells as flat CSR-style arrays, avoiding
+    the overhead of full AnnData/scipy/var DataFrame construction.
+
+    Attributes
+    ----------
+    indices:
+        int32, flat global feature indices (remapped from local).
+    values:
+        Native dtype, flat expression values.
+    offsets:
+        int64, CSR-style indptr (length = n_cells + 1).
+    n_features:
+        Global feature space width (registry size).
+    metadata:
+        Optional dict of obs columns as numpy arrays, aligned to cells.
+    """
+
+    indices: np.ndarray
+    values: np.ndarray
+    offsets: np.ndarray
+    n_features: int
+    metadata: dict[str, np.ndarray] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Async primitives
+# ---------------------------------------------------------------------------
+
+
+async def _take_group_sparse(
+    index_reader: BatchAsyncArray,
+    layer_reader: BatchAsyncArray,
+    remap: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Read indices and values for one zarr group concurrently.
+
+    Dispatches two concurrent ``run_in_executor`` calls (indices + values)
+    for maximum I/O overlap with GIL released.
+    """
+    (flat_indices, lengths), (flat_values, _) = await asyncio.gather(
+        index_reader.read_ranges(starts, ends),
+        layer_reader.read_ranges(starts, ends),
+    )
+    remapped = remap[flat_indices.astype(np.intp)]
+    mask = remapped >= 0
+    if not mask.all():
+        cell_ids = np.repeat(np.arange(len(lengths)), lengths)
+        remapped = remapped[mask]
+        flat_values = flat_values[mask]
+        lengths = np.bincount(cell_ids[mask], minlength=len(lengths)).astype(np.int64)
+    return remapped, flat_values, lengths
+
+
+async def _take_sparse(
+    batch_cell_indices: np.ndarray,
+    groups: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    unique_groups: list[str],
+    local_readers: dict[str, tuple[BatchAsyncArray, BatchAsyncArray]],
+    group_readers: dict[str, GroupReader],
+    n_features: int,
+    metadata_arrays: dict[str, np.ndarray] | None,
+    index_array_name: str,
+    layer: str,
+) -> SparseBatch:
+    """Fetch a sparse batch, dispatching across zarr groups concurrently.
+
+    Readers are created lazily on first access and cached in
+    ``local_readers`` for the lifetime of the worker process.
+    """
+    batch_groups = groups[batch_cell_indices]
+    batch_starts = starts[batch_cell_indices]
+    batch_ends = ends[batch_cell_indices]
+
+    # Sort by group for ordered concatenation
+    sort_order = np.argsort(batch_groups, kind="stable")
+    batch_groups = batch_groups[sort_order]
+    batch_starts = batch_starts[sort_order]
+    batch_ends = batch_ends[sort_order]
+
+    # Dispatch one task per unique group; create readers lazily
+    tasks = []
+    for gid in np.unique(batch_groups):
+        mask = batch_groups == gid
+        zg = unique_groups[gid]
+        if zg not in local_readers:
+            gr = group_readers[zg]
+            local_readers[zg] = (
+                gr.get_array_reader(index_array_name),
+                gr.get_array_reader(f"csr/layers/{layer}"),
+            )
+        index_reader, layer_reader = local_readers[zg]
+        tasks.append(
+            _take_group_sparse(
+                index_reader,
+                layer_reader,
+                group_readers[zg].get_remap(),
+                batch_starts[mask],
+                batch_ends[mask],
+            )
+        )
+
+    results = await asyncio.gather(*tasks)
+
+    # Assemble: concatenate in group order
+    all_indices = []
+    all_values = []
+    all_lengths = []
+    for remapped_indices, values, lengths in results:
+        all_indices.append(remapped_indices)
+        all_values.append(values)
+        all_lengths.append(lengths)
+
+    flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
+    flat_values = np.concatenate(all_values) if all_values else np.array([], dtype=np.float32)
+    lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
+
+    # Build CSR-style offsets
+    offsets = np.zeros(len(batch_cell_indices) + 1, dtype=np.int64)
+    np.cumsum(lengths, out=offsets[1:])
+
+    # Metadata: reorder to match sorted-by-group cell order
+    metadata = None
+    if metadata_arrays:
+        sorted_cell_indices = batch_cell_indices[sort_order]
+        metadata = {col: arr[sorted_cell_indices] for col, arr in metadata_arrays.items()}
+
+    return SparseBatch(
+        indices=flat_indices,
+        values=flat_values,
+        offsets=offsets,
+        n_features=n_features,
+        metadata=metadata,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CellDataset
+# ---------------------------------------------------------------------------
+
+
+class CellDataset:
+    """Map-style dataset for fast batch access over an atlas query.
+
+    Pure data-access object: resolves zarr remaps and exposes
+    :meth:`__getitems__` for batched async I/O.  Batch planning lives in
+    :mod:`lancell.sampler`.  Use :func:`make_loader` to wire dataset and
+    sampler into a ``torch.utils.data.DataLoader``.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas to read from.
+    cells_pl:
+        Polars DataFrame of cell records (from a query).
+    feature_space:
+        Which feature space to read.
+    layer:
+        Which layer to read within the feature space.
+    metadata_columns:
+        Obs column names to include as metadata on each SparseBatch.
+    wanted_globals:
+        Optional sorted int64 array of global feature indices to keep.
+        When set, :attr:`n_features` reflects the filtered count and
+        batch ``indices`` are bounded by that value.
+    """
+
+    def __init__(
+        self,
+        atlas: "RaggedAtlas",
+        cells_pl: pl.DataFrame,
+        feature_space: str = "gene_expression",
+        layer: str = "counts",
+        metadata_columns: list[str] | None = None,
+        wanted_globals: np.ndarray | None = None,
+    ) -> None:
+        # Resolve feature space
+        pf = atlas._pointer_fields[feature_space]
+        spec = get_spec(feature_space)
+
+        if spec.pointer_kind is not PointerKind.SPARSE:
+            raise NotImplementedError(
+                f"CellDataset only supports sparse feature spaces, "
+                f"got {spec.pointer_kind.value} for '{feature_space}'"
+            )
+
+        if len(spec.required_arrays) != 1:
+            raise NotImplementedError(
+                f"CellDataset requires exactly 1 index array, "
+                f"got {len(spec.required_arrays)} for '{feature_space}'"
+            )
+        self._index_array_name = spec.required_arrays[0].array_name
+        self._layer = layer
+
+        # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
+        # Workers reconstruct the zarr root lazily from this store.
+        self._store = atlas._store
+
+        # Unnest pointers and filter empty cells
+        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
+        groups = sorted(groups)  # Deterministic group ordering
+
+        self._n_cells = cells_pl.height
+        if self._n_cells == 0:
+            self.cells_pl = cells_pl
+            self._unique_groups: list[str] = []
+            self._groups_np = np.array([], dtype=np.int32)
+            self._starts = np.array([], dtype=np.int64)
+            self._ends = np.array([], dtype=np.int64)
+            self._group_readers: dict[str, GroupReader] = {}
+            self._n_features = len(wanted_globals) if wanted_globals is not None else 0
+            self._metadata_arrays: dict[str, np.ndarray] | None = None
+            self._local_readers: dict | None = None
+            self._loop: asyncio.AbstractEventLoop | None = None
+            self._loop_thread: threading.Thread | None = None
+            return
+
+        # Store the post-prepare DataFrame (has _zg, _start, _end + obs cols)
+        self.cells_pl = cells_pl
+
+        # Map group strings to integer ids for fast numpy operations
+        self._unique_groups = groups
+        group_to_id = {g: i for i, g in enumerate(groups)}
+        self._groups_np = np.array(
+            [group_to_id[v] for v in cells_pl["_zg"].to_list()], dtype=np.int32
+        )
+        self._starts = cells_pl["_start"].to_numpy().astype(np.int64)
+        self._ends = cells_pl["_end"].to_numpy().astype(np.int64)
+
+        # Per-group: load remap (local->global), wrap in GroupReader for workers
+        self._group_readers: dict[str, GroupReader] = {}
+        for zg in groups:
+            raw_remap = atlas._get_remap(zg, feature_space)
+            if wanted_globals is not None:
+                positions = np.searchsorted(wanted_globals, raw_remap).astype(np.int32)
+                mask = np.isin(raw_remap, wanted_globals)
+                positions[~mask] = -1
+                effective_remap = positions
+            else:
+                effective_remap = raw_remap
+            self._group_readers[zg] = GroupReader.for_worker(
+                zarr_group=zg,
+                feature_space=feature_space,
+                store=self._store,
+                remap=effective_remap,
+            )
+
+        # Global feature count from registry (stable across batches/epochs)
+        if wanted_globals is not None:
+            self._n_features = len(wanted_globals)
+        else:
+            registry_table = atlas._registry_tables[feature_space]
+            self._n_features = registry_table.count_rows()
+
+        # Extract metadata as numpy arrays
+        self._metadata_arrays = None
+        if metadata_columns:
+            self._metadata_arrays = {}
+            for col in metadata_columns:
+                if col in cells_pl.columns:
+                    self._metadata_arrays[col] = cells_pl[col].to_numpy()
+
+        # Worker-local state — initialized lazily in _ensure_initialized()
+        self._local_readers = None
+        self._loop = None
+        self._loop_thread = None
+
+    @property
+    def n_cells(self) -> int:
+        return self._n_cells
+
+    @property
+    def n_features(self) -> int:
+        return self._n_features
+
+    @property
+    def groups_np(self) -> np.ndarray:
+        """Integer group id for each cell (length = n_cells)."""
+        return self._groups_np
+
+    def __getitems__(self, cell_indices: list[int]) -> SparseBatch:
+        """Fetch a batch of cells by index as a :class:`SparseBatch`.
+
+        Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
+        indices (PyTorch ≥ 2.0 ``__getitems__`` protocol).
+
+        Parameters
+        ----------
+        cell_indices:
+            List of 0-based cell indices into this dataset's cell arrays.
+        """
+        self._ensure_initialized()
+        future = asyncio.run_coroutine_threadsafe(
+            _take_sparse(
+                np.array(cell_indices, dtype=np.int64),
+                self._groups_np,
+                self._starts,
+                self._ends,
+                self._unique_groups,
+                self._local_readers,
+                self._group_readers,
+                self._n_features,
+                self._metadata_arrays,
+                self._index_array_name,
+                self._layer,
+            ),
+            self._loop,
+        )
+        return future.result()
+
+    def __getitem__(self, idx: int) -> SparseBatch:
+        """Fetch a single cell as a :class:`SparseBatch`."""
+        return self.__getitems__([idx])
+
+    def _ensure_initialized(self) -> None:
+        """Start the background event loop and reader cache if not yet done.
+
+        Safe to call multiple times; subsequent calls are no-ops.
+        Called automatically on the first ``__getitem__`` in each process,
+        including spawned worker processes.
+        """
+        if self._local_readers is not None:
+            return
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        self._loop_thread.start()
+        self._local_readers = {}
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        # Drop worker-local state so the dataset is safely picklable for spawn.
+        # Workers call _ensure_initialized() on their first __getitems__.
+        # GroupReader.__getstate__ zeroes its own transient zarr state.
+        state["_local_readers"] = None
+        state["_loop"] = None
+        state["_loop_thread"] = None
+        return state
+
+    def __setstate__(self, state: dict) -> None:
+        self.__dict__.update(state)
+
+    def __del__(self) -> None:
+        if hasattr(self, "_loop") and self._loop is not None and not self._loop.is_closed():
+            self._loop.call_soon_threadsafe(self._loop.stop)
+            if self._loop_thread is not None:
+                self._loop_thread.join(timeout=5)
+            self._loop.close()
+
+
+# ---------------------------------------------------------------------------
+# Collate functions
+# ---------------------------------------------------------------------------
+
+
+def sparse_to_dense_collate(batch: SparseBatch) -> dict:
+    """Convert a SparseBatch to a dense float32 tensor via scatter.
+
+    Returns ``{"X": dense_tensor, **metadata_tensors}``.
+    """
+    import torch
+
+    n_cells = len(batch.offsets) - 1
+    X = torch.zeros(n_cells, batch.n_features, dtype=torch.float32)
+
+    lengths = np.diff(batch.offsets)
+    row_indices = np.repeat(np.arange(n_cells), lengths)
+
+    X[row_indices, batch.indices] = torch.from_numpy(batch.values.astype(np.float32))
+
+    result: dict = {"X": X}
+    if batch.metadata:
+        for col, arr in batch.metadata.items():
+            if arr.dtype.kind in ("i", "u", "f"):
+                result[col] = torch.from_numpy(arr)
+            else:
+                result[col] = arr
+    return result
+
+
+def sparse_to_csr_collate(batch: SparseBatch) -> dict:
+    """Convert a SparseBatch to a sparse CSR tensor.
+
+    Returns ``{"X": sparse_csr_tensor, **metadata_tensors}``.
+    """
+    import torch
+
+    n_cells = len(batch.offsets) - 1
+    X = torch.sparse_csr_tensor(
+        crow_indices=torch.from_numpy(batch.offsets),
+        col_indices=torch.from_numpy(batch.indices.astype(np.int64)),
+        values=torch.from_numpy(batch.values.astype(np.float32)),
+        size=(n_cells, batch.n_features),
+    )
+
+    result: dict = {"X": X}
+    if batch.metadata:
+        for col, arr in batch.metadata.items():
+            if arr.dtype.kind in ("i", "u", "f"):
+                result[col] = torch.from_numpy(arr)
+            else:
+                result[col] = arr
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Torch integration
+# ---------------------------------------------------------------------------
+
+
+def make_loader(dataset: CellDataset, sampler, **kwargs):
+    """Create a DataLoader with the right defaults for CellDataset.
+
+    Uses ``batch_sampler`` so PyTorch calls ``dataset.__getitems__(indices)``
+    for each batch yielded by ``sampler``.  Defaults:
+    ``collate_fn=_identity_collate``, ``num_workers=sampler.num_workers``,
+    ``multiprocessing_context="spawn"``, ``persistent_workers=False``.
+    Any of these can be overridden via ``kwargs``.
+
+    Parameters
+    ----------
+    dataset:
+        A :class:`CellDataset` instance.
+    sampler:
+        A :class:`~lancell.sampler.CellSampler` or
+        :class:`~lancell.sampler.BalancedCellSampler` instance.
+    **kwargs:
+        Forwarded to ``torch.utils.data.DataLoader``, overriding defaults.
+
+    Returns
+    -------
+    torch.utils.data.DataLoader
+    """
+    from torch.utils.data import DataLoader
+
+    defaults = dict(
+        batch_sampler=sampler,
+        num_workers=sampler.num_workers,
+        collate_fn=_identity_collate,
+        multiprocessing_context="spawn",
+        persistent_workers=False,
+    )
+    defaults.update(kwargs)
+    if defaults["num_workers"] == 0 and "multiprocessing_context" not in kwargs:
+        defaults["multiprocessing_context"] = None
+    return DataLoader(dataset, **defaults)

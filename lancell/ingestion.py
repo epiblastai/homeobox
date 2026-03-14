@@ -36,6 +36,7 @@ def add_from_anndata(
     chunk_size: int = 4096,
     shard_size: int = 65536,
     dataset_record: DatasetRecord | None = None,
+    use_bitpacking: bool = False,
 ) -> int:
     """Ingest an AnnData into the atlas.
 
@@ -69,6 +70,9 @@ def add_from_anndata(
         Optional pre-built dataset record. If ``None``, a default
         :class:`DatasetRecord` is created. Pass a subclassed record
         for richer dataset metadata.
+    use_bitpacking:
+        If True, use BP-128 bitpacking instead of zstd for integer
+        arrays (indices and count layers). Float arrays still use zstd.
 
     Returns
     -------
@@ -131,7 +135,8 @@ def add_from_anndata(
     # Write zarr arrays
     if spec.pointer_kind is PointerKind.SPARSE:
         starts, ends = write_sparse_zarr(
-            atlas, adata, zarr_group, layer_name, chunk_size, shard_size
+            atlas, adata, zarr_group, layer_name, chunk_size, shard_size,
+            use_bitpacking=use_bitpacking,
         )
     else:
         write_dense_zarr(atlas, adata, zarr_group, layer_name, chunk_size, shard_size)
@@ -150,6 +155,7 @@ def add_from_anndata(
                 zarr_group=zarr_group,
                 start=int(starts[i]),
                 end=int(ends[i]),
+                zarr_row=i,
             )
         else:
             pointer = DenseZarrPointer(
@@ -185,8 +191,16 @@ def write_sparse_zarr(
     layer_name: str,
     chunk_size: int,
     shard_size: int,
+    use_bitpacking: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Write sparse (CSR) data to zarr arrays. Returns (starts, ends)."""
+    """Write sparse (CSR) data to zarr arrays. Returns (starts, ends).
+
+    Parameters
+    ----------
+    use_bitpacking
+        If True, use BP-128 bitpacking for indices (with delta) and
+        integer count layers instead of the default zstd codec.
+    """
     csr = sp.csr_matrix(adata.X)
     flat_indices = csr.indices.astype(np.uint32)
     flat_values = csr.data
@@ -196,19 +210,32 @@ def write_sparse_zarr(
 
     group = atlas._root.create_group(zarr_group)
 
-    group.create_array(
+    indices_kwargs: dict = {}
+    layer_kwargs: dict = {}
+    if use_bitpacking:
+        from lancell.codecs.bitpacking import BitpackingCodec
+
+        indices_kwargs["compressors"] = BitpackingCodec(transform="delta")
+        # Only use bitpacking for integer layers
+        if np.issubdtype(flat_values.dtype, np.integer):
+            layer_kwargs["compressors"] = BitpackingCodec(transform="none")
+
+    csr_group = group.create_group("csr")
+    csr_group.create_array(
         "indices",
         data=flat_indices,
         chunks=(chunk_size,),
         shards=(shard_size,),
+        **indices_kwargs,
     )
 
-    layers = group.create_group("layers")
+    layers = csr_group.create_group("layers")
     layers.create_array(
         layer_name,
         data=flat_values,
         chunks=(chunk_size,),
         shards=(shard_size,),
+        **layer_kwargs,
     )
 
     return starts, ends

@@ -14,6 +14,7 @@ class SparseZarrPointer(LanceModel):
     zarr_group: str
     start: int
     end: int
+    zarr_row: int = 0  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
     @model_validator(mode="after")
     def _require_sparse_feature_space(self):
@@ -53,6 +54,11 @@ class DenseZarrPointer(LanceModel):
 ZarrPointer = SparseZarrPointer | DenseZarrPointer
 
 
+def make_uid() -> str:
+    """Generate a random 16-character hex uid."""
+    return uuid.uuid4().hex[:16]
+
+
 class LancellBaseSchema(LanceModel):
     """
     Base schema for all lancell datasets. The only requirements are a uid string
@@ -60,7 +66,7 @@ class LancellBaseSchema(LanceModel):
     into a feature space.
     """
 
-    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    uid: str = Field(default_factory=make_uid)
     dataset_uid: str = ""
 
     def __init_subclass__(cls, **kwargs):
@@ -117,17 +123,40 @@ class FeatureBaseSchema(LanceModel):
             reassigned on registry rebuild — use uid for durable references.
     """
 
-    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    uid: str = Field(default_factory=make_uid)
     global_index: int | None = None
 
 
 class DatasetRecord(LanceModel):
     """Metadata for a single ingested dataset."""
 
-    uid: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    uid: str = Field(default_factory=make_uid)
     zarr_group: str
     feature_space: str  # FeatureSpace value
     n_cells: int
+    created_at: str = Field(
+        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+    )
+
+
+class FeatureDatasetPair(LanceModel):
+    """Inverted index entry mapping a feature UID to the dataset that measured it."""
+
+    feature_uid: str   # from any feature space registry (globally unique)
+    dataset_uid: str   # from DatasetRecord.uid
+
+
+class AtlasVersionRecord(LanceModel):
+    """One row per atlas snapshot created by RaggedAtlas.snapshot()."""
+
+    version: int
+    cell_table_name: str
+    cell_table_version: int
+    dataset_table_name: str
+    dataset_table_version: int
+    registry_table_names: str    # JSON: {"feature_space": "table_name", ...}
+    registry_table_versions: str  # JSON: {"feature_space": version_int, ...}
+    total_cells: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
