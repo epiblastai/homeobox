@@ -92,7 +92,7 @@ def _(os):
         )
 
     atlas_csc = _open("s3://epiblast/ragged_atlases/cellxgene_mini_csc/")
-    atlas_csr = _open("s3://epiblast/ragged_atlases/cellxgene_mini_feature_index/")
+    atlas_csr = _open("s3://epiblast/ragged_atlases/cellxgene_mini_csr/")
     return atlas_csc, atlas_csr
 
 
@@ -102,7 +102,7 @@ def _(atlas_csc, atlas_csr, mo):
     _n_cells_csr = atlas_csr.cell_table.count_rows()
     _n_genes = atlas_csc._registry_tables["gene_expression"].count_rows()
     _groups = atlas_csc.list_datasets()["zarr_group"].to_list()
-    _csc_ok = [atlas_csc._has_csc(g) for g in _groups]
+    _csc_ok = [atlas_csc._get_group_reader(g, "gene_expression").has_csc for g in _groups]
 
     mo.md(f"""
     ## Atlas Stats
@@ -382,7 +382,7 @@ def _(mo):
     ### Pattern 2: Feature filter + cell type restriction
 
     `.features()` composes naturally with `.where()` and `.limit()`.
-    The CSC path still applies when `atlas._has_csc()` is true for a group.
+    The CSC path still applies when `atlas._get_group_reader(zg, "gene_expression").has_csc` is true for a group.
     """)
     return
 
@@ -567,7 +567,7 @@ def _(atlas_csc, atlas_csr, mo):
     ```
 
     `csc/indices[csc_start[f] : csc_end[f]]` = zarr_rows of cells expressing gene *f*.
-    `atlas._has_csc(zarr_group)` checks whether `var.parquet` has non-null `csc_start`/`csc_end`.
+    `atlas._get_group_reader(zarr_group, "gene_expression").has_csc` checks whether `var.parquet` has non-null `csc_start`/`csc_end`.
     The feature-filtered reconstructor (`FeatureCSCReconstructor`) checks this per group and
     falls back to the CSR path for any group that lacks CSC data.
     """)

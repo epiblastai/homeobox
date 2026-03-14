@@ -13,6 +13,7 @@ from types import UnionType
 from typing import TYPE_CHECKING, Union, get_args, get_origin
 
 if TYPE_CHECKING:
+    from lancell.group_reader import GroupReader
     from lancell.query import AtlasQuery
 
 import anndata as ad
@@ -23,7 +24,6 @@ import pandas as pd
 import polars as pl
 import zarr
 
-from lancell.batch_array import BatchAsyncArray
 from lancell.group_specs import PointerKind, get_spec
 from lancell.schema import (
     AtlasVersionRecord,
@@ -35,14 +35,10 @@ from lancell.schema import (
     SparseZarrPointer,
 )
 from lancell.var_df import (
-    build_remap,
     find_datasets_with_features,
-    has_csc,
-    read_remap_if_fresh,
     read_var_df,
     reindex_registry,
     validate_var_df,
-    write_remap,
 )
 
 # ---------------------------------------------------------------------------
@@ -258,10 +254,8 @@ class RaggedAtlas:
         self._version_table = version_table
         self._feature_dataset_table = feature_dataset_table
 
-        # Instance-level caches (version-aware for remaps)
-        self._remap_cache: dict[tuple[str, str], tuple[int, np.ndarray]] = {}
-        self._batch_reader_cache: dict[tuple[str, str], BatchAsyncArray] = {}
-        self._var_df_cache: dict[str, pl.DataFrame] = {}
+        # Instance-level cache: one GroupReader per (zarr_group, feature_space)
+        self._group_readers: dict[tuple[str, str], "GroupReader"] = {}
 
         # Validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
@@ -420,56 +414,25 @@ class RaggedAtlas:
 
     # -- Store helpers ------------------------------------------------------
 
+    def _get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
+        """Return (cached) GroupReader for the given zarr_group + feature_space."""
+        from lancell.group_reader import GroupReader
+
+        key = (zarr_group, feature_space)
+        if key not in self._group_readers:
+            self._group_readers[key] = GroupReader.from_atlas_root(
+                zarr_group=zarr_group,
+                feature_space=feature_space,
+                root=self._root,
+                store=self._store,
+                registry_table=self._registry_tables.get(feature_space),
+                read_only=self._root.store.read_only,
+            )
+        return self._group_readers[key]
+
     def _get_remap(self, zarr_group: str, feature_space: str) -> np.ndarray:
-        """Load remap, recomputing and saving if the registry version has changed.
-
-        Checks the registry table version on every call.  If the cached remap
-        was built against the current version it is returned immediately;
-        otherwise the remap is rebuilt from the var_df sidecar and persisted.
-        """
-        registry_table = self._registry_tables[feature_space]
-        current_version = registry_table.version
-        cache_key = (zarr_group, feature_space)
-
-        cached_entry = self._remap_cache.get(cache_key)
-        if cached_entry is not None:
-            cached_version, cached_remap = cached_entry
-            if cached_version == current_version:
-                return cached_remap
-
-        # In-memory cache miss or stale — try the on-disk remap
-        group = self._root[zarr_group]
-        disk_remap = read_remap_if_fresh(self._store, group, current_version)
-        if disk_remap is not None:
-            self._remap_cache[cache_key] = (current_version, disk_remap)
-            return disk_remap
-
-        # Rebuild from var_df + registry
-        var_df = self._get_var_df(zarr_group)
-        remap = build_remap(var_df, registry_table)
-        if not self._root.store.read_only:
-            write_remap(self._store, group, remap, registry_version=current_version)
-        self._remap_cache[cache_key] = (current_version, remap)
-        return remap
-
-    def _get_var_df(self, zarr_group: str) -> pl.DataFrame:
-        """Load and cache var_df for a zarr group."""
-        if zarr_group not in self._var_df_cache:
-            self._var_df_cache[zarr_group] = read_var_df(self._store, zarr_group)
-        return self._var_df_cache[zarr_group]
-
-    def _has_csc(self, zarr_group: str) -> bool:
-        """Return True if this zarr group has CSC data (csc_start/csc_end in var.parquet)."""
-        return has_csc(self._get_var_df(zarr_group))
-
-    def _get_batch_reader(self, zarr_group: str, array_name: str) -> BatchAsyncArray:
-        """Get a cached BatchAsyncArray reader for a zarr array."""
-        cache_key = (zarr_group, array_name)
-        reader = self._batch_reader_cache.get(cache_key)
-        if reader is None:
-            reader = BatchAsyncArray.from_array(self._root[f"{zarr_group}/{array_name}"])
-            self._batch_reader_cache[cache_key] = reader
-        return reader
+        """Thin wrapper around GroupReader.get_remap for callers that predate GroupReader."""
+        return self._get_group_reader(zarr_group, feature_space).get_remap()
 
     # -- Query entry point --------------------------------------------------
 

@@ -309,8 +309,9 @@ class SparseCSRReconstructor:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
             ends = group_cells["_end"].to_numpy().astype(np.int64)
-            idx_reader = atlas._get_batch_reader(zg, index_array_name)
-            lyr_readers = [atlas._get_batch_reader(zg, f"csr/layers/{ln}") for ln in layers_to_read]
+            gr = atlas._get_group_reader(zg, pf.feature_space)
+            idx_reader = gr.get_array_reader(index_array_name)
+            lyr_readers = [gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read]
             group_data.append((zg, group_cells, starts, ends, idx_reader, lyr_readers))
 
         # Dispatch all groups concurrently
@@ -436,7 +437,8 @@ class DenseReconstructor:
             positions = group_cells["_pos"].to_numpy().astype(np.int64)
             starts = positions
             ends = positions + 1
-            readers = [atlas._get_batch_reader(zg, an) for an in array_names]
+            gr = atlas._get_group_reader(zg, pf.feature_space)
+            readers = [gr.get_array_reader(an) for an in array_names]
             group_data.append((zg, group_cells, starts, ends, offset, readers))
             offset += len(positions)
 
@@ -544,10 +546,11 @@ class FeatureCSCReconstructor:
 
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
+            gr = atlas._get_group_reader(zg, spec.feature_space)
 
-            if atlas._has_csc(zg):
-                var_df = atlas._get_var_df(zg)
-                remap = atlas._get_remap(zg, spec.feature_space)
+            if gr.has_csc:
+                var_df = gr.var_df
+                remap = gr.get_remap()
 
                 # Build global_index -> local_index inverse map
                 remap_inv = np.full(
@@ -584,9 +587,9 @@ class FeatureCSCReconstructor:
 
                 starts = np.array(csc_starts_list, dtype=np.int64)
                 ends = np.array(csc_ends_list, dtype=np.int64)
-                idx_reader = atlas._get_batch_reader(zg, "csc/indices")
+                idx_reader = gr.get_array_reader("csc/indices")
                 lyr_readers = [
-                    atlas._get_batch_reader(zg, f"csc/layers/{ln}") for ln in layers_to_read
+                    gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read
                 ]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
                 group_info.append(
@@ -601,9 +604,9 @@ class FeatureCSCReconstructor:
             else:
                 starts = group_cells["_start"].to_numpy().astype(np.int64)
                 ends = group_cells["_end"].to_numpy().astype(np.int64)
-                idx_reader = atlas._get_batch_reader(zg, csr_index_name)
+                idx_reader = gr.get_array_reader(csr_index_name)
                 lyr_readers = [
-                    atlas._get_batch_reader(zg, f"csr/layers/{ln}") for ln in layers_to_read
+                    gr.get_array_reader(f"csr/layers/{ln}") for ln in layers_to_read
                 ]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
                 group_info.append(

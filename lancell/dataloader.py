@@ -34,6 +34,7 @@ import polars as pl
 if TYPE_CHECKING:
     from lancell.atlas import RaggedAtlas
 from lancell.batch_array import BatchAsyncArray
+from lancell.group_reader import GroupReader
 from lancell.group_specs import PointerKind, get_spec
 from lancell.reconstruction import _prepare_sparse_cells
 
@@ -108,10 +109,9 @@ async def _take_sparse(
     ends: np.ndarray,
     unique_groups: list[str],
     local_readers: dict[str, tuple[BatchAsyncArray, BatchAsyncArray]],
-    remaps: dict[str, np.ndarray],
+    group_readers: dict[str, GroupReader],
     n_features: int,
     metadata_arrays: dict[str, np.ndarray] | None,
-    zarr_root,
     index_array_name: str,
     layer: str,
 ) -> SparseBatch:
@@ -136,16 +136,17 @@ async def _take_sparse(
         mask = batch_groups == gid
         zg = unique_groups[gid]
         if zg not in local_readers:
+            gr = group_readers[zg]
             local_readers[zg] = (
-                BatchAsyncArray.from_array(zarr_root[f"{zg}/{index_array_name}"]),
-                BatchAsyncArray.from_array(zarr_root[f"{zg}/csr/layers/{layer}"]),
+                gr.get_array_reader(index_array_name),
+                gr.get_array_reader(f"csr/layers/{layer}"),
             )
         index_reader, layer_reader = local_readers[zg]
         tasks.append(
             _take_group_sparse(
                 index_reader,
                 layer_reader,
-                remaps[zg],
+                group_readers[zg].get_remap(),
                 batch_starts[mask],
                 batch_ends[mask],
             )
@@ -258,13 +259,12 @@ class CellDataset:
             self._groups_np = np.array([], dtype=np.int32)
             self._starts = np.array([], dtype=np.int64)
             self._ends = np.array([], dtype=np.int64)
-            self._remaps: dict[str, np.ndarray] = {}
+            self._group_readers: dict[str, GroupReader] = {}
             self._n_features = len(wanted_globals) if wanted_globals is not None else 0
             self._metadata_arrays: dict[str, np.ndarray] | None = None
             self._local_readers: dict | None = None
             self._loop: asyncio.AbstractEventLoop | None = None
             self._loop_thread: threading.Thread | None = None
-            self._zarr_root = None
             return
 
         # Store the post-prepare DataFrame (has _zg, _start, _end + obs cols)
@@ -279,17 +279,23 @@ class CellDataset:
         self._starts = cells_pl["_start"].to_numpy().astype(np.int64)
         self._ends = cells_pl["_end"].to_numpy().astype(np.int64)
 
-        # Per-group: load remap (local->global)
-        self._remaps = {}
+        # Per-group: load remap (local->global), wrap in GroupReader for workers
+        self._group_readers: dict[str, GroupReader] = {}
         for zg in groups:
             raw_remap = atlas._get_remap(zg, feature_space)
             if wanted_globals is not None:
                 positions = np.searchsorted(wanted_globals, raw_remap).astype(np.int32)
                 mask = np.isin(raw_remap, wanted_globals)
                 positions[~mask] = -1
-                self._remaps[zg] = positions
+                effective_remap = positions
             else:
-                self._remaps[zg] = raw_remap
+                effective_remap = raw_remap
+            self._group_readers[zg] = GroupReader.for_worker(
+                zarr_group=zg,
+                feature_space=feature_space,
+                store=self._store,
+                remap=effective_remap,
+            )
 
         # Global feature count from registry (stable across batches/epochs)
         if wanted_globals is not None:
@@ -310,7 +316,6 @@ class CellDataset:
         self._local_readers = None
         self._loop = None
         self._loop_thread = None
-        self._zarr_root = None
 
     @property
     def n_cells(self) -> int:
@@ -345,10 +350,9 @@ class CellDataset:
                 self._ends,
                 self._unique_groups,
                 self._local_readers,
-                self._remaps,
+                self._group_readers,
                 self._n_features,
                 self._metadata_arrays,
-                self._zarr_root,
                 self._index_array_name,
                 self._layer,
             ),
@@ -369,9 +373,6 @@ class CellDataset:
         """
         if self._local_readers is not None:
             return
-        import zarr
-
-        self._zarr_root = zarr.open_group(zarr.storage.ObjectStore(self._store), mode="r")
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._loop_thread.start()
@@ -381,10 +382,10 @@ class CellDataset:
         state = self.__dict__.copy()
         # Drop worker-local state so the dataset is safely picklable for spawn.
         # Workers call _ensure_initialized() on their first __getitems__.
+        # GroupReader.__getstate__ zeroes its own transient zarr state.
         state["_local_readers"] = None
         state["_loop"] = None
         state["_loop_thread"] = None
-        state["_zarr_root"] = None
         return state
 
     def __setstate__(self, state: dict) -> None:
