@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
+import zarr
 
 from lancell.batch_array import BatchArray
 from lancell.var_df import read_var_df, write_var_df
@@ -114,8 +115,9 @@ def add_csc(
     csc_start = np.searchsorted(sorted_features, feature_range, side="left").astype(np.int64)
     csc_end = np.searchsorted(sorted_features, feature_range, side="right").astype(np.int64)
 
-    # Write CSC zarr arrays
-    csc_group = atlas._root.require_group(f"{zarr_group}/csc")
+    # Write CSC zarr arrays (open writable root so this works even when atlas was opened read-only)
+    _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
+    csc_group = _writable_root.require_group(f"{zarr_group}/csc")
     csc_group.create_array(
         "indices",
         data=sorted_cell_ids.astype(np.uint32),

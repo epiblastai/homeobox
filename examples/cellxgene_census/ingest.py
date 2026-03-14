@@ -27,6 +27,7 @@ from examples.cellxgene_census.schema import (
 from lancell.atlas import RaggedAtlas, _schema_obs_fields
 from lancell.codecs.bitpacking import BitpackingCodec
 from lancell.schema import make_uid
+from lancell.tools.add_csc import add_csc
 from lancell.var_df import build_remap, reindex_registry, write_remap, write_var_df
 
 FEATURE_SPACE = "gene_expression"
@@ -192,7 +193,8 @@ def ingest_backed(
     # Use a writable zarr store wrapping the same obstore (atlas._root may be read-only)
     writable_store = zarr.storage.ObjectStore(atlas._store)
     group = zarr.open_group(writable_store, path=zarr_group, mode="w")
-    group.create_array(
+    csr_group = group.create_group("csr")
+    csr_group.create_array(
         "indices",
         shape=(nnz,),
         dtype=np.uint32,
@@ -200,7 +202,7 @@ def ingest_backed(
         shards=(SHARD_SIZE,),
         compressors=BitpackingCodec(transform="delta"),
     )
-    layers = group.create_group("layers")
+    layers = csr_group.create_group("layers")
     layers.create_array(
         LAYER_NAME,
         shape=(nnz,),
@@ -216,8 +218,8 @@ def ingest_backed(
     ends = indptr[1:]
 
     # Stream data in shard-sized batches
-    zarr_indices = group["indices"]
-    zarr_counts = group["layers"][LAYER_NAME]
+    zarr_indices = csr_group["indices"]
+    zarr_counts = csr_group["layers"][LAYER_NAME]
 
     written = 0
     while written < nnz:
@@ -253,8 +255,9 @@ def ingest_backed(
             pa.array([zarr_group] * n_cells, type=pa.string()),
             pa.array(starts.astype(np.int64), type=pa.int64()),
             pa.array(ends.astype(np.int64), type=pa.int64()),
+            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
         ],
-        names=["feature_space", "zarr_group", "start", "end"],
+        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
     )
 
     # Start with auto-generated columns
@@ -286,7 +289,7 @@ def ingest_backed(
     atlas.cell_table.add(arrow_table)
     print(f"    Inserted {n_cells:,} cell records")
 
-    return n_cells
+    return n_cells, zarr_group
 
 
 def main():
@@ -314,7 +317,11 @@ def main():
     ensembl_to_uid = register_genes(atlas, adata)
 
     print("Ingesting data...")
-    n_cells = ingest_backed(atlas, adata, h5ad_path, ensembl_to_uid)
+    n_cells, zarr_group = ingest_backed(atlas, adata, h5ad_path, ensembl_to_uid)
+
+    print("Adding CSC layout...")
+    add_csc(atlas, zarr_group=zarr_group, feature_space=FEATURE_SPACE, layer_name=LAYER_NAME,
+            chunk_size=CHUNK_SIZE, shard_size=SHARD_SIZE)
 
     print(f"Done! Ingested {n_cells:,} cells from {Path(h5ad_path).name}")
 
