@@ -16,7 +16,11 @@ import polars as pl
 
 from lancell.atlas import PointerFieldInfo, RaggedAtlas
 from lancell.group_specs import PointerKind, get_spec
-from lancell.reconstruction import FeatureCSCReconstructor, _build_obs_only_anndata, _get_pointer_columns
+from lancell.reconstruction import (
+    FeatureCSCReconstructor,
+    _build_obs_only_anndata,
+    _get_pointer_columns,
+)
 
 
 class AtlasQuery:
@@ -141,6 +145,39 @@ class AtlasQuery:
         if self._feature_spaces is None:
             return pfs
         return {k: v for k, v in pfs.items() if v.feature_space in self._feature_spaces}
+
+    def count(self, group_by: str | list[str] | None = None) -> "pl.DataFrame | int":
+        """Count cells, optionally grouped by metadata columns.
+
+        Only the grouping columns are fetched from LanceDB, so this is much
+        cheaper than ``to_polars()`` for large atlases.
+
+        Parameters
+        ----------
+        group_by:
+            Column name(s) to group by.  If ``None``, returns a scalar count.
+
+        Returns
+        -------
+        int
+            Total cell count when ``group_by`` is ``None``.
+        pl.DataFrame
+            DataFrame with one row per group and a ``count`` column otherwise.
+        """
+        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        if self._where_clause is not None:
+            q = q.where(self._where_clause)
+        if self._limit_n is not None:
+            q = q.limit(self._limit_n)
+
+        if group_by is None:
+            # Fetch only a single cheap column to count rows
+            any_col = self._atlas.cell_table.schema.names[0]
+            return len(q.select([any_col]).to_arrow())
+
+        cols = [group_by] if isinstance(group_by, str) else list(group_by)
+        result = q.select(cols).to_polars()
+        return result.group_by(cols).agg(pl.len().alias("count")).sort(cols)
 
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of cell metadata."""
