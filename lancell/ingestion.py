@@ -14,13 +14,9 @@ import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
-from lancell.atlas import (
-    PointerFieldInfo,
-    RaggedAtlas,
-    _schema_obs_fields,
-    validate_obs_columns,
-)
+from lancell.atlas import RaggedAtlas
 from lancell.group_specs import PointerKind, get_spec
+from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns
 from lancell.schema import (
     DatasetRecord,
     make_uid,

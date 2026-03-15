@@ -14,6 +14,7 @@ class SparseZarrPointer(LanceModel):
     zarr_group: str
     start: int
     end: int
+    # REVIEW: Why default this? Should be a required argument.
     zarr_row: int = 0  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
     @model_validator(mode="after")
@@ -41,14 +42,6 @@ class DenseZarrPointer(LanceModel):
                 f"{spec.pointer_kind.value} pointer, not a dense pointer"
             )
         return self
-
-
-# Placeholder for now, logic for loading hasn't been implemented yet
-# Eventually we can use this for nifty things like RTree indexes
-# class SpatialZarrPointer(LanceModel):
-#     feature_space: FeatureSpace
-#     zarr_group: str
-#     bounding_box: list[float]  # [x_min, y_min, x_max, y_max]
 
 
 ZarrPointer = SparseZarrPointer | DenseZarrPointer
@@ -109,6 +102,10 @@ class LancellBaseSchema(LanceModel):
         )
 
 
+# Fields set automatically by the atlas — never expected in user-provided obs.
+AUTO_FIELDS: frozenset[str] = frozenset(LancellBaseSchema.model_fields)
+
+
 class FeatureBaseSchema(LanceModel):
     """
     Minimal schema for a global feature registry entry.
@@ -142,8 +139,7 @@ class DatasetRecord(LanceModel):
 class DatasetVar(LanceModel):
     """Per-feature-per-dataset index row for the _dataset_vars table.
 
-    Replaces the sidecar parquet files (var.parquet, local_to_global_index.parquet)
-    and the _feature_dataset_pairs inverted index.
+    # REVIEW: Write a proper docstring instead of just using comments for the fields.
     """
 
     feature_uid: str  # global_feature_uid (FTS indexed — feature→datasets lookup)
@@ -155,7 +151,11 @@ class DatasetVar(LanceModel):
 
 
 class AtlasVersionRecord(LanceModel):
-    """One row per atlas snapshot created by RaggedAtlas.snapshot()."""
+    """
+    One row per atlas snapshot created by RaggedAtlas.snapshot().
+
+    REVIEW: Write a proper docstring
+    """
 
     version: int
     cell_table_name: str

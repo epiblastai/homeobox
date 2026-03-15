@@ -6,21 +6,17 @@ spaces) exist and their types. ``RaggedAtlas.open(...)`` or ``.create(...)`` is
 the full API — no manifest file to maintain.
 """
 
-import dataclasses
 import json
 from collections import defaultdict
-from types import UnionType
-from typing import TYPE_CHECKING, Union, get_args, get_origin
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from lancell.group_reader import GroupReader
     from lancell.query import AtlasQuery
 
-import anndata as ad
 import lancedb
 import numpy as np
 import obstore
-import pandas as pd
 import polars as pl
 import zarr
 
@@ -30,193 +26,15 @@ from lancell.dataset_vars import (
     sync_dataset_vars_global_index,
     validate_dataset_vars,
 )
-from lancell.group_specs import PointerKind, get_spec
+from lancell.group_specs import get_spec
+from lancell.obs_alignment import _extract_pointer_fields
 from lancell.schema import (
     AtlasVersionRecord,
     DatasetRecord,
     DatasetVar,
-    DenseZarrPointer,
     FeatureBaseSchema,
     LancellBaseSchema,
-    SparseZarrPointer,
 )
-
-# ---------------------------------------------------------------------------
-# PointerFieldInfo — metadata about a schema's pointer fields
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class PointerFieldInfo:
-    """Metadata extracted from a single pointer field on a cell schema."""
-
-    field_name: str
-    feature_space: str
-    pointer_kind: PointerKind
-    pointer_type: type  # SparseZarrPointer or DenseZarrPointer
-
-
-def _extract_pointer_fields(
-    schema_cls: type[LancellBaseSchema],
-) -> dict[str, PointerFieldInfo]:
-    """Introspect a schema class and return info for each pointer field."""
-    result: dict[str, PointerFieldInfo] = {}
-    for name, annotation in schema_cls.__annotations__.items():
-        if name == "uid":
-            continue
-        origin = get_origin(annotation)
-        if origin is Union or isinstance(annotation, UnionType):
-            inner_types = get_args(annotation)
-        else:
-            inner_types = (annotation,)
-
-        for t in inner_types:
-            if t is type(None):
-                continue
-            if t is SparseZarrPointer or t is DenseZarrPointer:
-                # Convention: field name == feature space name.
-                # Enforced at class-definition time in LancellBaseSchema.__init_subclass__.
-                feature_space = name
-                spec = get_spec(feature_space)
-                pointer_kind = PointerKind.SPARSE if t is SparseZarrPointer else PointerKind.DENSE
-                if pointer_kind is not spec.pointer_kind:
-                    raise TypeError(
-                        f"Field '{name}' uses {pointer_kind.value} pointer but "
-                        f"feature space '{feature_space}' requires {spec.pointer_kind.value}"
-                    )
-                result[name] = PointerFieldInfo(
-                    field_name=name,
-                    feature_space=feature_space,
-                    pointer_kind=pointer_kind,
-                    pointer_type=t,
-                )
-                break
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Pre-flight schema alignment
-# ---------------------------------------------------------------------------
-
-# Fields set automatically by the atlas — never expected in user-provided obs.
-_AUTO_FIELDS = {"uid", "dataset_uid"}
-
-
-def _schema_obs_fields(
-    cell_schema: type[LancellBaseSchema],
-) -> dict[str, bool]:
-    """Return {field_name: required} for user-supplied obs fields.
-
-    Excludes auto-generated fields (uid, dataset_uid) and pointer fields.
-    """
-    pointer_fields = _extract_pointer_fields(cell_schema)
-    result: dict[str, bool] = {}
-    for name, field_info in cell_schema.model_fields.items():
-        if name in _AUTO_FIELDS or name in pointer_fields:
-            continue
-        required = field_info.is_required()
-        result[name] = required
-    return result
-
-
-def validate_obs_columns(
-    obs: pd.DataFrame,
-    cell_schema: type[LancellBaseSchema],
-    obs_to_schema: dict[str, str] | None = None,
-) -> list[str]:
-    """Validate that obs columns match the cell schema.
-
-    Parameters
-    ----------
-    obs:
-        The obs DataFrame from an AnnData.
-    cell_schema:
-        The schema class to validate against.
-    obs_to_schema:
-        Optional mapping from obs column names to schema field names.
-        Use this when obs columns have different names than the schema
-        expects, e.g. ``{"donor_id": "donor", "cell_type_ontology": "cell_type"}``.
-
-    Returns
-    -------
-    list[str]
-        List of error strings. Empty list means valid.
-    """
-    errors: list[str] = []
-    schema_fields = _schema_obs_fields(cell_schema)
-    obs_to_schema = obs_to_schema or {}
-
-    # Build the set of schema field names reachable from obs columns
-    # (either directly or via the mapping)
-    reverse_map = {v: k for k, v in obs_to_schema.items()}
-    obs_cols = set(obs.columns)
-
-    for field_name, required in schema_fields.items():
-        # Field is satisfied if obs has it directly or via mapping
-        obs_col = reverse_map.get(field_name, field_name)
-        if required and obs_col not in obs_cols:
-            errors.append(f"Missing required column '{field_name}'")
-
-    return errors
-
-
-def align_obs_to_schema(
-    adata: ad.AnnData,
-    cell_schema: type[LancellBaseSchema],
-    *,
-    obs_to_schema: dict[str, str] | None = None,
-    inplace: bool = False,
-) -> ad.AnnData:
-    """Align an AnnData's obs to match a cell schema.
-
-    - Renames columns according to ``obs_to_schema``.
-    - Raises if required fields are missing (after renaming).
-    - Adds ``None`` columns for optional fields not present.
-    - Drops extra columns not in the schema.
-
-    Parameters
-    ----------
-    adata:
-        The AnnData to align.
-    cell_schema:
-        The schema class to align to.
-    obs_to_schema:
-        Optional mapping from obs column names to schema field names.
-        Use this when obs columns have different names than the schema
-        expects, e.g. ``{"donor_id": "donor", "cell_type_ontology": "cell_type"}``.
-    inplace:
-        If True, modify ``adata`` in place. Otherwise return a copy.
-
-    Returns
-    -------
-    ad.AnnData
-        The aligned AnnData.
-    """
-    errors = validate_obs_columns(adata.obs, cell_schema, obs_to_schema)
-    if errors:
-        raise ValueError(f"Cannot align obs to schema: {errors}")
-
-    if not inplace:
-        adata = adata.copy()
-
-    # Rename obs columns according to mapping
-    if obs_to_schema:
-        adata.obs = adata.obs.rename(columns=obs_to_schema)
-
-    schema_fields = _schema_obs_fields(cell_schema)
-    obs_cols = set(adata.obs.columns)
-
-    # Add None columns for optional fields not present
-    for field_name, required in schema_fields.items():
-        if not required and field_name not in obs_cols:
-            adata.obs[field_name] = None
-
-    # Drop extra columns not in schema
-    keep = [c for c in adata.obs.columns if c in schema_fields]
-    adata.obs = adata.obs[keep]
-
-    return adata
-
 
 # ---------------------------------------------------------------------------
 # RaggedAtlas
@@ -256,6 +74,25 @@ class RaggedAtlas:
 
         # Instance-level cache: one GroupReader per (zarr_group, feature_space)
         self._group_readers: dict[tuple[str, str], GroupReader] = {}
+
+        # REVIEW: I think we shouldn't need to do this. My preferred pattern is
+        # that __init__ is never touched manually by a user. Instead they use create
+        # and checkout. Then before creating a snapshot we do all of the validation.
+        # That guarantees that when a user checks out a version of the atlas
+        # (i.e., reopens it after creation) it is always valid. `open` is then exclusively
+        # for the purpose of writing new data to the atlas. Maybe that justifies a rename, although
+        # open is alright.
+        # In my mind the overall pattern is: The user creates the dataset, then maybe the add
+        # data from an AnnData to it. The atlas_versions table however will be empty. They won't actually
+        # be allowed to use the dataset for anything until they create a snapshot. Then they can
+        # checkout the snapshot, which is guaranteed to have valid global indices for everything and
+        # it can be used for queries, ml data streaming etc. But importantly, none of that is accessible
+        # until the first snapshot is created. So let's say the user added the anndata but never created
+        # a snapshot and now they want to add another dataset, well they'd use `open` and would add from
+        # a second anndata. All the data will have been written into zarrs and the relevant tables, but
+        # they will still need to create a snapshot. Once they create the snapshot all of the datasets that
+        # are currently "pending" get added and then the user can use the atlas for data loading and queries.
+        # The key point is that staged data is stored but can't be used until "committed" via a snapshot.
 
         # Validate that global_index is contiguous 0..N-1 within each
         # registry table. A broken index silently corrupts every remap and
@@ -303,8 +140,13 @@ class RaggedAtlas:
         registry_schemas:
             Mapping of feature space names to their registry schema classes.
             Table names default to ``"{feature_space}_registry"``.
+
+        # REVIEW: I don't think we need this. A reasonable default of `atlas_versions`
+        # should always be OK.
         version_table_name:
             Name for the version tracking table.
+
+        # REVIEW: This wouldn't be necessary if we make the change mentioned above
         update_feature_registries:
             If ``True`` (default), automatically run
             :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
@@ -385,15 +227,9 @@ class RaggedAtlas:
         for fs, table_name in registry_tables.items():
             resolved_registries[fs] = db.open_table(table_name)
 
-        try:
-            version_table: lancedb.table.Table | None = db.open_table(version_table_name)
-        except Exception:
-            version_table = None
-
-        try:
-            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
-        except Exception:
-            dataset_vars_table = None
+        # These table are mandatory
+        version_table = db.open_table(version_table_name)
+        dataset_vars_table = db.open_table("_dataset_vars")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
 
@@ -440,6 +276,7 @@ class RaggedAtlas:
             )
         return self._group_readers[key]
 
+    # REVIEW: I believe this can be removed, there shouldn't be any callers that predate GroupReader.
     def _get_remap(self, zarr_group: str, feature_space: str) -> np.ndarray:
         """Thin wrapper around GroupReader.get_remap for callers that predate GroupReader."""
         return self._get_group_reader(zarr_group, feature_space).get_remap()
@@ -558,14 +395,13 @@ class RaggedAtlas:
         self.cell_table.optimize()
         self._dataset_table.optimize()
         for table in self._registry_tables.values():
-            table.optimize()
             reindex_registry(table)
-            if self._dataset_vars_table is not None:
-                sync_dataset_vars_global_index(self._dataset_vars_table, table)
-        if self._dataset_vars_table is not None:
-            self._dataset_vars_table.optimize()
-            self._dataset_vars_table.create_fts_index("feature_uid", replace=True)
-            self._dataset_vars_table.create_fts_index("dataset_uid", replace=True)
+            table.optimize()
+            sync_dataset_vars_global_index(self._dataset_vars_table, table)
+
+        self._dataset_vars_table.create_fts_index("feature_uid", replace=True)
+        self._dataset_vars_table.create_fts_index("dataset_uid", replace=True)
+        self._dataset_vars_table.optimize()
 
     # -- Validation ---------------------------------------------------------
 
@@ -628,6 +464,7 @@ class RaggedAtlas:
         """Return a Polars DataFrame of all ingested datasets."""
         return self._dataset_table.search().to_polars()
 
+    # REVIEW: Rename `find_dataset_with_features`?
     def datasets_with_features(
         self,
         feature_uids: str | list[str],
@@ -654,11 +491,6 @@ class RaggedAtlas:
         """
         if isinstance(feature_uids, str):
             feature_uids = [feature_uids]
-        if self._dataset_vars_table is None:
-            raise RuntimeError(
-                "_dataset_vars table not found. This atlas may have been created "
-                "before _dataset_vars was introduced. Re-create the atlas to use this feature."
-            )
         return self._datasets_with_features_fast(feature_uids, feature_space)
 
     def _datasets_with_features_fast(
@@ -679,6 +511,8 @@ class RaggedAtlas:
         if pairs.is_empty():
             return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
 
+        # REVIEW: MatchQuery already guarantees that it's exact, we don't need to
+        # filter again.
         # Filter to only exact feature_uid matches (FTS may return partial matches)
         pairs = pairs.filter(pl.col("feature_uid").is_in(feature_uids)).unique(
             subset=["feature_uid", "dataset_uid"]
