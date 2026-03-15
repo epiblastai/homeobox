@@ -12,11 +12,11 @@ from lancell.dataloader import (
     CellDataset,
     DenseBatch,
     MultimodalBatch,
-    MultimodalCellDataset,
     SparseBatch,
     multimodal_to_dense_collate,
     sparse_to_dense_collate,
 )
+from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
 from lancell.sampler import BalancedCellSampler, CellSampler
 from lancell.schema import (

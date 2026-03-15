@@ -333,7 +333,7 @@ async def _take_dense(
     results = await asyncio.gather(*tasks)
 
     sorted_data = np.empty((n_present, mod_data.n_features), dtype=np.float32)
-    for (s, e), group_data in zip(group_slices, results):
+    for (s, e), group_data in zip(group_slices, results, strict=True):
         sorted_data[s:e] = group_data
 
     inv_sort = np.argsort(sort_order, kind="stable")
@@ -408,7 +408,7 @@ async def _take_multimodal(
     results = list(await asyncio.gather(*tasks)) if tasks else []
 
     modalities: dict[str, SparseBatch | DenseBatch] = dict(empty_modalities)
-    for fs, result in zip(task_fs, results):
+    for fs, result in zip(task_fs, results, strict=True):
         mod_data = modality_data[fs]
         if mod_data.kind is PointerKind.SPARSE:
             inv_sort = np.argsort(sort_orders[fs], kind="stable")
