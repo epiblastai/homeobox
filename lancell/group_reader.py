@@ -29,11 +29,8 @@ class GroupReader:
         store: obstore.store.ObjectStore,
         dataset_vars_table: lancedb.table.Table | None,
         dataset_uid: str | None,
-        # REVIEW: I don't like this. We need to be more stringent about the version assumptions.
-        # Once loaded an atlas should be considered immutable. We will checkout specific versions
-        # of all the tables such that even if there are rewrites, current work will not be affected.
-        remap_cache: tuple[int, np.ndarray] | None = None,
-        var_df_cache: tuple[int, pl.DataFrame] | None = None,
+        _remap: np.ndarray | None = None,
+        _var_df: pl.DataFrame | None = None,
         zarr_group_handle: zarr.Group | None = None,
     ) -> None:
         self.zarr_group = zarr_group
@@ -41,8 +38,8 @@ class GroupReader:
         self._store = store
         self._dataset_vars_table = dataset_vars_table
         self._dataset_uid = dataset_uid
-        self._remap_cache = remap_cache
-        self._var_df_cache = var_df_cache
+        self._remap = _remap
+        self._var_df = _var_df
         self._zarr_group_handle = zarr_group_handle
         self._array_reader_cache: dict[str, BatchAsyncArray] = {}
 
@@ -90,48 +87,30 @@ class GroupReader:
             store=store,
             dataset_vars_table=None,
             dataset_uid=None,
-            remap_cache=(0, remap),
+            _remap=remap,
         )
 
     def get_remap(self) -> np.ndarray:
-        """Return the local-to-global-index remap array.
-
-        If ``_dataset_vars_table`` is ``None`` (worker path), returns the frozen
-        remap directly. Otherwise performs a version-aware cache check and
-        rebuilds from the Lance table if stale.
-        """
-        if self._dataset_vars_table is None:
-            assert self._remap_cache is not None, (
-                f"GroupReader for {self.zarr_group!r} has no remap. "
-                "The for_worker path requires a remap at construction time."
-            )
-            return self._remap_cache[1]
-
-        if self._dataset_uid is None:
+        """Return the local-to-global-index remap array (load-once)."""
+        if self._remap is not None:
+            return self._remap
+        if self._dataset_vars_table is None or self._dataset_uid is None:
             raise ValueError(
-                f"GroupReader for {self.zarr_group!r} has no dataset_uid. "
-                "Cannot load remap from _dataset_vars."
+                f"GroupReader for {self.zarr_group!r} has no remap and no table to load from."
             )
-
-        current_version = self._dataset_vars_table.version
-        if self._remap_cache is not None:
-            cached_version, cached_remap = self._remap_cache
-            if cached_version == current_version:
-                return cached_remap
-
-        # Cache miss or stale — read from Lance table
         rows = read_dataset_vars(self._dataset_vars_table, self._dataset_uid)
-        remap = rows["global_index"].to_numpy().astype(np.int32, copy=False)
-        self._remap_cache = (current_version, remap)
-        return remap
+        self._remap = rows["global_index"].to_numpy().astype(np.int32, copy=False)
+        return self._remap
 
     @property
     def var_df(self) -> pl.DataFrame:
-        """Load and cache var_df for this zarr group.
+        """Load and cache var_df for this zarr group (load-once).
 
         Returns a DataFrame with columns ``global_feature_uid``, ``csc_start``,
         ``csc_end`` in local feature order (row i = local feature i).
         """
+        if self._var_df is not None:
+            return self._var_df
         if self._dataset_vars_table is None or self._dataset_uid is None:
             return pl.DataFrame(
                 schema={
@@ -140,23 +119,15 @@ class GroupReader:
                     "csc_end": pl.Int64,
                 }
             )
-
-        current_version = self._dataset_vars_table.version
-        if self._var_df_cache is not None:
-            cached_version, cached_df = self._var_df_cache
-            if cached_version == current_version:
-                return cached_df
-
         rows = read_dataset_vars(self._dataset_vars_table, self._dataset_uid)
-        df = rows.select(
+        self._var_df = rows.select(
             [
                 pl.col("feature_uid").alias("global_feature_uid"),
                 pl.col("csc_start"),
                 pl.col("csc_end"),
             ]
         )
-        self._var_df_cache = (current_version, df)
-        return df
+        return self._var_df
 
     @property
     def has_csc(self) -> bool:

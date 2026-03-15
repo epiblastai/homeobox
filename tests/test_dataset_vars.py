@@ -347,7 +347,8 @@ class TestGroupReaderRemap:
         # Same object (warm cache)
         assert remap1 is remap2
 
-    def test_cache_invalidated_by_table_version(self, tmp_path):
+    def test_remap_load_once_ignores_table_mutations(self, tmp_path):
+        """get_remap() is load-once: mutations to the table after first load are not seen."""
         from lancell.group_reader import GroupReader
 
         uids = ["uid_a", "uid_b"]
@@ -373,7 +374,7 @@ class TestGroupReaderRemap:
         remap1 = gr.get_remap()
         np.testing.assert_array_equal(remap1, [0, 1])
 
-        # Simulate reindex: swap global indices
+        # Mutate the underlying table
         rows = read_dataset_vars(table, "ds_001")
         rows = rows.with_columns(pl.Series("global_index", [1, 0]))
         (
@@ -382,10 +383,10 @@ class TestGroupReaderRemap:
             .execute(rows)
         )
 
-        # Cache is stale — next call rebuilds
+        # Load-once: same cached object returned, mutation is not visible
         remap2 = gr.get_remap()
-        np.testing.assert_array_equal(remap2, [1, 0])
-        assert remap1 is not remap2
+        np.testing.assert_array_equal(remap2, [0, 1])
+        assert remap1 is remap2
 
     def test_worker_path_returns_frozen_remap(self, tmp_path):
         import obstore

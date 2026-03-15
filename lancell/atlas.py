@@ -597,6 +597,7 @@ class RaggedAtlas:
             dataset_table_version=self._dataset_table.version,
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
+            dataset_vars_table_version=self._dataset_vars_table.version,
             total_cells=self.cell_table.count_rows(),
         )
         self._version_table.add([record])
@@ -676,6 +677,9 @@ class RaggedAtlas:
             dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
         except Exception:
             dataset_vars_table = None
+
+        if dataset_vars_table is not None:
+            dataset_vars_table.checkout(row["dataset_vars_table_version"])
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 

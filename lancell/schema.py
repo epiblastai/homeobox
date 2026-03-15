@@ -164,6 +164,7 @@ class AtlasVersionRecord(LanceModel):
     dataset_table_version: int
     registry_table_names: str  # JSON: {"feature_space": "table_name", ...}
     registry_table_versions: str  # JSON: {"feature_space": version_int, ...}
+    dataset_vars_table_version: int
     total_cells: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
