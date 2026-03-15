@@ -319,9 +319,17 @@ def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBa
     new_offsets = np.zeros(n_cells + 1, dtype=np.int64)
     np.cumsum(new_lengths, out=new_offsets[1:])
 
+    reordered_metadata = (
+        {col: arr[perm] for col, arr in batch.metadata.items()}
+        if batch.metadata is not None
+        else None
+    )
+
     total = int(new_lengths.sum())
     if total == 0:
-        return SparseBatch(batch.indices, batch.values, new_offsets, batch.n_features)
+        return SparseBatch(
+            batch.indices, batch.values, new_offsets, batch.n_features, reordered_metadata
+        )
 
     # Segment-arange gather: for each output row i, collect elements from source row perm[i]
     src_starts = batch.offsets[:-1][perm]
@@ -334,6 +342,7 @@ def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBa
         values=batch.values[gather],
         offsets=new_offsets,
         n_features=batch.n_features,
+        metadata=reordered_metadata,
     )
 
 

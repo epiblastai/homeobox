@@ -108,7 +108,7 @@ class CellSampler(_TorchSampler):
         worker_cell_lists: list[list[np.ndarray]] = [[] for _ in range(effective_workers)]
         worker_totals = np.zeros(effective_workers, dtype=np.int64)
 
-        for gid, count in zip(unique_gids, counts, strict=False):
+        for gid, count in zip(unique_gids, counts, strict=True):
             w = int(np.argmin(worker_totals))
             cell_indices = np.where(self.groups_np == gid)[0].astype(np.int64)
             worker_cell_lists[w].append(cell_indices)

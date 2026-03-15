@@ -57,8 +57,8 @@ class RaggedAtlas:
         registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
         *,
-        version_table: lancedb.table.Table | None = None,
-        dataset_vars_table: lancedb.table.Table | None = None,
+        version_table: lancedb.table.Table,
+        dataset_vars_table: lancedb.table.Table,
     ) -> None:
         self.db = db
         self.cell_table = cell_table
@@ -178,15 +178,8 @@ class RaggedAtlas:
         for fs, table_name in registry_tables.items():
             resolved_registries[fs] = db.open_table(table_name)
 
-        try:
-            version_table: lancedb.table.Table | None = db.open_table(version_table_name)
-        except Exception:
-            version_table = None
-
-        try:
-            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
-        except Exception:
-            dataset_vars_table = None
+        version_table = db.open_table(version_table_name)
+        dataset_vars_table = db.open_table("_dataset_vars")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
 
@@ -209,19 +202,16 @@ class RaggedAtlas:
 
         key = (zarr_group, feature_space)
         if key not in self._group_readers:
-            dataset_uid: str | None = None
-            if self._dataset_vars_table is not None:
-                datasets_df = (
-                    self._dataset_table.search()
-                    .to_polars()
-                    .filter(
-                        (pl.col("zarr_group") == zarr_group)
-                        & (pl.col("feature_space") == feature_space)
-                    )
-                    .select(["uid"])
+            datasets_df = (
+                self._dataset_table.search()
+                .to_polars()
+                .filter(
+                    (pl.col("zarr_group") == zarr_group)
+                    & (pl.col("feature_space") == feature_space)
                 )
-                if not datasets_df.is_empty():
-                    dataset_uid = datasets_df["uid"][0]
+                .select(["uid"])
+            )
+            dataset_uid: str | None = datasets_df["uid"][0] if not datasets_df.is_empty() else None
 
             self._group_readers[key] = GroupReader.from_atlas_root(
                 zarr_group=zarr_group,
@@ -325,8 +315,6 @@ class RaggedAtlas:
         feature_space:
             Which feature space this dataset belongs to (used to look up registry).
         """
-        if self._dataset_vars_table is None:
-            return
         registry_table = self._registry_tables.get(feature_space)
         if registry_table is None:
             raise ValueError(
@@ -519,8 +507,6 @@ class RaggedAtlas:
         return errors
 
     def _validate_dataset_vars(self, zarr_groups_by_space: dict[str, set[str]]) -> list[str]:
-        if self._dataset_vars_table is None:
-            return []
         errors: list[str] = []
         # Build a lookup: (zarr_group, feature_space) -> dataset_uid
         datasets_df = (
@@ -566,12 +552,6 @@ class RaggedAtlas:
             If ``True`` (default), run :meth:`validate` before recording the snapshot
             and raise if any errors are found.
         """
-        if self._version_table is None:
-            raise ValueError(
-                "This atlas has no version table. Re-create it with RaggedAtlas.create() "
-                "to enable versioning."
-            )
-
         if validate:
             errors = self.validate()
             if errors:
@@ -673,13 +653,8 @@ class RaggedAtlas:
             t.checkout(registry_versions[fs])
             resolved_registries[fs] = t
 
-        try:
-            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
-        except Exception:
-            dataset_vars_table = None
-
-        if dataset_vars_table is not None:
-            dataset_vars_table.checkout(row["dataset_vars_table_version"])
+        dataset_vars_table = db.open_table("_dataset_vars")
+        dataset_vars_table.checkout(row["dataset_vars_table_version"])
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
 

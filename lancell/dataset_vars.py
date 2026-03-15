@@ -64,7 +64,7 @@ def build_dataset_vars_df(
     # columns of the matched rows. Dig deeper for a more efficient method.
     registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
     uid_to_global: dict[str, int] = dict(
-        zip(registry_df["uid"].to_list(), registry_df["global_index"].to_list(), strict=False)
+        zip(registry_df["uid"].to_list(), registry_df["global_index"].to_list(), strict=True)
     )
     registry_uids = set(registry_df["uid"].to_list())
 

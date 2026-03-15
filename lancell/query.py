@@ -81,7 +81,8 @@ class AtlasQuery:
         columns:
             Column names to include in the results.
         """
-        assert isinstance(columns, list), "Columns must be a list"
+        if not isinstance(columns, list):
+            raise ValueError("Columns must be a list")
         self._select_columns = columns
         return self
 

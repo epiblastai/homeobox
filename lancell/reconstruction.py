@@ -349,7 +349,7 @@ class SparseCSRReconstructor:
         obs_parts: list[pl.DataFrame] = []
 
         for (zg, group_cells, _, _, _, _), (index_result, layer_results) in zip(
-            group_data, all_results, strict=False
+            group_data, all_results, strict=True
         ):
             flat_indices, lengths = index_result
             n_cells_group = len(group_cells)
@@ -378,7 +378,7 @@ class SparseCSRReconstructor:
             np.cumsum(lengths, out=indptr[1:])
 
             # Build CSR for each layer
-            for ln, (flat_values, _) in zip(layers_to_read, layer_results, strict=False):
+            for ln, (flat_values, _) in zip(layers_to_read, layer_results, strict=True):
                 if keep_mask is not None:
                     flat_values = flat_values[keep_mask]
                 csr = sp.csr_matrix(
@@ -476,11 +476,11 @@ class DenseReconstructor:
         obs_parts: list[pl.DataFrame] = []
 
         for (zg, group_cells, _, _, offset, _), group_results in zip(
-            group_data, all_results, strict=False
+            group_data, all_results, strict=True
         ):
             n_cells_group = group_cells.height
 
-            for out_key, (flat_data, _) in zip(output_keys, group_results, strict=False):
+            for out_key, (flat_data, _) in zip(output_keys, group_results, strict=True):
                 n_local_features = flat_data.shape[0] // n_cells_group
                 local_data = flat_data.reshape(n_cells_group, n_local_features)
 
@@ -644,7 +644,7 @@ class FeatureCSCReconstructor:
         obs_parts: list[pl.DataFrame] = []
         cell_offset = 0
 
-        for info, (idx_result, layer_results) in zip(group_info, all_results, strict=False):
+        for info, (idx_result, layer_results) in zip(group_info, all_results, strict=True):
             group_cells = info["group_cells"]
             n_cells_group = group_cells.height
             flat_indices, lengths = idx_result
@@ -654,7 +654,7 @@ class FeatureCSCReconstructor:
                 zr_to_rank = info["zr_to_rank"]
 
                 offset = 0
-                for length, col_idx in zip(lengths, feat_col_indices, strict=False):
+                for length, col_idx in zip(lengths, feat_col_indices, strict=True):
                     if length == 0:
                         offset += length
                         continue
