@@ -227,11 +227,12 @@ def _build_var(
         return pd.DataFrame(index=pd.RangeIndex(0))
 
     registry_table = atlas._registry_tables[feature_space]
-    registry_df = registry_table.search().to_polars()
-
-    # Filter to joined globals
-    registry_df = registry_df.filter(pl.col("global_index").is_in(joined_globals.tolist())).sort(
-        "global_index"
+    indices_sql = ", ".join(str(i) for i in joined_globals.tolist())
+    registry_df = (
+        registry_table.search()
+        .where(f"global_index IN ({indices_sql})", prefilter=True)
+        .to_polars()
+        .sort("global_index")
     )
 
     var = registry_df.to_pandas()
@@ -306,9 +307,10 @@ class SparseCSRReconstructor:
             )
         index_array_name = spec.required_arrays[0].array_name
 
+        cells_pl_original = cells_pl
         cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
         if not groups:
-            return ad.AnnData()
+            return _build_obs_only_anndata(cells_pl_original)
 
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
@@ -428,9 +430,10 @@ class DenseReconstructor:
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        cells_pl_original = cells_pl
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
         if not groups:
-            return ad.AnnData()
+            return _build_obs_only_anndata(cells_pl_original)
 
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
@@ -555,9 +558,10 @@ class FeatureCSCReconstructor:
             )
         csr_index_name = spec.required_arrays[0].array_name  # e.g. "csr/indices"
 
+        cells_pl_original = cells_pl
         cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
         if not groups:
-            return ad.AnnData()
+            return _build_obs_only_anndata(cells_pl_original)
 
         n_features = len(wanted_globals)
         layers_to_read = (

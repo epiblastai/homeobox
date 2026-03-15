@@ -58,18 +58,15 @@ def add_csc(
         If no cells or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    if atlas._dataset_vars_table is None:
-        raise ValueError(
-            "_dataset_vars table not found. This atlas may have been created "
-            "before _dataset_vars was introduced."
-        )
-
     # Look up dataset_uid for this zarr_group + feature_space
     datasets_df = (
         atlas._dataset_table.search()
-        .to_polars()
-        .filter((pl.col("zarr_group") == zarr_group) & (pl.col("feature_space") == feature_space))
+        .where(
+            f"zarr_group = '{zarr_group}' AND feature_space = '{feature_space}'",
+            prefilter=True,
+        )
         .select(["uid"])
+        .to_polars()
     )
     if datasets_df.is_empty():
         raise ValueError(
@@ -79,14 +76,21 @@ def add_csc(
     dataset_uid = datasets_df["uid"][0]
 
     # Query all cells in this zarr group
-    cells_df = atlas.cell_table.search().to_polars()
+    cells_df = (
+        atlas.cell_table.search()
+        .where(f"{feature_space}.zarr_group = '{zarr_group}'", prefilter=True)
+        .select([feature_space])
+        .to_polars()
+    )
     ptr_struct = cells_df[feature_space].struct.unnest()
-    cells_df = cells_df.with_columns(
-        ptr_struct["zarr_group"].alias("_zg"),
-        ptr_struct["zarr_row"].alias("_zarr_row"),
-        ptr_struct["start"].alias("_start"),
-        ptr_struct["end"].alias("_end"),
-    ).filter(pl.col("_zg") == zarr_group)
+    cells_df = pl.DataFrame(
+        {
+            "_zg": ptr_struct["zarr_group"],
+            "_zarr_row": ptr_struct["zarr_row"],
+            "_start": ptr_struct["start"],
+            "_end": ptr_struct["end"],
+        }
+    )
 
     if cells_df.is_empty():
         raise ValueError(
@@ -99,6 +103,11 @@ def add_csc(
     ends = cells_df["_end"].to_numpy()
     n_cells = len(zarr_rows)
 
+    if len(zarr_rows) != len(np.unique(zarr_rows)):
+        raise ValueError(
+            f"zarr_rows for group '{zarr_group}' contain duplicate values. "
+            f"Was zarr_row populated correctly during ingest?"
+        )
     if not np.array_equal(zarr_rows, np.arange(n_cells)):
         raise ValueError(
             f"zarr_rows for group '{zarr_group}' are not sequential 0..{n_cells - 1}. "

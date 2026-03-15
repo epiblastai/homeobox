@@ -204,12 +204,12 @@ class RaggedAtlas:
         if key not in self._group_readers:
             datasets_df = (
                 self._dataset_table.search()
-                .to_polars()
-                .filter(
-                    (pl.col("zarr_group") == zarr_group)
-                    & (pl.col("feature_space") == feature_space)
+                .where(
+                    f"zarr_group = '{zarr_group}' AND feature_space = '{feature_space}'",
+                    prefilter=True,
                 )
                 .select(["uid"])
+                .to_polars()
             )
             dataset_uid: str | None = datasets_df["uid"][0] if not datasets_df.is_empty() else None
 
@@ -464,8 +464,11 @@ class RaggedAtlas:
         if pairs.is_empty():
             return pl.DataFrame(schema={"zarr_group": pl.Utf8, "global_feature_uid": pl.Utf8})
 
-        datasets_df = self._dataset_table.search().to_polars()
-        datasets_df = datasets_df.filter(pl.col("feature_space") == feature_space)
+        datasets_df = (
+            self._dataset_table.search()
+            .where(f"feature_space = '{feature_space}'", prefilter=True)
+            .to_polars()
+        )
 
         return (
             pairs.rename({"feature_uid": "global_feature_uid"})

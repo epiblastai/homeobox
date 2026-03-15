@@ -144,11 +144,17 @@ class TestSnapshot:
 
     def test_snapshot_raises_without_version_table(self, tmp_path):
         store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
-        atlas._version_table = None
-
-        with pytest.raises(ValueError, match="no version table"):
-            atlas.snapshot()
+        # Opening with a non-existent version table name raises immediately.
+        with pytest.raises(ValueError, match="not found"):
+            RaggedAtlas.open(
+                db_uri=str(tmp_path / "atlas.lancedb"),
+                cell_table_name="cells",
+                cell_schema=TestCellSchema,
+                dataset_table_name="_datasets",
+                store=store,
+                registry_tables={"gene_expression": "gene_expression_registry"},
+                version_table_name="nonexistent_versions",
+            )
 
     def test_snapshot_raises_if_registry_invalid(self, tmp_path):
         """snapshot() must fail if registries are not fully indexed."""
@@ -351,12 +357,11 @@ class TestCheckout:
 
 
 class TestBackwardCompat:
-    def test_open_without_version_table_succeeds(self, tmp_path):
-        """Atlas opened without a version table sets _version_table=None."""
+    def test_open_without_version_table_raises(self, tmp_path):
+        """Opening with a non-existent version table name raises immediately."""
         store = obstore.store.LocalStore(prefix=str(tmp_path))
         atlas, gene_uids = _make_atlas(tmp_path, store)
 
-        # Write data so the tables are persisted on disk
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -366,22 +371,13 @@ class TestBackwardCompat:
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
 
-        # Pass a non-existent version table name to simulate an older atlas
-        opened = RaggedAtlas.open(
-            db_uri=str(tmp_path / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
-            dataset_table_name="_datasets",
-            store=store,
-            registry_tables={"gene_expression": "gene_expression_registry"},
-            version_table_name="nonexistent_versions",
-        )
-        assert opened._version_table is None
-
-    def test_snapshot_on_no_version_table_raises(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, _ = _make_atlas(tmp_path, store)
-        atlas._version_table = None
-
-        with pytest.raises(ValueError, match="no version table"):
-            atlas.snapshot()
+        with pytest.raises(ValueError, match="not found"):
+            RaggedAtlas.open(
+                db_uri=str(tmp_path / "atlas.lancedb"),
+                cell_table_name="cells",
+                cell_schema=TestCellSchema,
+                dataset_table_name="_datasets",
+                store=store,
+                registry_tables={"gene_expression": "gene_expression_registry"},
+                version_table_name="nonexistent_versions",
+            )

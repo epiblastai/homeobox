@@ -57,12 +57,13 @@ def build_dataset_vars_df(
     feature_uids = var_df["global_feature_uid"].to_list()
     n = len(feature_uids)
 
-    # REVIEW: I do not like reading the whole table into memory here. It feels
-    # like there should be a function for this. For example when inserting
-    # data theres: `merge_insert(on="uid").when_not_matched_insert_all()` which
-    # means there's a way to check if values are matched and presumably to load the other
-    # columns of the matched rows. Dig deeper for a more efficient method.
-    registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
+    uids_sql = ", ".join(f"'{u}'" for u in feature_uids)
+    registry_df = (
+        registry_table.search()
+        .where(f"uid IN ({uids_sql})", prefilter=True)
+        .select(["uid", "global_index"])
+        .to_polars()
+    )
     uid_to_global: dict[str, int] = dict(
         zip(registry_df["uid"].to_list(), registry_df["global_index"].to_list(), strict=True)
     )

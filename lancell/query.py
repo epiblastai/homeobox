@@ -198,7 +198,7 @@ class AtlasQuery:
         """
         cells_pl = self._build_scanner().to_polars()
         if cells_pl.is_empty():
-            return ad.AnnData()
+            return _build_obs_only_anndata(cells_pl)
 
         active_pfs = self._active_pointer_fields()
         # Pick the first feature space for X
