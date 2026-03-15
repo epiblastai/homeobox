@@ -59,7 +59,6 @@ class RaggedAtlas:
         *,
         version_table: lancedb.table.Table | None = None,
         dataset_vars_table: lancedb.table.Table | None = None,
-        update_feature_registries: bool = True,
     ) -> None:
         self.db = db
         self.cell_table = cell_table
@@ -75,36 +74,6 @@ class RaggedAtlas:
         # Instance-level cache: one GroupReader per (zarr_group, feature_space)
         self._group_readers: dict[tuple[str, str], GroupReader] = {}
 
-        # REVIEW: I think we shouldn't need to do this. My preferred pattern is
-        # that __init__ is never touched manually by a user. Instead they use create
-        # and checkout. Then before creating a snapshot we do all of the validation.
-        # That guarantees that when a user checks out a version of the atlas
-        # (i.e., reopens it after creation) it is always valid. `open` is then exclusively
-        # for the purpose of writing new data to the atlas. Maybe that justifies a rename, although
-        # open is alright.
-        # In my mind the overall pattern is: The user creates the dataset, then maybe the add
-        # data from an AnnData to it. The atlas_versions table however will be empty. They won't actually
-        # be allowed to use the dataset for anything until they create a snapshot. Then they can
-        # checkout the snapshot, which is guaranteed to have valid global indices for everything and
-        # it can be used for queries, ml data streaming etc. But importantly, none of that is accessible
-        # until the first snapshot is created. So let's say the user added the anndata but never created
-        # a snapshot and now they want to add another dataset, well they'd use `open` and would add from
-        # a second anndata. All the data will have been written into zarrs and the relevant tables, but
-        # they will still need to create a snapshot. Once they create the snapshot all of the datasets that
-        # are currently "pending" get added and then the user can use the atlas for data loading and queries.
-        # The key point is that staged data is stored but can't be used until "committed" via a snapshot.
-
-        # Validate that global_index is contiguous 0..N-1 within each
-        # registry table. A broken index silently corrupts every remap and
-        # every reconstructed AnnData.
-        registry_errors = self._validate_registries()
-        if registry_errors and update_feature_registries:
-            for table in self._registry_tables.values():
-                reindex_registry(table)
-            registry_errors = self._validate_registries()
-        if registry_errors:
-            raise ValueError(f"Registry validation failed at init: {registry_errors}")
-
     # -- Construction -------------------------------------------------------
 
     @classmethod
@@ -119,7 +88,6 @@ class RaggedAtlas:
         store: obstore.store.ObjectStore,
         registry_schemas: dict[str, type[FeatureBaseSchema]],
         version_table_name: str = "atlas_versions",
-        update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
 
@@ -140,18 +108,8 @@ class RaggedAtlas:
         registry_schemas:
             Mapping of feature space names to their registry schema classes.
             Table names default to ``"{feature_space}_registry"``.
-
-        # REVIEW: I don't think we need this. A reasonable default of `atlas_versions`
-        # should always be OK.
         version_table_name:
             Name for the version tracking table.
-
-        # REVIEW: This wouldn't be necessary if we make the change mentioned above
-        update_feature_registries:
-            If ``True`` (default), automatically run
-            :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
-            ``global_index`` is not contiguous.  If ``False``, raise on
-            broken registries instead.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
@@ -179,7 +137,6 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
-            update_feature_registries=update_feature_registries,
         )
 
     @classmethod
@@ -193,7 +150,6 @@ class RaggedAtlas:
         store: obstore.store.ObjectStore,
         registry_tables: dict[str, str],
         version_table_name: str = "atlas_versions",
-        update_feature_registries: bool = True,
     ) -> "RaggedAtlas":
         """Open an existing atlas.
 
@@ -213,11 +169,6 @@ class RaggedAtlas:
             Mapping of feature space names to LanceDB table names.
         version_table_name:
             Name of the version tracking table.
-        update_feature_registries:
-            If ``True`` (default), automatically run
-            :func:`~lancell.dataset_vars.reindex_registry` on any registry whose
-            ``global_index`` is not contiguous.  If ``False``, raise on
-            broken registries instead.
         """
         db = lancedb.connect(db_uri)
         cell_table = db.open_table(cell_table_name)
@@ -227,9 +178,15 @@ class RaggedAtlas:
         for fs, table_name in registry_tables.items():
             resolved_registries[fs] = db.open_table(table_name)
 
-        # These table are mandatory
-        version_table = db.open_table(version_table_name)
-        dataset_vars_table = db.open_table("_dataset_vars")
+        try:
+            version_table: lancedb.table.Table | None = db.open_table(version_table_name)
+        except Exception:
+            version_table = None
+
+        try:
+            dataset_vars_table: lancedb.table.Table | None = db.open_table("_dataset_vars")
+        except Exception:
+            dataset_vars_table = None
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
 
@@ -242,7 +199,6 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
-            update_feature_registries=update_feature_registries,
         )
 
     # -- Store helpers ------------------------------------------------------
@@ -597,17 +553,32 @@ class RaggedAtlas:
 
     # -- Versioning ---------------------------------------------------------
 
-    def snapshot(self) -> int:
+    def snapshot(self, *, validate: bool = True) -> int:
         """Record a consistent snapshot of all table versions.
 
         Returns the new atlas version number (0-indexed, monotonically increasing).
-        Raises ``ValueError`` if the atlas was created without a version table.
+        Raises ``ValueError`` if the atlas was created without a version table, or if
+        ``validate=True`` (the default) and validation errors are found.
+
+        Parameters
+        ----------
+        validate:
+            If ``True`` (default), run :meth:`validate` before recording the snapshot
+            and raise if any errors are found.
         """
         if self._version_table is None:
             raise ValueError(
                 "This atlas has no version table. Re-create it with RaggedAtlas.create() "
                 "to enable versioning."
             )
+
+        if validate:
+            errors = self.validate()
+            if errors:
+                raise ValueError(
+                    "Atlas validation failed — fix errors before snapshotting:\n"
+                    + "\n".join(f"  • {e}" for e in errors)
+                )
 
         existing = self._version_table.search().select(["version"]).to_polars()
         if existing.is_empty():
@@ -717,5 +688,4 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             dataset_vars_table=dataset_vars_table,
-            update_feature_registries=False,
         )

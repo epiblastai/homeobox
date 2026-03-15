@@ -11,9 +11,9 @@ import polars as pl
 import scipy.sparse as sp
 from zarr.core.sync import sync
 
-from lancell.atlas import PointerFieldInfo
 from lancell.batch_array import BatchAsyncArray
 from lancell.group_specs import ZarrGroupSpec
+from lancell.obs_alignment import PointerFieldInfo
 from lancell.protocols import Reconstructor
 
 if TYPE_CHECKING:

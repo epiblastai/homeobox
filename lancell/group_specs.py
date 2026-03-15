@@ -123,27 +123,46 @@ class ZarrGroupSpec(BaseModel):
                             f"shape {expected}"
                         )
 
+        # Determine the layers group path — may be top-level "layers" or nested (e.g. "csr/layers")
+        layers_path = "layers"
+        for sg_spec in self.required_subgroups:
+            name = sg_spec.subgroup_name
+            if name == "layers" or name.endswith("/layers"):
+                layers_path = name
+                break
+
         # Check required layers
         if self.required_layers:
-            if "layers" not in group or not isinstance(group["layers"], zarr.Group):
+            try:
+                layers_candidate = group[layers_path]
+                layers_group: zarr.Group | None = (
+                    layers_candidate if isinstance(layers_candidate, zarr.Group) else None
+                )
+            except Exception:
+                layers_group = None
+            if layers_group is None:
                 errors.append(
                     f"Missing required 'layers' subgroup (required layers: {self.required_layers})"
                 )
             else:
-                layers_group = group["layers"]
                 for layer_name in self.required_layers:
                     if layer_name not in layers_group:
                         errors.append(f"Missing required layer '{layer_name}'")
 
         # Check allowed layers (flag unknown arrays in layers/)
-        if self.allowed_layers and "layers" in group and isinstance(group["layers"], zarr.Group):
-            allowed_values = set(self.allowed_layers)
-            for name, _ in group["layers"].arrays():
-                if name not in allowed_values:
-                    errors.append(
-                        f"Unknown layer '{name}' in layers/ subgroup. "
-                        f"Allowed: {sorted(allowed_values)}"
-                    )
+        if self.allowed_layers:
+            try:
+                layers_candidate = group[layers_path]
+                if isinstance(layers_candidate, zarr.Group):
+                    allowed_values = set(self.allowed_layers)
+                    for name, _ in layers_candidate.arrays():
+                        if name not in allowed_values:
+                            errors.append(
+                                f"Unknown layer '{name}' in layers/ subgroup. "
+                                f"Allowed: {sorted(allowed_values)}"
+                            )
+            except Exception:
+                pass
 
         return errors
 

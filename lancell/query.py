@@ -14,8 +14,9 @@ import lancedb
 import numpy as np
 import polars as pl
 
-from lancell.atlas import PointerFieldInfo, RaggedAtlas
+from lancell.atlas import RaggedAtlas
 from lancell.group_specs import get_spec
+from lancell.obs_alignment import PointerFieldInfo
 from lancell.reconstruction import (
     _build_obs_only_anndata,
     _get_pointer_columns,

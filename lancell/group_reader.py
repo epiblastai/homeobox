@@ -29,6 +29,9 @@ class GroupReader:
         store: obstore.store.ObjectStore,
         dataset_vars_table: lancedb.table.Table | None,
         dataset_uid: str | None,
+        # REVIEW: I don't like this. We need to be more stringent about the version assumptions.
+        # Once loaded an atlas should be considered immutable. We will checkout specific versions
+        # of all the tables such that even if there are rewrites, current work will not be affected.
         remap_cache: tuple[int, np.ndarray] | None = None,
         var_df_cache: tuple[int, pl.DataFrame] | None = None,
         zarr_group_handle: zarr.Group | None = None,

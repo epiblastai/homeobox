@@ -7,9 +7,10 @@ import polars as pl
 import pytest
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas, align_obs_to_schema
+from lancell.atlas import RaggedAtlas
 from lancell.dataset_vars import reindex_registry
 from lancell.ingestion import add_from_anndata
+from lancell.obs_alignment import align_obs_to_schema
 from lancell.schema import (
     DatasetRecord,
     FeatureBaseSchema,
@@ -147,6 +148,26 @@ class TestSnapshot:
         atlas._version_table = None
 
         with pytest.raises(ValueError, match="no version table"):
+            atlas.snapshot()
+
+    def test_snapshot_raises_if_registry_invalid(self, tmp_path):
+        """snapshot() must fail if registries are not fully indexed."""
+        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas = RaggedAtlas.create(
+            db_uri=str(tmp_path / "atlas.lancedb"),
+            cell_table_name="cells",
+            cell_schema=TestCellSchema,
+            store=store,
+            registry_schemas={"gene_expression": GeneFeatureSchema},
+            dataset_table_name="_datasets",
+            dataset_schema=DatasetRecord,
+        )
+        # Register features but deliberately skip reindex_registry
+        atlas.register_features(
+            "gene_expression",
+            [GeneFeatureSchema(uid=f"gene_{i}", gene_name=f"GENE{i}") for i in range(5)],
+        )
+        with pytest.raises(ValueError, match="validation failed"):
             atlas.snapshot()
 
 
