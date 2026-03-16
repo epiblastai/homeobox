@@ -14,6 +14,7 @@ import pyarrow as pa
 import scipy.sparse as sp
 import zarr
 
+from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
 from lancell.batch_array import BatchArray
 from lancell.dataset_vars import read_dataset_vars
@@ -408,10 +409,6 @@ def write_dataset_vars(
     atlas.add_dataset_vars(var_df, dataset_uid, feature_space)
 
 
-def _sql_escape(s: str) -> str:
-    return s.replace("'", "''")
-
-
 def add_csc(
     atlas: RaggedAtlas,
     zarr_group: str,
@@ -456,7 +453,7 @@ def add_csc(
     datasets_df = (
         atlas._dataset_table.search()
         .where(
-            f"zarr_group = '{_sql_escape(zarr_group)}' AND feature_space = '{_sql_escape(feature_space)}'",
+            f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
             prefilter=True,
         )
         .select(["uid"])
@@ -472,7 +469,7 @@ def add_csc(
     # Query all cells in this zarr group
     cells_df = (
         atlas.cell_table.search()
-        .where(f"{feature_space}.zarr_group = '{_sql_escape(zarr_group)}'", prefilter=True)
+        .where(f"{feature_space}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
         .select([feature_space])
         .to_polars()
     )

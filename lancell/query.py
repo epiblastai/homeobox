@@ -97,6 +97,12 @@ class AtlasQuery:
 
     def feature_spaces(self, *spaces: str) -> "AtlasQuery":
         """Restrict reconstruction to specific feature spaces."""
+        known = {pf.feature_space for pf in self._atlas._pointer_fields.values()}
+        unknown = set(spaces) - known
+        if unknown:
+            raise ValueError(
+                f"Unknown feature space(s): {sorted(unknown)}. Available: {sorted(known)}"
+            )
         self._feature_spaces = list(spaces)
         return self
 
@@ -112,6 +118,9 @@ class AtlasQuery:
         requested features. The ``feature_join`` setting is ignored for
         filtered feature spaces; intersection semantics are used.
         """
+        if feature_space not in self._atlas._registry_tables:
+            known = sorted(self._atlas._registry_tables.keys())
+            raise ValueError(f"No registry for feature space '{feature_space}'. Available: {known}")
         self._feature_filter[feature_space] = list(uids)
         return self
 
