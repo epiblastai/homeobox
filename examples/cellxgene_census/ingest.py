@@ -21,9 +21,8 @@ from examples.cellxgene_census.schema import (
     GeneFeatureSpace,
 )
 from lancell.atlas import RaggedAtlas
-from lancell.ingestion import add_anndata_batch
+from lancell.ingestion import add_anndata_batch, add_csc
 from lancell.schema import make_uid
-from lancell.tools.add_csc import add_csc
 
 FEATURE_SPACE = "gene_expression"
 LAYER_NAME = "counts"
