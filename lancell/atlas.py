@@ -324,8 +324,8 @@ class RaggedAtlas:
         """Compact tables and reindex feature registries.
 
         Calls ``table.optimize()`` on the cell, dataset, and registry tables
-        to compact small Lance fragments, then assigns contiguous
-        ``global_index`` values on every registry via
+        to compact small Lance fragments, then assigns ``global_index`` to any
+        unindexed registry features via
         :func:`~lancell.dataset_vars.reindex_registry`, and propagates updated
         indices to ``_dataset_vars`` via
         :func:`~lancell.dataset_vars.sync_dataset_vars_global_index`.
@@ -334,6 +334,7 @@ class RaggedAtlas:
         self._dataset_table.optimize()
         for table in self._registry_tables.values():
             reindex_registry(table)
+            table.create_scalar_index("uid", replace=True)
             table.optimize()
             sync_dataset_vars_global_index(self._dataset_vars_table, table)
 
@@ -359,7 +360,7 @@ class RaggedAtlas:
         check_var_dfs:
             For feature spaces with var_df, validate _dataset_vars rows.
         check_registries:
-            Check that registry tables exist and global_index is contiguous.
+            Check that all registry rows have a global_index assigned.
         """
         errors: list[str] = []
 
@@ -472,14 +473,6 @@ class RaggedAtlas:
             if null_count > 0:
                 errors.append(
                     f"Registry '{fs}': {null_count} row(s) have no global_index. "
-                    f"Run reindex_registry(table) to fix."
-                )
-                continue
-            indices = sorted(df["global_index"].to_list())
-            expected = list(range(len(indices)))
-            if indices != expected:
-                errors.append(
-                    f"Registry '{fs}': global_index is not contiguous 0..{len(indices) - 1}. "
                     f"Run reindex_registry(table) to fix."
                 )
         return errors

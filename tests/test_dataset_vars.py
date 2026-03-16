@@ -158,16 +158,18 @@ class TestSyncDatasetVarsGlobalIndex:
         registry = _make_registry(tmp_path, uids, indexed=False)
         table = _make_dataset_vars_table(tmp_path)
 
-        # Reindex assigns uid_a=0, uid_b=1, uid_c=2
         reindex_registry(registry)
+
+        # Look up actual assigned indices
+        reg_df = registry.search().select(["uid", "global_index"]).to_polars()
+        gi_c = int(reg_df.filter(pl.col("uid") == "uid_c")["global_index"][0])
+        gi_a = int(reg_df.filter(pl.col("uid") == "uid_a")["global_index"][0])
 
         var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
         df = build_dataset_vars_df(var_df, "ds_001", registry)
         table.add(df)
 
-        # Simulate registry change: add a new feature and reindex
-        # (global_index values in _dataset_vars are now stale)
-        # For this test, manually mess up global_index then sync
+        # Manually mess up global_index then sync
         rows = read_dataset_vars(table, "ds_001")
         stale = rows.with_columns(pl.Series("global_index", [-1, -1]))
         (
@@ -181,8 +183,7 @@ class TestSyncDatasetVarsGlobalIndex:
         assert n == 2
 
         result = read_dataset_vars(table, "ds_001")
-        # uid_c=2, uid_a=0 after reindex
-        assert result["global_index"].to_list() == [2, 0]
+        assert result["global_index"].to_list() == [gi_c, gi_a]
 
     def test_empty_registry(self, tmp_path):
         db = lancedb.connect(str(tmp_path / "lancedb"))
@@ -243,15 +244,14 @@ class TestValidateDatasetVars:
 
 
 class TestReindexRegistry:
-    def test_assigns_contiguous_indices(self, tmp_path):
+    def test_assigns_indices_to_unindexed(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_c", "uid_a", "uid_b"], indexed=False)
         n = reindex_registry(registry)
         assert n == 3
 
         df = registry.search().select(["uid", "global_index"]).to_polars()
-        df = df.sort("uid")
-        assert df["uid"].to_list() == ["uid_a", "uid_b", "uid_c"]
-        assert df["global_index"].to_list() == [0, 1, 2]
+        assert df["global_index"].null_count() == 0
+        assert df["global_index"].n_unique() == 3
 
     def test_reindex_is_deterministic(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_z", "uid_a", "uid_m"], indexed=False)
@@ -263,12 +263,13 @@ class TestReindexRegistry:
 
         assert df1["global_index"].to_list() == df2["global_index"].to_list()
 
-    def test_reindex_overwrites_existing_indices(self, tmp_path):
+    def test_reindex_is_noop_when_already_indexed(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_b", "uid_a"], indexed=True)
-        reindex_registry(registry)
-        df = registry.search().select(["uid", "global_index"]).to_polars().sort("uid")
-        assert df["uid"].to_list() == ["uid_a", "uid_b"]
-        assert df["global_index"].to_list() == [0, 1]
+        df_before = registry.search().select(["uid", "global_index"]).to_polars().sort("uid")
+        n = reindex_registry(registry)
+        assert n == 0
+        df_after = registry.search().select(["uid", "global_index"]).to_polars().sort("uid")
+        assert df_before["global_index"].to_list() == df_after["global_index"].to_list()
 
     def test_empty_table(self, tmp_path):
         db = lancedb.connect(str(tmp_path / "lancedb"))
@@ -279,10 +280,13 @@ class TestReindexRegistry:
         registry = _make_registry(tmp_path, ["uid_c", "uid_a", "uid_b"], indexed=False)
         reindex_registry(registry)
 
+        reg_df = registry.search().select(["uid", "global_index"]).to_polars()
+        gi_b = int(reg_df.filter(pl.col("uid") == "uid_b")["global_index"][0])
+        gi_c = int(reg_df.filter(pl.col("uid") == "uid_c")["global_index"][0])
+
         var_df = pl.DataFrame({"global_feature_uid": ["uid_b", "uid_c"]})
         df = build_dataset_vars_df(var_df, "ds_001", registry)
-        # uid_a=0, uid_b=1, uid_c=2 after reindex
-        assert df["global_index"].to_list() == [1, 2]
+        assert df["global_index"].to_list() == [gi_b, gi_c]
 
 
 # ---------------------------------------------------------------------------

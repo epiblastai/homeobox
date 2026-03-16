@@ -116,6 +116,7 @@ def read_dataset_vars(
     return (
         table.search()
         .where(f"dataset_uid = '{dataset_uid}'", prefilter=True)
+        # REVIEW: Small savings, but we don't need to load `dataset_uid`
         .to_polars()
         .sort("local_index")
     )
@@ -150,6 +151,7 @@ def sync_dataset_vars_global_index(
     if registry_df.is_empty():
         return 0
 
+    # REVIEW: We shouldn't need to load all columns, do we?
     all_rows = dataset_vars_table.search().to_polars()
     if all_rows.is_empty():
         return 0
@@ -270,52 +272,44 @@ def _get_local_feature_count(
 # ---------------------------------------------------------------------------
 
 
-def reindex_registry(
-    table: lancedb.table.Table,
-    *,
-    sort_by: str = "uid",
-) -> int:
-    """Assign contiguous ``global_index`` values to every row in a feature registry.
+def reindex_registry(table: lancedb.table.Table) -> int:
+    """Assign ``global_index`` to any features that do not yet have one.
 
-    Reads all rows, sorts deterministically by *sort_by*, assigns
-    ``global_index = 0 .. N-1``, and writes the updated indices back via
-    ``merge_insert`` on ``uid``.
-
-    Parameters
-    ----------
-    table:
-        A LanceDB table backed by a FeatureBaseSchema subclass.
-    sort_by:
-        Column to sort by before assigning indices.
+    Reads only unindexed rows (``global_index IS NULL``) and assigns each a
+    unique integer starting from ``max(existing_index) + 1`` (or 0 if the
+    table is currently empty).  Rows that already have a ``global_index`` are
+    never modified.
 
     Returns
     -------
     int
-        Number of features indexed.
+        Number of features newly indexed.  0 if all features are already indexed.
     """
-    columns = ["uid", "global_index"]
-    if sort_by not in columns:
-        columns.append(sort_by)
-    df = table.search().select(columns).to_polars()
-    if df.is_empty():
+    unindexed = (
+        table.search().where("global_index IS NULL", prefilter=True).select(["uid"]).to_polars()
+    )
+    if unindexed.is_empty():
         return 0
 
-    df = df.sort(sort_by)
-    indices = df["global_index"]
-    if (
-        indices.null_count() == 0
-        and int(indices[0]) == 0
-        and int(indices.diff().drop_nulls().max()) <= 1
-    ):
-        return 0
-    df = df.with_columns(pl.Series("global_index", range(len(df)), dtype=pl.Int64))
+    existing = (
+        table.search()
+        .where("global_index IS NOT NULL", prefilter=True)
+        .select(["global_index"])
+        .to_polars()
+    )
+    next_index = int(existing["global_index"].max()) + 1 if not existing.is_empty() else 0
 
-    (table.merge_insert(on="uid").when_matched_update_all().execute(df))
-    return len(df)
+    updated = unindexed.with_columns(
+        pl.Series(
+            "global_index", list(range(next_index, next_index + len(unindexed))), dtype=pl.Int64
+        )
+    )
+    table.merge_insert(on="uid").when_matched_update_all().execute(updated)
+    return len(updated)
 
 
 # ---------------------------------------------------------------------------
-# Feature UID resolution (unchanged from var_df.py)
+# Feature UID resolution
 # ---------------------------------------------------------------------------
 
 

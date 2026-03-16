@@ -114,9 +114,9 @@ class FeatureBaseSchema(LanceModel):
 
     Fields:
         uid: Canonical stable identifier. Safe to preserve across registry rebuilds.
-        global_index: Dense integer for compute paths (gather/scatter in NumPy,
-            PyTorch, Arrow, Rust). Unique within one feature registry. May be
-            reassigned on registry rebuild — use uid for durable references.
+        global_index: Unique stable integer, assigned incrementally (new features get
+            max(existing) + 1). Used as a scatter/gather key in compute paths. Never
+            reassigned once set — use uid for durable references.
     """
 
     uid: str = Field(default_factory=make_uid)

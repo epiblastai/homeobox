@@ -586,23 +586,26 @@ class FeatureCSCReconstructor:
                 var_df = gr.var_df
                 remap = gr.get_remap()
 
-                # Build global_index -> local_index inverse map
-                remap_inv = np.full(
-                    int(remap.max()) + 1 if len(remap) > 0 else 0, -1, dtype=np.int64
-                )
-                for local_i, global_i in enumerate(remap):
-                    remap_inv[int(global_i)] = local_i
+                # Build global_index -> local_index inverse map (vectorized)
+                sort_order = np.argsort(remap)  # local indices ordered by global index
+                sorted_remap = remap[sort_order]  # global indices in sorted order
+
+                # For each wanted global, find its position in the sorted remap
+                positions = np.searchsorted(sorted_remap, wanted_globals)
+                in_range = positions < len(sorted_remap)
+                clipped = np.where(in_range, positions, 0)
+                matched = in_range & (sorted_remap[clipped] == wanted_globals)
+                local_indices = np.where(matched, sort_order[clipped], -1).astype(np.int64)
 
                 # Find CSC ranges for each wanted global feature present in this group
                 csc_starts_list: list[int] = []
                 csc_ends_list: list[int] = []
                 feat_col_indices: list[int] = []
 
-                for col_idx, global_f in enumerate(wanted_globals):
-                    gf = int(global_f)
-                    if gf >= len(remap_inv) or remap_inv[gf] == -1:
+                for col_idx in range(len(wanted_globals)):
+                    local_f = int(local_indices[col_idx])
+                    if local_f == -1:
                         continue
-                    local_f = int(remap_inv[gf])
                     row = var_df.row(local_f, named=True)
                     cs = row.get("csc_start")
                     ce = row.get("csc_end")
