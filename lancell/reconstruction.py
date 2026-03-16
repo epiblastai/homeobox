@@ -153,7 +153,9 @@ def _get_pointer_columns(cells_pl: pl.DataFrame) -> list[str]:
 
 def _build_obs_only_anndata(cells_pl: pl.DataFrame) -> ad.AnnData:
     """Build an AnnData with only obs, no X."""
-    keep_cols = [c for c in cells_pl.columns if cells_pl[c].dtype != pl.Struct]
+    keep_cols = [
+        c for c in cells_pl.columns if cells_pl[c].dtype != pl.Struct and not c.startswith("_")
+    ]
     obs = cells_pl.select(keep_cols).to_pandas()
     if "uid" in obs.columns:
         obs = obs.set_index("uid")
@@ -280,9 +282,9 @@ class SparseCSRReconstructor:
                     "feature_join has no effect when wanted_globals is provided; "
                     "the feature space is pinned to the requested globals."
                 )
-            # If we are selecting relatively few cells and many features,
-            # then better to go down the csr path
-            if len(cells_pl) < len(wanted_globals):
+            # CSC is optimized for few features / many cells (column-oriented reads);
+            # delegate when cells outnumber wanted features
+            if len(cells_pl) > len(wanted_globals):
                 return FeatureCSCReconstructor().as_anndata(
                     atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
                 )
@@ -408,6 +410,8 @@ class DenseReconstructor:
         _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
+        if n_features == 0:
+            return _build_obs_only_anndata(cells_pl_original)
 
         layers_to_read = (
             layer_overrides if layer_overrides is not None else list(spec.required_layers)
