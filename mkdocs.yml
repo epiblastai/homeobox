@@ -38,6 +38,7 @@ plugins:
 nav:
   - Overview: index.md
   - Data Structure: data_structure.md
+  - RaggedAtlas: atlas.md
 
 markdown_extensions:
   - admonition
