@@ -57,11 +57,8 @@ class ZarrGroupSpec(BaseModel):
     required_layers: list[str] = []
     allowed_layers: list[str] = []
 
-    def validate_group(self, group: zarr.Group) -> list[str]:
-        """Validate a zarr group against this spec. Returns a list of errors."""
+    def _check_top_level_arrays(self, group: zarr.Group) -> tuple[list[str], dict[str, tuple]]:
         errors: list[str] = []
-
-        # Check required top-level arrays
         reference_shapes: dict[str, tuple] = {}
         for array_spec in self.required_arrays:
             if array_spec.array_name not in group:
@@ -81,8 +78,10 @@ class ZarrGroupSpec(BaseModel):
                     f"'{array_spec.array_name}' has dtype.kind='{arr.dtype.kind}', "
                     f"expected '{array_spec.dtype_kind.value}'"
                 )
+        return errors, reference_shapes
 
-        # Check required subgroups
+    def _check_subgroups(self, group: zarr.Group, reference_shapes: dict[str, tuple]) -> list[str]:
+        errors: list[str] = []
         for sg_spec in self.required_subgroups:
             if sg_spec.subgroup_name not in group:
                 errors.append(f"Missing required subgroup '{sg_spec.subgroup_name}'")
@@ -92,7 +91,6 @@ class ZarrGroupSpec(BaseModel):
                 errors.append(f"'{sg_spec.subgroup_name}' is not a group")
                 continue
 
-            # Check required arrays within subgroup
             sub_arrays = {k: v for k, v in subgroup.arrays()}
             if sg_spec.required_arrays:
                 for arr_spec in sg_spec.required_arrays:
@@ -102,17 +100,14 @@ class ZarrGroupSpec(BaseModel):
                             f"required array '{arr_spec.array_name}'"
                         )
 
-            # Uniform shape check across all arrays in subgroup
             if sg_spec.uniform_shape and sub_arrays:
                 shapes = {name: arr.shape for name, arr in sub_arrays.items()}
-                unique_shapes = set(shapes.values())
-                if len(unique_shapes) > 1:
+                if len(set(shapes.values())) > 1:
                     errors.append(
                         f"Subgroup '{sg_spec.subgroup_name}' arrays have "
                         f"inconsistent shapes: {shapes}"
                     )
 
-            # Shape must match a sibling array at parent level
             if sg_spec.match_shape_of and sg_spec.match_shape_of in reference_shapes:
                 expected = reference_shapes[sg_spec.match_shape_of]
                 for name, arr in sub_arrays.items():
@@ -122,16 +117,20 @@ class ZarrGroupSpec(BaseModel):
                             f"doesn't match '{sg_spec.match_shape_of}' "
                             f"shape {expected}"
                         )
+        return errors
 
-        # Determine the layers group path — may be top-level "layers" or nested (e.g. "csr/layers")
-        layers_path = "layers"
+    def _find_layers_path(self) -> str:
+        """Return the layers group path — may be top-level or nested (e.g. 'csr/layers')."""
         for sg_spec in self.required_subgroups:
             name = sg_spec.subgroup_name
             if name == "layers" or name.endswith("/layers"):
-                layers_path = name
-                break
+                return name
+        return "layers"
 
-        # Check required layers
+    def _check_layers(self, group: zarr.Group) -> list[str]:
+        errors: list[str] = []
+        layers_path = self._find_layers_path()
+
         if self.required_layers:
             try:
                 layers_candidate = group[layers_path]
@@ -149,7 +148,6 @@ class ZarrGroupSpec(BaseModel):
                     if layer_name not in layers_group:
                         errors.append(f"Missing required layer '{layer_name}'")
 
-        # Check allowed layers (flag unknown arrays in layers/)
         if self.allowed_layers:
             try:
                 layers_candidate = group[layers_path]
@@ -164,6 +162,13 @@ class ZarrGroupSpec(BaseModel):
             except Exception:
                 pass
 
+        return errors
+
+    def validate_group(self, group: zarr.Group) -> list[str]:
+        """Validate a zarr group against this spec. Returns a list of errors."""
+        errors, reference_shapes = self._check_top_level_arrays(group)
+        errors += self._check_subgroups(group, reference_shapes)
+        errors += self._check_layers(group)
         return errors
 
 
