@@ -256,11 +256,9 @@ class RaggedAtlas:
         Must be called before ingestion for feature spaces that
         have a registry (``has_var_df=True``).
 
-        This method only inserts new feature rows — it does **not** assign
-        ``global_index``.  Call :func:`~lancell.feature_layouts.reindex_registry`
-        on the registry table after all registrations are complete to assign
-        contiguous indices.  This two-step approach avoids index races when
-        multiple writers register features concurrently.
+        Features are inserted with ``global_index = None``.  The index is
+        assigned later by ``optimize()`` / ``reindex_registry()`` which is
+        designed to run after ingestion completes.
 
         Parameters
         ----------
@@ -291,9 +289,7 @@ class RaggedAtlas:
 
         # Deduplicate within the input batch; merge_insert(on="uid") with
         # when_not_matched_insert_all handles skipping rows that already
-        # exist in the registry.  global_index is NOT assigned here — call
-        # reindex_registry() after all registrations to assign contiguous
-        # indices, avoiding races between concurrent writers.
+        # exist in the registry.
         new_records = features_df.unique(subset=["uid"], keep="first")
 
         n_before = registry_table.count_rows()

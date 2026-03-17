@@ -161,22 +161,7 @@ class FeatureLayout(LanceModel):
     layout_uid: str
     feature_uid: str
     local_index: int
-    global_index: int
-
-
-class DatasetVar(LanceModel):
-    """Deprecated: Per-feature-per-dataset index row for the ``_dataset_vars`` table.
-
-    Kept for backward compatibility / migration tooling. New code should use
-    :class:`FeatureLayout` instead.
-    """
-
-    feature_uid: str
-    dataset_uid: str
-    local_index: int
-    global_index: int
-    csc_start: int | None = None
-    csc_end: int | None = None
+    global_index: int | None = None
 
 
 class AtlasVersionRecord(LanceModel):

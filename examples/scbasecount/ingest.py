@@ -27,19 +27,17 @@ from examples.scbasecount.schema import (
 )
 from lancell.atlas import RaggedAtlas
 from lancell.codecs.bitpacking import BitpackingCodec
-from lancell.ingestion import add_csc, write_dataset_vars
-from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns
+from lancell.ingestion import add_csc
+from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields
 from lancell.schema import make_uid
 
-FEATURE_SPACE = "velocyto_expression"
+FEATURE_SPACE = "genefull_expression"
 CHUNK_SIZE = 40_960
 SHARD_SIZE = 1024 * CHUNK_SIZE
 
 OBS_RENAME = {
     "gene_count_Unique": "gene_count_unique",
     "umi_count_Unique": "umi_count_unique",
-    "gene_count_spliced": "gene_count_unique",
-    "umi_count_spliced": "umi_count_unique",
     "SRX_accession": "srx_accession",
 }
 
@@ -104,14 +102,20 @@ def open_atlas(atlas_dir: str) -> RaggedAtlas:
         cell_schema=CellObs,
         dataset_table_name="datasets",
         store=store,
-        registry_tables={FEATURE_SPACE: "velocyto_expression_registry"},
+        registry_tables={FEATURE_SPACE: "genefull_expression_registry"},
     )
 
 
-def register_genes(atlas: RaggedAtlas, adata: ad.AnnData) -> dict[str, str]:
-    """Register gene features and return gene_id -> registry uid mapping."""
+def register_genes(atlas: RaggedAtlas, adata: ad.AnnData, organism: str) -> dict[str, str]:
+    """Register gene features and return gene_id -> registry uid mapping.
+
+    Deduplication is strictly by ``adata.var.index`` (the gene_id), never by
+    the ``gene_symbols`` column which can collide across organisms.
+    """
     var = adata.var
-    gene_ids = list(var.index)
+    # Deduplicate var by index so each unique gene_id is registered once
+    var_deduped = var[~var.index.duplicated(keep="first")]
+    gene_ids = list(var_deduped.index)
 
     registry_table = atlas._registry_tables[FEATURE_SPACE]
     existing_df = registry_table.search().select(["uid", "gene_id"]).to_polars()
@@ -121,28 +125,19 @@ def register_genes(atlas: RaggedAtlas, adata: ad.AnnData) -> dict[str, str]:
 
     gene_to_uid: dict[str, str] = {}
     new_features: list[GeneFeatureSpace] = []
-    for gene_id in gene_ids:
+    for i, gene_id in enumerate(gene_ids):
         if gene_id in existing_gene_to_uid:
             gene_to_uid[gene_id] = existing_gene_to_uid[gene_id]
-        elif gene_id in gene_to_uid:
-            pass  # duplicate var index
         else:
-            row = var.loc[gene_id]
-            # scBaseCount uses "gene_symbols" instead of "gene_name"
-            for col in ("gene_name", "gene_symbols"):
-                if col in var.columns:
-                    gene_name = str(row[col])
-                    break
-            else:
-                gene_name = gene_id
-            feature = GeneFeatureSpace(gene_id=gene_id, gene_name=gene_name)
+            gene_name = str(var_deduped.iloc[i]["gene_symbols"]) if "gene_symbols" in var_deduped.columns else gene_id
+            feature = GeneFeatureSpace(gene_id=gene_id, gene_name=gene_name, organism=organism)
             new_features.append(feature)
             gene_to_uid[gene_id] = feature.uid
 
     if new_features:
         n_new = atlas.register_features(FEATURE_SPACE, new_features)
         print(
-            f"  Registered {n_new} new genes ({len(gene_ids)} total in this file, "
+            f"  Registered {n_new} new genes ({len(gene_ids)} unique in this file, "
             f"{len(existing_gene_to_uid)} already existed)"
         )
     else:
@@ -208,7 +203,7 @@ def _union_sparsity(matrices: list[sp.csr_matrix]) -> tuple[np.ndarray, np.ndarr
     return union_indptr, indices, reindexed_values
 
 
-def ingest_velocyto(
+def ingest_genefull(
     atlas: RaggedAtlas,
     adata: ad.AnnData,
     h5ad_path: str,
@@ -217,7 +212,7 @@ def ingest_velocyto(
     feature_type: str,
     release_date: str,
 ) -> tuple[int, str]:
-    """Ingest an h5ad with Velocyto layers into the atlas."""
+    """Ingest an h5ad with GeneFull_Ex50pAS layers into the atlas."""
     n_cells = adata.n_obs
     print(f"  n_cells={n_cells:,}")
 
@@ -232,21 +227,21 @@ def ingest_velocyto(
     adata.var["global_feature_uid"] = [gene_to_uid[gid] for gid in gene_ids]
 
     # Get sparse matrices for all 3 layers
-    spliced = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-    unspliced = adata.layers["unspliced"] if isinstance(adata.layers["unspliced"], sp.csr_matrix) else sp.csr_matrix(adata.layers["unspliced"])
-    ambiguous = adata.layers["ambiguous"] if isinstance(adata.layers["ambiguous"], sp.csr_matrix) else sp.csr_matrix(adata.layers["ambiguous"])
+    unique = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
+    em = adata.layers["UniqueAndMult-EM"] if isinstance(adata.layers["UniqueAndMult-EM"], sp.csr_matrix) else sp.csr_matrix(adata.layers["UniqueAndMult-EM"])
+    uniform = adata.layers["UniqueAndMult-Uniform"] if isinstance(adata.layers["UniqueAndMult-Uniform"], sp.csr_matrix) else sp.csr_matrix(adata.layers["UniqueAndMult-Uniform"])
 
     # Cast float to int32 if values are raw integer counts
-    for mat in (spliced, unspliced, ambiguous):
+    for mat in (unique, em, uniform):
         if mat.data.dtype.kind == "f" and np.array_equal(mat.data, np.floor(mat.data)):
             mat.data = mat.data.astype(np.int32)
 
     # Compute union sparsity and reindex
-    union_indptr, union_indices, reindexed = _union_sparsity([spliced, unspliced, ambiguous])
+    union_indptr, union_indices, reindexed = _union_sparsity([unique, em, uniform])
     nnz = len(union_indices)
 
     # Determine if data is integer for bitpacking
-    data_dtype = spliced.data.dtype
+    data_dtype = unique.data.dtype
     use_bitpacking = data_dtype in {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
     indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
     layer_kwargs: dict = {}
@@ -270,7 +265,7 @@ def ingest_velocyto(
     )
     layers_group = csr_group.create_group("layers")
 
-    layer_names = ["spliced", "unspliced", "ambiguous"]
+    layer_names = ["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"]
     for k, layer_name in enumerate(layer_names):
         zarr_layer = layers_group.create_array(
             layer_name,
@@ -295,10 +290,7 @@ def ingest_velocyto(
     starts = union_indptr[:-1].astype(np.int64)
     ends = union_indptr[1:].astype(np.int64)
 
-    # Write dataset_vars
-    write_dataset_vars(atlas, adata, FEATURE_SPACE, zarr_group, zarr_group)
-
-    # Build dataset record from sample metadata
+    # Build dataset record from sample metadata (must exist before add_or_reuse_layout)
     dataset_kwargs = {
         "uid": zarr_group,
         "zarr_group": zarr_group,
@@ -325,6 +317,10 @@ def ingest_velocyto(
         schema=ScBasecountDatasetRecord.to_arrow_schema(),
     )
     atlas._dataset_table.add(dataset_arrow)
+
+    # Register feature layout (updates dataset record with layout_uid)
+    var_pl = pl.DataFrame({"global_feature_uid": adata.var["global_feature_uid"].tolist()})
+    atlas.add_or_reuse_layout(var_pl, zarr_group, FEATURE_SPACE)
 
     # Insert cell records
     pointer_field: PointerFieldInfo | None = None
@@ -376,7 +372,7 @@ def main():
     parser.add_argument("--h5ad", required=True, help="Path to .h5ad file")
     parser.add_argument("--atlas-dir", required=True, help="Path to atlas directory")
     parser.add_argument("--sample-metadata", required=True, help="Path to sample_metadata.parquet")
-    parser.add_argument("--feature-type", default="Velocyto", help="Feature type (default: Velocyto)")
+    parser.add_argument("--feature-type", default="GeneFull_Ex50pAS", help="Feature type (default: GeneFull_Ex50pAS)")
     parser.add_argument("--release-date", default="2026-01-12", help="Release date (default: 2026-01-12)")
     parser.add_argument("--no-csc", action="store_true", help="Skip CSC layout")
     args = parser.parse_args()
@@ -404,23 +400,24 @@ def main():
         atlas = create_atlas(atlas_dir)
 
     print("Registering genes...")
-    gene_to_uid = register_genes(atlas, adata)
+    gene_to_uid = register_genes(atlas, adata, organism=sample_row["organism"])
 
-    print("Ingesting velocyto data...")
-    n_cells, zarr_group = ingest_velocyto(
+    print("Ingesting genefull data...")
+    n_cells, zarr_group = ingest_genefull(
         atlas, adata, h5ad_path, gene_to_uid, sample_row,
         args.feature_type, args.release_date,
     )
 
     if not args.no_csc:
-        print("Adding CSC layout for spliced layer...")
+        print("Adding CSC layout for Unique layer...")
         add_csc(
             atlas,
             zarr_group=zarr_group,
             feature_space=FEATURE_SPACE,
-            layer_name="spliced",
+            layer_name="Unique",
             chunk_size=CHUNK_SIZE,
             shard_size=SHARD_SIZE,
+            use_scipy=True,
         )
 
     print(f"Done! Ingested {n_cells:,} cells from {Path(h5ad_path).name}")

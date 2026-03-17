@@ -1,10 +1,10 @@
 """Schemas for an scBaseCount atlas built on lancell's ragged atlas framework.
 
 Defines:
-- VELOCYTO_EXPRESSION_SPEC: custom zarr group spec for spliced/unspliced/ambiguous layers
+- GENEFULL_EXPRESSION_SPEC: custom zarr group spec for Unique/EM/Uniform layers
 - GeneFeatureSpace: feature registry schema for genes (var metadata)
 - ScBasecountDatasetRecord: dataset-level metadata with scBaseCount provenance
-- CellObs: cell-level observation schema with velocyto_expression pointer
+- CellObs: cell-level observation schema with genefull_expression pointer
 """
 
 from lancell.group_specs import (
@@ -24,11 +24,11 @@ from lancell.schema import (
 )
 
 # ---------------------------------------------------------------------------
-# Custom feature space spec for Velocyto layers
+# Custom feature space spec for GeneFull_Ex50pAS layers
 # ---------------------------------------------------------------------------
 
-VELOCYTO_EXPRESSION_SPEC = ZarrGroupSpec(
-    feature_space="velocyto_expression",
+GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
+    feature_space="genefull_expression",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
@@ -37,11 +37,11 @@ VELOCYTO_EXPRESSION_SPEC = ZarrGroupSpec(
     required_subgroups=[
         SubgroupSpec(subgroup_name="csr/layers", uniform_shape=True, match_shape_of="csr/indices"),
     ],
-    required_layers=["spliced"],
-    allowed_layers=["spliced", "unspliced", "ambiguous"],
+    required_layers=["Unique"],
+    allowed_layers=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
     reconstructor=SparseCSRReconstructor(),
 )
-register_spec(VELOCYTO_EXPRESSION_SPEC)
+register_spec(GENEFULL_EXPRESSION_SPEC)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +54,7 @@ class GeneFeatureSpace(FeatureBaseSchema):
 
     gene_id: str
     gene_name: str
+    organism: str
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +66,7 @@ class ScBasecountDatasetRecord(DatasetRecord):
     """Dataset record with scBaseCount provenance."""
 
     srx_accession: str
-    feature_type: str = "Velocyto"
+    feature_type: str = "GeneFull_Ex50pAS"
     release_date: str = "2026-01-12"
     lib_prep: str | None = None
     tech_10x: str | None = None
@@ -90,7 +91,7 @@ class ScBasecountDatasetRecord(DatasetRecord):
 class CellObs(LancellBaseSchema):
     """Cell-level observation schema for scBaseCount data."""
 
-    velocyto_expression: SparseZarrPointer | None = None
+    genefull_expression: SparseZarrPointer | None = None
 
     cell_barcode: str | None = None
     srx_accession: str | None = None

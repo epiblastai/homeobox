@@ -306,7 +306,7 @@ class TestValidateFeatureLayout:
 
 
 # ---------------------------------------------------------------------------
-# reindex_registry (kept from old test_dataset_vars.py)
+# reindex_registry
 # ---------------------------------------------------------------------------
 
 

@@ -40,7 +40,7 @@ print(dataset.n_features)  # width of the feature space (global index range)
 When training on a fixed gene panel — a set of marker genes, a pre-selected HVG list, or a model-specific vocabulary — pass a list of global feature indices to `.features()` before calling the terminal method. The dataset will only load and return those features, and `n_features` will equal the length of the list.
 
 ```python
-from lancell.dataset_vars import resolve_feature_uids_to_global_indices
+from lancell.feature_layouts import resolve_feature_uids_to_global_indices
 
 wanted = resolve_feature_uids_to_global_indices(
     atlas_r._registry_tables["gene_expression"],
@@ -56,7 +56,7 @@ dataset = (
 print(dataset.n_features)  # 3
 ```
 
-`resolve_feature_uids_to_global_indices` looks up Ensembl IDs (or any UID your schema uses) in the feature registry and returns their positions in the global feature index. The resulting indices are what the zarr reader uses to slice data — no coordinate translation happens at batch time.
+[`resolve_feature_uids_to_global_indices`](feature_layouts.md#resolve_feature_uids_to_global_indices) looks up Ensembl IDs (or any UID your schema uses) in the feature registry and returns their positions in the global feature index. The resulting indices are what the zarr reader uses to slice data — no coordinate translation happens at batch time.
 
 ---
 

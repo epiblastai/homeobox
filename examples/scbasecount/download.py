@@ -28,6 +28,7 @@ def read_sample_metadata(
     gcs_path = (
         f"arc-institute-virtual-cell-atlas/scbasecount/{release_date}"
         f"/metadata/{feature_type}/Homo_sapiens/sample_metadata.parquet"
+        # f"/metadata/{feature_type}/Caenorhabditis_elegans/sample_metadata.parquet"
     )
     fs = gcsfs.GCSFileSystem(token="anon")
     with fs.open(gcs_path, "rb") as f:
@@ -49,6 +50,7 @@ def build_file_list(
         gcs_uri = (
             f"{GCS_BASE}/{release_date}/h5ad/{feature_type}"
             f"/Homo_sapiens/{srx}.h5ad"
+            # f"/Caenorhabditis_elegans/{srx}.h5ad"
         )
         local_path = output_dir / f"{srx}.h5ad"
         if local_path.exists():

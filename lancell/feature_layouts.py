@@ -1,8 +1,7 @@
 """Feature layout helpers: _feature_layouts LanceDB table.
 
-Replaces the per-(dataset, feature) ``_dataset_vars`` table with a
-per-(layout, feature) table. Each unique feature ordering is stored once
-as a "layout", and datasets reference layouts by ``layout_uid``.
+Each unique feature ordering is stored once as a "layout", and datasets
+reference layouts by ``layout_uid``.
 """
 
 import hashlib
@@ -269,7 +268,7 @@ def _get_local_feature_count(
 
 
 # ---------------------------------------------------------------------------
-# Registry reindexing (unchanged from dataset_vars.py)
+# Registry reindexing
 # ---------------------------------------------------------------------------
 
 
