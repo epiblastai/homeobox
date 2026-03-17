@@ -167,6 +167,7 @@ After this call, the zarr group contains:
 │       └── counts
 └── csc/
     ├── indices          # col-sorted: cell row IDs in feature order
+    ├── indptr           # (n_features + 1,) int64 — byte-range boundaries per feature
     └── layers/
         └── counts
 ```

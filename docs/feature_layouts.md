@@ -262,20 +262,18 @@ def resolve_feature_uids_to_global_indices(
 For how this connects to feature-filtered training, see [PyTorch Data Loading](dataloader.md#feature-filtered-datasets).
 
 ```python
-from lancell.feature_layouts import resolve_feature_uids_to_global_indices
-
-global_indices = resolve_feature_uids_to_global_indices(
-    registry_table,
-    feature_uids=["ENSG00000141510", "ENSG00000012048", "ENSG00000171862"],
-)
-
 # Use with a feature-filtered query
 adata = (
     atlas_r.query()
-    .features(global_indices, feature_space="gene_expression")
+    .features(
+        ["ENSG00000141510", "ENSG00000012048", "ENSG00000171862"],
+        feature_space="gene_expression",
+    )
     .to_anndata()
 )
 ```
+
+If you already have global indices (e.g. from a prior `resolve_feature_uids_to_global_indices` call), pass the UIDs directly to `.features()` — it handles the registry lookup internally.
 
 ---
 

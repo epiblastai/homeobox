@@ -244,6 +244,7 @@ The `uid` field carries the canonical identifier for the modality. For genes, us
 | `zarr_group` | `str` | Path to the zarr group within the object store. This is the same path stored in pointer fields on cell rows, so the two can be joined. |
 | `feature_space` | `str` | The registered feature space name for this group (e.g. `"gene_expression"`, `"protein_abundance"`). |
 | `n_cells` | `int` | Number of cells in the dataset. Recorded at ingest time; used by `validate()` when checking consistency between the cell table and the zarr arrays. |
+| `layout_uid` | `str` | Content-hash identifying the feature ordering for this dataset. Set by `add_or_reuse_layout()` during ingestion; empty string until that call completes. Used to join datasets against `_feature_layouts` rows. |
 | `created_at` | `str` | UTC ISO 8601 timestamp, set automatically at instantiation. |
 
 You construct a `DatasetRecord` explicitly when calling `add_from_anndata()` or the lower-level ingestion functions. If you need to attach provenance fields (source database accession, DOI, release date, etc.), subclass `DatasetRecord` and pass your subclass to `RaggedAtlas.create()` as the `dataset_schema` argument:

@@ -44,7 +44,7 @@ import obstore.store
 import lancell
 from lancell.atlas import RaggedAtlas
 from lancell.schema import LancellBaseSchema, SparseZarrPointer
-from lancell.dataset_schema import DatasetRecord
+from lancell.schema import DatasetRecord
 from my_project.schemas import GeneSchema  # a FeatureBaseSchema subclass
 
 store = obstore.store.S3Store("s3://my-bucket/my-atlas/zarr")
@@ -212,8 +212,8 @@ Once checked out, the atlas is fully queryable:
 ```python
 adata = (
     atlas_latest.query()
-    .where("tissue == 'liver'")
-    .feature_space("gene_expression")
+    .where("tissue = 'liver'")
+    .feature_spaces("gene_expression")
     .to_anndata()
 )
 ```
