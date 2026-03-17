@@ -104,7 +104,7 @@ def main():
     print(f"  {len(pairs)} files to download")
 
     if args.dry_run:
-        for gcs_uri, local_path in pairs:
+        for gcs_uri, _local_path in pairs:
             print(f"    {gcs_uri}")
         return
 

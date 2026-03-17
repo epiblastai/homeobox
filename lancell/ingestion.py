@@ -16,7 +16,6 @@ import zarr
 
 from lancell._util import sql_escape
 from lancell.atlas import RaggedAtlas
-from lancell.batch_array import BatchArray
 from lancell.feature_layouts import read_feature_layout
 from lancell.group_specs import PointerKind, get_spec
 from lancell.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns

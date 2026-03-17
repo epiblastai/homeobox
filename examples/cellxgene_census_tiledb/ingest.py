@@ -218,7 +218,7 @@ def ingest_dataset(
     all_indptr = [np.array([0], dtype=np.int64)]
     running_nnz = 0
 
-    for block_csr, (block_obs_joinids, _) in blockwise.scipy():
+    for block_csr, (_block_obs_joinids, _) in blockwise.scipy():
         # block_csr is a CSR matrix with shape (block_n_cells, n_vars_full)
         # reindex columns to local var index (0-based contiguous)
         # var_joinids are the soma_joinids we care about

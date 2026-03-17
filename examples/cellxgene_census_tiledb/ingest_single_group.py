@@ -255,7 +255,7 @@ def ingest_all(
     t_stream_start = time.perf_counter()
     last_progress = 0
 
-    for block_csr, (block_obs_joinids, _) in blockwise.scipy():
+    for block_csr, (_block_obs_joinids, _) in blockwise.scipy():
         block_n = block_csr.shape[0]
         # Reindex to contiguous var columns
         block_csr = block_csr[:, var_joinids]

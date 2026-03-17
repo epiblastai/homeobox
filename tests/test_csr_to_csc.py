@@ -4,7 +4,6 @@ import anndata as ad
 import numpy as np
 import obstore
 import polars as pl
-import pytest
 import scipy.sparse as sp
 
 from lancell.atlas import RaggedAtlas
@@ -115,7 +114,6 @@ class TestAddCsc:
 
         # Verify against expected CSC
         expected_indices = expected_csc.indices.astype(np.uint32)
-        expected_data = expected_csc.data.astype(np.float32)
         expected_indptr = expected_csc.indptr
 
         n_features = expected_csc.shape[1]

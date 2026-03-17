@@ -10,7 +10,7 @@ from pathlib import Path
 
 import obstore.store
 
-from examples.cellxgene_census_tiledb.schema import CellObs, CensusDatasetRecord, GeneFeatureSpace
+from examples.cellxgene_census_tiledb.schema import CellObs
 from lancell.atlas import RaggedAtlas
 from lancell.ingestion import add_csc
 

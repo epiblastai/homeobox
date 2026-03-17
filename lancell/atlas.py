@@ -343,7 +343,6 @@ class RaggedAtlas:
             )
 
         # Update DatasetRecord with layout_uid
-        update_df = pl.DataFrame({"uid": [dataset_uid], "layout_uid": [layout_uid]})
         (
             self._dataset_table.merge_insert(on="uid")
             .when_matched_update_all()

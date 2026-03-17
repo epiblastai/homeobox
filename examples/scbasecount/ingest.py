@@ -18,7 +18,6 @@ import obstore.store
 import polars as pl
 import pyarrow as pa
 import scipy.sparse as sp
-import zarr
 
 from examples.scbasecount.schema import (
     CellObs,

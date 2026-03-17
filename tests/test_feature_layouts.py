@@ -477,9 +477,9 @@ class TestGroupReaderRemap:
 
     def test_has_csc_via_zarr(self, tmp_path):
         """has_csc checks for zarr indptr existence."""
-        from lancell.group_reader import GroupReader
-
         import obstore
+
+        from lancell.group_reader import GroupReader
 
         store = obstore.store.MemoryStore()
         zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
@@ -498,9 +498,9 @@ class TestGroupReaderRemap:
 
     def test_get_csc_indptr(self, tmp_path):
         """get_csc_indptr() loads from zarr and caches."""
-        from lancell.group_reader import GroupReader
-
         import obstore
+
+        from lancell.group_reader import GroupReader
 
         store = obstore.store.MemoryStore()
         zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
