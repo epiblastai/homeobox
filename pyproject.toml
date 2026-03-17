@@ -1,52 +1,22 @@
 [project]
 name = "lancell"
 version = "0.1.0"
-description = ""
+description = "Cell-centric ML training backend on LanceDB and sharded zarr"
 readme = "README.md"
-requires-python = "==3.13.*"
+requires-python = ">=3.12"
 dependencies = [
-    "h5py",
-    "torch",
-    "boto3",
-    "pylance>=2.0.0",
-    "lancedb",
-    "torchvision",
-    "marimo",
-    "pandas",
-    "pubmed-parser",
-    "matplotlib",
-    "scipy",
-    "rdkit",
-    "numba",
-    "transformers",
-    "sentencepiece",
-    "protobuf",
-    "wandb",
-    "biopython",
-    "datasets",
-    "pydicom",
-    "openpyxl",
-    "scikit-learn",
-    "polars",
-    "accelerate",
-    "python-fasthtml",
-    "anthropic",
-    "gcsfs",
-    "pydantic-ai-slim",
-    "opencv-python",
     "anndata",
-    "s3fs",
-    "scanpy",
-    "bionty",
+    "h5py",
+    "lancedb",
     "mudata",
-    "GEOparse",
-    "fastapi",
-    "uvicorn[standard]",
-    "httpx",
-    "reflex",
+    "numpy",
     "obstore",
-    "tifffile>=2026.3.3",
-    "imagecodecs>=2026.1.14",
+    "polars",
+    "pydantic",
+    "pyarrow",
+    "pylance>=2.0.0",
+    "scipy",
+    "zarr",
 ]
 
 [[tool.uv.index]]
@@ -63,10 +33,49 @@ torchvision = [
 ]
 
 [project.optional-dependencies]
+ml = [
+    "torch",
+]
+bio = [
+    "bionty",
+    "biopython",
+    "GEOparse",
+    "pubmed-parser",
+    "scanpy",
+]
+viz = [
+    "marimo",
+    "matplotlib",
+]
+io = [
+    "boto3",
+    "gcsfs",
+    "s3fs",
+    "opencv-python",
+    "tifffile>=2026.3.3",
+    "imagecodecs>=2026.1.14",
+]
+ai = [
+    "anthropic",
+    "pydantic-ai-slim",
+]
+all = [
+    "lancell[ml,bio,viz,io,ai]",
+    "datasets",
+    "duckdb",
+    "numba",
+    "openpyxl",
+    "pandas",
+    "scikit-learn",
+]
 dev = [
     "pytest",
     "ruff",
     "pre-commit",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
 ]
 
 [build-system]

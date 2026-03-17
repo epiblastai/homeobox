@@ -1,4 +1,5 @@
 import asyncio
+import warnings
 from functools import cached_property
 
 import numpy as np
@@ -24,7 +25,11 @@ class BatchAsyncArray(AsyncArray):
 
     @cached_property
     def _rust_reader(self) -> RustBatchReader:
-        return RustBatchReader(self)
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore", message="Successfully reconstructed", category=RuntimeWarning
+            )
+            return RustBatchReader(self)
 
     @cached_property
     def _native_dtype(self) -> np.dtype:

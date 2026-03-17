@@ -1,8 +1,11 @@
+mod bitpack_codec;
+mod bitpacking;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::PyRuntimeError;
@@ -10,6 +13,16 @@ use pyo3::prelude::*;
 use pyo3_object_store::AnyObjectStore;
 use rayon::prelude::*;
 use tokio::runtime::Runtime;
+
+use zarrs::array::codec::api::CodecRuntimeRegistryHandleV3;
+
+/// Global handle for the bitpacking codec registration.
+/// Kept alive for the lifetime of the process so the codec stays registered.
+static BITPACK_CODEC_HANDLE: OnceLock<CodecRuntimeRegistryHandleV3> = OnceLock::new();
+
+fn ensure_bitpack_codec_registered() {
+    BITPACK_CODEC_HANDLE.get_or_init(bitpack_codec::register_bitpack_codec);
+}
 
 use zarrs::array::codec::{CodecChain, ShardingCodecConfiguration};
 use zarrs::array::{
@@ -20,6 +33,107 @@ use zarrs::metadata::ConfigurationSerialize;
 use zarrs_object_store::object_store::path::Path as ObjectPath;
 use zarrs_object_store::object_store::{ObjectStore, ObjectStoreExt};
 use zarrs_object_store::AsyncObjectStore;
+
+// ---------------------------------------------------------------------------
+// Shared sharding metadata extraction
+// ---------------------------------------------------------------------------
+
+/// Metadata extracted from a sharded zarr array.
+pub(crate) struct ShardingMeta {
+    pub inner_codecs: Arc<CodecChain>,
+    pub index_codecs: Arc<CodecChain>,
+    pub subchunk_shape: Vec<NonZeroU64>,
+    pub data_type: DataType,
+    pub fill_value: FillValue,
+    pub chunk_size: usize,
+    pub chunks_per_shard: usize,
+    pub element_stride: usize,
+    pub ndim: usize,
+    pub index_encoded_size: usize,
+}
+
+/// Extract sharding metadata from a zarrs Array.
+/// Works with any storage backend since it only accesses cached metadata.
+pub(crate) fn extract_sharding_meta<T>(
+    array: &Array<T>,
+) -> Result<ShardingMeta, String> {
+    let dtype_size = array
+        .data_type()
+        .fixed_size()
+        .ok_or("variable-length dtypes not supported")?;
+    let data_type = array.data_type().clone();
+    let fill_value = array.fill_value().clone();
+
+    let ndim = array.shape().len();
+    let zero_indices: Vec<u64> = vec![0; ndim];
+    let shard_shape = array
+        .chunk_shape(&zero_indices)
+        .map_err(|e| format!("chunk_shape: {e}"))?;
+
+    let subchunk_shape = array
+        .subchunk_shape()
+        .ok_or("array is not sharded")?;
+    let chunk_size = subchunk_shape[0].get() as usize;
+    let chunks_per_shard: usize = shard_shape
+        .iter()
+        .zip(subchunk_shape.iter())
+        .map(|(s, c)| s.get() as usize / c.get() as usize)
+        .product();
+    let element_stride: usize = subchunk_shape[1..]
+        .iter()
+        .map(|d| d.get() as usize)
+        .product::<usize>()
+        * dtype_size;
+
+    let codec_chain = array.codecs();
+    let a2b_codec = codec_chain.array_to_bytes_codec();
+    let configuration = a2b_codec
+        .configuration_v3(&CodecMetadataOptions::default())
+        .ok_or("no v3 config for sharding codec")?;
+    let sharding_config = ShardingCodecConfiguration::try_from_configuration(configuration)
+        .map_err(|e| format!("parse sharding config: {e}"))?;
+    let ShardingCodecConfiguration::V1(v1) = sharding_config
+    else {
+        return Err("unsupported sharding configuration variant".into());
+    };
+
+    let inner_codecs = Arc::new(
+        CodecChain::from_metadata(&v1.codecs)
+            .map_err(|e| format!("inner codecs: {e}"))?,
+    );
+    let index_codecs = Arc::new(
+        CodecChain::from_metadata(&v1.index_codecs)
+            .map_err(|e| format!("index codecs: {e}"))?,
+    );
+
+    let index_shape: Vec<NonZeroU64> = vec![
+        NonZeroU64::new(chunks_per_shard as u64).unwrap(),
+        NonZeroU64::new(2).unwrap(),
+    ];
+    let uint64_dt = zarrs::array::data_type::uint64();
+    let uint64_fv = FillValue::from(u64::MAX);
+    let index_encoded_size = match index_codecs.encoded_representation(
+        &index_shape,
+        &uint64_dt,
+        &uint64_fv,
+    ) {
+        Ok(BytesRepresentation::FixedSize(size)) => size as usize,
+        _ => return Err("index codecs must produce fixed-size output".into()),
+    };
+
+    Ok(ShardingMeta {
+        inner_codecs,
+        index_codecs,
+        subchunk_shape: subchunk_shape.to_vec(),
+        data_type,
+        fill_value,
+        chunk_size,
+        chunks_per_shard,
+        element_stride,
+        ndim,
+        index_encoded_size,
+    })
+}
 
 // ---------------------------------------------------------------------------
 // Types used across read_ranges phases
@@ -347,6 +461,9 @@ impl RustBatchReader {
 impl RustBatchReader {
     #[new]
     fn new(py_zarr_array: &Bound<'_, PyAny>) -> PyResult<Self> {
+        // 0. Ensure bitpacking codec is registered before opening any arrays
+        ensure_bitpack_codec_registered();
+
         // 1. Extract obstore from zarr array and convert to Arc<dyn ObjectStore>
         let store_wrapper = py_zarr_array.getattr("store")?;
         let obstore = store_wrapper.getattr("store")?;
@@ -354,8 +471,6 @@ impl RustBatchReader {
         let store: Arc<dyn ObjectStore> = any_store.into_dyn();
 
         // 2. Extract the array's path within the store.
-        //    zarr AsyncArray.store_path is a StorePath object; .path gives the
-        //    relative path string within the store.
         let raw_path: String = py_zarr_array
             .getattr("store_path")
             .and_then(|sp| sp.getattr("path"))
@@ -379,94 +494,25 @@ impl RustBatchReader {
             .block_on(Array::async_open(zarrs_store, &store_path))
             .map_err(|e| PyRuntimeError::new_err(format!("failed to open zarr array: {e}")))?;
 
-        // 4. Extract metadata
-        let dtype_size = array
-            .data_type()
-            .fixed_size()
-            .ok_or_else(|| PyRuntimeError::new_err("variable-length dtypes not supported"))?;
-        let data_type = array.data_type().clone();
-        let fill_value = array.fill_value().clone();
-
-        let ndim = array.shape().len();
-        let zero_indices: Vec<u64> = vec![0; ndim];
-        let shard_shape = array
-            .chunk_shape(&zero_indices)
-            .map_err(|e| PyRuntimeError::new_err(format!("chunk_shape: {e}")))?;
-
-        let subchunk_shape = array
-            .subchunk_shape()
-            .ok_or_else(|| PyRuntimeError::new_err("array is not sharded"))?;
-        let chunk_size = subchunk_shape[0].get() as usize;
-        let chunks_per_shard: usize = shard_shape
-            .iter()
-            .zip(subchunk_shape.iter())
-            .map(|(s, c)| s.get() as usize / c.get() as usize)
-            .product();
-        let element_stride: usize = subchunk_shape[1..]
-            .iter()
-            .map(|d| d.get() as usize)
-            .product::<usize>()
-            * dtype_size;
-
-        // 5. Extract inner codec chain from sharding configuration
-        let codec_chain = array.codecs();
-        let a2b_codec = codec_chain.array_to_bytes_codec();
-        let configuration = a2b_codec
-            .configuration_v3(&CodecMetadataOptions::default())
-            .ok_or_else(|| PyRuntimeError::new_err("no v3 config for sharding codec"))?;
-        let sharding_config = ShardingCodecConfiguration::try_from_configuration(configuration)
-            .map_err(|e| PyRuntimeError::new_err(format!("parse sharding config: {e}")))?;
-        let ShardingCodecConfiguration::V1(v1) = sharding_config
-        else {
-            return Err(PyRuntimeError::new_err(
-                "unsupported sharding configuration variant",
-            ));
-        };
-
-        let inner_codecs = Arc::new(
-            CodecChain::from_metadata(&v1.codecs)
-                .map_err(|e| PyRuntimeError::new_err(format!("inner codecs: {e}")))?,
-        );
-        let index_codecs = Arc::new(
-            CodecChain::from_metadata(&v1.index_codecs)
-                .map_err(|e| PyRuntimeError::new_err(format!("index codecs: {e}")))?,
-        );
-
-        // 6. Compute index encoded size
-        let index_shape: Vec<NonZeroU64> = vec![
-            NonZeroU64::new(chunks_per_shard as u64).unwrap(),
-            NonZeroU64::new(2).unwrap(),
-        ];
-        let uint64_dt = zarrs::array::data_type::uint64();
-        let uint64_fv = FillValue::from(u64::MAX);
-        let index_encoded_size = match index_codecs.encoded_representation(
-            &index_shape,
-            &uint64_dt,
-            &uint64_fv,
-        ) {
-            Ok(BytesRepresentation::FixedSize(size)) => size as usize,
-            _ => {
-                return Err(PyRuntimeError::new_err(
-                    "index codecs must produce fixed-size output",
-                ))
-            }
-        };
+        // 4. Extract sharding metadata via shared helper
+        let meta = extract_sharding_meta(&array)
+            .map_err(|e| PyRuntimeError::new_err(e))?;
 
         let codec_options = CodecOptions::default();
 
         Ok(Self {
             array: Arc::new(array),
             store,
-            inner_codecs,
-            index_codecs,
-            subchunk_shape: subchunk_shape.to_vec(),
-            data_type,
-            fill_value,
-            chunk_size,
-            chunks_per_shard,
-            element_stride,
-            ndim,
-            index_encoded_size,
+            inner_codecs: meta.inner_codecs,
+            index_codecs: meta.index_codecs,
+            subchunk_shape: meta.subchunk_shape,
+            data_type: meta.data_type,
+            fill_value: meta.fill_value,
+            chunk_size: meta.chunk_size,
+            chunks_per_shard: meta.chunks_per_shard,
+            element_stride: meta.element_stride,
+            ndim: meta.ndim,
+            index_encoded_size: meta.index_encoded_size,
             shard_index_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             runtime,
             codec_options,
@@ -524,8 +570,75 @@ impl RustBatchReader {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Bitpacking pyo3 exports (for the Python write path)
+// ---------------------------------------------------------------------------
+
+/// Encode raw bytes (little-endian uint32) using BP-128 bitpacking.
+///
+/// Parameters
+/// ----------
+/// data : bytes
+///     Raw little-endian uint32 data (length must be a multiple of 4).
+/// transform : str
+///     "none" or "delta".
+///
+/// Returns
+/// -------
+/// numpy array of encoded bytes.
+#[pyfunction]
+fn bitpack_encode<'py>(
+    py: Python<'py>,
+    data: &[u8],
+    transform: &str,
+) -> PyResult<Py<PyArray1<u8>>> {
+    if data.len() % 4 != 0 {
+        return Err(PyRuntimeError::new_err(format!(
+            "bitpack_encode: input length {} is not a multiple of 4",
+            data.len()
+        )));
+    }
+    let t = bitpacking::Transform::from_str(transform)
+        .map_err(|e| PyRuntimeError::new_err(e))?;
+
+    let values: Vec<u32> = data
+        .chunks_exact(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+
+    let encoded = bitpacking::encode(&values, t);
+    Ok(PyArray1::from_vec(py, encoded).into())
+}
+
+/// Decode BP-128 bitpacked data back to raw bytes (little-endian uint32).
+///
+/// Parameters
+/// ----------
+/// data : bytes
+///     Bitpacked encoded data.
+///
+/// Returns
+/// -------
+/// numpy array of decoded bytes (little-endian uint32).
+#[pyfunction]
+fn bitpack_decode<'py>(
+    py: Python<'py>,
+    data: &[u8],
+) -> PyResult<Py<PyArray1<u8>>> {
+    let values = bitpacking::decode(data)
+        .map_err(|e| PyRuntimeError::new_err(e))?;
+
+    let mut out = Vec::with_capacity(values.len() * 4);
+    for v in &values {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    Ok(PyArray1::from_vec(py, out).into())
+}
+
 #[pymodule]
 fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustBatchReader>()?;
+    m.add_function(wrap_pyfunction!(bitpack_encode, m)?)?;
+    m.add_function(wrap_pyfunction!(bitpack_decode, m)?)?;
     Ok(())
 }
