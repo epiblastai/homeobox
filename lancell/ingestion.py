@@ -409,6 +409,42 @@ def write_feature_layout(
     atlas.add_or_reuse_layout(var_df, dataset_uid, feature_space)
 
 
+def _read_compressed_output(
+    output_path: str,
+    csc_indices_zarr: zarr.Array,
+    csc_values_zarr: zarr.Array,
+) -> None:
+    """Read compressed CSC output file shard-by-shard and write to zarr arrays."""
+    import struct
+
+    from lancell._rust import bitpack_decode
+
+    with open(output_path, "rb") as f:
+        header = f.read(20)
+        magic, version, n_entries, n_shards = struct.unpack("<IIqI", header)
+        assert magic == 0x4C434353, f"Bad output magic: {magic:#X}"
+        assert version == 1, f"Unsupported version: {version}"
+
+        written = 0
+        for _ in range(n_shards):
+            shard_header = f.read(12)
+            n, indices_len, values_len = struct.unpack("<III", shard_header)
+
+            indices_compressed = f.read(indices_len)
+            values_compressed = f.read(values_len)
+
+            indices_raw = bitpack_decode(indices_compressed)
+            values_raw = bitpack_decode(values_compressed)
+
+            indices = np.frombuffer(indices_raw, dtype=np.uint32)[:n]
+            values = np.frombuffer(values_raw, dtype=np.uint32)[:n]
+
+            end = written + n
+            csc_indices_zarr[written:end] = indices
+            csc_values_zarr[written:end] = values
+            written = end
+
+
 def add_csc(
     atlas: RaggedAtlas,
     zarr_group: str,
@@ -416,6 +452,7 @@ def add_csc(
     layer_name: str = "counts",
     chunk_size: int = 4096,
     shard_size: int = 65536,
+    sort_buffer_bytes: int = 1 << 30,
 ) -> None:
     """Read existing CSR group and write CSC alongside it.
 
@@ -508,16 +545,16 @@ def add_csc(
     rows = read_feature_layout(atlas._feature_layouts_table, layout_uid)
     n_features = len(rows)
 
-    # Run memory-efficient two-pass CSR-to-CSC conversion in Rust
+    # Run external merge sort CSR-to-CSC conversion in Rust
     import tempfile
 
-    from lancell._rust import csr_to_csc as _rust_csr_to_csc
+    from lancell._rust import bitpack_decode, csr_to_csc as _rust_csr_to_csc
 
     csr_indices_path = f"{zarr_group}/csr/indices"
     csr_layer_path = f"{zarr_group}/csr/layers/{layer_name}"
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        idx_mmap_path, val_mmap_path, csc_start, csc_end = _rust_csr_to_csc(
+        output_path, indptr = _rust_csr_to_csc(
             atlas._store,
             csr_indices_path,
             csr_layer_path,
@@ -525,13 +562,15 @@ def add_csc(
             ends.astype(np.int64),
             int(n_features),
             tmp_dir,
+            shard_size=shard_size,
+            sort_buffer_bytes=sort_buffer_bytes,
         )
 
-        # Write CSC zarr arrays from mmap files in batches
+        nnz = int(indptr[-1]) if len(indptr) > 1 else 0
+
+        # Write CSC zarr arrays
         _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
         csc_group = _writable_root.require_group(f"{zarr_group}/csc")
-
-        nnz = int(csc_end[-1]) if len(csc_end) > 0 else 0
 
         csc_indices_zarr = csc_group.create_array(
             "indices",
@@ -549,25 +588,11 @@ def add_csc(
             shards=(shard_size,),
         )
 
-        # Write indptr as zarr array at {zarr_group}/csc/indptr
-        indptr = np.zeros(n_features + 1, dtype=np.int64)
-        indptr[:n_features] = csc_start
-        indptr[n_features] = csc_end[-1] if len(csc_end) > 0 else 0
         csc_group.create_array("indptr", data=indptr)
 
-        # Read mmap files in shard-sized batches and write to zarr
+        # Read compressed output file shard-by-shard and write to zarr
         if nnz > 0:
-            mmap_indices = np.memmap(idx_mmap_path, dtype=np.uint32, mode="r", shape=(nnz,))
-            mmap_values = np.memmap(val_mmap_path, dtype=np.uint32, mode="r", shape=(nnz,))
-
-            written = 0
-            while written < nnz:
-                end = min(written + shard_size, nnz)
-                csc_indices_zarr[written:end] = mmap_indices[written:end]
-                csc_values_zarr[written:end] = mmap_values[written:end]
-                written = end
-
-            del mmap_indices, mmap_values
+            _read_compressed_output(output_path, csc_indices_zarr, csc_values_zarr)
 
     # Cache invalidation: GroupReader needs fresh data
     atlas._group_readers.pop((zarr_group, feature_space), None)

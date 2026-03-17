@@ -14,3 +14,16 @@ def bitpack_encode(data: bytes, transform: str) -> npt.NDArray[np.uint8]: ...
 def bitpack_decode(
     data: bytes,
 ) -> npt.NDArray[np.uint8]: ...
+
+def csr_to_csc(
+    store: object,
+    csr_indices_path: str,
+    csr_layer_path: str,
+    starts: npt.NDArray[np.int64],
+    ends: npt.NDArray[np.int64],
+    n_features: int,
+    tmp_dir: str,
+    *,
+    shard_size: int = 65536,
+    sort_buffer_bytes: int = 1_073_741_824,
+) -> tuple[str, npt.NDArray[np.int64]]: ...

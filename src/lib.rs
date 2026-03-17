@@ -1,6 +1,9 @@
 mod bitpack_codec;
 mod bitpacking;
-mod csr_to_csc;
+mod block_io;
+mod merge_heap;
+mod merge_sort_csc;
+mod radix_sort;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -641,6 +644,6 @@ fn _rust(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<RustBatchReader>()?;
     m.add_function(wrap_pyfunction!(bitpack_encode, m)?)?;
     m.add_function(wrap_pyfunction!(bitpack_decode, m)?)?;
-    m.add_function(wrap_pyfunction!(csr_to_csc::csr_to_csc)(m)?)?;
+    m.add_function(wrap_pyfunction!(merge_sort_csc::csr_to_csc)(m)?)?;
     Ok(())
 }
