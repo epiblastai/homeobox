@@ -107,6 +107,10 @@ class GroupReader:
                 f"GroupReader for {self.zarr_group!r} has no remap and no table to load from."
             )
         rows = read_feature_layout(self._feature_layouts_table, self._layout_uid)
+        if rows["global_index"].null_count() > 0:
+            raise ValueError(
+                f"Layout '{self._layout_uid}' has null global_index values; run optimize() first."
+            )
         self._remap = rows["global_index"].to_numpy().astype(np.int32, copy=False)
         return self._remap
 

@@ -231,6 +231,10 @@ def validate_feature_layout(
     if null_count > 0:
         errors.append(f"feature_uid has {null_count} null(s)")
 
+    null_gi = rows["global_index"].null_count()
+    if null_gi > 0:
+        errors.append(f"global_index has {null_gi} null(s); run optimize() to sync from registry")
+
     n_unique = rows["feature_uid"].n_unique()
     if n_unique != len(rows):
         errors.append(f"feature_uid has duplicates: {len(rows)} rows but {n_unique} unique values")
