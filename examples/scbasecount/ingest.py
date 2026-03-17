@@ -417,7 +417,6 @@ def main():
             layer_name="Unique",
             chunk_size=CHUNK_SIZE,
             shard_size=SHARD_SIZE,
-            use_scipy=True,
         )
 
     print(f"Done! Ingested {n_cells:,} cells from {Path(h5ad_path).name}")

@@ -409,41 +409,6 @@ def write_feature_layout(
     atlas.add_or_reuse_layout(var_df, dataset_uid, feature_space)
 
 
-def _read_compressed_output(
-    output_path: str,
-    csc_indices_zarr: zarr.Array,
-    csc_values_zarr: zarr.Array,
-) -> None:
-    """Read compressed CSC output file shard-by-shard and write to zarr arrays."""
-    import struct
-
-    from lancell._rust import bitpack_decode
-
-    with open(output_path, "rb") as f:
-        header = f.read(20)
-        magic, version, n_entries, n_shards = struct.unpack("<IIqI", header)
-        assert magic == 0x4C434353, f"Bad output magic: {magic:#X}"
-        assert version == 1, f"Unsupported version: {version}"
-
-        written = 0
-        for _ in range(n_shards):
-            shard_header = f.read(12)
-            n, indices_len, values_len = struct.unpack("<III", shard_header)
-
-            indices_compressed = f.read(indices_len)
-            values_compressed = f.read(values_len)
-
-            indices_raw = bitpack_decode(indices_compressed)
-            values_raw = bitpack_decode(values_compressed)
-
-            indices = np.frombuffer(indices_raw, dtype=np.uint32)[:n]
-            values = np.frombuffer(values_raw, dtype=np.uint32)[:n]
-
-            end = written + n
-            csc_indices_zarr[written:end] = indices
-            csc_values_zarr[written:end] = values
-            written = end
-
 
 def add_csc(
     atlas: RaggedAtlas,
@@ -452,8 +417,6 @@ def add_csc(
     layer_name: str = "counts",
     chunk_size: int = 4096,
     shard_size: int = 65536,
-    sort_buffer_bytes: int = 1 << 30,
-    use_scipy: bool = False,
 ) -> None:
     """Read existing CSR group and write CSC alongside it.
 
@@ -479,12 +442,6 @@ def add_csc(
         Chunk size for the new CSC zarr arrays.
     shard_size:
         Shard size for the new CSC zarr arrays.
-    use_scipy:
-        If ``True``, load the full CSR into memory and use
-        ``scipy.sparse.csc_matrix`` to transpose. Much faster for small
-        datasets but requires the entire matrix to fit in RAM. When
-        ``False`` (default), uses an external merge-sort in Rust that
-        streams through temporary files and needs very little memory.
 
     Raises
     ------
@@ -552,16 +509,10 @@ def add_csc(
     rows = read_feature_layout(atlas._feature_layouts_table, layout_uid)
     n_features = len(rows)
 
-    if use_scipy:
-        _add_csc_scipy(
-            atlas, zarr_group, layer_name, starts, ends,
-            n_cells, n_features, chunk_size, shard_size, feature_space,
-        )
-    else:
-        _add_csc_rust(
-            atlas, zarr_group, layer_name, starts, ends,
-            n_features, chunk_size, shard_size, sort_buffer_bytes, feature_space,
-        )
+    _add_csc_scipy(
+        atlas, zarr_group, layer_name, starts, ends,
+        n_cells, n_features, chunk_size, shard_size, feature_space,
+    )
 
 
 def _add_csc_scipy(
@@ -628,66 +579,3 @@ def _add_csc_scipy(
     atlas._group_readers.pop((zarr_group, feature_space), None)
 
 
-def _add_csc_rust(
-    atlas: RaggedAtlas,
-    zarr_group: str,
-    layer_name: str,
-    starts: np.ndarray,
-    ends: np.ndarray,
-    n_features: int,
-    chunk_size: int,
-    shard_size: int,
-    sort_buffer_bytes: int,
-    feature_space: str,
-) -> None:
-    """CSR-to-CSC using Rust external merge sort (low memory, streams via temp files)."""
-    import tempfile
-
-    from lancell._rust import csr_to_csc as _rust_csr_to_csc
-
-    csr_indices_path = f"{zarr_group}/csr/indices"
-    csr_layer_path = f"{zarr_group}/csr/layers/{layer_name}"
-
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        output_path, indptr = _rust_csr_to_csc(
-            atlas._store,
-            csr_indices_path,
-            csr_layer_path,
-            starts.astype(np.int64),
-            ends.astype(np.int64),
-            int(n_features),
-            tmp_dir,
-            shard_size=shard_size,
-            sort_buffer_bytes=sort_buffer_bytes,
-        )
-
-        nnz = int(indptr[-1]) if len(indptr) > 1 else 0
-
-        # Write CSC zarr arrays
-        _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
-        csc_group = _writable_root.require_group(f"{zarr_group}/csc")
-
-        csc_indices_zarr = csc_group.create_array(
-            "indices",
-            shape=(nnz,),
-            dtype=np.uint32,
-            chunks=(chunk_size,),
-            shards=(shard_size,),
-        )
-        layers_group = csc_group.create_group("layers")
-        csc_values_zarr = layers_group.create_array(
-            layer_name,
-            shape=(nnz,),
-            dtype=np.uint32,
-            chunks=(chunk_size,),
-            shards=(shard_size,),
-        )
-
-        csc_group.create_array("indptr", data=indptr)
-
-        # Read compressed output file shard-by-shard and write to zarr
-        if nnz > 0:
-            _read_compressed_output(output_path, csc_indices_zarr, csc_values_zarr)
-
-    # Cache invalidation
-    atlas._group_readers.pop((zarr_group, feature_space), None)
