@@ -26,6 +26,7 @@ def _():
     import sys
     import time
 
+    import altair as alt
     import marimo as mo
     import numpy as np
     import polars as pl
@@ -35,7 +36,7 @@ def _():
     _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if _repo_root not in sys.path:
         sys.path.insert(0, _repo_root)
-    return mo, np, os, pl, tiledbsoma, time, tqdm
+    return alt, mo, np, os, pl, tiledbsoma, time, tqdm
 
 
 @app.cell(hide_code=True)
@@ -69,20 +70,16 @@ def _(mo):
         value=50_000,
         label="Cells to stream",
     )
-    n_epochs_slider = mo.ui.slider(
-        start=1, stop=5, step=1, value=1, label="Timed epochs"
-    )
-    mo.vstack([batch_size_slider, n_cells_slider, n_epochs_slider])
-    return batch_size_slider, n_cells_slider, n_epochs_slider
+    mo.vstack([batch_size_slider, n_cells_slider])
+    return batch_size_slider, n_cells_slider
 
 
 @app.cell
-def _(batch_size_slider, n_cells_slider, n_epochs_slider):
+def _(batch_size_slider, n_cells_slider):
     BATCH_SIZE = batch_size_slider.value
     N_CELLS = n_cells_slider.value
-    N_EPOCHS = n_epochs_slider.value
     SEED = 42
-    return BATCH_SIZE, N_CELLS, N_EPOCHS, SEED
+    return BATCH_SIZE, N_CELLS, SEED
 
 
 @app.cell
@@ -263,91 +260,11 @@ def _(np, time, tqdm):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Benchmark 1 — Single Worker (num_workers=0)
+    ## Benchmark 1 — Worker Scaling
 
-    Both systems stream `N_CELLS` with random shuffle using a single
-    in-process worker. This isolates pure I/O and decode throughput
-    without multiprocessing overhead.
-    """)
-    return
-
-
-@app.cell
-def _(
-    BATCH_SIZE,
-    N_CELLS,
-    N_EPOCHS,
-    SEED,
-    atlas,
-    experiment,
-    mo,
-    np,
-    pl,
-    run_lancell_epoch,
-    run_tiledb_epoch,
-):
-    # -- lancell single-worker --
-    lancell_single_results = []
-    for ep in range(N_EPOCHS):
-        res = run_lancell_epoch(atlas, N_CELLS, BATCH_SIZE, SEED + ep, num_workers=0)
-        lancell_single_results.append(res)
-        print(
-            f"lancell epoch {ep+1}: {res['total_s']:.2f}s, "
-            f"{res['cells_per_s']:,.0f} cells/s, "
-            f"{res['n_batches']} batches"
-        )
-
-    # -- TileDB single-worker --
-    tiledb_single_results = []
-    for ep in range(N_EPOCHS):
-        res = run_tiledb_epoch(experiment, N_CELLS, BATCH_SIZE, SEED + ep, num_workers=0)
-        tiledb_single_results.append(res)
-        print(
-            f"TileDB  epoch {ep+1}: {res['total_s']:.2f}s, "
-            f"{res['cells_per_s']:,.0f} cells/s, "
-            f"{res['n_batches']} batches"
-        )
-
-    # Summary
-    tiledb_med = float(np.median([r["total_s"] for r in tiledb_single_results]))
-    lancell_med = float(np.median([r["total_s"] for r in lancell_single_results]))
-    tiledb_cells_s = float(np.median([r["cells_per_s"] for r in tiledb_single_results]))
-    lancell_cells_s = float(np.median([r["cells_per_s"] for r in lancell_single_results]))
-    tiledb_med_batch = float(np.median([r["med_batch_ms"] for r in tiledb_single_results]))
-    lancell_med_batch = float(np.median([r["med_batch_ms"] for r in lancell_single_results]))
-    tiledb_p95_batch = float(np.median([r["p95_batch_ms"] for r in tiledb_single_results]))
-    lancell_p95_batch = float(np.median([r["p95_batch_ms"] for r in lancell_single_results]))
-
-    speedup_single = lancell_cells_s / tiledb_cells_s if tiledb_cells_s > 0 else 0
-
-    single_worker_df = pl.DataFrame(
-        {
-            "system": ["TileDB-SOMA", "lancell"],
-            "epoch_s": [round(tiledb_med, 2), round(lancell_med, 2)],
-            "cells_per_s": [round(tiledb_cells_s), round(lancell_cells_s)],
-            "med_batch_ms": [round(tiledb_med_batch, 1), round(lancell_med_batch, 1)],
-            "p95_batch_ms": [round(tiledb_p95_batch, 1), round(lancell_p95_batch, 1)],
-        }
-    )
-
-    mo.vstack([
-        mo.md(f"""
-    ### Single Worker Results (batch_size={BATCH_SIZE}, {N_CELLS:,} cells)
-
-    **lancell speedup: {speedup_single:.2f}x**
-        """),
-        single_worker_df,
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Benchmark 2 — Multi-Worker Scaling
-
-    Sweep over worker counts to compare how each system scales with
-    parallel data loading. Both systems use `multiprocessing_context="spawn"`.
+    Sweep over worker counts (including 0 for single in-process) to compare
+    I/O throughput and how each system scales with parallel data loading.
+    Both systems use `multiprocessing_context="spawn"` for multi-worker runs.
     """)
     return
 
@@ -356,8 +273,8 @@ def _(mo):
 def _(mo):
     worker_counts_input = mo.ui.array(
         [
-            mo.ui.checkbox(value=False, label="0 (in-process)"),
-            mo.ui.checkbox(value=True, label="2 workers"),
+            mo.ui.checkbox(value=True, label="0 (in-process)"),
+            mo.ui.checkbox(value=False, label="2 workers"),
             mo.ui.checkbox(value=True, label="4 workers"),
             mo.ui.checkbox(value=False, label="8 workers"),
         ]
@@ -445,23 +362,21 @@ def _(mo):
 
 
 @app.cell
-def _(mo, multi_worker_df, pl):
-    import altair as alt
-
-    tiledb_plot = multi_worker_df.select(
+def _(alt, mo, multi_worker_df, pl):
+    _tiledb_plot = multi_worker_df.select(
         pl.col("workers"),
         pl.col("tiledb_cells_per_s").alias("cells_per_s"),
         pl.lit("TileDB-SOMA").alias("system"),
     )
-    lancell_plot = multi_worker_df.select(
+    _lancell_plot = multi_worker_df.select(
         pl.col("workers"),
         pl.col("lancell_cells_per_s").alias("cells_per_s"),
         pl.lit("lancell").alias("system"),
     )
-    plot_df = pl.concat([tiledb_plot, lancell_plot])
+    _plot_df = pl.concat([_tiledb_plot, _lancell_plot])
 
-    chart = (
-        alt.Chart(plot_df.to_pandas())
+    _chart = (
+        alt.Chart(_plot_df.to_pandas())
         .mark_bar()
         .encode(
             x=alt.X("workers:N", title="Workers"),
@@ -472,7 +387,7 @@ def _(mo, multi_worker_df, pl):
         .properties(width=400, height=300, title="Dataloader Throughput")
     )
 
-    mo.ui.altair_chart(chart)
+    mo.ui.altair_chart(_chart)
     return
 
 
@@ -819,7 +734,8 @@ def _(
                 adata_t = q.to_anndata(X_name="raw")
             tiledb_times.append(time.perf_counter() - t0)
             print(f"  TileDB-SOMA run {_i+1}: {tiledb_times[-1]:.2f}s -> {adata_t.shape}")
-            return lancell_times, tiledb_times, adata_l, adata_t
+
+        return lancell_times, tiledb_times, adata_l, adata_t
 
     _lancell_times, _tiledb_times, _adata_l, _adata_t = _run()
 
@@ -853,25 +769,23 @@ def _(mo):
 
 
 @app.cell
-def _(cell_query_result, comb_query_result, feat_query_result, mo, pl):
-    import altair as alt
-
+def _(alt, cell_query_result, comb_query_result, feat_query_result, mo, pl):
     query_df = pl.DataFrame([cell_query_result, feat_query_result, comb_query_result])
 
-    tiledb_plot = query_df.select(
+    _tiledb_plot = query_df.select(
         pl.col("query"),
         pl.col("tiledb_s").alias("seconds"),
         pl.lit("TileDB-SOMA").alias("system"),
     )
-    lancell_plot = query_df.select(
+    _lancell_plot = query_df.select(
         pl.col("query"),
         pl.col("lancell_s").alias("seconds"),
         pl.lit("lancell").alias("system"),
     )
-    chart_df = pl.concat([tiledb_plot, lancell_plot])
+    _chart_df = pl.concat([_tiledb_plot, _lancell_plot])
 
-    chart = (
-        alt.Chart(chart_df.to_pandas())
+    _chart = (
+        alt.Chart(_chart_df.to_pandas())
         .mark_bar()
         .encode(
             x=alt.X(
@@ -886,7 +800,7 @@ def _(cell_query_result, comb_query_result, feat_query_result, mo, pl):
         .properties(width=400, height=300, title="Query -> AnnData Latency")
     )
 
-    mo.vstack([query_df, mo.ui.altair_chart(chart)])
+    mo.vstack([query_df, mo.ui.altair_chart(_chart)])
     return
 
 
@@ -916,11 +830,6 @@ def _(cell_query_result, comb_query_result, feat_query_result, mo):
     | Feature filter | `AxisQuery(value_filter=...)` on var | `.features(uids, space)` |
     | Reconstruction | Single `to_anndata()` path | Reconstructor per storage layout |
     """)
-    return
-
-
-@app.cell
-def _():
     return
 
 
