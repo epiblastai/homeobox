@@ -96,7 +96,7 @@ atlas = RaggedAtlas.checkout_latest(
 )
 
 atlas.query().count()                                           # 43,969,325
-atlas.query().where("cell_type = 'T cell'").limit(5000).to_anndata()
+adata = atlas.query().where("cell_type = 'neural cell'").limit(5000).to_anndata()
 ```
 
 ### Querying
