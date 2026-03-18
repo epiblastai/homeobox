@@ -228,8 +228,27 @@ class RaggedAtlas:
             )
         return self._group_readers[key]
 
-    # TODO: Add a `schemas` property helper that prints a summary of the tables
-    # and their schemas.
+    @property
+    def schemas(self) -> str:
+        """Print a summary of tables and their Arrow schemas."""
+        lines: list[str] = []
+
+        def _fmt_table(label: str, table: lancedb.table.Table) -> None:
+            schema = table.schema
+            rows = table.count_rows()
+            lines.append(f"  {label} ({table.name!r}, {rows} rows)")
+            for field in schema:
+                lines.append(f"    {field.name}: {field.type}")
+
+        lines.append("Atlas tables:")
+        _fmt_table("Cell table", self.cell_table)
+        _fmt_table("Dataset table", self._dataset_table)
+        for fs, reg_table in sorted(self._registry_tables.items()):
+            _fmt_table(f"Registry [{fs}]", reg_table)
+
+        summary = "\n".join(lines)
+        print(summary)
+        return summary
 
     # -- Query entry point --------------------------------------------------
 

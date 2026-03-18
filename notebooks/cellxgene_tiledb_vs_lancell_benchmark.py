@@ -233,7 +233,7 @@ def _(np, tiledbsoma, time, tqdm):
             "cells_per_s": total_cells / total_s if total_s > 0 else 0,
         }
 
-    return
+    return (run_tiledb_epoch,)
 
 
 @app.cell
@@ -327,9 +327,11 @@ def _(
     N_CELLS,
     SEED,
     atlas,
+    experiment,
     mo,
     pl,
     run_lancell_epoch,
+    run_tiledb_epoch,
     worker_counts,
 ):
     multi_rows = []
@@ -346,7 +348,7 @@ def _(
 
         # TileDB
         print(f"  TileDB-SOMA ...", end=" ", flush=True)
-        res_t = res_l # run_tiledb_epoch(experiment, N_CELLS, BATCH_SIZE, SEED, num_workers=nw)
+        res_t = run_tiledb_epoch(experiment, N_CELLS, BATCH_SIZE, SEED, num_workers=nw)
         print(
             f"{res_t['total_s']:.2f}s, {res_t['cells_per_s']:,.0f} cells/s"
         )
