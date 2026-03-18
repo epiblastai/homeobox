@@ -184,7 +184,7 @@ def add_anndata_batch(
     zarr_layer:
         Destination layer name within the zarr CSR ``layers/`` group
         (e.g. ``"counts"``). Required for feature spaces with
-        ``allowed_layers``; pass ``None`` for feature spaces without layers.
+        ``layers.allowed``; pass ``None`` for feature spaces without layers.
     dataset_record:
         Dataset record to register. ``dataset_record.zarr_group`` is used as
         the zarr group path (relative to the atlas store). Construct with
@@ -207,15 +207,15 @@ def add_anndata_batch(
     """
     spec = get_spec(feature_space)
 
-    if spec.allowed_layers and zarr_layer is None:
+    if spec.layers.allowed and zarr_layer is None:
         raise ValueError(
             f"zarr_layer is required for feature space '{feature_space}'. "
-            f"Allowed values: {spec.allowed_layers}"
+            f"Allowed values: {spec.layers.allowed}"
         )
-    if zarr_layer is not None and spec.allowed_layers and zarr_layer not in spec.allowed_layers:
+    if zarr_layer is not None and spec.layers.allowed and zarr_layer not in spec.layers.allowed:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.allowed_layers}"
+            f"'{feature_space}'. Allowed: {spec.layers.allowed}"
         )
 
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)

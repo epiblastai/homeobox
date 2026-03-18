@@ -1,10 +1,4 @@
-"""RaggedAtlas: user-facing API for writing, querying, and streaming lancell data.
-
-The LanceDB database IS the atlas. The Python schema class (a LancellBaseSchema
-subclass) serves as the descriptor — it declares which pointer fields (feature
-spaces) exist and their types. ``RaggedAtlas.open(...)`` or ``.create(...)`` is
-the full API — no manifest file to maintain.
-"""
+"""RaggedAtlas: user-facing API for writing, querying, and streaming lancell data."""
 
 import json
 from collections import defaultdict
@@ -61,6 +55,8 @@ class RaggedAtlas:
         version_table: lancedb.table.Table,
         feature_layouts_table: lancedb.table.Table,
     ) -> None:
+        # REVIEW: Add a docstring that __init__ should not be called
+        # directly, use create, open or checkout classmethods instead.
         self.db = db
         self.cell_table = cell_table
         self._cell_schema = cell_schema
@@ -147,6 +143,8 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         cell_table_name: str,
+        # TODO: It should be possible to open or checkout an atlas without providing
+        # the cell schema.
         cell_schema: type[LancellBaseSchema],
         dataset_table_name: str,
         *,
@@ -229,6 +227,9 @@ class RaggedAtlas:
             )
         return self._group_readers[key]
 
+    # TODO: Add a `schemas` property helper that prints a summary of the tables
+    # and their schemas.
+
     # -- Query entry point --------------------------------------------------
 
     def query(self) -> "AtlasQuery":
@@ -246,6 +247,9 @@ class RaggedAtlas:
 
     # -- Feature registration -----------------------------------------------
 
+    # TODO: Add a dedupe_on option that checks the features for duplicates in
+    # specified column. For example, for a gene registry, this might check if
+    # the ensembl id is already registered in the table and skip it if so.
     def register_features(
         self,
         feature_space: str,
@@ -376,8 +380,10 @@ class RaggedAtlas:
             table.optimize()
             sync_layouts_global_index(self._feature_layouts_table, table)
 
+        # FTS index creates an inverted table that makes it easy to find which
+        # layouts have a given feature
         self._feature_layouts_table.create_fts_index("feature_uid", replace=True)
-        self._feature_layouts_table.create_fts_index("layout_uid", replace=True)
+        self._feature_layouts_table.create_scalar_index("layout_uid", replace=True)
         self._feature_layouts_table.optimize()
 
     # -- Validation ---------------------------------------------------------
@@ -466,14 +472,10 @@ class RaggedAtlas:
             One row per (zarr_group, feature) match with columns
             ``zarr_group``, ``global_feature_uid``, plus dataset metadata.
         """
+        from lancedb.query import MatchQuery
+
         if isinstance(feature_uids, str):
             feature_uids = [feature_uids]
-        return self._find_datasets_with_features_fast(feature_uids, feature_space)
-
-    def _find_datasets_with_features_fast(
-        self, feature_uids: list[str], feature_space: str
-    ) -> pl.DataFrame:
-        from lancedb.query import MatchQuery
 
         query_str = " ".join(feature_uids)
         # Estimate limit: each feature could appear in every layout
@@ -491,6 +493,8 @@ class RaggedAtlas:
 
         pairs = pairs.unique(subset=["feature_uid", "layout_uid"])
 
+        # TODO: `layout_uid` is already in the datasets table, this should be an AND where
+        # clause and no join is necessary.
         datasets_df = (
             self._dataset_table.search()
             .where(f"feature_space = '{sql_escape(feature_space)}'", prefilter=True)
@@ -506,7 +510,7 @@ class RaggedAtlas:
     def _validate_registries(self) -> list[str]:
         errors: list[str] = []
         for fs, table in self._registry_tables.items():
-            df = table.search().select(["uid", "global_index"]).to_polars()
+            df = table.search().select(["global_index"]).to_polars()
             if df.is_empty():
                 continue
             null_count = df["global_index"].null_count()
@@ -630,6 +634,10 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         version: int,
+        # TODO: Having to provide the cell schema and store in order to checkout
+        # adds friction. We should try to infer them directly from the tables or the
+        # db_uri (e.g., we can figure out the store type from the db_uri prefix, and
+        # we can allow users to pass kwargs if they need to, e.g., for region or no-sign-request)
         cell_schema: type[LancellBaseSchema],
         store: obstore.store.ObjectStore,
         *,

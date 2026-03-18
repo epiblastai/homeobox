@@ -11,7 +11,7 @@
 
 import marimo
 
-__generated_with = "0.21.0"
+__generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 
@@ -66,8 +66,8 @@ def _():
     from lancell.group_specs import (
         ArraySpec,
         DTypeKind,
+        LayersSpec,
         PointerKind,
-        SubgroupSpec,
         ZarrGroupSpec,
         register_spec,
     )
@@ -81,11 +81,13 @@ def _():
         required_arrays=[
             ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
         ],
-        required_subgroups=[
-            SubgroupSpec(subgroup_name="csr/layers", uniform_shape=True, match_shape_of="csr/indices"),
-        ],
-        required_layers=["Unique"],
-        allowed_layers=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+        layers=LayersSpec(
+            prefix="csr",
+            uniform_shape=True,
+            match_shape_of="csr/indices",
+            required=["Unique"],
+            allowed=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+        ),
         reconstructor=SparseCSRReconstructor(),
     )
     register_spec(GENEFULL_EXPRESSION_SPEC)

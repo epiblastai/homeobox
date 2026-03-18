@@ -159,7 +159,9 @@ class CellSampler(_TorchSampler):
 # it rounds down to cells_per_cat * n_cats.  The real goal is more equal
 # representation across an epoch, not perfectly balanced individual batches.
 # Rework to always emit the requested batch_size (e.g. top up with extra
-# cells from larger categories).
+# cells from larger categories). We should remove this sampler for now until
+# we can build a replacement. It isn't useful as currently implemented, though
+# it did show the PoC that this kind of sampling can still be fast with lancell.
 class BalancedCellSampler(_TorchSampler):
     """Batch sampler that draws equal cells per category each batch.
 

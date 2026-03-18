@@ -71,6 +71,8 @@ def build_feature_layout_df(
     layout_uid = compute_layout_uid(feature_uids)
 
     uids_sql = ", ".join(f"'{sql_escape(u)}'" for u in feature_uids)
+    # TODO: Consider if this could be done more efficiently with a duckdb
+    # table join post where clause; https://docs.lancedb.com/integrations/data/duckdb
     registry_df = (
         registry_table.search()
         .where(f"uid IN ({uids_sql})", prefilter=True)
@@ -156,6 +158,8 @@ def sync_layouts_global_index(
     int
         Number of rows updated.
     """
+    # TODO: Again consider if this could be done more efficiently with duckdb on
+    # the lance tables
     registry_df = (
         registry_table.search()
         .select(["uid", "global_index"])
@@ -240,6 +244,7 @@ def validate_feature_layout(
         errors.append(f"feature_uid has duplicates: {len(rows)} rows but {n_unique} unique values")
 
     if registry_table is not None:
+        # TODO: Does `global_index` need to be loaded?
         registry_df = registry_table.search().select(["uid", "global_index"]).to_polars()
         registry_uids = set(registry_df["uid"].to_list())
         var_uids = rows["feature_uid"].to_list()

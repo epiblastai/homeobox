@@ -199,7 +199,7 @@ def _resolve_layers(
     """Return the list of layers to read, from overrides or the spec default."""
     if layer_overrides is not None:
         return layer_overrides
-    layers = list(spec.required_layers)
+    layers = list(spec.layers.required)
     if not layers:
         raise ValueError(
             f"No layers specified and spec for '{feature_space}' has no required layers"
@@ -415,7 +415,7 @@ class DenseReconstructor:
             return _build_obs_only_anndata(cells_pl_original)
 
         layers_to_read = (
-            layer_overrides if layer_overrides is not None else list(spec.required_layers)
+            layer_overrides if layer_overrides is not None else list(spec.layers.required)
         )
 
         # Resolve array names: "{layers_path}/{ln}" for layered specs, "data" for plain
