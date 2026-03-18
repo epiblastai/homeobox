@@ -6,6 +6,9 @@ from pydantic import BaseModel
 from lancell.protocols import Reconstructor
 
 
+# TODO: This seems totally unnecessary. We're just using the zarr dtype, I don't
+# believe this is required anywhere aside from validation, but then we're not validating
+# layer or assigning them a dtype, so it all seems a bit useless.
 class DTypeKind(str, Enum):
     """Structured dtype.kind values used by NumPy and Zarr arrays."""
 

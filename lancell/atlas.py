@@ -58,6 +58,7 @@ class RaggedAtlas:
         # REVIEW: Add a docstring that __init__ should not be called
         # directly, use create, open or checkout classmethods instead.
         self.db = db
+        self._db_uri = db.uri
         self.cell_table = cell_table
         self._cell_schema = cell_schema
         self._root = root

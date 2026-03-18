@@ -36,6 +36,8 @@ def _is_backed_csr(adata: ad.AnnData) -> bool:
     return adata.isbacked and "X" in adata.file._file and "data" in adata.file._file["X"]
 
 
+# TODO: This isn't aware of the ZarrGroupSpec and hardcodes the "csr" subgroup
+# and "indices"/"data" arrays
 def _write_sparse_batched(
     group: zarr.Group,
     adata: ad.AnnData,
@@ -110,6 +112,9 @@ def _write_sparse_batched(
     return starts, ends
 
 
+# TODO: This isn't aware of the ZarrGroupSpec there is always a `layers`
+# subgroup so the branching here into `data` is unnecessary. zarr_layer
+# should be mandatory as it is for sparse
 def _write_dense_batched(
     group: zarr.Group,
     adata: ad.AnnData,
@@ -156,6 +161,9 @@ def add_anndata_batch(
     adata: ad.AnnData,
     *,
     feature_space: str,
+    # TODO: Need to get the spec from the registry for
+    # the feature space
+    # TODO: make this mandatory
     zarr_layer: str | None,
     dataset_record: DatasetRecord,
     chunk_shape: tuple[int, ...] | None = None,
@@ -358,6 +366,7 @@ def add_from_anndata(
     atlas: RaggedAtlas,
     adata: ad.AnnData | str | Path,
     *,
+    # TODO: Seed TODOs in add_anndata_batch
     feature_space: str,
     zarr_layer: str | None,
     dataset_record: DatasetRecord,
@@ -413,8 +422,8 @@ def add_csc(
     zarr_group: str,
     feature_space: str,
     layer_name: str = "counts",
-    chunk_size: int = 4096,
-    shard_size: int = 65536,
+    chunk_size: int = _CHUNK_ELEMS,
+    shard_size: int = _SHARD_ELEMS,
 ) -> None:
     """Read existing CSR group and write CSC alongside it.
 
@@ -521,6 +530,8 @@ def add_csc(
     )
 
 
+# TODO: Again this is hard-coding paths into the zarr group instead
+# of using the ZarrGroupSpec. To determine them.
 def _add_csc_scipy(
     atlas: RaggedAtlas,
     zarr_group: str,
