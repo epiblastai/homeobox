@@ -48,6 +48,7 @@ nav:
     - Reconstructors: reconstructors.md
     - Array Storage: array_storage.md
     - PyTorch Data Loading: dataloader.md
+    - Differential Expression: dex.md
 
 markdown_extensions:
   - admonition
