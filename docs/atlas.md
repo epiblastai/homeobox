@@ -148,14 +148,6 @@ atlas.register_features("lognorm_rna", features)
 # register_features uses merge_insert — safe to call concurrently from multiple processes
 ```
 
-`register_features` inserts new rows but does not assign `global_index`. That happens when you call `atlas.optimize()`, which assigns contiguous indices in a single-writer pass.
-
-```python
-# Assigns global_index = 0..N-1 to any features that don't have one yet,
-# and runs other maintenance tasks (compaction, FTS rebuild).
-atlas.optimize()
-```
-
 **Annotate var with `global_feature_uid`.** The ingestion function looks for this column to build the `_feature_layouts` feature mapping.
 
 ```python

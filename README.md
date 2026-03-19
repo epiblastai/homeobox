@@ -85,7 +85,6 @@ atlas = RaggedAtlas.create(
 adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
 features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
-atlas.optimize()  # assigns global_index to newly registered features
 
 # 4. Prepare var and ingest
 adata.var["global_feature_uid"] = adata.var_names
