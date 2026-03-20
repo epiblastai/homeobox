@@ -19,6 +19,7 @@ from lancell.standardization._rate_limit import rate_limited
 from lancell.standardization.metadata_table import (
     COMPOUND_SYNONYMS_TABLE,
     COMPOUNDS_TABLE,
+    fts_fuzzy_search,
     get_reference_db,
 )
 from lancell.standardization.perturbations import _CHEMICAL_NEGATIVE_CONTROLS
@@ -514,10 +515,57 @@ def resolve_molecules(
         non_controls = [v for v in values if not is_control_compound(v)]
         local_results = _resolve_batch_names_local(non_controls)
 
+        # FTS fuzzy fallback for names not resolved by exact match
+        fts_results: dict[str, MoleculeResolution] = {}
+        unresolved_names = [v for v in non_controls if v not in local_results]
+        if unresolved_names and _has_compound_tables():
+            db = get_reference_db()
+            smiles_map: dict[int, str | None] = {}
+
+            for name in unresolved_names:
+                cleaned = clean_compound_name(name)
+                hits = fts_fuzzy_search(
+                    COMPOUND_SYNONYMS_TABLE,
+                    "synonym",
+                    cleaned,
+                    limit=1,
+                    select=["synonym_original", "pubchem_cid", "is_title"],
+                )
+                if not hits:
+                    continue
+
+                hit = hits[0]
+                cid = hit["pubchem_cid"]
+
+                # Look up SMILES if not already cached
+                if cid not in smiles_map and COMPOUNDS_TABLE in db.table_names():
+                    compounds_table = db.open_table(COMPOUNDS_TABLE)
+                    comp_df = (
+                        compounds_table.search()
+                        .where(f"pubchem_cid = {cid}", prefilter=True)
+                        .select(["canonical_smiles"])
+                        .to_polars()
+                    )
+                    if not comp_df.is_empty():
+                        smiles_map[cid] = comp_df.row(0, named=True)["canonical_smiles"]
+                    else:
+                        smiles_map[cid] = None
+
+                fts_results[name] = MoleculeResolution(
+                    input_value=name,
+                    resolved_value=hit["synonym_original"],
+                    confidence=0.8,
+                    source="lancedb_fts",
+                    pubchem_cid=cid,
+                    canonical_smiles=smiles_map.get(cid),
+                )
+
         results: list[MoleculeResolution] = []
         for v in values:
             if v in local_results:
                 results.append(local_results[v])
+            elif v in fts_results:
+                results.append(fts_results[v])
             else:
                 results.append(_resolve_single_name(v))
     else:
