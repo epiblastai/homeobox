@@ -6,10 +6,6 @@
 
 The module works with both sparse (e.g. `gene_expression`) and dense (e.g. `image_features`) feature spaces. For sparse data it applies library-size normalization and log1p before testing; dense data is used as-is.
 
-```bash
-pip install 'lancell[dex]'   # requires numba
-```
-
 ---
 
 ## Basic usage

@@ -48,7 +48,6 @@ viz = [
     "marimo",
     "matplotlib",
 ]
-dex = []
 io = [
     "boto3",
     "gcsfs",
@@ -62,7 +61,7 @@ ai = [
     "pydantic-ai-slim",
 ]
 all = [
-    "lancell[ml,bio,viz,io,ai,dex]",
+    "lancell[ml,bio,viz,io,ai]",
     "datasets",
     "duckdb",
     "openpyxl",
