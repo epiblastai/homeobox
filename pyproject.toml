@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow",
     "pylance>=2.0.0",
     "scipy",
+    "numba",
     "zarr",
 ]
 
@@ -63,7 +64,6 @@ all = [
     "lancell[ml,bio,viz,io,ai]",
     "datasets",
     "duckdb",
-    "numba",
     "openpyxl",
     "pandas",
     "scikit-learn",

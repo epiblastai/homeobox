@@ -5,12 +5,13 @@
 #     "lancell",
 #     "polars",
 #     "anndata",
+#     "numba",
 # ]
 # ///
 
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.21.1"
 app = marimo.App(width="medium")
 
 
@@ -38,6 +39,7 @@ def _(mo):
     4. Feature selection via registry lookup
     5. AnnData / batch reconstruction
     6. ML training with `CellDataset` + `CellSampler`
+    7. Differential expression with `dex`
     """)
     return
 
@@ -587,6 +589,129 @@ def _(mo):
     dataset sizes span orders of magnitude and you want more equal
     representation during training.
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 7. Differential expression with `dex`
+
+    lancell includes a built-in differential expression module that
+    compares two groups of cells directly from the atlas. It auto-dispatches
+    **Mann-Whitney U** or **Welch's t-test** on any feature space.
+
+    `dex()` follows the scanpy `rank_genes_groups` pattern: specify a
+    `groupby` column, a list of `target` group values, and a `control`
+    group value. It handles per-group loading, feature alignment,
+    normalization, and multiple-testing correction internally.
+    """)
+    return
+
+
+@app.cell
+def _():
+    from lancell.dex import dex
+
+    return (dex,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Discover comparison groups
+
+    We look up datasets by tissue and pick one `dataset_uid` per tissue.
+    The cell table stores `dataset_uid`, so that's the column we group by.
+    """)
+    return
+
+
+@app.cell
+def _(datasets, pl):
+    tissue_datasets = (
+        datasets
+        .filter(pl.col("tissue").is_not_null())
+        .group_by("tissue")
+        .agg(
+            pl.col("uid").first().alias("dataset_uid"),
+            pl.col("n_cells").first().alias("n_cells"),
+        )
+        .sort("n_cells", descending=True)
+    )
+    tissue_datasets
+    return (tissue_datasets,)
+
+
+@app.cell
+def _(tissue_datasets):
+    target_uid = tissue_datasets["dataset_uid"][0]
+    control_uid = tissue_datasets["dataset_uid"][2]
+    target_tissue = tissue_datasets["tissue"][0]
+    control_tissue = tissue_datasets["tissue"][2]
+
+    print(f"Target:  {target_tissue} (dataset_uid={target_uid})")
+    print(f"Control: {control_tissue} (dataset_uid={control_uid})")
+    return control_tissue, control_uid, target_tissue, target_uid
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Run `dex()`
+
+    We compare cells from two datasets (one per tissue), grouping by
+    `dataset_uid` and limiting each side to 1 000 cells with
+    `max_records` so the demo runs quickly.
+    """)
+    return
+
+
+@app.cell
+def _(atlas, control_uid, dex, target_uid):
+    dex_result = dex(
+        atlas,
+        groupby="dataset_uid",
+        target=[target_uid],
+        control=control_uid,
+        feature_space="genefull_expression",
+        test="mwu",
+        max_records=1_000,
+    )
+    dex_result.sort("fdr")
+    return (dex_result,)
+
+
+@app.cell(hide_code=True)
+def _(control_tissue, dex_result, mo, pl, target_tissue):
+    _sig = dex_result.filter(pl.col("fdr") < 0.05).height
+    mo.md(f"""
+    **{target_tissue}** vs **{control_tissue}**: **{_sig:,}** significant
+    genes (FDR < 0.05) out of **{dex_result.height:,}** tested.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Top differentially expressed genes
+
+    The `feature` column contains internal UIDs. Use
+    `atlas.join_feature_metadata()` to bring in human-readable
+    gene names and Ensembl IDs from the feature registry.
+    """)
+    return
+
+
+@app.cell
+def _(atlas, dex_result):
+    dex_annotated = atlas.join_feature_metadata(
+        dex_result,
+        feature_space="genefull_expression",
+        columns=["gene_name", "gene_id"],
+    )
+    dex_annotated.sort("fdr").head(20)
     return
 
 

@@ -126,6 +126,7 @@ maturin develop --release
 - **[Reconstructors](reconstructors.md)** — `SparseCSRReconstructor`, `DenseReconstructor`, `FeatureCSCReconstructor`; choosing between them; the `Reconstructor` protocol for custom implementations.
 - **[Array Storage](array_storage.md)** — `add_from_anndata` internals: streaming from backed `.h5ad` files, chunk/shard sizing, BP-128 bitpacking, the `_feature_layouts` feature mapping. Building the optional CSC column index with `add_csc()` for fast feature-filtered reads.
 - **[PyTorch Data Loading](dataloader.md)** — `CellDataset` and `MultimodalCellDataset`; `CellSampler` (locality-aware bin-packing); collate functions; `make_loader` with spawn parallelism.
+    - **[Differential Expression](dex.md)** — scanpy-style `dex()` function: Mann-Whitney U and Welch's t-test across groups, with FDR correction. Works on both sparse and dense feature spaces.
 
 ---
 
