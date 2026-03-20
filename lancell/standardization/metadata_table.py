@@ -1,9 +1,11 @@
 """LanceModel schemas and DB helpers for self-hosted reference databases.
 
-Four tables: organisms, genomic features, genomic feature aliases, and ontology terms.
+Eight tables: organisms, genomic features, genomic feature aliases, ontology terms,
+compounds, compound synonyms, proteins, and protein aliases.
 Stored in a single LanceDB at ``~/.cache/lancell/reference_db/``.
 """
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import lancedb
@@ -14,6 +16,10 @@ ORGANISMS_TABLE = "organisms"
 GENOMIC_FEATURES_TABLE = "genomic_features"
 GENOMIC_FEATURE_ALIASES_TABLE = "genomic_feature_aliases"
 ONTOLOGY_TERMS_TABLE = "ontology_terms"
+COMPOUNDS_TABLE = "compounds"
+COMPOUND_SYNONYMS_TABLE = "compound_synonyms"
+PROTEINS_TABLE = "proteins"
+PROTEIN_ALIASES_TABLE = "protein_aliases"
 
 DEFAULT_REFERENCE_DB_PATH = Path.home() / ".cache" / "lancell" / "reference_db"
 
@@ -156,6 +162,104 @@ class OntologyTermRecord(LanceModel):
     is_obsolete: bool
 
 
+class CompoundRecord(LanceModel):
+    """One row per PubChem compound.
+
+    Parameters
+    ----------
+    pubchem_cid:
+        PubChem Compound ID (primary key).
+    name:
+        Preferred compound name from CID-Title.
+    canonical_smiles:
+        Canonical SMILES from CID-SMILES, if available.
+    """
+
+    pubchem_cid: int
+    name: str
+    canonical_smiles: str | None = None
+
+
+class CompoundSynonymRecord(LanceModel):
+    """Flattened synonym table for fast name → CID lookup.
+
+    The ``synonym`` column is lowercased at ingestion time so that lookups
+    can use a scalar index with ``WHERE synonym IN (...)``.
+
+    Parameters
+    ----------
+    synonym:
+        Lowercased synonym string for case-insensitive exact match.
+    synonym_original:
+        Original casing of the synonym.
+    pubchem_cid:
+        FK to ``CompoundRecord.pubchem_cid``.
+    is_title:
+        ``True`` if this synonym is the preferred title from CID-Title.
+    """
+
+    synonym: str
+    synonym_original: str
+    pubchem_cid: int
+    is_title: bool
+
+
+class ProteinRecord(LanceModel):
+    """One row per primary UniProt accession.
+
+    Parameters
+    ----------
+    uniprot_id:
+        Primary accession, e.g. ``"P04637"``.
+    protein_name:
+        RecName Full, e.g. ``"Cellular tumor antigen p53"``.
+    gene_name:
+        Primary GN Name, e.g. ``"TP53"``. ``None`` for viral ORFs etc.
+    organism:
+        Normalized scientific name, e.g. ``"homo_sapiens"``.
+    ncbi_taxonomy_id:
+        From OX line, e.g. ``9606`` for human.
+    """
+
+    uniprot_id: str
+    protein_name: str
+    gene_name: str | None = None
+    organism: str
+    ncbi_taxonomy_id: int
+
+
+class ProteinAliasRecord(LanceModel):
+    """Flattened alias table for fast exact-match protein lookup.
+
+    The ``alias`` column is lowercased at ingestion time so that lookups
+    can use a scalar index with ``WHERE alias IN (...) AND organism = ?``.
+
+    Parameters
+    ----------
+    alias:
+        Lowercased alias string for case-insensitive exact match.
+    alias_original:
+        Original casing of the alias.
+    uniprot_id:
+        FK to ``ProteinRecord.uniprot_id``.
+    organism:
+        Same organism format as ``ProteinRecord``.
+    is_canonical:
+        ``True`` for RecName Full and primary GN Name.
+    source:
+        Origin of the alias: ``"rec_name"``, ``"alt_name"``,
+        ``"alt_name_short"``, ``"gene_name"``, ``"gene_synonym"``,
+        ``"orf_name"``, or ``"secondary_accession"``.
+    """
+
+    alias: str
+    alias_original: str
+    uniprot_id: str
+    organism: str
+    is_canonical: bool
+    source: str
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -185,6 +289,30 @@ def ensure_table(
 ) -> lancedb.table.Table:
     """Create or overwrite a table with the given data."""
     return db.create_table(table_name, data=data, schema=schema, mode=mode)
+
+
+def ensure_table_chunked(
+    db: lancedb.DBConnection,
+    table_name: str,
+    schema: type[LanceModel],
+    chunks: Iterator[list[dict]],
+) -> lancedb.table.Table:
+    """Create a table from the first chunk, then append subsequent chunks.
+
+    Needed for tables too large to materialize as a single ``list[dict]``
+    (e.g. 116M+ compound rows).
+    """
+    table: lancedb.table.Table | None = None
+    for chunk in chunks:
+        if not chunk:
+            continue
+        if table is None:
+            table = db.create_table(table_name, data=chunk, schema=schema, mode="overwrite")
+        else:
+            table.add(chunk)
+    if table is None:
+        raise ValueError(f"No data provided for table '{table_name}'")
+    return table
 
 
 def reference_db_exists(db_path: str | Path | None = None) -> bool:

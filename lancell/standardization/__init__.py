@@ -36,6 +36,7 @@ from lancell.standardization.ontologies import (
     get_ontology_siblings,
     get_ontology_term_id,
     resolve_assays,
+    resolve_cell_lines,
     resolve_cell_types,
     resolve_diseases,
     resolve_ontology_terms,
@@ -49,6 +50,7 @@ from lancell.standardization.perturbations import (
     is_control_label,
     parse_combinatorial_perturbations,
 )
+from lancell.standardization.proteins import resolve_proteins
 from lancell.standardization.types import (
     GeneResolution,
     MoleculeResolution,
@@ -75,6 +77,8 @@ __all__ = [
     # Genes
     "resolve_genes",
     "detect_organism_from_ensembl_ids",
+    # Proteins
+    "resolve_proteins",
     # Molecules
     "resolve_molecules",
     "clean_compound_name",
@@ -85,6 +89,7 @@ __all__ = [
     "resolve_ontology_terms",
     "get_ontology_term_id",
     "resolve_cell_types",
+    "resolve_cell_lines",
     "resolve_tissues",
     "resolve_diseases",
     "resolve_organisms",

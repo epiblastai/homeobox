@@ -92,6 +92,11 @@ class ResolutionReport:
                 row["inchi_key"] = r.inchi_key
                 row["iupac_name"] = r.iupac_name
                 row["chembl_id"] = r.chembl_id
+            elif isinstance(r, ProteinResolution):
+                row["uniprot_id"] = r.uniprot_id
+                row["gene_name"] = r.gene_name
+                row["protein_name"] = r.protein_name
+                row["organism"] = r.organism
             elif isinstance(r, OntologyResolution):
                 row["ontology_term_id"] = r.ontology_term_id
                 row["ontology_name"] = r.ontology_name

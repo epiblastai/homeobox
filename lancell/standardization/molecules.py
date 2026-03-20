@@ -3,22 +3,28 @@
 Strategy:
 1. Name cleanup: strip whitespace, normalize, remove salt suffixes
 2. Control detection: DMSO, vehicle, PBS, etc. → skip resolution
-3. PubChem batch resolve via pubchempy
-4. RDKit SMILES canonicalization
+3. Local LanceDB lookup (compounds + compound_synonyms tables)
+4. PubChem API fallback via pubchempy
+5. ChEMBL API fallback
+6. RDKit SMILES canonicalization
 """
-
-from __future__ import annotations
 
 import re
 from typing import Literal
 
-import pubchempy as pcp
+import polars as pl
 import requests
 
 from lancell.standardization._rate_limit import rate_limited
 from lancell.standardization.cache import get_cache
+from lancell.standardization.metadata_table import (
+    COMPOUND_SYNONYMS_TABLE,
+    COMPOUNDS_TABLE,
+    get_reference_db,
+)
 from lancell.standardization.perturbations import _CHEMICAL_NEGATIVE_CONTROLS
 from lancell.standardization.types import MoleculeResolution, ResolutionReport
+from lancell.util import sql_escape
 
 # Salt suffixes to strip from compound names
 _SALT_SUFFIXES = re.compile(
@@ -86,6 +92,8 @@ def canonicalize_smiles(smiles: str) -> str | None:
 @rate_limited("pubchem", max_per_second=5)
 def _pubchem_get_cids(identifier: str, namespace: str = "name") -> list[int]:
     """Rate-limited PubChem CID lookup."""
+    import pubchempy as pcp
+
     try:
         return pcp.get_cids(identifier, namespace=namespace)
     except pcp.BadRequestError:
@@ -95,6 +103,8 @@ def _pubchem_get_cids(identifier: str, namespace: str = "name") -> list[int]:
 @rate_limited("pubchem", max_per_second=5)
 def _pubchem_get_compound(cid: int) -> dict | None:
     """Rate-limited PubChem compound property fetch."""
+    import pubchempy as pcp
+
     try:
         compounds = pcp.get_compounds(cid, namespace="cid")
         if compounds:
@@ -196,6 +206,168 @@ def _resolve_chembl_fallback(name: str, cleaned: str) -> MoleculeResolution | No
     return result
 
 
+def _has_compound_tables() -> bool:
+    """Check if the compound LanceDB tables are populated."""
+    try:
+        db = get_reference_db()
+        tables = db.table_names()
+        return COMPOUND_SYNONYMS_TABLE in tables
+    except (RuntimeError, Exception):
+        return False
+
+
+def _resolve_name_local(cleaned: str, original: str) -> MoleculeResolution | None:
+    """Try to resolve a compound name via the local compound_synonyms table.
+
+    Returns None if the DB is not populated or no match is found,
+    allowing the caller to fall through to API resolution.
+    """
+    if not _has_compound_tables():
+        return None
+
+    db = get_reference_db()
+    table = db.open_table(COMPOUND_SYNONYMS_TABLE)
+    lower_name = cleaned.lower()
+
+    df = (
+        table.search()
+        .where(f"synonym = '{sql_escape(lower_name)}'", prefilter=True)
+        .select(["synonym", "synonym_original", "pubchem_cid", "is_title"])
+        .to_polars()
+    )
+
+    if df.is_empty():
+        return None
+
+    # Prefer title matches over synonym matches
+    title_matches = df.filter(pl.col("is_title"))
+    if not title_matches.is_empty():
+        row = title_matches.row(0, named=True)
+        confidence = 1.0
+    else:
+        row = df.row(0, named=True)
+        confidence = 0.9
+
+    cid = row["pubchem_cid"]
+    resolved_name = row["synonym_original"]
+
+    # Look up SMILES from the compounds table
+    canonical_smiles = None
+    if COMPOUNDS_TABLE in db.table_names():
+        compounds_table = db.open_table(COMPOUNDS_TABLE)
+        comp_df = (
+            compounds_table.search()
+            .where(f"pubchem_cid = {cid}", prefilter=True)
+            .select(["canonical_smiles"])
+            .to_polars()
+        )
+        if not comp_df.is_empty():
+            canonical_smiles = comp_df.row(0, named=True)["canonical_smiles"]
+
+    return MoleculeResolution(
+        input_value=original,
+        resolved_value=resolved_name,
+        confidence=confidence,
+        source="lancedb",
+        pubchem_cid=cid,
+        canonical_smiles=canonical_smiles,
+    )
+
+
+def _resolve_batch_names_local(names: list[str]) -> dict[str, MoleculeResolution]:
+    """Batch-resolve compound names via the local compound_synonyms table.
+
+    Returns a dict mapping input name → MoleculeResolution for names that
+    were successfully resolved. Names not found are omitted from the result.
+    """
+    if not names or not _has_compound_tables():
+        return {}
+
+    db = get_reference_db()
+    table = db.open_table(COMPOUND_SYNONYMS_TABLE)
+
+    # Build mapping from lowercased cleaned name → original input name
+    cleaned_to_original: dict[str, str] = {}
+    for name in names:
+        cleaned = clean_compound_name(name)
+        cleaned_to_original[cleaned.lower()] = name
+
+    # Batch query in groups of 500
+    lower_names = list(cleaned_to_original.keys())
+    syn_frames: list[pl.DataFrame] = []
+    for i in range(0, len(lower_names), 500):
+        batch = lower_names[i : i + 500]
+        in_clause = ", ".join(f"'{sql_escape(n)}'" for n in batch)
+        df = (
+            table.search()
+            .where(f"synonym IN ({in_clause})", prefilter=True)
+            .select(["synonym", "synonym_original", "pubchem_cid", "is_title"])
+            .to_polars()
+        )
+        syn_frames.append(df)
+
+    if not syn_frames:
+        return {}
+
+    all_syns = pl.concat(syn_frames)
+    if all_syns.is_empty():
+        return {}
+
+    # Look up SMILES for all matched CIDs
+    smiles_map: dict[int, str | None] = {}
+    if COMPOUNDS_TABLE in db.table_names():
+        matched_cids = all_syns.get_column("pubchem_cid").unique().to_list()
+        compounds_table = db.open_table(COMPOUNDS_TABLE)
+        for i in range(0, len(matched_cids), 500):
+            batch = matched_cids[i : i + 500]
+            in_clause = ", ".join(str(c) for c in batch)
+            comp_df = (
+                compounds_table.search()
+                .where(f"pubchem_cid IN ({in_clause})", prefilter=True)
+                .select(["pubchem_cid", "canonical_smiles"])
+                .to_polars()
+            )
+            for row in comp_df.iter_rows(named=True):
+                smiles_map[row["pubchem_cid"]] = row["canonical_smiles"]
+
+    # Group by synonym and pick best match per name
+    results: dict[str, MoleculeResolution] = {}
+    grouped = all_syns.group_by("synonym").agg(pl.all())
+
+    for row in grouped.iter_rows(named=True):
+        synonym_lower = row["synonym"]
+        original_name = cleaned_to_original.get(synonym_lower)
+        if original_name is None:
+            continue
+
+        cids = row["pubchem_cid"]
+        is_title_flags = row["is_title"]
+        originals = row["synonym_original"]
+
+        # Prefer title matches
+        best_idx = 0
+        best_confidence = 0.9
+        for idx, is_title in enumerate(is_title_flags):
+            if is_title:
+                best_idx = idx
+                best_confidence = 1.0
+                break
+
+        cid = cids[best_idx]
+        resolved_name = originals[best_idx]
+
+        results[original_name] = MoleculeResolution(
+            input_value=original_name,
+            resolved_value=resolved_name,
+            confidence=best_confidence,
+            source="lancedb",
+            pubchem_cid=cid,
+            canonical_smiles=smiles_map.get(cid),
+        )
+
+    return results
+
+
 def _resolve_single_name(name: str) -> MoleculeResolution:
     """Resolve a single compound name to a MoleculeResolution."""
     cache = get_cache()
@@ -210,6 +382,11 @@ def _resolve_single_name(name: str) -> MoleculeResolution:
         )
 
     cleaned = clean_compound_name(name)
+
+    # Try local DB first
+    local_result = _resolve_name_local(cleaned, name)
+    if local_result is not None:
+        return local_result
 
     # Check cache
     entry = cache.get("molecules_name", cleaned)
@@ -458,13 +635,23 @@ def resolve_molecules(
     ResolutionReport
         One ``MoleculeResolution`` per input value.
     """
-    resolver = {
-        "name": _resolve_single_name,
-        "smiles": _resolve_single_smiles,
-        "cid": _resolve_single_cid,
-    }[input_type]
+    if input_type == "name":
+        # Batch-resolve via local DB first, then fall back per-name for unresolved
+        non_controls = [v for v in values if not is_control_compound(v)]
+        local_results = _resolve_batch_names_local(non_controls)
 
-    results: list[MoleculeResolution] = [resolver(v) for v in values]
+        results: list[MoleculeResolution] = []
+        for v in values:
+            if v in local_results:
+                results.append(local_results[v])
+            else:
+                results.append(_resolve_single_name(v))
+    else:
+        resolver = {
+            "smiles": _resolve_single_smiles,
+            "cid": _resolve_single_cid,
+        }[input_type]
+        results = [resolver(v) for v in values]
 
     resolved_count = sum(1 for r in results if r.resolved_value is not None)
     ambiguous_count = sum(1 for r in results if len(r.alternatives) > 1)

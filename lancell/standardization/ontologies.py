@@ -2,12 +2,14 @@
 
 Covers: cell_type (CL), tissue (UBERON), disease (MONDO), organism (NCBITaxon),
 assay (EFO), development_stage (HsapDv/MmusDv), ethnicity (HANCESTRO),
-sex (PATO).
+sex (PATO), cell_line (CLO via OLS4).
 
 Strategy:
 1. Exact name match (case-insensitive) against ontology_terms table → confidence 1.0
 2. Synonym match (pipe-delimited, case-insensitive) → confidence 0.9
 3. No match → unresolved (confidence 0.0)
+
+Cell lines use OLS4 (CLO is OWL-only, not in the local DB).
 """
 
 import functools
@@ -28,6 +30,7 @@ class OntologyEntity(str, Enum):
     """Supported ontology entity types for CELLxGENE-compatible resolution."""
 
     CELL_TYPE = "cell_type"
+    CELL_LINE = "cell_line"
     TISSUE = "tissue"
     DISEASE = "disease"
     ORGANISM = "organism"
@@ -51,6 +54,7 @@ _ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
 # Mapping from OntologyEntity → display name
 _ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
     OntologyEntity.CELL_TYPE: "Cell Ontology",
+    OntologyEntity.CELL_LINE: "CLO",
     OntologyEntity.TISSUE: "UBERON",
     OntologyEntity.DISEASE: "MONDO",
     OntologyEntity.ORGANISM: "NCBITaxon",
@@ -166,6 +170,81 @@ def _resolve_sex(value: str) -> OntologyResolution:
     )
 
 
+def _resolve_cell_lines(values: list[str]) -> list[OntologyResolution]:
+    """Resolve cell line names to CLO terms via OLS4.
+
+    CLO is OWL-only (no OBO download), so we query OLS4 on demand.
+    Results are cached by the OLS4 layer (30-day TTL).
+
+    Search results are filtered to CLO-prefixed terms only, since the CLO
+    ontology in OLS4 includes imported terms from CL and other ontologies.
+    """
+    from lancell.standardization.ols import search_ols
+
+    results: list[OntologyResolution] = []
+    for val in values:
+        query = val.strip()
+        if not query:
+            results.append(
+                OntologyResolution(
+                    input_value=val,
+                    resolved_value=None,
+                    confidence=0.0,
+                    source="none",
+                    ontology_name="CLO",
+                )
+            )
+            continue
+
+        # Exact match
+        hits = search_ols(query, ontology="CLO", exact=True, rows=5)
+        clo_hits = [h for h in hits if h.obo_id.startswith("CLO:")]
+        if clo_hits:
+            term = clo_hits[0]
+            results.append(
+                OntologyResolution(
+                    input_value=val,
+                    resolved_value=term.label,
+                    confidence=1.0,
+                    source="ols4_clo",
+                    ontology_term_id=term.obo_id,
+                    ontology_name="CLO",
+                )
+            )
+            continue
+
+        # Fallback: fuzzy search
+        hits = search_ols(query, ontology="CLO", exact=False, rows=10)
+        clo_hits = [h for h in hits if h.obo_id.startswith("CLO:")]
+        if clo_hits:
+            term = clo_hits[0]
+            alternatives = [h.obo_id for h in clo_hits[1:]]
+            results.append(
+                OntologyResolution(
+                    input_value=val,
+                    resolved_value=term.label,
+                    confidence=0.8,
+                    source="ols4_clo",
+                    ontology_term_id=term.obo_id,
+                    ontology_name="CLO",
+                    alternatives=alternatives,
+                )
+            )
+            continue
+
+        results.append(
+            OntologyResolution(
+                input_value=val,
+                resolved_value=None,
+                confidence=0.0,
+                source="none",
+                ontology_name="CLO",
+            )
+        )
+
+    return results
+
+
 def _resolve_against_db(
     values: list[str],
     entity: OntologyEntity,
@@ -257,6 +336,8 @@ def resolve_ontology_terms(
     """
     if entity == OntologyEntity.SEX:
         results = [_resolve_sex(v) for v in values]
+    elif entity == OntologyEntity.CELL_LINE:
+        results = _resolve_cell_lines(values)
     else:
         results = _resolve_against_db(values, entity, organism)
 
@@ -313,6 +394,11 @@ def resolve_organisms(values: list[str]) -> ResolutionReport:
 def resolve_assays(values: list[str]) -> ResolutionReport:
     """Resolve assay names to EFO terms."""
     return resolve_ontology_terms(values, OntologyEntity.ASSAY)
+
+
+def resolve_cell_lines(values: list[str]) -> ResolutionReport:
+    """Resolve cell line names to CLO (Cell Line Ontology) terms via OLS4."""
+    return resolve_ontology_terms(values, OntologyEntity.CELL_LINE)
 
 
 # ---------------------------------------------------------------------------

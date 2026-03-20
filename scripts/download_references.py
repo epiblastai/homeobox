@@ -17,15 +17,22 @@ import textwrap
 import polars as pl
 import requests
 
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
 from lancell.standardization.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
     ONTOLOGY_TERMS_TABLE,
     ORGANISMS_TABLE,
+    PROTEIN_ALIASES_TABLE,
+    PROTEINS_TABLE,
     GenomicFeatureAliasRecord,
     GenomicFeatureRecord,
     OntologyTermRecord,
     OrganismRecord,
+    ProteinAliasRecord,
+    ProteinRecord,
     ensure_table,
     open_reference_db,
 )
@@ -779,6 +786,343 @@ def cmd_ontologies(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: proteins
+# ---------------------------------------------------------------------------
+
+UNIPROT_SPROT_URL = (
+    "https://ftp.uniprot.org/pub/databases/uniprot/current_release/"
+    "knowledgebase/complete/uniprot_sprot.dat.gz"
+)
+
+# Regex to strip evidence codes like {ECO:0000312|HGNC:HGNC:620}
+_EVIDENCE_RE = re.compile(r"\s*\{ECO:[^}]*\}")
+
+
+def _parse_uniprot_dat(
+    dat_path: str | Path,
+    taxonomy_filter: set[int] | None = None,
+    verbose: bool = False,
+) -> tuple[list[dict], list[dict]]:
+    """Parse a UniProt Swiss-Prot .dat flat file into protein and alias records.
+
+    Streaming line-by-line parser. Accumulates state per entry, flushes on ``//``.
+
+    Parameters
+    ----------
+    dat_path:
+        Path to a plain-text (uncompressed) ``.dat`` file.
+    taxonomy_filter:
+        If provided, only keep entries whose NCBI taxonomy ID is in this set.
+    verbose:
+        Print progress every 50k entries.
+
+    Returns
+    -------
+    tuple of (protein_records, alias_records)
+    """
+    protein_records: list[dict] = []
+    alias_records: list[dict] = []
+
+    # Per-entry state
+    accessions: list[str] = []
+    rec_names: list[str] = []  # RecName Full values (top-level only)
+    alt_names: list[str] = []  # AltName Full values (top-level only)
+    alt_names_short: list[str] = []  # AltName Short values (top-level only)
+    gene_name: str | None = None
+    gene_synonyms: list[str] = []
+    orf_names: list[str] = []
+    ncbi_taxonomy_id: int | None = None
+    os_text: str = ""
+    in_contains_block = False  # True after DE Contains: — skip sub-entry names
+    gn_buffer: str = ""  # GN lines may span multiple lines
+    entry_count = 0
+
+    def _strip_evidence(s: str) -> str:
+        return _EVIDENCE_RE.sub("", s).strip()
+
+    def _parse_gn_buffer():
+        """Parse accumulated GN lines into gene_name, gene_synonyms, orf_names."""
+        nonlocal gene_name, gene_synonyms, orf_names
+        if not gn_buffer:
+            return
+        # Take only first gene block (split on " and ")
+        first_block = gn_buffer.split(" and ")[0]
+        # Parse Name=...;
+        m = re.search(r"Name=([^;{]+)", first_block)
+        if m:
+            gene_name = _strip_evidence(m.group(1)).rstrip(";").strip()
+        # Parse Synonyms=...;
+        m = re.search(r"Synonyms=([^;]+);?", first_block)
+        if m:
+            raw = _strip_evidence(m.group(1))
+            gene_synonyms = [s.strip() for s in raw.split(",") if s.strip()]
+        # Parse ORFNames=...;
+        m = re.search(r"ORFNames=([^;]+);?", first_block)
+        if m:
+            raw = _strip_evidence(m.group(1))
+            orf_names = [s.strip() for s in raw.split(",") if s.strip()]
+
+    def _normalize_organism(raw: str) -> str:
+        """'Homo sapiens (Human).' -> 'homo_sapiens'"""
+        # Remove parenthetical common name and trailing period
+        cleaned = re.sub(r"\s*\(.*?\)", "", raw).strip().rstrip(".")
+        # Take first two words (binomial) and normalize
+        parts = cleaned.split()
+        binomial = "_".join(parts[:2]) if len(parts) >= 2 else parts[0] if parts else ""
+        return binomial.lower()
+
+    def _flush():
+        nonlocal accessions, rec_names, alt_names, alt_names_short
+        nonlocal gene_name, gene_synonyms, orf_names
+        nonlocal ncbi_taxonomy_id, os_text, in_contains_block, gn_buffer
+        nonlocal entry_count
+
+        _parse_gn_buffer()
+        entry_count += 1
+
+        if verbose and entry_count % 50_000 == 0:
+            print(f"  Parsed {entry_count} entries...")
+
+        if not accessions:
+            # Reset and return
+            accessions = []
+            rec_names = []
+            alt_names = []
+            alt_names_short = []
+            gene_name = None
+            gene_synonyms = []
+            orf_names = []
+            ncbi_taxonomy_id = None
+            os_text = ""
+            in_contains_block = False
+            gn_buffer = ""
+            return
+
+        # Apply taxonomy filter
+        if taxonomy_filter is not None and ncbi_taxonomy_id not in taxonomy_filter:
+            accessions = []
+            rec_names = []
+            alt_names = []
+            alt_names_short = []
+            gene_name = None
+            gene_synonyms = []
+            orf_names = []
+            ncbi_taxonomy_id = None
+            os_text = ""
+            in_contains_block = False
+            gn_buffer = ""
+            return
+
+        primary_ac = accessions[0]
+        secondary_acs = accessions[1:]
+        organism = _normalize_organism(os_text)
+        protein_name = rec_names[0] if rec_names else ""
+
+        protein_records.append(
+            {
+                "uniprot_id": primary_ac,
+                "protein_name": protein_name,
+                "gene_name": gene_name,
+                "organism": organism,
+                "ncbi_taxonomy_id": ncbi_taxonomy_id or 0,
+            }
+        )
+
+        # Build aliases, deduplicating by (alias_lower, uniprot_id)
+        seen_aliases: set[str] = set()
+
+        def _add_alias(original: str, is_canonical: bool, source: str):
+            lower = original.lower()
+            if lower in seen_aliases:
+                return
+            seen_aliases.add(lower)
+            alias_records.append(
+                {
+                    "alias": lower,
+                    "alias_original": original,
+                    "uniprot_id": primary_ac,
+                    "organism": organism,
+                    "is_canonical": is_canonical,
+                    "source": source,
+                }
+            )
+
+        for rn in rec_names:
+            _add_alias(rn, True, "rec_name")
+        for an in alt_names:
+            _add_alias(an, False, "alt_name")
+        for ans in alt_names_short:
+            _add_alias(ans, False, "alt_name_short")
+        if gene_name:
+            _add_alias(gene_name, True, "gene_name")
+        for gs in gene_synonyms:
+            _add_alias(gs, False, "gene_synonym")
+        for orf in orf_names:
+            _add_alias(orf, False, "orf_name")
+        for sac in secondary_acs:
+            _add_alias(sac, False, "secondary_accession")
+
+        # Reset state
+        accessions = []
+        rec_names = []
+        alt_names = []
+        alt_names_short = []
+        gene_name = None
+        gene_synonyms = []
+        orf_names = []
+        ncbi_taxonomy_id = None
+        os_text = ""
+        in_contains_block = False
+        gn_buffer = ""
+
+    with open(dat_path) as fh:
+        for line in fh:
+            line_code = line[:2]
+
+            if line_code == "//":
+                _flush()
+                continue
+
+            if line_code == "AC":
+                # AC   P04637; Q15086; Q16535;
+                parts = line[5:].strip().rstrip(";").split(";")
+                accessions.extend(p.strip() for p in parts if p.strip())
+
+            elif line_code == "DE":
+                content = line[5:].rstrip("\n")
+                # Detect Contains: block — skip sub-entry names
+                if content.strip().startswith("Contains:"):
+                    in_contains_block = True
+                    continue
+                # Detect Includes: block — also skip
+                if content.strip().startswith("Includes:"):
+                    in_contains_block = True
+                    continue
+                # Top-level RecName/AltName reset the contains flag
+                if content.startswith("RecName:") or content.startswith("AltName:"):
+                    in_contains_block = False
+
+                if in_contains_block:
+                    continue
+
+                if "Full=" in content:
+                    m = re.search(r"Full=([^;{]+)", content)
+                    if m:
+                        val = _strip_evidence(m.group(1)).rstrip(";").strip()
+                        if val:
+                            if "RecName:" in content or (
+                                content.startswith("         ") and rec_names and not alt_names
+                            ):
+                                # RecName: Full= or continuation of RecName block
+                                if "RecName:" in content:
+                                    rec_names.append(val)
+                                # Continuation lines with Full= after RecName are sub-names — skip
+                            elif "AltName:" in content:
+                                alt_names.append(val)
+                            else:
+                                # Continuation of current DE block — could be RecName or AltName
+                                # Treat as alt_name for safety
+                                alt_names.append(val)
+                if "Short=" in content:
+                    m = re.search(r"Short=([^;{]+)", content)
+                    if m:
+                        val = _strip_evidence(m.group(1)).rstrip(";").strip()
+                        if val:
+                            alt_names_short.append(val)
+
+            elif line_code == "GN":
+                # GN lines may span multiple lines; concatenate
+                gn_content = line[5:].rstrip("\n").strip()
+                if gn_buffer:
+                    gn_buffer += " " + gn_content
+                else:
+                    gn_buffer = gn_content
+
+            elif line_code == "OX":
+                # OX   NCBI_TaxID=9606 {evidence};
+                m = re.search(r"NCBI_TaxID=(\d+)", line)
+                if m:
+                    ncbi_taxonomy_id = int(m.group(1))
+
+            elif line_code == "OS":
+                # OS lines may span multiple lines
+                os_content = line[5:].rstrip("\n").strip()
+                if os_text:
+                    os_text += " " + os_content
+                else:
+                    os_text = os_content
+
+    if verbose:
+        print(f"  Total: {entry_count} entries, {len(protein_records)} proteins, {len(alias_records)} aliases")
+
+    return protein_records, alias_records
+
+
+def cmd_proteins(args: argparse.Namespace) -> None:
+    """Parse UniProt Swiss-Prot flat file and load protein tables into LanceDB."""
+    db = open_reference_db(args.db_path)
+
+    # Build taxonomy filter if --organisms given
+    taxonomy_filter: set[int] | None = None
+    if args.organisms:
+        if ORGANISMS_TABLE not in db.list_tables().tables:
+            raise RuntimeError(
+                f"Organisms table not found. Run `python {__file__} organisms` first."
+            )
+        organism_lookup = _load_organism_lookup(db)
+        taxonomy_filter = set()
+        for name in args.organisms:
+            rec = organism_lookup.get(name)
+            if rec is None:
+                print(f"  WARNING: Unknown organism '{name}', skipping")
+                continue
+            taxonomy_filter.add(rec["ncbi_taxonomy_id"])
+        if not taxonomy_filter:
+            print("No valid organisms specified, aborting.")
+            return
+
+    # Resolve input path
+    input_path = getattr(args, "input", None)
+    tmp_file = None
+
+    if input_path is None:
+        # Download from UniProt FTP
+        print(f"Downloading Swiss-Prot from {UNIPROT_SPROT_URL}...")
+        resp = requests.get(UNIPROT_SPROT_URL, stream=True, timeout=600)
+        resp.raise_for_status()
+        tmp_file = NamedTemporaryFile(suffix=".dat", delete=False)
+        with gzip.open(io.BytesIO(resp.content), "rt") as gz:
+            for chunk in iter(lambda: gz.read(1024 * 1024), ""):
+                tmp_file.write(chunk.encode())
+        tmp_file.close()
+        input_path = tmp_file.name
+        print(f"  Downloaded and decompressed to {input_path}")
+
+    print(f"Parsing {input_path}...")
+    protein_records, alias_records = _parse_uniprot_dat(
+        input_path,
+        taxonomy_filter=taxonomy_filter,
+        verbose=args.verbose,
+    )
+
+    # Clean up temp file
+    if tmp_file is not None:
+        Path(tmp_file.name).unlink(missing_ok=True)
+
+    if protein_records:
+        ensure_table(db, PROTEINS_TABLE, ProteinRecord, protein_records)
+        print(f"Wrote {len(protein_records)} proteins to '{PROTEINS_TABLE}'")
+    else:
+        print("No protein records to write.")
+
+    if alias_records:
+        ensure_table(db, PROTEIN_ALIASES_TABLE, ProteinAliasRecord, alias_records)
+        print(f"Wrote {len(alias_records)} aliases to '{PROTEIN_ALIASES_TABLE}'")
+    else:
+        print("No alias records to write.")
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: all
 # ---------------------------------------------------------------------------
 
@@ -796,6 +1140,8 @@ def cmd_all(args: argparse.Namespace) -> None:
     if not hasattr(args, "ontologies") or args.ontologies is None:
         args.ontologies = None
     cmd_ontologies(args)
+    print("\n=== Proteins ===")
+    cmd_proteins(args)
     print("\nDone!")
 
 
@@ -846,10 +1192,34 @@ def main() -> None:
     )
     sub_ont.set_defaults(func=cmd_ontologies)
 
+    # proteins
+    sub_prot = subparsers.add_parser(
+        "proteins", help="Parse UniProt Swiss-Prot flat file into protein tables"
+    )
+    sub_prot.add_argument(
+        "--input",
+        type=str,
+        default=None,
+        help="Path to local uniprot_sprot.dat file. If omitted, downloads from UniProt FTP.",
+    )
+    sub_prot.add_argument(
+        "--organisms",
+        nargs="+",
+        default=None,
+        help="Filter by organism common_name or scientific_name (requires organisms table)",
+    )
+    sub_prot.set_defaults(func=cmd_proteins)
+
     # all
-    sub_all = subparsers.add_parser("all", help="Run organisms, genomic-features, and ontologies")
+    sub_all = subparsers.add_parser("all", help="Run organisms, genomic-features, ontologies, and proteins")
     sub_all.add_argument("--organisms", nargs="+", default=None)
     sub_all.add_argument("--ontologies", nargs="+", default=None)
+    sub_all.add_argument(
+        "--input",
+        type=str,
+        default=None,
+        help="Path to local uniprot_sprot.dat file for proteins step.",
+    )
     sub_all.set_defaults(func=cmd_all)
 
     args = parser.parse_args()

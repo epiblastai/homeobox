@@ -53,10 +53,14 @@ def _(mo):
 @app.cell
 def _():
     from lancell.standardization.metadata_table import (
+        COMPOUNDS_TABLE,
+        COMPOUND_SYNONYMS_TABLE,
         GENOMIC_FEATURE_ALIASES_TABLE,
         GENOMIC_FEATURES_TABLE,
         ONTOLOGY_TERMS_TABLE,
         ORGANISMS_TABLE,
+        PROTEIN_ALIASES_TABLE,
+        PROTEINS_TABLE,
         get_reference_db,
         set_reference_db_path,
     )
@@ -64,10 +68,14 @@ def _():
     set_reference_db_path("s3://epiblast/ontology_resolver/")
     db = get_reference_db()
     return (
+        COMPOUNDS_TABLE,
+        COMPOUND_SYNONYMS_TABLE,
         GENOMIC_FEATURES_TABLE,
         GENOMIC_FEATURE_ALIASES_TABLE,
         ONTOLOGY_TERMS_TABLE,
         ORGANISMS_TABLE,
+        PROTEINS_TABLE,
+        PROTEIN_ALIASES_TABLE,
         db,
     )
 
@@ -805,7 +813,586 @@ def _(resolve_organisms):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 7. Try It Yourself
+    ## 7. OLS4: Ontology Lookup Service
+
+    The [EMBL-EBI Ontology Lookup Service](https://www.ebi.ac.uk/ols4/) provides
+    on-demand access to 250+ ontologies.  The `lancell.standardization.ols` module
+    wraps OLS4 for use cases where the local reference DB falls short:
+
+    - **Fuzzy text search** — find terms when exact name/synonym matching fails
+    - **Cell line resolution (CLO)** — CLO is OWL-only and not in the local DB
+    - **Term detail lookup** — full metadata for any CURIE
+    - **Cross-ontology mappings** — xrefs between ontology systems
+    - **Obsolete term replacement** — find successors for deprecated terms
+
+    All results are cached (30-day TTL) and rate-limited (10 req/s).
+    """)
+    return
+
+
+@app.cell
+def _():
+    from lancell.standardization.ols import (
+        get_ols_ancestors,
+        get_ols_mappings,
+        get_ols_replacement,
+        get_ols_term,
+        search_ols,
+    )
+    from lancell.standardization.ontologies import resolve_cell_lines
+
+    return (
+        get_ols_ancestors,
+        get_ols_mappings,
+        get_ols_term,
+        resolve_cell_lines,
+        search_ols,
+    )
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Fuzzy text search
+
+    `search_ols()` finds terms by relevance-ranked text matching across any
+    ontology hosted by EBI.  Useful as a fallback when the local DB's exact
+    name/synonym matching returns nothing.
+    """)
+    return
+
+
+@app.cell
+def _(pl, search_ols):
+    cl_hits = search_ols("motor neuron", ontology="CL", rows=5)
+    pl.DataFrame([
+        {
+            "obo_id": t.obo_id,
+            "label": t.label,
+            "description": (t.description or "")[:80],
+        }
+        for t in cl_hits
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    Without an ontology filter, OLS4 searches across all 250+ ontologies:
+    """)
+    return
+
+
+@app.cell
+def _(pl, search_ols):
+    cross_hits = search_ols("glioblastoma", rows=5)
+    pl.DataFrame([
+        {
+            "obo_id": t.obo_id,
+            "label": t.label,
+            "ontology": t.ontology_prefix,
+        }
+        for t in cross_hits
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Cell line resolution (CLO)
+
+    The Cell Line Ontology is distributed only as OWL (no OBO), so it's not in
+    the local reference DB.  `resolve_cell_lines()` queries CLO via OLS4 instead.
+    """)
+    return
+
+
+@app.cell
+def _(resolve_cell_lines):
+    cell_line_report = resolve_cell_lines([
+        "HeLa", "HEK293", "A549", "K562", "U2OS", "NOTACELLLINE",
+    ])
+    cell_line_report.to_dataframe()
+    return (cell_line_report,)
+
+
+@app.cell(hide_code=True)
+def _(cell_line_report, mo):
+    mo.md(f"""
+    **{cell_line_report.resolved}** / **{cell_line_report.total}** resolved.
+    Results are filtered to CLO-prefixed terms only (imported CL/BFO terms are
+    excluded).  Exact matches get confidence 1.0, fuzzy matches 0.8.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Term detail lookup
+
+    `get_ols_term()` fetches full metadata for any CURIE — definition, synonyms,
+    cross-references, and obsolescence status.
+    """)
+    return
+
+
+@app.cell
+def _(get_ols_term, mo):
+    neuron_term = get_ols_term("CL:0000540")
+    mo.md(f"""
+    **{neuron_term.obo_id}**: {neuron_term.label}
+
+    - **Description**: {neuron_term.description}
+    - **Synonyms**: {', '.join(neuron_term.synonyms) or 'none'}
+    - **Obsolete**: {neuron_term.is_obsolete}
+    - **Cross-references**: {', '.join(neuron_term.xrefs[:8])}{'...' if len(neuron_term.xrefs) > 8 else ''}
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Cross-ontology mappings
+
+    `get_ols_mappings()` extracts cross-references from a term's OBO xrefs and
+    annotations — useful for translating between ontology systems.
+    """)
+    return
+
+
+@app.cell
+def _(get_ols_mappings, pl):
+    neuron_xrefs = get_ols_mappings("CL:0000540")
+    pl.DataFrame({"xref": neuron_xrefs}).head(15)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Hierarchy traversal
+
+    `get_ols_ancestors()` walks up the ontology graph via the OLS4 API.
+    This works for any ontology — including those not in the local DB.
+    """)
+    return
+
+
+@app.cell
+def _(get_ols_ancestors, pl):
+    ancestors = get_ols_ancestors("CL:0000540", max_depth=8)
+    pl.DataFrame([
+        {"obo_id": t.obo_id, "label": t.label}
+        for t in ancestors
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 8. Proteins Table
+
+    One row per primary UniProt accession from Swiss-Prot. The protein aliases
+    table maps lowercased protein names, gene names, synonyms, and secondary
+    accessions to UniProt IDs for fast exact-match resolution.
+    """)
+    return
+
+
+@app.cell
+def _(PROTEINS_TABLE, db, mo):
+    proteins_table = db.open_table(PROTEINS_TABLE)
+    proteins_summary = (
+        proteins_table.search()
+        .select(["organism", "ncbi_taxonomy_id"])
+        .to_polars()
+    )
+
+    total_proteins = proteins_summary.height
+    organism_protein_counts = (
+        proteins_summary.group_by("organism")
+        .len()
+        .sort("len", descending=True)
+        .rename({"len": "count"})
+        .head(10)
+    )
+
+    mo.md(f"**{total_proteins:,}** total protein records.")
+    return organism_protein_counts, proteins_table
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Proteins per organism (top 10)
+    """)
+    return
+
+
+@app.cell
+def _(organism_protein_counts):
+    organism_protein_counts
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Sample protein records (human)
+    """)
+    return
+
+
+@app.cell
+def _(proteins_table):
+    (
+        proteins_table.search()
+        .where("organism = 'homo_sapiens'", prefilter=True)
+        .select(["uniprot_id", "protein_name", "gene_name", "organism"])
+        .limit(10)
+        .to_polars()
+    )
+    return
+
+
+@app.cell
+def _(PROTEIN_ALIASES_TABLE, db, mo, pl):
+    protein_aliases_table = db.open_table(PROTEIN_ALIASES_TABLE)
+    protein_aliases_summary = (
+        protein_aliases_table.search()
+        .select(["is_canonical", "source"])
+        .to_polars()
+    )
+
+    total_protein_aliases = protein_aliases_summary.height
+    canonical_protein = protein_aliases_summary.filter(pl.col("is_canonical")).height
+
+    source_protein_counts = (
+        protein_aliases_summary.group_by("source")
+        .len()
+        .sort("len", descending=True)
+        .rename({"len": "count"})
+    )
+
+    mo.md(f"""
+    **{total_protein_aliases:,}** total protein aliases: **{canonical_protein:,}** canonical
+    + **{total_protein_aliases - canonical_protein:,}** synonyms.
+    """)
+    return protein_aliases_table, source_protein_counts
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Protein aliases by source
+    """)
+    return
+
+
+@app.cell
+def _(source_protein_counts):
+    source_protein_counts
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Aliases for TP53 / P04637 (human)
+    """)
+    return
+
+
+@app.cell
+def _(protein_aliases_table):
+    (
+        protein_aliases_table.search()
+        .where(
+            "uniprot_id = 'P04637' AND organism = 'homo_sapiens'",
+            prefilter=True,
+        )
+        .select(["alias", "alias_original", "uniprot_id", "is_canonical", "source"])
+        .to_polars()
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 9. Protein Resolution
+
+    `resolve_proteins()` uses the protein alias table for fast, offline resolution
+    of protein names, gene names, and UniProt accessions. It follows the same
+    pattern as gene resolution: lowercased exact matching, canonical vs synonym
+    disambiguation, and batch enrichment from the proteins table.
+    """)
+    return
+
+
+@app.cell
+def _():
+    from lancell.standardization.proteins import resolve_proteins
+
+    return (resolve_proteins,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Protein name resolution
+    """)
+    return
+
+
+@app.cell
+def _(resolve_proteins):
+    protein_report = resolve_proteins(
+        ["TP53", "p53", "BRCA1", "insulin", "CD3D", "APP", "NOTAPROTEIN"],
+        organism="human",
+    )
+    protein_report.to_dataframe()
+    return (protein_report,)
+
+
+@app.cell(hide_code=True)
+def _(mo, protein_report):
+    mo.md(f"""
+    **{protein_report.resolved}** / **{protein_report.total}** resolved,
+    **{protein_report.unresolved}** unresolved,
+    **{protein_report.ambiguous}** ambiguous.
+
+    `TP53` resolves via gene name alias (canonical, confidence 1.0),
+    `p53` resolves via AltName Short (synonym, confidence 0.9),
+    `insulin` resolves via RecName Full (canonical, confidence 1.0).
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 10. Compounds Table
+
+    One row per PubChem compound (~116M rows), built from PubChem's
+    `CID-Title` and `CID-SMILES` bulk FTP files. Each compound has a
+    preferred name and canonical SMILES string. The table is populated
+    by `scripts/download_pubchem.py`.
+    """)
+    return
+
+
+@app.cell
+def _(COMPOUNDS_TABLE, db, mo):
+    compounds_table = db.open_table(COMPOUNDS_TABLE)
+    compounds_count = compounds_table.count_rows()
+
+    mo.md(f"**{compounds_count:,}** total compound records.")
+    return (compounds_table,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Sample compound records
+    """)
+    return
+
+
+@app.cell
+def _(compounds_table):
+    (
+        compounds_table.search()
+        .select(["pubchem_cid", "name", "canonical_smiles"])
+        .limit(10)
+        .to_polars()
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Look up specific compounds by CID
+    """)
+    return
+
+
+@app.cell
+def _(compounds_table):
+    (
+        compounds_table.search()
+        .where("pubchem_cid IN (2244, 5291, 2519, 5288826)", prefilter=True)
+        .select(["pubchem_cid", "name", "canonical_smiles"])
+        .to_polars()
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 11. Compound Synonyms Table
+
+    Maps lowercased compound names and synonyms to PubChem CIDs for fast
+    exact-match resolution. Title synonyms (`is_title=True`) are the
+    preferred compound names; other synonyms come from PubChem's
+    `CID-Synonym-filtered` file.
+    """)
+    return
+
+
+@app.cell
+def _(COMPOUND_SYNONYMS_TABLE, db, mo):
+    synonyms_table = db.open_table(COMPOUND_SYNONYMS_TABLE)
+    total_synonyms = synonyms_table.count_rows()
+    title_count = synonyms_table.count_rows("is_title = true")
+    synonym_count = total_synonyms - title_count
+
+    mo.md(f"""
+    **{total_synonyms:,}** total synonym entries: **{title_count:,}** title names
+    + **{synonym_count:,}** synonyms.
+    """)
+    return (synonyms_table,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Synonyms for aspirin (CID 2244)
+    """)
+    return
+
+
+@app.cell
+def _(synonyms_table):
+    (
+        synonyms_table.search()
+        .where("pubchem_cid = 2244", prefilter=True)
+        .select(["synonym", "synonym_original", "pubchem_cid", "is_title"])
+        .limit(20)
+        .to_polars()
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Name lookup: find CIDs for "imatinib"
+    """)
+    return
+
+
+@app.cell
+def _(synonyms_table):
+    (
+        synonyms_table.search()
+        .where("synonym = 'imatinib'", prefilter=True)
+        .select(["synonym", "synonym_original", "pubchem_cid", "is_title"])
+        .to_polars()
+    )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 12. Molecule Resolution
+
+    `resolve_molecules()` resolves compound names to PubChem CIDs and
+    canonical SMILES. The resolution strategy is:
+
+    1. **Control detection** — DMSO, vehicle, PBS, etc. are recognized immediately
+    2. **Local LanceDB lookup** — batch query the `compound_synonyms` table (fast, offline)
+    3. **PubChem API fallback** — for names not found locally
+    4. **ChEMBL API fallback** — last resort
+
+    Title matches (preferred compound names) get confidence 1.0, synonym
+    matches get 0.9. Salt suffixes are automatically stripped before lookup.
+    """)
+    return
+
+
+@app.cell
+def _():
+    from lancell.standardization.molecules import resolve_molecules
+
+    return (resolve_molecules,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Compound name resolution
+    """)
+    return
+
+
+@app.cell
+def _(resolve_molecules):
+    mol_report = resolve_molecules([
+        "aspirin",
+        "imatinib",
+        "dexamethasone",
+        "imatinib mesylate",
+        "DMSO",
+        "Oxyquinoline",
+        "NOTAREALCOMPOUND",
+    ])
+    mol_report.to_dataframe()
+    return (mol_report,)
+
+
+@app.cell(hide_code=True)
+def _(mo, mol_report):
+    mo.md(f"""
+    **{mol_report.resolved}** / **{mol_report.total}** resolved,
+    **{mol_report.unresolved}** unresolved.
+
+    Note how `imatinib mesylate` is resolved to the same CID as `imatinib`
+    after salt suffix stripping. `DMSO` is detected as a control compound.
+    Local DB matches show `source="lancedb"`.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ### Try your own compounds
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    compound_input = mo.ui.text(
+        value="rapamycin, metformin, paclitaxel, vehicle, FAKEMOL123",
+        label="Compounds (comma-separated)",
+        full_width=True,
+    )
+    compound_input
+    return (compound_input,)
+
+
+@app.cell
+def _(compound_input, resolve_molecules):
+    user_compounds = [c.strip() for c in compound_input.value.split(",") if c.strip()]
+    user_mol_report = resolve_molecules(user_compounds)
+    user_mol_report.to_dataframe()
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md("""
+    ## 13. Try It Yourself
 
     Enter comma-separated gene symbols or Ensembl IDs below.
     """)
