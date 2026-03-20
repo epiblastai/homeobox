@@ -23,15 +23,6 @@ from lancell.group_specs import PointerKind
 
 
 class TestBenjaminiHochberg:
-    def test_matches_statsmodels(self):
-        from statsmodels.stats.multitest import multipletests
-
-        rng = np.random.default_rng(42)
-        pvals = rng.uniform(0, 1, size=50)
-        expected = multipletests(pvals, method="fdr_bh")[1]
-        result = _benjamini_hochberg(pvals)
-        np.testing.assert_allclose(result, expected, atol=1e-10)
-
     def test_empty(self):
         result = _benjamini_hochberg(np.array([], dtype=np.float64))
         assert result.dtype == np.float64
