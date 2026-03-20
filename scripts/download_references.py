@@ -13,12 +13,11 @@ import gzip
 import io
 import re
 import textwrap
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 import polars as pl
 import requests
-
-from pathlib import Path
-from tempfile import NamedTemporaryFile
 
 from lancell.standardization.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
@@ -187,14 +186,24 @@ def _fetch_gencode_gtf(url: str, verbose: bool = False) -> pl.DataFrame:
         separator="\t",
         has_header=False,
         new_columns=[
-            "seqname", "source", "feature", "start", "end",
-            "score", "strand", "frame", "attributes",
+            "seqname",
+            "source",
+            "feature",
+            "start",
+            "end",
+            "score",
+            "strand",
+            "frame",
+            "attributes",
         ],
     )
 
     # Extract attributes and normalize
     df = df.with_columns(
-        pl.col("attributes").str.extract(r'gene_id "([^"]+)"').str.replace(r"\.\d+$", "").alias("ensembl_gene_id"),
+        pl.col("attributes")
+        .str.extract(r'gene_id "([^"]+)"')
+        .str.replace(r"\.\d+$", "")
+        .alias("ensembl_gene_id"),
         pl.col("attributes").str.extract(r'gene_name "([^"]+)"').alias("symbol"),
         pl.col("attributes").str.extract(r'gene_type "([^"]+)"').alias("biotype"),
         pl.col("seqname").str.replace("^chr", "").str.replace("^M$", "MT").alias("chromosome"),
@@ -213,11 +222,20 @@ def _process_gencode_df(
         pl.col("biotype").fill_null(""),
         pl.lit(organism_name).alias("organism"),
         pl.lit(assembly).alias("assembly"),
-    ).select(["ensembl_gene_id", "symbol", "ncbi_gene_id", "biotype", "chromosome", "organism", "assembly"])
+    ).select(
+        [
+            "ensembl_gene_id",
+            "symbol",
+            "ncbi_gene_id",
+            "biotype",
+            "chromosome",
+            "organism",
+            "assembly",
+        ]
+    )
 
-    aliases_df = (
-        df.filter(pl.col("symbol").is_not_null() & (pl.col("symbol") != ""))
-        .select([
+    aliases_df = df.filter(pl.col("symbol").is_not_null() & (pl.col("symbol") != "")).select(
+        [
             pl.col("symbol").str.to_lowercase().alias("alias"),
             pl.col("symbol").alias("alias_original"),
             pl.col("ensembl_gene_id"),
@@ -225,14 +243,16 @@ def _process_gencode_df(
             pl.lit(True).alias("is_canonical"),
             pl.lit("gencode").alias("source"),
             pl.lit(assembly).alias("assembly"),
-        ])
+        ]
     )
 
     feature_records = features_df.to_dicts()
     alias_records = aliases_df.to_dicts()
 
     if verbose:
-        print(f"  GENCODE {organism_name}: {len(feature_records)} features, {len(alias_records)} aliases")
+        print(
+            f"  GENCODE {organism_name}: {len(feature_records)} features, {len(alias_records)} aliases"
+        )
     return feature_records, alias_records
 
 
@@ -343,7 +363,9 @@ def _detect_prefix(gene_ids: list[str]) -> str | None:
     return None
 
 
-def _fetch_biomart(dataset: str, verbose: bool = False, biomart_url: str = BIOMART_URL) -> pl.DataFrame:
+def _fetch_biomart(
+    dataset: str, verbose: bool = False, biomart_url: str = BIOMART_URL
+) -> pl.DataFrame:
     """POST a BioMart query and return a polars DataFrame."""
     xml = BIOMART_XML_TEMPLATE.format(dataset=dataset)
     if verbose:
@@ -447,7 +469,9 @@ def _process_biomart_df(
             )
 
     if verbose:
-        print(f"  BioMart {organism_name}: {len(feature_records)} features, {len(alias_records)} aliases")
+        print(
+            f"  BioMart {organism_name}: {len(feature_records)} features, {len(alias_records)} aliases"
+        )
     return feature_records, alias_records
 
 
@@ -487,9 +511,7 @@ def cmd_genomic_features(args: argparse.Namespace) -> None:
 
     # Load organisms from the DB (must run `organisms` first)
     if ORGANISMS_TABLE not in db.list_tables().tables:
-        raise RuntimeError(
-            f"Organisms table not found. Run `python {__file__} organisms` first."
-        )
+        raise RuntimeError(f"Organisms table not found. Run `python {__file__} organisms` first.")
     organism_lookup = _load_organism_lookup(db)
 
     # Fetch available BioMart datasets for validation
@@ -542,7 +564,9 @@ def cmd_genomic_features(args: argparse.Namespace) -> None:
             gtf_url = _discover_gencode_gtf_url(base_url)
             gtf_df = _fetch_gencode_gtf(gtf_url, verbose=args.verbose)
             assembly = CURRENT_ASSEMBLIES.get(sci_name)
-            gc_features, gc_aliases = _process_gencode_df(gtf_df, sci_name, assembly=assembly, verbose=args.verbose)
+            gc_features, gc_aliases = _process_gencode_df(
+                gtf_df, sci_name, assembly=assembly, verbose=args.verbose
+            )
             gencode_data[sci_name] = (gc_features, gc_aliases)
         except Exception as e:
             print(f"  ERROR fetching GENCODE for {sci_name}: {e}")
@@ -559,7 +583,9 @@ def cmd_genomic_features(args: argparse.Namespace) -> None:
             print(f"  ERROR fetching {dataset}: {e}")
             continue
         assembly = CURRENT_ASSEMBLIES.get(scientific_name)
-        features, aliases = _process_biomart_df(df, scientific_name, assembly=assembly, verbose=args.verbose)
+        features, aliases = _process_biomart_df(
+            df, scientific_name, assembly=assembly, verbose=args.verbose
+        )
         biomart_data[scientific_name] = (features, aliases)
 
     # Phase 3: Merge GENCODE + BioMart
@@ -602,7 +628,9 @@ def cmd_genomic_features(args: argparse.Namespace) -> None:
         print("Fetching GENCODE v19 for human (GRCh37)...")
         try:
             gtf_df = _fetch_gencode_gtf(GENCODE_V19_URL, verbose=args.verbose)
-            grch37_gc = _process_gencode_df(gtf_df, "homo_sapiens", assembly="GRCh37", verbose=args.verbose)
+            grch37_gc = _process_gencode_df(
+                gtf_df, "homo_sapiens", assembly="GRCh37", verbose=args.verbose
+            )
         except Exception as e:
             print(f"  ERROR fetching GENCODE v19: {e}")
 
@@ -691,7 +719,7 @@ def _parse_obo_ontology(ontology_prefix: str, url: str, verbose: bool = False) -
         if raw_prefix.upper() != ontology_prefix.upper():
             return
         # Normalize term ID prefix to match our canonical casing (e.g. efo: -> EFO:)
-        normalized_id = ontology_prefix + term_id[len(raw_prefix):]
+        normalized_id = ontology_prefix + term_id[len(raw_prefix) :]
         records.append(
             {
                 "ontology_term_id": normalized_id,
@@ -1053,7 +1081,9 @@ def _parse_uniprot_dat(
                     os_text = os_content
 
     if verbose:
-        print(f"  Total: {entry_count} entries, {len(protein_records)} proteins, {len(alias_records)} aliases")
+        print(
+            f"  Total: {entry_count} entries, {len(protein_records)} proteins, {len(alias_records)} aliases"
+        )
 
     return protein_records, alias_records
 
@@ -1165,9 +1195,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # organisms
-    sub_org = subparsers.add_parser(
-        "organisms", help="Fetch all organisms from Ensembl REST API"
-    )
+    sub_org = subparsers.add_parser("organisms", help="Fetch all organisms from Ensembl REST API")
     sub_org.set_defaults(func=cmd_organisms)
 
     # genomic-features
@@ -1211,7 +1239,9 @@ def main() -> None:
     sub_prot.set_defaults(func=cmd_proteins)
 
     # all
-    sub_all = subparsers.add_parser("all", help="Run organisms, genomic-features, ontologies, and proteins")
+    sub_all = subparsers.add_parser(
+        "all", help="Run organisms, genomic-features, ontologies, and proteins"
+    )
     sub_all.add_argument("--organisms", nargs="+", default=None)
     sub_all.add_argument("--ontologies", nargs="+", default=None)
     sub_all.add_argument(

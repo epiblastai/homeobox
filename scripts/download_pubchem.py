@@ -23,8 +23,8 @@ import polars as pl
 import requests
 
 from lancell.standardization.metadata_table import (
-    COMPOUNDS_TABLE,
     COMPOUND_SYNONYMS_TABLE,
+    COMPOUNDS_TABLE,
     CompoundRecord,
     CompoundSynonymRecord,
     ensure_table_chunked,
@@ -65,7 +65,11 @@ def _download_file(url: str, dest: Path, verbose: bool = False) -> None:
             downloaded += len(chunk)
             if verbose and total > 0:
                 pct = downloaded * 100 // total
-                print(f"\r  {dest.name}: {downloaded / 1e9:.1f}G / {total / 1e9:.1f}G ({pct}%)", end="", flush=True)
+                print(
+                    f"\r  {dest.name}: {downloaded / 1e9:.1f}G / {total / 1e9:.1f}G ({pct}%)",
+                    end="",
+                    flush=True,
+                )
     if verbose:
         print()
 
@@ -142,9 +146,7 @@ def _build_compounds(
         dtypes={"pubchem_cid": pl.Int64},
     )
 
-    smiles_buffer = pl.DataFrame(
-        schema={"pubchem_cid": pl.Int64, "canonical_smiles": pl.Utf8}
-    )
+    smiles_buffer = pl.DataFrame(schema={"pubchem_cid": pl.Int64, "canonical_smiles": pl.Utf8})
     smiles_exhausted = False
     total_rows = 0
 
@@ -253,8 +255,6 @@ def _build_synonyms(
     # Create scalar index on synonym for fast exact-match lookups
     print("Creating scalar index on compound_synonyms.synonym...")
     table.create_scalar_index("synonym")
-
-
 
 
 # ---------------------------------------------------------------------------
