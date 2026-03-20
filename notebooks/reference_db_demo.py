@@ -30,7 +30,7 @@ def _(mo):
     `scripts/download_references.py` and demonstrates the gene resolution
     and ontology resolution pipelines that use them.
 
-    The reference DB replaces external API calls (bionty, MyGene.info, Ensembl REST)
+    The reference DB replaces external API calls (MyGene.info, Ensembl REST)
     with fast, offline, deterministic local lookups. For human, both GRCh38 and
     GRCh37 assemblies are stored so that legacy gene names from older references
     can still be resolved.
@@ -655,7 +655,6 @@ def _(mo):
 
     `resolve_ontology_terms()` and its convenience wrappers resolve free-text
     metadata values to ontology terms with CELLxGENE-compatible CURIE IDs.
-    Uses bionty for standardization with fuzzy search fallback.
     """)
     return
 
