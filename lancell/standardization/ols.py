@@ -21,7 +21,6 @@ from dataclasses import dataclass, field
 import requests
 
 from lancell.standardization._rate_limit import rate_limited
-from lancell.standardization.cache import get_cache
 
 OLS4_BASE = "https://www.ebi.ac.uk/ols4/api"
 
@@ -159,22 +158,6 @@ def _normalize_replaced_by(value: str) -> str:
     return value
 
 
-def _term_to_dict(term: OLSTerm) -> dict:
-    """Serialize an :class:`OLSTerm` to a dict for cache storage."""
-    return {
-        "obo_id": term.obo_id,
-        "label": term.label,
-        "iri": term.iri,
-        "ontology_prefix": term.ontology_prefix,
-        "ontology_name": term.ontology_name,
-        "description": term.description,
-        "synonyms": term.synonyms,
-        "is_obsolete": term.is_obsolete,
-        "replaced_by": term.replaced_by,
-        "xrefs": term.xrefs,
-    }
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -206,12 +189,6 @@ def search_ols(
     list[OLSTerm]
         Matching terms ranked by OLS4 relevance scoring.
     """
-    cache = get_cache()
-    cache_key = f"{query}|{ontology or ''}|{exact}|{rows}"
-    entry = cache.get("ols4_search", cache_key)
-    if entry is not None:
-        return [OLSTerm(**t) for t in entry.value["terms"]]
-
     params: dict[str, str | int] = {
         "q": query,
         "rows": rows,
@@ -233,10 +210,7 @@ def search_ols(
     resp.raise_for_status()
 
     docs = resp.json().get("response", {}).get("docs", [])
-    terms = [_parse_term(doc, from_search=True) for doc in docs]
-
-    cache.put("ols4_search", cache_key, {"terms": [_term_to_dict(t) for t in terms]})
-    return terms
+    return [_parse_term(doc, from_search=True) for doc in docs]
 
 
 def get_ols_term(curie: str) -> OLSTerm | None:
@@ -256,23 +230,11 @@ def get_ols_term(curie: str) -> OLSTerm | None:
     OLSTerm | None
         The term with full metadata, or ``None`` if not found in OLS4.
     """
-    cache = get_cache()
-    entry = cache.get("ols4_term", curie)
-    if entry is not None:
-        if entry.value.get("_not_found"):
-            return None
-        return OLSTerm(**entry.value)
-
     term = _fetch_term_by_iri(curie)
     if term is None:
         # Fallback: exact search by obo_id (handles non-standard IRI schemes)
         term = _fetch_term_by_obo_id(curie)
 
-    if term is None:
-        cache.put("ols4_term", curie, {"_not_found": True})
-        return None
-
-    cache.put("ols4_term", curie, _term_to_dict(term))
     return term
 
 
@@ -341,25 +303,11 @@ def get_ols_replacement(obsolete_curie: str) -> OLSTerm | None:
     OLSTerm | None
         The replacement term, or ``None``.
     """
-    cache = get_cache()
-    entry = cache.get("ols4_replacement", obsolete_curie)
-    if entry is not None:
-        if entry.value.get("_no_replacement"):
-            return None
-        return OLSTerm(**entry.value)
-
     term = get_ols_term(obsolete_curie)
     if term is None or not term.is_obsolete or not term.replaced_by:
-        cache.put("ols4_replacement", obsolete_curie, {"_no_replacement": True})
         return None
 
-    replacement = get_ols_term(term.replaced_by)
-    if replacement is None:
-        cache.put("ols4_replacement", obsolete_curie, {"_no_replacement": True})
-        return None
-
-    cache.put("ols4_replacement", obsolete_curie, _term_to_dict(replacement))
-    return replacement
+    return get_ols_term(term.replaced_by)
 
 
 def get_ols_mappings(curie: str) -> list[str]:
@@ -380,16 +328,8 @@ def get_ols_mappings(curie: str) -> list[str]:
         Cross-reference identifiers (e.g. ``["FMA:54651", "BTO:0000938"]``).
         Empty list if the term is not found or has no xrefs.
     """
-    cache = get_cache()
-    entry = cache.get("ols4_mappings", curie)
-    if entry is not None:
-        return entry.value.get("xrefs", [])
-
     term = get_ols_term(curie)
-    xrefs = term.xrefs if term is not None else []
-
-    cache.put("ols4_mappings", curie, {"xrefs": xrefs})
-    return xrefs
+    return term.xrefs if term is not None else []
 
 
 def get_ols_ancestors(curie: str, max_depth: int | None = None) -> list[OLSTerm]:
@@ -451,15 +391,6 @@ def _fetch_relatives(
     max_depth
         Truncate results to this many terms.
     """
-    cache = get_cache()
-    cache_key = f"{curie}|{relation}"
-    entry = cache.get("ols4_hierarchy", cache_key)
-    if entry is not None:
-        terms = [OLSTerm(**t) for t in entry.value["terms"]]
-        if max_depth is not None:
-            terms = terms[:max_depth]
-        return terms
-
     iri = _curie_to_iri(curie)
     ontology = _curie_to_ontology(curie)
     encoded_iri = _double_encode_iri(iri)
@@ -487,8 +418,6 @@ def _fetch_relatives(
         if page + 1 >= total_pages:
             break
         page += 1
-
-    cache.put("ols4_hierarchy", cache_key, {"terms": [_term_to_dict(t) for t in terms]})
 
     if max_depth is not None:
         return terms[:max_depth]

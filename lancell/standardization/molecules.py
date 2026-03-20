@@ -16,7 +16,6 @@ import polars as pl
 import requests
 
 from lancell.standardization._rate_limit import rate_limited
-from lancell.standardization.cache import get_cache
 from lancell.standardization.metadata_table import (
     COMPOUND_SYNONYMS_TABLE,
     COMPOUNDS_TABLE,
@@ -146,29 +145,11 @@ def _chembl_search_by_name(name: str) -> dict | None:
 
 def _resolve_chembl_fallback(name: str, cleaned: str) -> MoleculeResolution | None:
     """Try ChEMBL as a fallback when PubChem finds nothing."""
-    cache = get_cache()
-
-    entry = cache.get("molecules_chembl_name", cleaned)
-    if entry is not None:
-        v = entry.value
-        if v.get("chembl_id") is None:
-            return None
-        return MoleculeResolution(
-            input_value=name,
-            resolved_value=v.get("pref_name") or cleaned,
-            confidence=v.get("confidence", 0.85),
-            source="chembl (cached)",
-            chembl_id=v.get("chembl_id"),
-            canonical_smiles=v.get("canonical_smiles"),
-            inchi_key=v.get("inchi_key"),
-        )
-
     mol = _chembl_search_by_name(cleaned)
     if mol is None and cleaned != name.strip():
         mol = _chembl_search_by_name(name.strip())
 
     if mol is None:
-        cache.put("molecules_chembl_name", cleaned, {"chembl_id": None})
         return None
 
     chembl_id = mol.get("molecule_chembl_id")
@@ -181,7 +162,7 @@ def _resolve_chembl_fallback(name: str, cleaned: str) -> MoleculeResolution | No
     if raw_smiles:
         canon_smiles = canonicalize_smiles(raw_smiles) or raw_smiles
 
-    result = MoleculeResolution(
+    return MoleculeResolution(
         input_value=name,
         resolved_value=pref_name or cleaned,
         confidence=0.85,
@@ -190,20 +171,6 @@ def _resolve_chembl_fallback(name: str, cleaned: str) -> MoleculeResolution | No
         canonical_smiles=canon_smiles,
         inchi_key=inchi_key,
     )
-
-    cache.put(
-        "molecules_chembl_name",
-        cleaned,
-        {
-            "chembl_id": chembl_id,
-            "pref_name": pref_name,
-            "canonical_smiles": canon_smiles,
-            "inchi_key": inchi_key,
-            "confidence": 0.85,
-        },
-    )
-
-    return result
 
 
 def _has_compound_tables() -> bool:
@@ -370,8 +337,6 @@ def _resolve_batch_names_local(names: list[str]) -> dict[str, MoleculeResolution
 
 def _resolve_single_name(name: str) -> MoleculeResolution:
     """Resolve a single compound name to a MoleculeResolution."""
-    cache = get_cache()
-
     # Check if it's a control
     if is_control_compound(name):
         return MoleculeResolution(
@@ -387,21 +352,6 @@ def _resolve_single_name(name: str) -> MoleculeResolution:
     local_result = _resolve_name_local(cleaned, name)
     if local_result is not None:
         return local_result
-
-    # Check cache
-    entry = cache.get("molecules_name", cleaned)
-    if entry is not None:
-        v = entry.value
-        return MoleculeResolution(
-            input_value=name,
-            resolved_value=v.get("iupac_name") or cleaned,
-            confidence=v.get("confidence", 0.9),
-            source="pubchem (cached)",
-            pubchem_cid=v.get("cid"),
-            canonical_smiles=v.get("canonical_smiles"),
-            inchi_key=v.get("inchikey"),
-            iupac_name=v.get("iupac_name"),
-        )
 
     # PubChem lookup
     cids = _pubchem_get_cids(cleaned, namespace="name")
@@ -425,15 +375,13 @@ def _resolve_single_name(name: str) -> MoleculeResolution:
     compound_data = _pubchem_get_compound(cid)
     if compound_data is None:
         # Got CID but couldn't fetch properties
-        result = MoleculeResolution(
+        return MoleculeResolution(
             input_value=name,
             resolved_value=cleaned,
             confidence=0.7,
             source="pubchem",
             pubchem_cid=cid,
         )
-        cache.put("molecules_name", cleaned, {"cid": cid, "confidence": 0.7})
-        return result
 
     canon_smiles = compound_data.get("canonical_smiles")
     if canon_smiles:
@@ -441,7 +389,7 @@ def _resolve_single_name(name: str) -> MoleculeResolution:
         if rdkit_canon:
             canon_smiles = rdkit_canon
 
-    result = MoleculeResolution(
+    return MoleculeResolution(
         input_value=name,
         resolved_value=compound_data.get("iupac_name") or cleaned,
         confidence=0.9,
@@ -452,43 +400,12 @@ def _resolve_single_name(name: str) -> MoleculeResolution:
         iupac_name=compound_data.get("iupac_name"),
     )
 
-    cache.put(
-        "molecules_name",
-        cleaned,
-        {
-            "cid": cid,
-            "canonical_smiles": canon_smiles,
-            "inchikey": compound_data.get("inchikey"),
-            "iupac_name": compound_data.get("iupac_name"),
-            "confidence": 0.9,
-        },
-    )
-
-    return result
-
 
 def _resolve_single_smiles(smiles: str) -> MoleculeResolution:
     """Resolve a single SMILES string."""
-    cache = get_cache()
-
     # Canonicalize first
     canonical = canonicalize_smiles(smiles)
     lookup_smiles = canonical or smiles
-
-    # Check cache
-    entry = cache.get("molecules_smiles", lookup_smiles)
-    if entry is not None:
-        v = entry.value
-        return MoleculeResolution(
-            input_value=smiles,
-            resolved_value=v.get("canonical_smiles") or lookup_smiles,
-            confidence=v.get("confidence", 0.9),
-            source="pubchem (cached)",
-            pubchem_cid=v.get("cid"),
-            canonical_smiles=v.get("canonical_smiles"),
-            inchi_key=v.get("inchikey"),
-            iupac_name=v.get("iupac_name"),
-        )
 
     # PubChem lookup by SMILES
     cids = _pubchem_get_cids(lookup_smiles, namespace="smiles")
@@ -514,7 +431,7 @@ def _resolve_single_smiles(smiles: str) -> MoleculeResolution:
     result_smiles = canonical or lookup_smiles
 
     if compound_data:
-        result = MoleculeResolution(
+        return MoleculeResolution(
             input_value=smiles,
             resolved_value=compound_data.get("canonical_smiles") or result_smiles,
             confidence=0.9,
@@ -525,7 +442,7 @@ def _resolve_single_smiles(smiles: str) -> MoleculeResolution:
             iupac_name=compound_data.get("iupac_name"),
         )
     else:
-        result = MoleculeResolution(
+        return MoleculeResolution(
             input_value=smiles,
             resolved_value=result_smiles,
             confidence=0.7,
@@ -534,25 +451,9 @@ def _resolve_single_smiles(smiles: str) -> MoleculeResolution:
             canonical_smiles=result_smiles,
         )
 
-    cache.put(
-        "molecules_smiles",
-        lookup_smiles,
-        {
-            "cid": cid,
-            "canonical_smiles": result.canonical_smiles,
-            "inchikey": result.inchi_key,
-            "iupac_name": result.iupac_name,
-            "confidence": result.confidence,
-        },
-    )
-
-    return result
-
 
 def _resolve_single_cid(cid_str: str) -> MoleculeResolution:
     """Resolve a single PubChem CID (passed as string)."""
-    cache = get_cache()
-
     try:
         cid = int(cid_str)
     except ValueError:
@@ -561,20 +462,6 @@ def _resolve_single_cid(cid_str: str) -> MoleculeResolution:
             resolved_value=None,
             confidence=0.0,
             source="none",
-        )
-
-    entry = cache.get("molecules_cid", str(cid))
-    if entry is not None:
-        v = entry.value
-        return MoleculeResolution(
-            input_value=cid_str,
-            resolved_value=v.get("iupac_name") or str(cid),
-            confidence=v.get("confidence", 0.95),
-            source="pubchem (cached)",
-            pubchem_cid=cid,
-            canonical_smiles=v.get("canonical_smiles"),
-            inchi_key=v.get("inchikey"),
-            iupac_name=v.get("iupac_name"),
         )
 
     compound_data = _pubchem_get_compound(cid)
@@ -592,7 +479,7 @@ def _resolve_single_cid(cid_str: str) -> MoleculeResolution:
         if rdkit_canon:
             canon_smiles = rdkit_canon
 
-    result = MoleculeResolution(
+    return MoleculeResolution(
         input_value=cid_str,
         resolved_value=compound_data.get("iupac_name") or str(cid),
         confidence=0.95,
@@ -602,19 +489,6 @@ def _resolve_single_cid(cid_str: str) -> MoleculeResolution:
         inchi_key=compound_data.get("inchikey"),
         iupac_name=compound_data.get("iupac_name"),
     )
-
-    cache.put(
-        "molecules_cid",
-        str(cid),
-        {
-            "canonical_smiles": canon_smiles,
-            "inchikey": compound_data.get("inchikey"),
-            "iupac_name": compound_data.get("iupac_name"),
-            "confidence": 0.95,
-        },
-    )
-
-    return result
 
 
 def resolve_molecules(

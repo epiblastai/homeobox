@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from xml.etree import ElementTree
 
 import requests
 
 from lancell.standardization._rate_limit import rate_limited
-from lancell.standardization.cache import get_cache
 
 # ---------------------------------------------------------------------------
 # Rate limit — dynamic based on API key
@@ -251,28 +250,19 @@ def _parse_bioproject_xml(xml_text: str) -> BioProjectMetadata | None:
 
 
 def _fetch_doi_from_pmid(pmid: str) -> str | None:
-    """Fetch DOI for a PubMed ID via efetch. Cached separately."""
-    cache = get_cache()
-    entry = cache.get("ncbi_pubmed_doi", pmid)
-    if entry is not None:
-        return entry.value.get("doi")
-
+    """Fetch DOI for a PubMed ID via efetch."""
     resp = _entrez_get(
         "efetch.fcgi",
         _entrez_params(db="pubmed", id=pmid, rettype="xml", retmode="xml"),
     )
-    doi = None
     try:
         root = ElementTree.fromstring(resp.text)
         for aid in root.findall(".//ArticleId"):
             if aid.get("IdType") == "doi" and aid.text:
-                doi = aid.text
-                break
+                return aid.text
     except ElementTree.ParseError:
         pass
-
-    cache.put("ncbi_pubmed_doi", pmid, {"doi": doi})
-    return doi
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -298,11 +288,6 @@ def fetch_geo_metadata(
 
 def fetch_geo_series(accession: str) -> GeoSeriesMetadata:
     """Fetch GEO Series metadata via E-utilities esearch + esummary."""
-    cache = get_cache()
-    entry = cache.get("ncbi_geo_series", accession)
-    if entry is not None:
-        return GeoSeriesMetadata(**entry.value)
-
     # esearch to get UID
     resp = _entrez_get(
         "esearch.fcgi",
@@ -367,17 +352,11 @@ def fetch_geo_series(accession: str) -> GeoSeriesMetadata:
         sra_accession=sra_accession,
         samples=samples,
     )
-    cache.put("ncbi_geo_series", accession, asdict(result))
     return result
 
 
 def fetch_geo_sample(accession: str) -> GeoSampleMetadata:
     """Fetch GEO Sample metadata from SOFT format."""
-    cache = get_cache()
-    entry = cache.get("ncbi_geo_sample", accession)
-    if entry is not None:
-        return GeoSampleMetadata(**entry.value)
-
     text = _geo_soft_get(accession)
     soft = _parse_soft(text)
 
@@ -425,7 +404,6 @@ def fetch_geo_sample(accession: str) -> GeoSampleMetadata:
         series_ids=series_ids,
         biosample_accession=biosample_accession,
     )
-    cache.put("ncbi_geo_sample", accession, asdict(result))
     return result
 
 
@@ -434,11 +412,6 @@ def fetch_biosample(accession: str) -> BioSampleMetadata:
 
     Accepts a SAMN accession, numeric UID, or GSM accession (searches biosample DB).
     """
-    cache = get_cache()
-    entry = cache.get("ncbi_biosample", accession)
-    if entry is not None:
-        return BioSampleMetadata(**entry.value)
-
     # Determine search term
     acc = accession.strip()
     if acc.startswith("GSM"):
@@ -471,17 +444,11 @@ def fetch_biosample(accession: str) -> BioSampleMetadata:
     if result is None:
         raise ValueError(f"Failed to parse BioSample XML for {accession}")
 
-    cache.put("ncbi_biosample", accession, asdict(result))
     return result
 
 
 def fetch_bioproject(accession: str) -> BioProjectMetadata:
     """Fetch BioProject metadata."""
-    cache = get_cache()
-    entry = cache.get("ncbi_bioproject", accession)
-    if entry is not None:
-        return BioProjectMetadata(**entry.value)
-
     # esearch — bioproject uses [Project Accession] field, not [ACCN]
     resp = _entrez_get(
         "esearch.fcgi",
@@ -506,7 +473,6 @@ def fetch_bioproject(accession: str) -> BioProjectMetadata:
     if result is None:
         raise ValueError(f"Failed to parse BioProject XML for {accession}")
 
-    cache.put("ncbi_bioproject", accession, asdict(result))
     return result
 
 
@@ -515,12 +481,6 @@ def link_accessions(accession: str, source_db: str, target_db: str) -> list[str]
 
     Returns a list of target UIDs.
     """
-    cache = get_cache()
-    cache_ns = f"{source_db}_to_{target_db}"
-    entry = cache.get("ncbi_elink", accession, namespace=cache_ns)
-    if entry is not None:
-        return entry.value.get("ids", [])
-
     # esearch source DB
     resp = _entrez_get(
         "esearch.fcgi",
@@ -547,7 +507,6 @@ def link_accessions(accession: str, source_db: str, target_db: str) -> list[str]
     except ElementTree.ParseError:
         pass
 
-    cache.put("ncbi_elink", accession, {"ids": target_ids}, namespace=cache_ns)
     return target_ids
 
 

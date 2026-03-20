@@ -304,40 +304,5 @@ def _(entity_selector, mo, ontology_input, similarity_slider):
     return
 
 
-@app.cell
-def _(mo):
-    mo.md("""
-    ## 5. Cache
-
-    All API results are persisted in a local SQLite database.
-    Re-running the resolvers above will be instant for previously seen values.
-    """)
-    return
-
-
-@app.cell
-def _(mo, pd):
-    from lancell.standardization import get_cache
-
-    cache = get_cache()
-    _rows = cache._conn.execute(
-        "SELECT resolver, COUNT(*) as entries FROM cache GROUP BY resolver ORDER BY entries DESC"
-    ).fetchall()
-
-    cache_df = pd.DataFrame(_rows, columns=["resolver", "entries"])
-    _total = cache_df["entries"].sum() if not cache_df.empty else 0
-
-    mo.vstack(
-        [
-            mo.md(f"**Cache location:** `{cache._db_path}`"),
-            mo.md(f"**Total cached entries:** {_total}"),
-            mo.ui.table(cache_df, label="Entries per resolver")
-            if not cache_df.empty
-            else mo.md("_Cache is empty._"),
-        ]
-    )
-    return
-
-
 if __name__ == "__main__":
     app.run()

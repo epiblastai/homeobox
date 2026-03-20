@@ -12,7 +12,6 @@ import polars as pl
 import requests
 
 from lancell.standardization._rate_limit import rate_limited
-from lancell.standardization.cache import get_cache
 from lancell.standardization.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
@@ -443,35 +442,11 @@ def _resolve_symbols_mygene(
     if not symbols:
         return results
 
-    cache = get_cache()
-    uncached: list[str] = []
-
-    # Check cache first
-    for sym in symbols:
-        entry = cache.get("genes_mygene", sym, namespace=organism)
-        if entry is not None:
-            v = entry.value
-            results[sym] = GeneResolution(
-                input_value=sym,
-                resolved_value=v.get("symbol"),
-                confidence=v.get("confidence", 0.8),
-                source="mygene (cached)",
-                symbol=v.get("symbol"),
-                ensembl_gene_id=v.get("ensembl_gene_id"),
-                organism=organism,
-                ncbi_gene_id=v.get("ncbi_gene_id"),
-            )
-        else:
-            uncached.append(sym)
-
-    if not uncached:
-        return results
-
     org_record = _get_organism_record(organism)
     species = org_record["common_name"]
     mg = mygene.MyGeneInfo()
     response = mg.querymany(
-        uncached,
+        symbols,
         scopes="symbol,alias",
         fields="symbol,ensembl.gene,entrezgene",
         species=species,
@@ -483,7 +458,7 @@ def _resolve_symbols_mygene(
         query = hit.get("query", "")
         hits_by_query.setdefault(query, []).append(hit)
 
-    for sym in uncached:
+    for sym in symbols:
         hits = hits_by_query.get(sym, [])
         valid_hits = [h for h in hits if not h.get("notfound", False)]
 
@@ -515,19 +490,6 @@ def _resolve_symbols_mygene(
             ncbi_gene_id=ncbi_id,
         )
 
-        # Cache the result
-        cache.put(
-            "genes_mygene",
-            sym,
-            {
-                "symbol": canonical_symbol,
-                "ensembl_gene_id": ensembl_id,
-                "ncbi_gene_id": ncbi_id,
-                "confidence": confidence,
-            },
-            namespace=organism,
-        )
-
     return results
 
 
@@ -556,32 +518,9 @@ def _resolve_symbols_ensembl_rest(
     org_record = _get_organism_record(organism)
     species = org_record["ensembl_species_name"]
 
-    cache = get_cache()
-    uncached: list[str] = []
-
-    for sym in symbols:
-        entry = cache.get("genes_ensembl_rest", sym, namespace=organism)
-        if entry is not None:
-            v = entry.value
-            if v.get("ensembl_gene_id") is not None:
-                results[sym] = GeneResolution(
-                    input_value=sym,
-                    resolved_value=v.get("symbol"),
-                    confidence=v.get("confidence", 0.85),
-                    source="ensembl_rest (cached)",
-                    symbol=v.get("symbol"),
-                    ensembl_gene_id=v.get("ensembl_gene_id"),
-                    organism=organism,
-                )
-        else:
-            uncached.append(sym)
-
-    if not uncached:
-        return results
-
     # Batch in chunks of 1000
-    for i in range(0, len(uncached), 1000):
-        batch = uncached[i : i + 1000]
+    for i in range(0, len(symbols), 1000):
+        batch = symbols[i : i + 1000]
         try:
             response = _ensembl_rest_post_symbols(species, batch)
         except Exception:
@@ -605,17 +544,6 @@ def _resolve_symbols_ensembl_rest(
                 organism=organism,
             )
 
-            cache.put(
-                "genes_ensembl_rest",
-                sym,
-                {
-                    "symbol": display_name,
-                    "ensembl_gene_id": ensembl_id,
-                    "confidence": 0.85,
-                },
-                namespace=organism,
-            )
-
     return results
 
 
@@ -630,38 +558,16 @@ def _resolve_ensembl_ids_mygene(
     if not ensembl_ids:
         return results
 
-    cache = get_cache()
-    uncached: list[str] = []
-
     # Strip version suffixes for lookup
     id_to_base: dict[str, str] = {}
     for eid in ensembl_ids:
-        base = eid.split(".")[0]
-        id_to_base[eid] = base
-        entry = cache.get("genes_ensembl", base, namespace=organism)
-        if entry is not None:
-            v = entry.value
-            results[eid] = GeneResolution(
-                input_value=eid,
-                resolved_value=v.get("symbol"),
-                confidence=v.get("confidence", 0.9),
-                source="mygene (cached)",
-                symbol=v.get("symbol"),
-                ensembl_gene_id=base,
-                organism=organism,
-                ncbi_gene_id=v.get("ncbi_gene_id"),
-            )
-        else:
-            uncached.append(eid)
+        id_to_base[eid] = eid.split(".")[0]
 
-    if not uncached:
-        return results
-
-    base_ids = [id_to_base[eid] for eid in uncached]
+    base_ids = [id_to_base[eid] for eid in ensembl_ids]
     mg = mygene.MyGeneInfo()
     response = mg.getgenes(base_ids, fields="symbol,ensembl.gene,entrezgene")
 
-    for eid, hit in zip(uncached, response, strict=False):
+    for eid, hit in zip(ensembl_ids, response, strict=False):
         if hit is None or hit.get("notfound", False):
             continue
 
@@ -680,13 +586,6 @@ def _resolve_ensembl_ids_mygene(
             ensembl_gene_id=base,
             organism=organism,
             ncbi_gene_id=ncbi_id,
-        )
-
-        cache.put(
-            "genes_ensembl",
-            base,
-            {"symbol": symbol, "ncbi_gene_id": ncbi_id, "confidence": 0.95},
-            namespace=organism,
         )
 
     return results

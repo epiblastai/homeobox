@@ -3,11 +3,8 @@
 Modular, fully independent standardization library for resolving messy
 metadata to canonical identifiers and CELLxGENE-compatible ontology term IDs.
 No coupling to ingestion_utils.py or LanceDB.
-
-Caches API results at ``~/.cache/lancell/``.
 """
 
-from lancell.standardization.cache import StandardizationCache, get_cache
 from lancell.standardization.genes import detect_organism_from_ensembl_ids, resolve_genes
 from lancell.standardization.metadata_table import get_reference_db, set_reference_db_path
 from lancell.standardization.molecules import (
@@ -68,9 +65,6 @@ __all__ = [
     "ProteinResolution",
     "OntologyResolution",
     "ResolutionReport",
-    # Cache
-    "StandardizationCache",
-    "get_cache",
     # Reference DB
     "set_reference_db_path",
     "get_reference_db",
