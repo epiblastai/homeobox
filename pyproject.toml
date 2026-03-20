@@ -38,9 +38,9 @@ ml = [
     "torch",
 ]
 bio = [
-    "bionty",
     "biopython",
     "GEOparse",
+    "pronto",
     "pubmed-parser",
     "scanpy",
 ]

@@ -93,7 +93,7 @@ Prebuilt wheels are available on PyPI. Requires Python 3.13.
 ```bash
 pip install lancell          # core: atlas, querying, ingestion
 pip install lancell[ml]      # + PyTorch dataloader
-pip install lancell[bio]     # + scanpy, bionty, GEOparse
+pip install lancell[bio]     # + scanpy, GEOparse
 pip install lancell[io]      # + S3/GCS/Azure, image codecs
 pip install lancell[viz]     # + marimo, matplotlib
 pip install lancell[all]     # everything
