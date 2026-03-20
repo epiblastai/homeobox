@@ -350,6 +350,59 @@ def set_reference_db_path(db_path: str | Path) -> None:
     _shared_db_connection = None
 
 
+# ---------------------------------------------------------------------------
+# FTS fuzzy search utilities
+# ---------------------------------------------------------------------------
+
+_fts_indexed_columns: set[tuple[str, str]] = set()
+
+
+def ensure_fts_index(table_name: str, column: str) -> None:
+    """Ensure an FTS index exists on *column* in *table_name* (idempotent)."""
+    key = (table_name, column)
+    if key in _fts_indexed_columns:
+        return
+    db = get_reference_db()
+    table = db.open_table(table_name)
+    table.create_fts_index(column, replace=True)
+    _fts_indexed_columns.add(key)
+
+
+def fts_fuzzy_search(
+    table_name: str,
+    column: str,
+    query: str,
+    where: str | None = None,
+    fuzziness: int = 2,
+    limit: int = 5,
+    select: list[str] | None = None,
+) -> list[dict]:
+    """Run a fuzzy full-text search on *column* in *table_name*.
+
+    Uses ``MatchQuery`` with ``FullTextOperator.AND`` for multi-word queries
+    and ``OR`` for single-word queries. Returns up to *limit* results as dicts.
+    """
+    from lancedb.query import FullTextOperator, MatchQuery
+
+    ensure_fts_index(table_name, column)
+
+    words = query.strip().split()
+    operator = FullTextOperator.AND if len(words) > 1 else FullTextOperator.OR
+
+    db = get_reference_db()
+    table = db.open_table(table_name)
+    search = table.search(
+        MatchQuery(query, column, fuzziness=fuzziness, operator=operator),
+        query_type="fts",
+    )
+    if where:
+        search = search.where(where, prefilter=True)
+    if select:
+        search = search.select(select)
+    search = search.limit(limit)
+    return search.to_list()
+
+
 def get_reference_db() -> lancedb.DBConnection:
     """Return a cached LanceDB connection to the reference DB.
 
