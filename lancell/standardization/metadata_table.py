@@ -38,6 +38,8 @@ class OrganismRecord(LanceModel):
         NCBI Taxonomy ID, e.g. ``9606`` for human.
     ensembl_prefix:
         Ensembl gene ID prefix, e.g. ``"ENSG"`` for human.
+        ``None`` until genomic features have been downloaded for this
+        organism (the prefix is detected from actual gene IDs).
     ensembl_species_name:
         Species name used in Ensembl BioMart dataset names,
         e.g. ``"homo_sapiens"``.
@@ -46,7 +48,7 @@ class OrganismRecord(LanceModel):
     common_name: str
     scientific_name: str
     ncbi_taxonomy_id: int
-    ensembl_prefix: str
+    ensembl_prefix: str | None = None
     ensembl_species_name: str
 
 
@@ -69,6 +71,9 @@ class GenomicFeatureRecord(LanceModel):
     organism:
         FK to ``OrganismRecord.scientific_name``,
         e.g. ``"homo_sapiens"``.
+    assembly:
+        Genome assembly, e.g. ``"GRCh38"``, ``"GRCh37"``.
+        ``None`` for species where assembly is not tracked.
     """
 
     ensembl_gene_id: str
@@ -77,6 +82,7 @@ class GenomicFeatureRecord(LanceModel):
     biotype: str
     chromosome: str | None
     organism: str
+    assembly: str | None = None
 
 
 class GenomicFeatureAliasRecord(LanceModel):
@@ -101,6 +107,13 @@ class GenomicFeatureAliasRecord(LanceModel):
         e.g. ``"homo_sapiens"``.
     is_canonical:
         ``True`` if this alias is the HGNC/MGI canonical symbol.
+    source:
+        Which authority provided this alias. ``"gencode"`` for names
+        from GENCODE GTFs (human/mouse), ``"biomart"`` for Ensembl
+        BioMart synonyms and names.
+    assembly:
+        Genome assembly this alias was sourced from,
+        e.g. ``"GRCh38"``, ``"GRCh37"``. ``None`` if not tracked.
     """
 
     alias: str
@@ -108,6 +121,8 @@ class GenomicFeatureAliasRecord(LanceModel):
     ensembl_gene_id: str
     organism: str
     is_canonical: bool
+    source: str = "biomart"
+    assembly: str | None = None
 
 
 class OntologyTermRecord(LanceModel):
@@ -146,12 +161,18 @@ class OntologyTermRecord(LanceModel):
 # ---------------------------------------------------------------------------
 
 
+def _is_remote_path(path: str | Path) -> bool:
+    """Check if a path is a remote URI (S3, GCS, Azure)."""
+    return str(path).startswith(("s3://", "gs://", "az://"))
+
+
 def open_reference_db(db_path: str | Path | None = None) -> lancedb.DBConnection:
     """Open (or create) the reference LanceDB."""
     if db_path is None:
         db_path = DEFAULT_REFERENCE_DB_PATH
-    db_path = Path(db_path)
-    db_path.mkdir(parents=True, exist_ok=True)
+    if not _is_remote_path(db_path):
+        db_path = Path(db_path)
+        db_path.mkdir(parents=True, exist_ok=True)
     return lancedb.connect(str(db_path))
 
 
@@ -169,9 +190,58 @@ def ensure_table(
 def reference_db_exists(db_path: str | Path | None = None) -> bool:
     """Check if the reference DB is populated (has at least the organisms table)."""
     if db_path is None:
-        db_path = DEFAULT_REFERENCE_DB_PATH
+        db_path = _custom_db_path or DEFAULT_REFERENCE_DB_PATH
+    if _is_remote_path(db_path):
+        db = lancedb.connect(str(db_path))
+        return ORGANISMS_TABLE in db.table_names()
     db_path = Path(db_path)
     if not db_path.exists():
         return False
     db = lancedb.connect(str(db_path))
     return ORGANISMS_TABLE in db.table_names()
+
+
+# ---------------------------------------------------------------------------
+# Centralized DB connection (lazy singleton with configurable path)
+# ---------------------------------------------------------------------------
+
+_custom_db_path: str | Path | None = None
+_shared_db_connection: lancedb.DBConnection | None = None
+
+
+def set_reference_db_path(db_path: str | Path) -> None:
+    """Set a custom path for the reference DB (local or remote).
+
+    Call this before any resolution functions to point at a non-default
+    location (e.g. ``"s3://bucket/ontology_resolver/"``). Resets the
+    cached connection so the next call to ``get_reference_db()`` connects
+    to the new path.
+    """
+    global _custom_db_path, _shared_db_connection
+    _custom_db_path = db_path
+    _shared_db_connection = None
+
+
+def get_reference_db() -> lancedb.DBConnection:
+    """Return a cached LanceDB connection to the reference DB.
+
+    Uses the path set by ``set_reference_db_path()`` if called, otherwise
+    falls back to ``DEFAULT_REFERENCE_DB_PATH``.
+
+    Raises
+    ------
+    RuntimeError
+        If the reference DB does not exist at the configured path.
+    """
+    global _shared_db_connection
+    if _shared_db_connection is not None:
+        return _shared_db_connection
+    db_path = _custom_db_path or DEFAULT_REFERENCE_DB_PATH
+    if not _is_remote_path(db_path) and not Path(db_path).exists():
+        raise RuntimeError(
+            f"Reference database not found at {db_path}. "
+            "Run `python scripts/download_references.py` to populate it, "
+            "or call `set_reference_db_path()` to point at a remote DB."
+        )
+    _shared_db_connection = open_reference_db(db_path)
+    return _shared_db_connection

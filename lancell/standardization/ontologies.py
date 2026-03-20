@@ -1,28 +1,27 @@
-"""Ontology term resolution for CELLxGENE-compatible metadata.
+"""Ontology term resolution against local LanceDB reference tables.
 
 Covers: cell_type (CL), tissue (UBERON), disease (MONDO), organism (NCBITaxon),
-assay (EFO), development_stage (HsapDv/MmusDv), cell_line (CLO), ethnicity (HANCESTRO),
+assay (EFO), development_stage (HsapDv/MmusDv), ethnicity (HANCESTRO),
 sex (PATO).
 
 Strategy:
-1. bionty standardize — fast local lookup, handles ~70-80% of standard terms
-2. Fuzzy search — bionty .search() for failures
-3. CELLxGENE compatibility — outputs OBO CURIE format (CL:0000540)
+1. Exact name match (case-insensitive) against ontology_terms table → confidence 1.0
+2. Synonym match (pipe-delimited, case-insensitive) → confidence 0.9
+3. No match → unresolved (confidence 0.0)
 """
-
-from __future__ import annotations
 
 import functools
 from collections import defaultdict
-from collections.abc import Sequence
 from enum import Enum
-from typing import Any
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
-from lancell.standardization.cache import get_cache
+from lancell.standardization.metadata_table import (
+    ONTOLOGY_TERMS_TABLE,
+    get_reference_db,
+)
 from lancell.standardization.types import OntologyResolution, ResolutionReport
+from lancell.util import sql_escape
 
 
 class OntologyEntity(str, Enum):
@@ -34,24 +33,22 @@ class OntologyEntity(str, Enum):
     ORGANISM = "organism"
     ASSAY = "assay"
     DEVELOPMENT_STAGE = "development_stage"
-    CELL_LINE = "cell_line"
     ETHNICITY = "ethnicity"
     SEX = "sex"
 
 
-# Mapping from OntologyEntity → bionty class name
-_ENTITY_TO_BIONTY_CLASS: dict[OntologyEntity, str] = {
-    OntologyEntity.CELL_TYPE: "CellType",
-    OntologyEntity.TISSUE: "Tissue",
-    OntologyEntity.DISEASE: "Disease",
-    OntologyEntity.ORGANISM: "Organism",
-    OntologyEntity.ASSAY: "ExperimentalFactor",
-    OntologyEntity.DEVELOPMENT_STAGE: "DevelopmentalStage",
-    OntologyEntity.CELL_LINE: "CellLine",
-    OntologyEntity.ETHNICITY: "Ethnicity",
+# Mapping from OntologyEntity → ontology prefix(es) in the reference DB
+_ENTITY_TO_PREFIXES: dict[OntologyEntity, list[str]] = {
+    OntologyEntity.CELL_TYPE: ["CL"],
+    OntologyEntity.TISSUE: ["UBERON"],
+    OntologyEntity.DISEASE: ["MONDO"],
+    OntologyEntity.ORGANISM: ["NCBITaxon"],
+    OntologyEntity.ASSAY: ["EFO"],
+    OntologyEntity.DEVELOPMENT_STAGE: ["HsapDv", "MmusDv"],
+    OntologyEntity.ETHNICITY: ["HANCESTRO"],
 }
 
-# Mapping from OntologyEntity → ontology name for display
+# Mapping from OntologyEntity → display name
 _ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
     OntologyEntity.CELL_TYPE: "Cell Ontology",
     OntologyEntity.TISSUE: "UBERON",
@@ -59,21 +56,19 @@ _ENTITY_TO_ONTOLOGY_NAME: dict[OntologyEntity, str] = {
     OntologyEntity.ORGANISM: "NCBITaxon",
     OntologyEntity.ASSAY: "EFO",
     OntologyEntity.DEVELOPMENT_STAGE: "HsapDv",
-    OntologyEntity.CELL_LINE: "CLO",
     OntologyEntity.ETHNICITY: "HANCESTRO",
     OntologyEntity.SEX: "PATO",
 }
 
-# Entities that should use organism="all"
-_ORGANISM_ALL_ENTITIES: set[OntologyEntity] = {
-    OntologyEntity.CELL_TYPE,
-    OntologyEntity.TISSUE,
-    OntologyEntity.DISEASE,
-    OntologyEntity.CELL_LINE,
-    OntologyEntity.ETHNICITY,
+# Development stage prefix selection by organism
+_DEVELOPMENT_STAGE_ORGANISM_PREFIX: dict[str, str] = {
+    "human": "HsapDv",
+    "homo_sapiens": "HsapDv",
+    "mouse": "MmusDv",
+    "mus_musculus": "MmusDv",
 }
 
-# Hard-coded sex terms (PATO doesn't have a bionty class)
+# Hard-coded sex terms (PATO terms are not in the OBO download)
 _SEX_TERMS: dict[str, tuple[str, str]] = {
     "female": ("PATO:0000383", "female"),
     "male": ("PATO:0000384", "male"),
@@ -82,20 +77,71 @@ _SEX_TERMS: dict[str, tuple[str, str]] = {
 }
 
 
-def _get_bionty_ontology(entity: OntologyEntity, organism: str | None = None) -> Any:
-    """Get the bionty public ontology instance for the given entity."""
-    import bionty as bt
+# ---------------------------------------------------------------------------
+# Ontology data loading (cached)
+# ---------------------------------------------------------------------------
 
-    bionty_class_name = _ENTITY_TO_BIONTY_CLASS.get(entity)
-    if bionty_class_name is None:
-        raise ValueError(f"No bionty class for entity {entity}")
 
-    if entity in _ORGANISM_ALL_ENTITIES:
-        org = "all"
-    else:
-        org = organism or "all"
+def _get_prefixes(entity: OntologyEntity, organism: str | None = None) -> list[str]:
+    """Get the ontology prefix(es) for an entity, considering organism for dev stage."""
+    if entity == OntologyEntity.DEVELOPMENT_STAGE and organism:
+        prefix = _DEVELOPMENT_STAGE_ORGANISM_PREFIX.get(organism.lower())
+        if prefix:
+            return [prefix]
+    prefixes = _ENTITY_TO_PREFIXES.get(entity)
+    if prefixes is None:
+        raise ValueError(f"No ontology prefix mapping for entity {entity}")
+    return prefixes
 
-    return getattr(bt, bionty_class_name).public(organism=org)
+
+@functools.lru_cache(maxsize=32)
+def _load_ontology_terms(prefix: str) -> pl.DataFrame:
+    """Load all non-obsolete terms for a given ontology prefix. Cached."""
+    db = get_reference_db()
+    table = db.open_table(ONTOLOGY_TERMS_TABLE)
+    return (
+        table.search()
+        .where(
+            f"ontology_prefix = '{sql_escape(prefix)}' AND is_obsolete = false",
+            prefilter=True,
+        )
+        .select(["ontology_term_id", "name", "synonyms", "parent_ids"])
+        .to_polars()
+    )
+
+
+@functools.lru_cache(maxsize=32)
+def _build_name_index(prefix: str) -> dict[str, tuple[str, str]]:
+    """Build lowercased name → (ontology_term_id, canonical_name) index."""
+    df = _load_ontology_terms(prefix)
+    index: dict[str, tuple[str, str]] = {}
+    for row in df.iter_rows(named=True):
+        key = row["name"].strip().lower()
+        if key not in index:
+            index[key] = (row["ontology_term_id"], row["name"])
+    return index
+
+
+@functools.lru_cache(maxsize=32)
+def _build_synonym_index(prefix: str) -> dict[str, tuple[str, str, str]]:
+    """Build lowercased synonym → (ontology_term_id, canonical_name, synonym_original) index."""
+    df = _load_ontology_terms(prefix)
+    index: dict[str, tuple[str, str, str]] = {}
+    for row in df.iter_rows(named=True):
+        synonyms = row["synonyms"]
+        if not synonyms:
+            continue
+        for syn in synonyms.split(" | "):
+            syn_stripped = syn.strip()
+            key = syn_stripped.lower()
+            if key not in index:
+                index[key] = (row["ontology_term_id"], row["name"], syn_stripped)
+    return index
+
+
+# ---------------------------------------------------------------------------
+# Resolution
+# ---------------------------------------------------------------------------
 
 
 def _resolve_sex(value: str) -> OntologyResolution:
@@ -120,161 +166,68 @@ def _resolve_sex(value: str) -> OntologyResolution:
     )
 
 
-def _resolve_with_bionty(
+def _resolve_against_db(
     values: list[str],
     entity: OntologyEntity,
     organism: str | None = None,
-    min_similarity: float = 0.8,
 ) -> list[OntologyResolution]:
-    """Resolve values using bionty standardize + fuzzy search fallback."""
-    cache = get_cache()
+    """Resolve values against the local ontology_terms table."""
     ontology_name = _ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
-    cache_resolver = f"ontology_{entity.value}"
+    prefixes = _get_prefixes(entity, organism)
+
+    # Build combined name and synonym indices across all relevant prefixes
+    name_index: dict[str, tuple[str, str]] = {}
+    synonym_index: dict[str, tuple[str, str, str]] = {}
+    for prefix in prefixes:
+        name_index.update(_build_name_index(prefix))
+        synonym_index.update(_build_synonym_index(prefix))
 
     results: list[OntologyResolution] = []
-    uncached_indices: list[int] = []
-    uncached_values: list[str] = []
+    for val in values:
+        key = val.strip().lower()
 
-    # Check cache first
-    for i, v in enumerate(values):
-        entry = cache.get(cache_resolver, v, namespace=organism or "")
-        if entry is not None:
-            d = entry.value
+        # Step 1: exact name match
+        if key in name_index:
+            term_id, canonical_name = name_index[key]
             results.append(
                 OntologyResolution(
-                    input_value=v,
-                    resolved_value=d.get("resolved_value"),
-                    confidence=d.get("confidence", 0.0),
-                    source=d.get("source", "bionty (cached)"),
-                    ontology_term_id=d.get("ontology_term_id"),
+                    input_value=val,
+                    resolved_value=canonical_name,
+                    confidence=1.0,
+                    source="reference_db",
+                    ontology_term_id=term_id,
                     ontology_name=ontology_name,
                 )
             )
-        else:
-            results.append(None)  # type: ignore[arg-type] — placeholder
-            uncached_indices.append(i)
-            uncached_values.append(v)
+            continue
 
-    if not uncached_values:
-        return results  # type: ignore[return-value]
+        # Step 2: synonym match
+        if key in synonym_index:
+            term_id, canonical_name, _syn_original = synonym_index[key]
+            results.append(
+                OntologyResolution(
+                    input_value=val,
+                    resolved_value=canonical_name,
+                    confidence=0.9,
+                    source="reference_db_synonym",
+                    ontology_term_id=term_id,
+                    ontology_name=ontology_name,
+                )
+            )
+            continue
 
-    ontology = _get_bionty_ontology(entity, organism)
-
-    # Step 1: bionty standardize
-    standardized = ontology.standardize(uncached_values, field="name", return_field="name")
-    ontology_ids = ontology.standardize(uncached_values, field="name", return_field="ontology_id")
-    validated = ontology.validate(standardized, field="name")
-
-    # Step 2: for failures, try fuzzy search
-    for j, (idx, val) in enumerate(zip(uncached_indices, uncached_values, strict=True)):
-        std_name = standardized[j]
-        ont_id = ontology_ids[j]
-        is_valid = validated[j]
-
-        if is_valid:
-            resolution = OntologyResolution(
+        # Step 3: unresolved
+        results.append(
+            OntologyResolution(
                 input_value=val,
-                resolved_value=std_name,
-                confidence=1.0 if std_name.lower() == val.strip().lower() else 0.9,
-                source="bionty",
-                ontology_term_id=ont_id if ont_id != val else None,
+                resolved_value=None,
+                confidence=0.0,
+                source="none",
                 ontology_name=ontology_name,
             )
-        else:
-            # Fuzzy search fallback
-            resolution = _fuzzy_search_single(val, ontology, ontology_name, min_similarity)
-
-        results[idx] = resolution
-
-        # Cache the result
-        cache.put(
-            cache_resolver,
-            val,
-            {
-                "resolved_value": resolution.resolved_value,
-                "confidence": resolution.confidence,
-                "source": resolution.source,
-                "ontology_term_id": resolution.ontology_term_id,
-            },
-            namespace=organism or "",
         )
 
-    return results  # type: ignore[return-value]
-
-
-def _fuzzy_search_single(
-    value: str,
-    ontology: Any,
-    ontology_name: str,
-    min_similarity: float,
-) -> OntologyResolution:
-    """Fuzzy-search a single value against a bionty ontology."""
-    try:
-        search_results = ontology.search(value, top_k=5)
-    except Exception:
-        return OntologyResolution(
-            input_value=value,
-            resolved_value=None,
-            confidence=0.0,
-            source="none",
-            ontology_name=ontology_name,
-        )
-
-    if search_results.empty:
-        return OntologyResolution(
-            input_value=value,
-            resolved_value=None,
-            confidence=0.0,
-            source="none",
-            ontology_name=ontology_name,
-        )
-
-    # search_results is a DataFrame with columns like name, ontology_id, and a score column
-    # The score column name varies; it may be "__ratio__" or similar
-    score_cols = [c for c in search_results.columns if "ratio" in c.lower() or "score" in c.lower()]
-    if score_cols:
-        score_col = score_cols[0]
-    else:
-        # Assume results are ranked by relevance, use position as proxy
-        score_col = None
-
-    best_row = search_results.iloc[0]
-    best_name = best_row.get("name", None)
-    best_id = best_row.get("ontology_id", None)
-
-    if score_col is not None:
-        best_score = float(best_row[score_col])
-        # bionty search scores are typically 0-100 (percentage)
-        confidence = best_score / 100.0 if best_score > 1.0 else best_score
-    else:
-        confidence = 0.7  # Default confidence for position-ranked results
-
-    alternatives = []
-    for _, row in search_results.iloc[1:].iterrows():
-        alt_name = row.get("name")
-        if alt_name:
-            alternatives.append(str(alt_name))
-
-    if confidence >= min_similarity:
-        return OntologyResolution(
-            input_value=value,
-            resolved_value=best_name,
-            confidence=confidence,
-            source="bionty_search",
-            alternatives=alternatives,
-            ontology_term_id=best_id,
-            ontology_name=ontology_name,
-        )
-    else:
-        return OntologyResolution(
-            input_value=value,
-            resolved_value=None,
-            confidence=confidence,
-            source="bionty_search",
-            alternatives=[str(best_name)] + alternatives if best_name else alternatives,
-            ontology_term_id=None,
-            ontology_name=ontology_name,
-        )
+    return results
 
 
 def resolve_ontology_terms(
@@ -294,7 +247,8 @@ def resolve_ontology_terms(
     organism
         Organism context (required for development_stage, ignored for most others).
     min_similarity
-        Minimum fuzzy match score (0-1) to accept a match.
+        Minimum fuzzy match score (0-1) to accept a match. Currently unused
+        since resolution is exact name/synonym only, kept for API compatibility.
 
     Returns
     -------
@@ -304,7 +258,7 @@ def resolve_ontology_terms(
     if entity == OntologyEntity.SEX:
         results = [_resolve_sex(v) for v in values]
     else:
-        results = _resolve_with_bionty(values, entity, organism, min_similarity)
+        results = _resolve_against_db(values, entity, organism)
 
     resolved_count = sum(1 for r in results if r.resolved_value is not None)
     ambiguous_count = sum(1 for r in results if len(r.alternatives) > 1)
@@ -366,54 +320,37 @@ def resolve_assays(values: list[str]) -> ResolutionReport:
 # ---------------------------------------------------------------------------
 
 
-@functools.lru_cache(maxsize=16)
-def _get_ontology_df(entity: OntologyEntity, organism: str | None = None) -> pd.DataFrame:
-    """Get the full ontology DataFrame (cached). Indexed by ontology_id."""
-    ontology = _get_bionty_ontology(entity, organism)
-    df = ontology.to_dataframe()
-    if df.index.name != "ontology_id":
-        if "ontology_id" in df.columns:
-            df = df.set_index("ontology_id")
-    return df
+@functools.lru_cache(maxsize=32)
+def _build_term_lookup(prefix: str) -> dict[str, dict]:
+    """Build term_id → {name, parent_ids} lookup from cached terms."""
+    df = _load_ontology_terms(prefix)
+    lookup: dict[str, dict] = {}
+    for row in df.iter_rows(named=True):
+        lookup[row["ontology_term_id"]] = {
+            "name": row["name"],
+            "parent_ids": row["parent_ids"],
+        }
+    return lookup
 
 
-@functools.lru_cache(maxsize=16)
-def _get_children_index(
-    entity: OntologyEntity, organism: str | None = None
-) -> dict[str, list[str]]:
+@functools.lru_cache(maxsize=32)
+def _build_children_index(prefix: str) -> dict[str, list[str]]:
     """Build reverse index: parent_id → [child_ids]."""
-    df = _get_ontology_df(entity, organism)
+    lookup = _build_term_lookup(prefix)
     children: dict[str, list[str]] = defaultdict(list)
-    for term_id, row in df.iterrows():
-        parents = row.get("parents")
-        if parents is None:
-            continue
-        if isinstance(parents, np.ndarray):
-            if len(parents) == 0:
-                continue
-            parent_list = parents.tolist()
-        elif isinstance(parents, (list, Sequence)):
-            parent_list = list(parents)
-        else:
-            continue
-        for pid in parent_list:
-            children[pid].append(str(term_id))
+    for term_id, info in lookup.items():
+        for pid in info["parent_ids"]:
+            children[pid].append(term_id)
     return dict(children)
 
 
-def _get_parents(df: pd.DataFrame, term_id: str) -> list[str]:
-    """Get parent IDs for a term from the DataFrame."""
-    row = df.loc[term_id]
-    parents = row.get("parents")
-    if parents is None:
-        return []
-    if isinstance(parents, np.ndarray):
-        if len(parents) == 0:
-            return []
-        return parents.tolist()
-    if isinstance(parents, (list, Sequence)):
-        return list(parents)
-    return []
+def _prefix_from_term_id(term_id: str) -> str:
+    """Extract ontology prefix from a CURIE, e.g. 'CL:0000540' → 'CL'."""
+    if ":" not in term_id:
+        raise ValueError(
+            f"Invalid ontology term ID '{term_id}' — expected CURIE format (e.g. 'CL:0000540')"
+        )
+    return term_id.split(":")[0]
 
 
 def get_ontology_ancestors(
@@ -445,13 +382,14 @@ def get_ontology_ancestors(
     ValueError
         If *term_id* is not found in the ontology.
     """
-    df = _get_ontology_df(entity, organism)
-    if term_id not in df.index:
+    prefix = _prefix_from_term_id(term_id)
+    lookup = _build_term_lookup(prefix)
+    if term_id not in lookup:
         raise ValueError(f"Term '{term_id}' not found in {entity.value} ontology")
 
     ancestors: list[tuple[str, str]] = []
     visited: set[str] = {term_id}
-    frontier: list[str] = _get_parents(df, term_id)
+    frontier: list[str] = list(lookup[term_id]["parent_ids"])
     depth = 0
 
     while frontier:
@@ -459,12 +397,11 @@ def get_ontology_ancestors(
             break
         next_frontier: list[str] = []
         for pid in frontier:
-            if pid in visited or pid not in df.index:
+            if pid in visited or pid not in lookup:
                 continue
             visited.add(pid)
-            name = df.loc[pid].get("name", "")
-            ancestors.append((pid, str(name)))
-            next_frontier.extend(_get_parents(df, pid))
+            ancestors.append((pid, lookup[pid]["name"]))
+            next_frontier.extend(lookup[pid]["parent_ids"])
         frontier = next_frontier
         depth += 1
 
@@ -500,11 +437,12 @@ def get_ontology_descendants(
     ValueError
         If *term_id* is not found in the ontology.
     """
-    df = _get_ontology_df(entity, organism)
-    if term_id not in df.index:
+    prefix = _prefix_from_term_id(term_id)
+    lookup = _build_term_lookup(prefix)
+    if term_id not in lookup:
         raise ValueError(f"Term '{term_id}' not found in {entity.value} ontology")
 
-    children_index = _get_children_index(entity, organism)
+    children_index = _build_children_index(prefix)
 
     descendants: list[tuple[str, str]] = []
     visited: set[str] = {term_id}
@@ -516,11 +454,10 @@ def get_ontology_descendants(
             break
         next_frontier: list[str] = []
         for cid in frontier:
-            if cid in visited or cid not in df.index:
+            if cid in visited or cid not in lookup:
                 continue
             visited.add(cid)
-            name = df.loc[cid].get("name", "")
-            descendants.append((cid, str(name)))
+            descendants.append((cid, lookup[cid]["name"]))
             next_frontier.extend(children_index.get(cid, []))
         frontier = next_frontier
         depth += 1
@@ -554,18 +491,18 @@ def get_ontology_siblings(
     ValueError
         If *term_id* is not found in the ontology.
     """
-    df = _get_ontology_df(entity, organism)
-    if term_id not in df.index:
+    prefix = _prefix_from_term_id(term_id)
+    lookup = _build_term_lookup(prefix)
+    if term_id not in lookup:
         raise ValueError(f"Term '{term_id}' not found in {entity.value} ontology")
 
-    children_index = _get_children_index(entity, organism)
-    parents = _get_parents(df, term_id)
+    children_index = _build_children_index(prefix)
+    parents = lookup[term_id]["parent_ids"]
 
-    siblings: dict[str, str] = {}  # preserve uniqueness
+    siblings: dict[str, str] = {}
     for pid in parents:
         for cid in children_index.get(pid, []):
-            if cid != term_id and cid not in siblings and cid in df.index:
-                name = df.loc[cid].get("name", "")
-                siblings[cid] = str(name)
+            if cid != term_id and cid not in siblings and cid in lookup:
+                siblings[cid] = lookup[cid]["name"]
 
     return list(siblings.items())

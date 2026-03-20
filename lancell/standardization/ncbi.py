@@ -224,26 +224,16 @@ def _parse_bioproject_xml(xml_text: str) -> BioProjectMetadata | None:
     organism = organism or None
 
     # Data type and scope
-    data_type_elem = root.find(
-        ".//ProjectType/ProjectTypeSubmission/ProjectDataTypeSet/DataType"
-    )
+    data_type_elem = root.find(".//ProjectType/ProjectTypeSubmission/ProjectDataTypeSet/DataType")
     if data_type_elem is None and pkg is not None:
         data_type_elem = pkg.find(
             ".//ProjectType/ProjectTypeSubmission/ProjectDataTypeSet/DataType"
         )
-    data_type = (
-        data_type_elem.text
-        if data_type_elem is not None and data_type_elem.text
-        else None
-    )
+    data_type = data_type_elem.text if data_type_elem is not None and data_type_elem.text else None
 
-    scope_elem = root.find(
-        ".//ProjectType/ProjectTypeSubmission/Target/Scope"
-    )
+    scope_elem = root.find(".//ProjectType/ProjectTypeSubmission/Target/Scope")
     if scope_elem is None and pkg is not None:
-        scope_elem = pkg.find(
-            ".//ProjectType/ProjectTypeSubmission/Target/Scope"
-        )
+        scope_elem = pkg.find(".//ProjectType/ProjectTypeSubmission/Target/Scope")
     if scope_elem is None:
         # Try the Target attribute
         scope = org_elem.get("scope") if org_elem is not None else None
@@ -316,9 +306,7 @@ def fetch_geo_series(accession: str) -> GeoSeriesMetadata:
     # esearch to get UID
     resp = _entrez_get(
         "esearch.fcgi",
-        _entrez_params(
-            db="gds", term=f"{accession}[ACCN]", retmode="json", retmax="1"
-        ),
+        _entrez_params(db="gds", term=f"{accession}[ACCN]", retmode="json", retmax="1"),
     )
     search_result = resp.json().get("esearchresult", {})
     id_list = search_result.get("idlist", [])
@@ -358,9 +346,7 @@ def fetch_geo_series(accession: str) -> GeoSeriesMetadata:
     # Extract samples
     samples = []
     for s in doc.get("samples", []):
-        samples.append(
-            {"accession": s.get("accession", ""), "title": s.get("title", "")}
-        )
+        samples.append({"accession": s.get("accession", ""), "title": s.get("title", "")})
 
     # Resolve DOI from first PMID
     doi = None
@@ -524,9 +510,7 @@ def fetch_bioproject(accession: str) -> BioProjectMetadata:
     return result
 
 
-def link_accessions(
-    accession: str, source_db: str, target_db: str
-) -> list[str]:
+def link_accessions(accession: str, source_db: str, target_db: str) -> list[str]:
     """Generic elink wrapper — find linked records across NCBI databases.
 
     Returns a list of target UIDs.
@@ -540,9 +524,7 @@ def link_accessions(
     # esearch source DB
     resp = _entrez_get(
         "esearch.fcgi",
-        _entrez_params(
-            db=source_db, term=f"{accession}[ACCN]", retmode="json", retmax="1"
-        ),
+        _entrez_params(db=source_db, term=f"{accession}[ACCN]", retmode="json", retmax="1"),
     )
     id_list = resp.json().get("esearchresult", {}).get("idlist", [])
     if not id_list:
@@ -552,9 +534,7 @@ def link_accessions(
     # elink (XML mode — more reliable than JSON)
     resp = _entrez_get(
         "elink.fcgi",
-        _entrez_params(
-            dbfrom=source_db, db=target_db, id=source_uid, retmode="xml"
-        ),
+        _entrez_params(dbfrom=source_db, db=target_db, id=source_uid, retmode="xml"),
     )
 
     target_ids: list[str] = []
@@ -584,15 +564,11 @@ def fetch_geo_biosample_attrs(gsm_accession: str) -> dict[str, str]:
         # Fallback: try esearch biosample by GSM
         resp = _entrez_get(
             "esearch.fcgi",
-            _entrez_params(
-                db="biosample", term=gsm_accession, retmode="json", retmax="1"
-            ),
+            _entrez_params(db="biosample", term=gsm_accession, retmode="json", retmax="1"),
         )
         id_list = resp.json().get("esearchresult", {}).get("idlist", [])
         if not id_list:
-            raise ValueError(
-                f"No BioSample link found for {gsm_accession}"
-            )
+            raise ValueError(f"No BioSample link found for {gsm_accession}")
         # Fetch by UID
         bs = fetch_biosample(id_list[0])
         return bs.attributes

@@ -9,24 +9,12 @@ Caches API results at ``~/.cache/lancell/``.
 
 from lancell.standardization.cache import StandardizationCache, get_cache
 from lancell.standardization.genes import detect_organism_from_ensembl_ids, resolve_genes
+from lancell.standardization.metadata_table import get_reference_db, set_reference_db_path
 from lancell.standardization.molecules import (
     canonicalize_smiles,
     clean_compound_name,
     is_control_compound,
     resolve_molecules,
-)
-from lancell.standardization.ontologies import (
-    OntologyEntity,
-    get_ontology_ancestors,
-    get_ontology_descendants,
-    get_ontology_siblings,
-    get_ontology_term_id,
-    resolve_assays,
-    resolve_cell_types,
-    resolve_diseases,
-    resolve_ontology_terms,
-    resolve_organisms,
-    resolve_tissues,
 )
 from lancell.standardization.ncbi import (
     BioProjectMetadata,
@@ -40,6 +28,19 @@ from lancell.standardization.ncbi import (
     fetch_geo_sample,
     fetch_geo_series,
     link_accessions,
+)
+from lancell.standardization.ontologies import (
+    OntologyEntity,
+    get_ontology_ancestors,
+    get_ontology_descendants,
+    get_ontology_siblings,
+    get_ontology_term_id,
+    resolve_assays,
+    resolve_cell_types,
+    resolve_diseases,
+    resolve_ontology_terms,
+    resolve_organisms,
+    resolve_tissues,
 )
 from lancell.standardization.perturbations import (
     classify_perturbation_method,
@@ -68,6 +69,9 @@ __all__ = [
     # Cache
     "StandardizationCache",
     "get_cache",
+    # Reference DB
+    "set_reference_db_path",
+    "get_reference_db",
     # Genes
     "resolve_genes",
     "detect_organism_from_ensembl_ids",

@@ -375,7 +375,7 @@ def _(atlas, marker_genes):
         atlas.query()
         .feature_spaces("genefull_expression")
         .features(marker_uids, feature_space="genefull_expression")
-        .limit(200_000)
+        .limit(10_000)
         .to_anndata()
     )
     adata_markers

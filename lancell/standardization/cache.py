@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+# TODO: Consider moving this cache to S3 for a persistent multi-user cache.
 DEFAULT_CACHE_DIR = Path.home() / ".cache" / "lancell"
 DEFAULT_TTL_SECONDS = 30 * 24 * 3600  # 30 days
 
