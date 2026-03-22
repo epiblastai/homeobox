@@ -20,21 +20,12 @@ from lancell.schema import (
 # ---------------------------------------------------------------------------
 
 
-class FeatureSpace(str, Enum):
-    GENE_EXPRESSION = "gene_expression"
-    PROTEIN_ABUNDANCE = "protein_abundance"
-    CHROMATIN_ACCESSIBILITY = "chromatin_accessibility"
-    IMAGE_FEATURES = "image_features"
-    IMAGE_TILES = "image_tiles"
-
-
 class FeatureType(str, Enum):
     """The level of resolution a genomic feature represents."""
 
     GENE = "gene"
     TRANSCRIPT = "transcript"
     EXON = "exon"
-    CRYPTIC_EXON = "cryptic_exon"
     PROBE = "probe"
     OTHER = "other"
 
@@ -197,7 +188,7 @@ class GenomicFeatureSchema(FeatureBaseSchema):
     feature_id: str
 
     # What level of resolution this feature represents
-    feature_type: FeatureType
+    feature_type: str  # one of FeatureType
 
     # For transcript/isoform-level features, e.g. ENST00000269305.7
     transcript_id: str | None = None
@@ -212,6 +203,12 @@ class GenomicFeatureSchema(FeatureBaseSchema):
 
     # The organism this feature belongs to, e.g. "human", "mouse"
     organism: str
+
+    @model_validator(mode="after")
+    def validate_feature_type(self) -> Self:
+        if self.feature_type not in FeatureType.__members__.values():
+            raise ValueError(f"Invalid feature type: {self.feature_type}")
+        return self
 
 
 class ReferenceSequenceSchema(FeatureBaseSchema):
@@ -228,7 +225,7 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     sequence_name: str
 
     # The role this sequence plays in the assembly
-    sequence_role: SequenceRole
+    sequence_role: str  # one of SequenceRole
 
     # The organism, e.g. "human", "mouse"
     organism: str
@@ -243,6 +240,12 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
     # Whether this sequence is part of the primary assembly,
     # i.e. the set of sequences most analyses restrict to
     is_primary_assembly: bool = True
+
+    @model_validator(mode="after")
+    def validate_sequence_role(self) -> Self:
+        if self.sequence_role not in SequenceRole.__members__.values():
+            raise ValueError(f"Invalid sequence role: {self.sequence_role}")
+        return self
 
 
 class ProteinSchema(FeatureBaseSchema):
@@ -320,7 +323,7 @@ class GeneticPerturbationSchema(LanceModel):
     uid: str = Field(default_factory=make_uid)
 
     # Reagent type
-    perturbation_type: GeneticPerturbationType
+    perturbation_type: str  # one of GeneticPerturbationType
 
     # The actual reagent sequence, e.g. the 20bp guide or siRNA duplex
     guide_sequence: str | None = None
@@ -339,11 +342,26 @@ class GeneticPerturbationSchema(LanceModel):
     intended_ensembl_gene_id: str | None = None
 
     # Where the guide lands relative to gene structure
-    target_context: TargetContext | None = None
+    target_context: str | None = None  # one of TargetContext
 
     # Reagent provenance
     library_name: str | None = None  # e.g. "Brunello", "CROPseq"
     reagent_id: str | None = None  # e.g. "BRD_KO_1", "CROPseq_A1"
+
+    @model_validator(mode="after")
+    def validate_perturbation_type(self) -> Self:
+        if self.perturbation_type not in GeneticPerturbationType.__members__.values():
+            raise ValueError(f"Invalid perturbation type: {self.perturbation_type}")
+        return self
+
+    @model_validator(mode="after")
+    def validate_target_context(self) -> Self:
+        if (
+            self.target_context is not None
+            and self.target_context not in TargetContext.__members__.values()
+        ):
+            raise ValueError(f"Invalid target context: {self.target_context}")
+        return self
 
 
 class BiologicPerturbationSchema(LanceModel):
@@ -357,7 +375,7 @@ class BiologicPerturbationSchema(LanceModel):
 
     # Biologic identity
     biologic_name: str
-    biologic_type: BiologicPerturbationType
+    biologic_type: str  # one of BiologicPerturbationType
 
     # Protein identity from ProteinSchema.uid, if applicable
     protein_uid: str | None = None
@@ -366,6 +384,12 @@ class BiologicPerturbationSchema(LanceModel):
     vendor: str | None = None
     catalog_number: str | None = None
     lot_number: str | None = None
+
+    @model_validator(mode="after")
+    def validate_biologic_type(self) -> Self:
+        if self.biologic_type not in BiologicPerturbationType.__members__.values():
+            raise ValueError(f"Invalid biologic type: {self.biologic_type}")
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -419,7 +443,7 @@ class CellIndex(LancellBaseSchema):
     # UIDs and types go together to specify foreign keys. The uid is a foreign
     # key value and the perturbation type determines which table it is a key in.
     perturbation_uids: list[str] | None
-    perturbation_types: list[PerturbationType] | None
+    perturbation_types: list[str] | None  # one of PerturbationType
     # Concentrations for the perturbation in micromolar, if applicable, else use -1
     # to keep the lists equally long
     perturbation_concentrations_um: list[float] | None
@@ -443,6 +467,14 @@ class CellIndex(LancellBaseSchema):
 
     # Auto-filled field
     perturbation_search_string: str = ""
+
+    @model_validator(mode="after")
+    def validate_perturbation_types(self) -> Self:
+        if self.perturbation_types is not None:
+            for ptype in self.perturbation_types:
+                if ptype not in PerturbationType.__members__.values():
+                    raise ValueError(f"Invalid perturbation type: {ptype}")
+        return self
 
     @model_validator(mode="after")
     def validate_perturbation_lists(self) -> Self:
