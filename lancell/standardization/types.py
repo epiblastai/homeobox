@@ -44,6 +44,8 @@ class ProteinResolution(Resolution):
     gene_name: str | None = None
     protein_name: str | None = None
     organism: str | None = None
+    sequence: str | None = None
+    sequence_length: int | None = None
 
 
 @dataclass
@@ -110,6 +112,8 @@ class ResolutionReport:
                 row["gene_name"] = r.gene_name
                 row["protein_name"] = r.protein_name
                 row["organism"] = r.organism
+                row["sequence"] = r.sequence
+                row["sequence_length"] = r.sequence_length
             elif isinstance(r, GuideRnaResolution):
                 row["chromosome"] = r.chromosome
                 row["target_start"] = r.target_start

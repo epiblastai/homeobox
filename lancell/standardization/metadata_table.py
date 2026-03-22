@@ -220,6 +220,11 @@ class ProteinRecord(LanceModel):
         Normalized scientific name, e.g. ``"homo_sapiens"``.
     ncbi_taxonomy_id:
         From OX line, e.g. ``9606`` for human.
+    sequence:
+        Amino acid sequence from the SQ block. ``None`` if not
+        parsed (e.g. taxonomy-filtered entries).
+    sequence_length:
+        Length of the amino acid sequence in residues.
     """
 
     uniprot_id: str
@@ -227,6 +232,8 @@ class ProteinRecord(LanceModel):
     gene_name: str | None = None
     organism: str
     ncbi_taxonomy_id: int
+    sequence: str | None = None
+    sequence_length: int | None = None
 
 
 class ProteinAliasRecord(LanceModel):

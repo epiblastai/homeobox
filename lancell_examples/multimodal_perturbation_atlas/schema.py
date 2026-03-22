@@ -250,6 +250,8 @@ class ProteinSchema(FeatureBaseSchema):
     # Length of the amino acid sequence
     sequence_length: int | None
 
+    is_clr_control: bool = False  # Whether this protein is a control used for CLR normalization
+
 
 class ImageFeatureSchema(FeatureBaseSchema):
     # The name of the image feature, e.g., "mean_intensity_DAPI", "texture_feature_1", etc.
@@ -365,8 +367,8 @@ class BiologicPerturbationSchema(LanceModel):
     biologic_name: str
     biologic_type: str  # one of BiologicPerturbationType
 
-    # Protein identity from ProteinSchema.uid, if applicable
-    protein_uid: str | None = None
+    # Protein identity, if applicable
+    uniprot_id: str | None
 
     # Provenance
     vendor: str | None = None
