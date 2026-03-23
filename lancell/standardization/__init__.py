@@ -24,13 +24,20 @@ from lancell.standardization.ncbi import (
     BioSampleMetadata,
     GeoSampleMetadata,
     GeoSeriesMetadata,
+    PublicationFullText,
+    PublicationMetadata,
+    PublicationSection,
     fetch_bioproject,
     fetch_biosample,
     fetch_geo_biosample_attrs,
     fetch_geo_metadata,
     fetch_geo_sample,
     fetch_geo_series,
+    fetch_publication,
+    fetch_publication_metadata,
+    fetch_publication_text,
     link_accessions,
+    search_pubmed_by_title,
 )
 from lancell.standardization.ontologies import (
     OntologyEntity,
@@ -124,4 +131,12 @@ __all__ = [
     "fetch_bioproject",
     "link_accessions",
     "fetch_geo_biosample_attrs",
+    # Publications
+    "PublicationMetadata",
+    "PublicationSection",
+    "PublicationFullText",
+    "fetch_publication",
+    "fetch_publication_metadata",
+    "fetch_publication_text",
+    "search_pubmed_by_title",
 ]

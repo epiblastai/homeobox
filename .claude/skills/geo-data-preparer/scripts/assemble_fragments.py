@@ -256,7 +256,7 @@ def generate_perturbation_search_string(assembled: pd.DataFrame) -> pd.DataFrame
         return ",".join(parts)
 
     assembled["perturbation_search_string"] = assembled.apply(build_search_string, axis=1)
-    print(f"  generated perturbation_search_string")
+    print("  generated perturbation_search_string")
     return assembled
 
 
@@ -295,13 +295,13 @@ def assemble_obs(experiment_dir: Path, feature_space: str, schema_class: type | 
     fragments = load_fragments(experiment_dir, pattern)
 
     if not fragments:
-        print(f"  no obs fragments found, creating empty standardized obs")
+        print("  no obs fragments found, creating empty standardized obs")
         assembled = pd.DataFrame(index=raw_obs_index)
     else:
         assembled = pd.concat(fragments, axis=1)
         # Verify index alignment
         if not assembled.index.equals(raw_obs_index):
-            print(f"  WARNING: fragment indices do not match raw obs index, reindexing")
+            print("  WARNING: fragment indices do not match raw obs index, reindexing")
             assembled = assembled.reindex(raw_obs_index)
 
     # Merge | columns using type-aware rules
@@ -338,12 +338,12 @@ def assemble_var(experiment_dir: Path, feature_space: str, schema_class: type | 
     fragments = load_fragments(experiment_dir, pattern)
 
     if not fragments:
-        print(f"  no var fragments found, creating empty standardized var")
+        print("  no var fragments found, creating empty standardized var")
         assembled = pd.DataFrame(index=raw_var_index)
     else:
         assembled = pd.concat(fragments, axis=1)
         if not assembled.index.equals(raw_var_index):
-            print(f"  WARNING: fragment indices do not match raw var index, reindexing")
+            print("  WARNING: fragment indices do not match raw var index, reindexing")
             assembled = assembled.reindex(raw_var_index)
 
     # Merge | columns (less common for var, but supported)
