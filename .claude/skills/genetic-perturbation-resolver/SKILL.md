@@ -5,7 +5,12 @@ description: Use this skill to standardize genetic perturbation targets in dataf
 
 # Genetic Perturbation Resolver
 
-Resolve genetic perturbation targets and schema fields. Handles three input types that may co-exist in a single dataset:
+Resolve genetic perturbation targets and schema fields. Operates in two phases:
+
+- **Phase A** (accession-level): Resolve `GeneticPerturbation_raw.csv` → assign UIDs → write `GeneticPerturbation_resolved.csv`
+- **Phase B** (per-experiment): Write obs fragment with perturbation list columns using the `|` convention
+
+Handles three input types that may co-exist in a single dataset:
 
 1. **Gene names/symbols** — Target gene names (e.g., "TP53", "BRCA1").
 2. **Guide RNA sequences** — Raw ~20bp guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context.
@@ -13,12 +18,26 @@ Resolve genetic perturbation targets and schema fields. Handles three input type
 
 ## Interface
 
-**Input:**
-- Dataframe(s) with genetic perturbation information — gene names, guide sequences, and/or genomic coordinates
-- A user-specified target schema describing which output columns to produce. Ask questions if the schema field names are not descriptive enough.
+**Phase A Input:**
+- `GeneticPerturbation_raw.csv` — consolidated perturbation data across all experiments, at the accession level. Enriched by preparer with supplementary data (guide library, etc.).
+- A user-specified target schema.
 
-**Output:**
-- The same dataframe(s) with standardized schema columns added, named per the user's target schema
+**Phase A Output:**
+- `GeneticPerturbation_resolved.csv` — with resolution columns, UIDs assigned via `make_uid()`, `resolved` boolean.
+
+**Phase B Input:**
+- Per-experiment raw obs CSV (`{fs}_raw_obs.csv`) — **read-only**
+- `GeneticPerturbation_resolved.csv` from Phase A (for UID lookup)
+
+**Phase B Output:**
+- Per-experiment obs fragment (`{fs}_fragment_genetic_perturbation_obs.csv`) with `|` convention columns:
+  - `perturbation_uids|GeneticPerturbation` — JSON list of UIDs
+  - `perturbation_types|GeneticPerturbation` — JSON list of perturbation type strings
+  - `perturbation_concentrations_um|GeneticPerturbation` — JSON list of floats (-1.0 for genetic)
+  - `is_negative_control|GeneticPerturbation` — boolean
+  - `negative_control_type|GeneticPerturbation` — string or None
+
+**Column naming:** No `validated_` prefix. Schema field names directly.
 
 **Rule:** Save the CSV after adding each column to prevent losing work.
 
@@ -37,31 +56,36 @@ from lancell.standardization import (
     GeneticPerturbationType,
 )
 from lancell.standardization.types import GeneResolution, GuideRnaResolution, ResolutionReport
+from lancell.schema import make_uid
 ```
 
 ---
 
-## Step 1: Load & inspect
+## Phase A: Global Resolution
+
+### A1. Load & inspect
 
 ```python
 import pandas as pd
+from pathlib import Path
 
-obs_df = pd.read_csv(obs_csv_path, index_col=0)
+accession_dir = Path("<accession_dir>")
+raw_path = accession_dir / "GeneticPerturbation_raw.csv"
+raw_df = pd.read_csv(raw_path, index_col=0)
+print(f"Perturbations: {len(raw_df)}, Columns: {list(raw_df.columns)}")
 ```
 
 Identify which columns contain perturbation information and what input type(s) are available:
 
 - **Gene name column** — e.g., `"gene"`, `"target_gene"`, `"sgRNA_target"`, `"perturbation"`
 - **Guide sequence column** — e.g., `"guide_seq"`, `"sgRNA_sequence"`, `"protospacer"` — typically 20bp DNA strings
-- **Coordinate columns** — e.g., `"target_chr"`, `"target_start"`, `"target_end"` — or a combined format like `"chr17:7687490-7687510"`
+- **Coordinate columns** — e.g., `"target_chr"`, `"target_start"`, `"target_end"`
 
----
-
-## Step 2: Control detection
+### A2. Control detection
 
 ```python
 target_col = "<target_column>"
-unique_targets = obs_df[target_col].dropna().unique().tolist()
+unique_targets = raw_df[target_col].dropna().unique().tolist()
 
 control_mask = detect_control_labels(unique_targets)
 control_labels = [t for t, is_ctrl in zip(unique_targets, control_mask) if is_ctrl]
@@ -79,28 +103,7 @@ for t in actual_targets:
         print(f"  Possible missed control: '{t}'")
 ```
 
-### Derive `is_negative_control` and `negative_control_type`
-
-```python
-def derive_is_control(value) -> bool:
-    if pd.isna(value):
-        return False  # NaN perturbation does NOT imply control
-    return is_control_label(str(value))
-
-obs_df["<is_control_column>"] = obs_df[target_col].apply(derive_is_control)
-
-# Also derive the canonical control type
-obs_df["<control_type_column>"] = obs_df[target_col].apply(
-    lambda v: detect_negative_control_type(str(v)) if not pd.isna(v) else None
-)
-obs_df.to_csv(obs_csv_path)
-```
-
-**Combinatorial screens:** A cell is only a control if **all** of its perturbations are control type. If a cell received two sgRNAs where one targets a gene and the other is non-targeting, that cell is **not** a control.
-
----
-
-## Step 3: Combinatorial splitting
+### A3. Combinatorial splitting
 
 ```python
 sample_parts = [parse_combinatorial_perturbations(t) for t in actual_targets[:20]]
@@ -109,43 +112,32 @@ if max_parts > 1:
     print(f"Combinatorial perturbations detected (max targets: {max_parts})")
 ```
 
-`parse_combinatorial_perturbations` uses `+`, `&`, `;`, `|`, and comma-space as delimiters. It does **not** use `_` because underscores are common in perturbation column values for non-delimiter reasons (sample IDs, compound names, free-text labels). If the dataset uses `_` as a combinatorial delimiter (e.g., `"AHR_KLF1"`), investigate manually — resolve a sample of split parts as gene symbols to confirm splitting produces valid genes before proceeding.
+`parse_combinatorial_perturbations` uses `+`, `&`, `;`, `|`, and comma-space as delimiters. If the dataset uses `_` as a combinatorial delimiter (e.g., `"AHR_KLF1"`), investigate manually — resolve a sample of split parts as gene symbols to confirm splitting produces valid genes before proceeding.
 
----
-
-## Step 4: Classify perturbation method
+### A4. Classify perturbation method
 
 ```python
 method_string = "<method>"  # from GEO metadata or obs column
 method_result = classify_perturbation_method(method_string)
 if method_result is not None:
-    validated_method = method_result.value
-    print(f"Classified method: {validated_method}")
+    perturbation_method = method_result.value
+    print(f"Classified method: {perturbation_method}")
 else:
     print(f"WARNING: Could not classify method '{method_string}'")
-    validated_method = method_string  # keep original
-
-obs_df["<method_column>"] = validated_method
-obs_df.to_csv(obs_csv_path)
+    perturbation_method = method_string  # keep original
 ```
 
----
-
-## Step 5: Resolve by gene name
-
-Use when perturbation targets are gene symbols (the most common case).
+### A5. Resolve by gene name
 
 ```python
 report = resolve_genes(actual_targets, organism="human", input_type="symbol")
 target_map = {}
 for res in report.results:
-    target_map[res.input_value] = res.symbol if res.symbol else res.input_value
+    target_map[res.input_value] = res
 
 if report.unresolved_values:
     print(f"{len(report.unresolved_values)} targets unresolved: {report.unresolved_values[:10]}")
 ```
-
-This fills `intended_gene_name` and `intended_ensembl_gene_id` but provides no genomic coordinates or target context.
 
 For combinatorial datasets, split and resolve each part independently:
 
@@ -158,94 +150,22 @@ for target in actual_targets:
             all_individual_targets.add(part)
 
 report = resolve_genes(list(all_individual_targets), organism="human", input_type="symbol")
-individual_map = {}
-for res in report.results:
-    individual_map[res.input_value] = res.symbol if res.symbol else res.input_value
 ```
 
-### Write resolved perturbation columns
-
-For single-target datasets:
-
-```python
-for label in control_labels:
-    target_map[label] = None
-
-obs_df["<perturbation_column>"] = obs_df[target_col].map(target_map)
-obs_df.to_csv(obs_csv_path)
-```
-
-For combinatorial datasets:
-
-```python
-for i in range(max_parts):
-    col_name = f"<perturbation_column>_{i + 1}"
-    def get_part(value, idx=i):
-        if pd.isna(value) or is_control_label(str(value)):
-            return None
-        parts = parse_combinatorial_perturbations(str(value))
-        if idx < len(parts):
-            part = parts[idx].strip()
-            if is_control_label(part):
-                return None
-            return individual_map.get(part, part)
-        return None
-    obs_df[col_name] = obs_df[target_col].apply(get_part)
-    obs_df.to_csv(obs_csv_path)
-```
-
----
-
-## Step 6: Resolve by guide RNA sequence
-
-Use when the dataset provides raw guide sequences (typically 20bp DNA). This is slower than gene name resolution — BLAT is rate-limited to ~1 request/second.
+### A6. Resolve by guide RNA sequence (if applicable)
 
 ```python
 guide_col = "<guide_sequence_column>"
-unique_guides = obs_df[guide_col].dropna().unique().tolist()
-print(f"Unique guide sequences: {len(unique_guides)}")
-
-# Deduplicate before resolution — guides are shared across many cells
+unique_guides = raw_df[guide_col].dropna().unique().tolist()
 report = resolve_guide_sequences(unique_guides, organism="human")
 print(f"Resolved: {report.resolved}/{report.total}, Ambiguous: {report.ambiguous}")
 ```
 
-Each `GuideRnaResolution` provides:
-
-| Field | Description |
-|---|---|
-| `chromosome` | e.g., `"chr17"` |
-| `target_start` | Genomic start coordinate |
-| `target_end` | Genomic end coordinate |
-| `target_strand` | `"+"` or `"-"` |
-| `intended_gene_name` | Closest protein-coding gene |
-| `intended_ensembl_gene_id` | Ensembl ID of the intended gene |
-| `target_context` | `"exon"`, `"intron"`, `"promoter"`, `"5_UTR"`, `"3_UTR"`, `"intergenic"`, or `"other"` |
-| `assembly` | e.g., `"hg38"` |
-| `blat_pct_match` | BLAT alignment quality (0–100) |
+### A7. Resolve by genomic coordinates (if applicable)
 
 ```python
-guide_map = {res.input_value: res for res in report.results}
-
-# Map results back to obs
-for field in ["chromosome", "target_start", "target_end", "target_strand",
-              "intended_gene_name", "intended_ensembl_gene_id", "target_context"]:
-    obs_df[f"<{field}_column>"] = obs_df[guide_col].map(
-        lambda g: getattr(guide_map.get(g, None), field, None) if not pd.isna(g) else None
-    )
-obs_df.to_csv(obs_csv_path)
-```
-
----
-
-## Step 7: Resolve by genomic coordinates
-
-Use when the dataset provides pre-computed target coordinates (e.g., enhancer/promoter-targeting CRISPRi/a screens). Skips BLAT and goes directly to Ensembl overlap annotation.
-
-```python
-# Build coordinate dicts from obs columns
 coordinates = []
-for _, row in obs_df[obs_df["<chr_col>"].notna()].drop_duplicates(subset=["<chr_col>", "<start_col>", "<end_col>"]).iterrows():
+for _, row in raw_df[raw_df["<chr_col>"].notna()].iterrows():
     coordinates.append({
         "chromosome": row["<chr_col>"],
         "start": int(row["<start_col>"]),
@@ -256,7 +176,113 @@ for _, row in obs_df[obs_df["<chr_col>"].notna()].drop_duplicates(subset=["<chr_
 report = annotate_genomic_coordinates(coordinates, organism="human")
 ```
 
-This fills `intended_gene_name`, `intended_ensembl_gene_id`, and `target_context`. Regions with no overlapping protein-coding gene get `target_context="intergenic"` and `intended_gene_name=None`.
+### A8. Assign UIDs and write resolved output
+
+```python
+resolved_df = raw_df.copy()
+
+# Map resolution results to schema field names (no validated_ prefix)
+resolved_df["intended_gene_name"] = [...]
+resolved_df["intended_ensembl_gene_id"] = [...]
+resolved_df["perturbation_method"] = perturbation_method
+resolved_df["resolved"] = [...]
+
+# Controls get None for gene fields
+for label in control_labels:
+    mask = resolved_df[target_col] == label
+    resolved_df.loc[mask, "intended_gene_name"] = None
+    resolved_df.loc[mask, "intended_ensembl_gene_id"] = None
+
+# Assign UIDs — one per unique perturbation
+resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
+
+output_path = accession_dir / "GeneticPerturbation_resolved.csv"
+resolved_df.to_csv(output_path)
+print(f"Wrote {output_path.name}: {len(resolved_df)} perturbations, {resolved_df['resolved'].sum()} resolved")
+```
+
+---
+
+## Phase B: Per-Experiment Obs Fragments
+
+### B1. Load resolved table and raw obs
+
+```python
+accession_dir = Path("<accession_dir>")
+experiment_dir = Path("<experiment_dir>")
+
+resolved = pd.read_csv(accession_dir / "GeneticPerturbation_resolved.csv", index_col=0)
+raw_obs = pd.read_csv(experiment_dir / f"{fs}_raw_obs.csv", index_col=0)
+
+# Build lookup: perturbation key → uid
+uid_map = dict(zip(resolved["<key_column>"], resolved["uid"]))
+
+fragment = pd.DataFrame(index=raw_obs.index)
+```
+
+### B2. Build perturbation list columns with `|` convention
+
+For each cell, map its perturbation(s) to UIDs from the resolved table:
+
+```python
+import json
+
+def build_perturbation_lists(value):
+    """Map a cell's perturbation value to UID list and type list."""
+    if pd.isna(value):
+        return None, None, None
+    if is_control_label(str(value)):
+        return None, None, None
+
+    parts = parse_combinatorial_perturbations(str(value))
+    uids = []
+    types = []
+    concentrations = []
+    for part in parts:
+        part = part.strip()
+        if not part or is_control_label(part):
+            continue
+        uid = uid_map.get(part)
+        if uid:
+            uids.append(uid)
+            types.append("genetic_perturbation")
+            concentrations.append(-1.0)  # not applicable for genetic
+
+    if not uids:
+        return None, None, None
+    return json.dumps(uids), json.dumps(types), json.dumps(concentrations)
+
+results = raw_obs[perturbation_col].apply(build_perturbation_lists)
+fragment["perturbation_uids|GeneticPerturbation"] = results.apply(lambda x: x[0])
+fragment["perturbation_types|GeneticPerturbation"] = results.apply(lambda x: x[1])
+fragment["perturbation_concentrations_um|GeneticPerturbation"] = results.apply(lambda x: x[2])
+```
+
+### B3. Derive control columns with `|` convention
+
+```python
+def derive_is_control(value) -> bool:
+    if pd.isna(value):
+        return False  # NaN perturbation does NOT imply control
+    return is_control_label(str(value))
+
+fragment["is_negative_control|GeneticPerturbation"] = raw_obs[perturbation_col].apply(derive_is_control)
+
+fragment["negative_control_type|GeneticPerturbation"] = raw_obs[perturbation_col].apply(
+    lambda v: detect_negative_control_type(str(v)) if not pd.isna(v) and is_control_label(str(v)) else None
+)
+```
+
+**Combinatorial screens:** A cell is only a control if **all** of its perturbations are control type. If a cell received two sgRNAs where one targets a gene and the other is non-targeting, that cell is **not** a control.
+
+### B4. Write fragment
+
+```python
+fragment["genetic_perturbation_resolved"] = True  # or derive from resolution status
+fragment_path = experiment_dir / f"{fs}_fragment_genetic_perturbation_obs.csv"
+fragment.to_csv(fragment_path)
+print(f"Wrote {fragment_path.name}: {len(fragment)} rows")
+```
 
 ---
 
@@ -271,6 +297,10 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 
 ## Rules
 
+- **Two-phase workflow.** Phase A resolves globally and assigns UIDs. Phase B maps UIDs to per-experiment obs.
+- **No `validated_` prefix.** Output columns use schema field names directly.
+- **Use `|` convention in Phase B.** All obs columns that could also be written by other perturbation resolvers use `{field}|GeneticPerturbation` naming.
+- **Assign UIDs via `make_uid()` in Phase A.** Every unique perturbation gets a UID.
 - **`is_negative_control=True` ONLY for explicit controls.** NaN/None perturbation does NOT imply control.
 - **Combinatorial screens:** A cell is only a control if **all** perturbations are control type.
 - **Control labels map to None in perturbation columns.** They inform `is_negative_control`, not the gene target.

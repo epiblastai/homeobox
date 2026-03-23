@@ -6,7 +6,7 @@ may represent the same cells but with different barcode string formats:
   - ADT barcodes from CSV export: ACGTACGT (no suffix)
   - ATAC fragment barcodes: lane1#ACGTACGT-1 (with lane prefix)
 
-This script detects the normalization needed, writes a `validated_multimodal_barcode`
+This script detects the normalization needed, writes a `multimodal_barcode`
 column to each feature space's preparer fragment CSV, and reports overlap statistics.
 
 Usage:
@@ -17,7 +17,7 @@ Arguments:
 
 The script reads metadata.json from the experiment directory to find feature spaces
 and source files, extracts barcodes from each modality, finds the best normalization,
-and writes `validated_multimodal_barcode` to {fs}_fragment_preparer_obs.csv for each
+and writes `multimodal_barcode` to {fs}_fragment_preparer_obs.csv for each
 feature space.
 """
 
@@ -203,16 +203,16 @@ def main(experiment_dir: str) -> None:
     if len(common) < 0.5 * min(len(s) for s in normalized_sets.values()):
         print(f"  WARNING: <50% overlap — check file pairing for {experiment_dir.name}")
 
-    # Write validated_multimodal_barcode to each feature space's preparer fragment
+    # Write multimodal_barcode to each feature space's preparer fragment
     for fs in feature_spaces:
         fragment_path = experiment_dir / f"{fs}_fragment_preparer_obs.csv"
         assert fragment_path.exists(), f"{fragment_path} not found — write preparer fragment first"
         preparer_fragment = pd.read_csv(fragment_path, index_col=0)
-        preparer_fragment["validated_multimodal_barcode"] = [
+        preparer_fragment["multimodal_barcode"] = [
             barcode_map.get(str(bc), str(bc)) for bc in preparer_fragment.index
         ]
         preparer_fragment.to_csv(fragment_path)
-        print(f"  wrote validated_multimodal_barcode to {fragment_path.name}")
+        print(f"  wrote multimodal_barcode to {fragment_path.name}")
 
 
 if __name__ == "__main__":

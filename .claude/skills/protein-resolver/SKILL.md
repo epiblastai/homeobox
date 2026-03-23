@@ -7,20 +7,29 @@ description: Resolve protein identifiers for ADT/CITE-seq feature tables (Protei
 
 Resolve protein identifiers in two contexts that share the same core resolution function:
 
-1. **Protein feature resolution** (var-level) — ADT/CITE-seq panels where each feature is a protein target. Maps to `ProteinSchema`.
-2. **Biologic perturbation resolution** (obs-level) — cytokines, growth factors, antibodies applied to cells. Maps to `BiologicPerturbationSchema`.
+1. **Protein feature resolution** (Phase A, var-level) — ADT/CITE-seq panels where each feature is a protein target. Maps to `ProteinSchema`. Input: `Protein_raw.csv` → Output: `Protein_resolved.csv`.
+2. **Biologic perturbation resolution** (Phase A + Phase B) — cytokines, growth factors, antibodies applied to cells. Maps to `BiologicPerturbationSchema`. Input: `BiologicPerturbation_raw.csv` → Output: `BiologicPerturbation_resolved.csv` + per-experiment obs fragments with `|` convention.
 
 For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-perturbation-resolver** skill. For small molecule perturbations, use the **molecule-resolver** skill.
 
 ## Interface
 
-**Input:**
-- For protein features: dataframe(s) with protein/antibody names (typically the var index of an ADT/CITE-seq matrix)
-- For biologic perturbations: dataframe(s) with biologic agent names (typically an obs column)
-- A user-specified target schema describing which output columns to produce
+**Phase A Input:**
+- `Protein_raw.csv` and/or `BiologicPerturbation_raw.csv` — consolidated data across all experiments, at the accession level.
+- A user-specified target schema.
 
-**Output:**
-- The same dataframe(s) with resolution columns added, named per the user's target schema
+**Phase A Output:**
+- `Protein_resolved.csv` — with resolution columns, UIDs assigned via `make_uid()`, `resolved` boolean.
+- `BiologicPerturbation_resolved.csv` — same pattern.
+
+**Phase B Input (biologic perturbations only):**
+- Per-experiment raw obs CSV (`{fs}_raw_obs.csv`) — **read-only**
+- `BiologicPerturbation_resolved.csv` from Phase A (for UID lookup)
+
+**Phase B Output (biologic perturbations only):**
+- Per-experiment obs fragment (`{fs}_fragment_biologic_perturbation_obs.csv`) with `|` convention columns.
+
+**Column naming:** No `validated_` prefix. Schema field names directly.
 
 **Rule:** Save the CSV after adding each column to prevent losing work.
 
@@ -34,11 +43,12 @@ from lancell.standardization import (
     detect_negative_control_type,
 )
 from lancell.standardization.types import ProteinResolution, ResolutionReport
+from lancell.schema import make_uid
 ```
 
 ---
 
-## Workflow A: Protein Feature Resolution (ProteinSchema)
+## Workflow A: Protein Feature Resolution (Phase A — ProteinSchema)
 
 ### A1. Load and inspect
 
@@ -46,8 +56,10 @@ from lancell.standardization.types import ProteinResolution, ResolutionReport
 import pandas as pd
 from pathlib import Path
 
-var_df = pd.read_csv(var_csv_path, index_col=0)
-protein_aliases = var_df.index.tolist()
+accession_dir = Path("<accession_dir>")
+raw_path = accession_dir / "Protein_raw.csv"
+raw_df = pd.read_csv(raw_path, index_col=0)
+protein_aliases = raw_df["var_index"].tolist()
 print(f"Protein features: {len(protein_aliases)}")
 print(f"Sample: {protein_aliases[:10]}")
 ```
@@ -92,11 +104,13 @@ Common ADT naming issues that cause failures:
 
 Investigate failures and build a correction mapping before proceeding.
 
-### A4. Write columns
+### A4. Assign UIDs and write resolved output
 
-Map `ProteinResolution` fields to the target schema:
+Map `ProteinResolution` fields to the target schema (no `validated_` prefix):
 
 ```python
+resolved_df = raw_df.copy()
+
 for res in report.results:
     uniprot_id = res.uniprot_id          # → ProteinSchema.uniprot_id
     protein_name = res.protein_name      # → ProteinSchema.protein_name
@@ -105,72 +119,65 @@ for res in report.results:
     sequence = res.sequence              # → ProteinSchema.sequence
     sequence_length = res.sequence_length  # → ProteinSchema.sequence_length
     is_resolved = res.resolved_value is not None
-```
 
-For isotype controls, all protein fields map to None.
+# For isotype controls, all protein fields map to None.
+resolved_df["resolved"] = [...]
 
-Always include a `resolved` boolean column:
-```python
-var_df["resolved"] = [res.resolved_value is not None for res in all_results]
-var_df.to_csv(var_csv_path)
+# Assign UIDs — one per unique protein feature
+resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
+
+output_path = accession_dir / "Protein_resolved.csv"
+resolved_df.to_csv(output_path)
+print(f"Wrote {output_path.name}: {len(resolved_df)} features, {resolved_df['resolved'].sum()} resolved")
 ```
 
 ### A5. Notes
 
-- `ProteinSchema.sequence` and `ProteinSchema.sequence_length` are populated from the SwissProt reference database. They are available when the protein resolves to a UniProt ID.
-- `FeatureBaseSchema.uid` and `FeatureBaseSchema.global_index` are auto-generated at ingestion time, not during resolution.
+- `ProteinSchema.sequence` and `ProteinSchema.sequence_length` are populated from the SwissProt reference database when a UniProt ID resolves.
+- `FeatureBaseSchema.global_index` is auto-generated at ingestion time, not during resolution.
 
 ---
 
-## Workflow B: Biologic Perturbation Resolution (BiologicPerturbationSchema)
+## Workflow B: Biologic Perturbation Resolution (Phase A + Phase B — BiologicPerturbationSchema)
 
-### B1. Load and inspect
+### Phase A: Global Resolution
+
+#### BA1. Load and inspect
 
 ```python
-obs_df = pd.read_csv(obs_csv_path, index_col=0)
-biologic_col = "treatment"  # adjust to actual column name
-unique_biologics = obs_df[biologic_col].dropna().unique().tolist()
+raw_path = accession_dir / "BiologicPerturbation_raw.csv"
+raw_df = pd.read_csv(raw_path, index_col=0)
+unique_biologics = raw_df["<biologic_column>"].dropna().unique().tolist()
 print(f"Unique biologic agents: {len(unique_biologics)}")
-print(unique_biologics[:20])
 ```
 
-### B2. Control detection
+#### BA2. Control detection
 
 Use `detect_control_labels()` for standard controls (DMSO, vehicle, untreated, PBS). Additionally apply isotype control detection for antibody-treated experiments:
 
 ```python
 control_flags = detect_control_labels(unique_biologics)
 controls = [v for v, is_ctrl in zip(unique_biologics, control_flags) if is_ctrl]
-# Also check isotype controls
 isotype_ctrls = [v for v in unique_biologics if is_isotype_control(v)]
 all_controls = set(controls) | set(isotype_ctrls)
 
 actual_biologics = [v for v in unique_biologics if v not in all_controls]
 ```
 
-Derive `is_negative_control` and `negative_control_type` for obs records. For isotype controls, set `negative_control_type = "isotype_control"`.
-
-### B3. Resolve protein identity
+#### BA3. Resolve protein identity
 
 ```python
 report = resolve_proteins(actual_biologics, organism="human")
 print(f"Resolved: {report.resolved}/{report.total}")
 ```
 
-Map results:
-```python
-for res in report.results:
-    biologic_name = res.input_value      # → BiologicPerturbationSchema.biologic_name
-    uniprot_id = res.uniprot_id          # → BiologicPerturbationSchema.uniprot_id
-```
-
-### B4. Biologic type classification (manual)
+#### BA4. Biologic type classification (manual)
 
 **No automated `classify_biologic_type()` function exists.** Classification must be guided by dataset metadata and heuristics:
 
-1. **Check dataset metadata first.** Papers and GEO records often describe agent types explicitly ("cells were treated with cytokines IL-2 and IL-7", "blocking antibody anti-PD-L1").
+1. **Check dataset metadata first.** Papers and GEO records often describe agent types explicitly.
 
-2. **Common heuristic patterns** (not automated — validate against metadata):
+2. **Common heuristic patterns** (validate against metadata):
 
    | Pattern | Likely Type |
    |---|---|
@@ -182,24 +189,90 @@ for res in report.results:
    | EGF, FGF, VEGF, PDGF, NGF, BMP, HGF | `growth_factor` |
    | WNT, DLL1, DLL4, JAG1 | `ligand` |
 
-3. **Single-type datasets** (common case — e.g., "cytokine screen"): apply uniformly from metadata.
-
-4. **Mixed-type datasets**: build a manual classification dict:
-
-   ```python
-   biologic_type_map = {
-       "IL-2": "cytokine",
-       "IL-6": "cytokine",
-       "anti-CD3": "antibody",
-       "EGF": "growth_factor",
-   }
-   ```
-
+3. **Single-type datasets** (common case): apply uniformly from metadata.
+4. **Mixed-type datasets**: build a manual classification dict.
 5. **Default to `"other"`** for unclassifiable agents.
 
-### B5. Write columns
+#### BA5. Assign UIDs and write resolved output
 
-Map to `BiologicPerturbationSchema` fields. `vendor`, `catalog_number`, and `lot_number` come from metadata if available. Always include a `resolved` boolean column.
+```python
+resolved_df = raw_df.copy()
+
+# Map fields (no validated_ prefix)
+resolved_df["biologic_name"] = [...]
+resolved_df["uniprot_id"] = [...]
+resolved_df["biologic_type"] = [...]
+resolved_df["resolved"] = [...]
+
+# Assign UIDs
+resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
+
+output_path = accession_dir / "BiologicPerturbation_resolved.csv"
+resolved_df.to_csv(output_path)
+```
+
+### Phase B: Per-Experiment Obs Fragments
+
+#### BB1. Load resolved table and raw obs
+
+```python
+resolved = pd.read_csv(accession_dir / "BiologicPerturbation_resolved.csv", index_col=0)
+raw_obs = pd.read_csv(experiment_dir / f"{fs}_raw_obs.csv", index_col=0)
+
+uid_map = dict(zip(resolved["<key_column>"], resolved["uid"]))
+fragment = pd.DataFrame(index=raw_obs.index)
+```
+
+#### BB2. Build perturbation list columns with `|` convention
+
+```python
+import json
+
+def build_perturbation_lists(row):
+    biologic = row[biologic_col]
+    concentration = row.get(concentration_col)
+    if pd.isna(biologic) or is_control_label(str(biologic)) or is_isotype_control(str(biologic)):
+        return None, None, None
+
+    uid = uid_map.get(str(biologic))
+    if uid is None:
+        return None, None, None
+
+    conc = float(concentration) if pd.notna(concentration) else -1.0
+    return json.dumps([uid]), json.dumps(["biologic"]), json.dumps([conc])
+
+results = raw_obs.apply(build_perturbation_lists, axis=1)
+fragment["perturbation_uids|BiologicPerturbation"] = results.apply(lambda x: x[0])
+fragment["perturbation_types|BiologicPerturbation"] = results.apply(lambda x: x[1])
+fragment["perturbation_concentrations_um|BiologicPerturbation"] = results.apply(lambda x: x[2])
+```
+
+#### BB3. Derive control columns with `|` convention
+
+```python
+def derive_is_control(value) -> bool:
+    if pd.isna(value):
+        return False
+    return is_control_label(str(value)) or is_isotype_control(str(value))
+
+fragment["is_negative_control|BiologicPerturbation"] = raw_obs[biologic_col].apply(derive_is_control)
+
+fragment["negative_control_type|BiologicPerturbation"] = raw_obs[biologic_col].apply(
+    lambda v: (
+        "isotype_control" if pd.notna(v) and is_isotype_control(str(v))
+        else detect_negative_control_type(str(v)) if pd.notna(v) and is_control_label(str(v))
+        else None
+    )
+)
+```
+
+#### BB4. Write fragment
+
+```python
+fragment["biologic_perturbation_resolved"] = True
+fragment_path = experiment_dir / f"{fs}_fragment_biologic_perturbation_obs.csv"
+fragment.to_csv(fragment_path)
+```
 
 ---
 
@@ -214,6 +287,10 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 
 ## Rules
 
+- **Two-phase workflow.** Phase A resolves globally and assigns UIDs. Phase B maps UIDs to per-experiment obs (biologic perturbations only; protein features have no obs fragments).
+- **No `validated_` prefix.** Output columns use schema field names directly.
+- **Use `|` convention in Phase B.** All obs columns that could also be written by other perturbation resolvers use `{field}|BiologicPerturbation` naming.
+- **Assign UIDs via `make_uid()` in Phase A.** Every unique protein/biologic gets a UID.
 - **One-step resolution.** Use `resolve_proteins()` directly. Do not attempt the old two-step alias→gene symbol→UniProt approach.
 - **Isotype controls are NOT caught by `is_control_label()`.** Use the explicit isotype patterns defined in this skill.
 - **Biologic type requires manual classification.** No automated classifier exists. Use metadata and heuristics, default to `"other"`.

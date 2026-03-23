@@ -13,17 +13,22 @@ This skill consumes outputs from the `geo-data-preparer` skill. Before starting,
 
 ```
 /tmp/geo_agent/<accession>/
-├── <accession>_0.h5ad                                    # only if source was h5ad (renamed copy)
-├── <original_matrix_filename>.mtx.gz                     # raw matrix kept with original name
-├── <original_companion_files>.*                           # companion files kept with original names
-├── <accession>_0_standardized_obs.csv                    # from geo-data-preparer + resolver sub-agents
-├── <accession>_0_gene_expression_standardized_var.csv    # from geo-data-preparer + resolver sub-agents
-├── metadata.json                                         # from geo-data-preparer
-├── publication.json                                      # from geo-data-preparer (optional)
-└── entries.json                                          # file classification used to build metadata.json
+├── GenomicFeature_resolved.csv                         # feature registry with UIDs (from gene-resolver)
+├── Protein_resolved.csv                                # optional: protein feature registry with UIDs
+├── GeneticPerturbation_resolved.csv                    # optional: perturbation registry with UIDs
+├── SmallMolecule_resolved.csv                          # optional: molecule registry with UIDs
+├── BiologicPerturbation_resolved.csv                   # optional: biologic registry with UIDs
+├── publication.json                                    # from geo-data-preparer (optional)
+├── <accession>_metadata.json                           # from geo-data-preparer
+├── <SubDir>/
+│   ├── metadata.json
+│   ├── <original_data_files>.*
+│   ├── gene_expression_standardized_obs.csv            # assembled obs (columns = schema field names)
+│   ├── gene_expression_standardized_var.csv            # assembled var (with uid column)
+│   └── ...
 ```
 
-**Important:** Data files keep their original GEO filenames (not renamed to generic names). Check `metadata.json` to find the exact filenames for each entry.
+**Important:** Standardized CSVs use schema field names directly (no `validated_` prefix). Resolved tables at the accession level have pre-assigned `uid` columns.
 
 **If any of these files are missing, STOP and instruct the user to run the `geo-data-preparer` skill first.** Do NOT attempt to download, convert, or validate data inline.
 
@@ -43,17 +48,7 @@ Read the user-provided Python schema file and identify:
 
 ### Mapping pointer fields to feature spaces
 
-Each `SparseZarrPointer` or `DenseZarrPointer` field in the cell schema corresponds to a feature space. The field name **must match** a registered feature space name. For example:
-
-```python
-class CellIndex(LancellBaseSchema):
-    gene_expression: SparseZarrPointer | None = None      # → feature space "gene_expression"
-    protein_abundance: DenseZarrPointer | None = None      # → feature space "protein_abundance"
-    chromatin_accessibility: SparseZarrPointer | None = None  # → feature space "chromatin_accessibility"
-    # ... metadata fields ...
-```
-
-The `registry_schemas` dict passed to `RaggedAtlas.create()` maps each feature space name to its registry schema class.
+Each `SparseZarrPointer` or `DenseZarrPointer` field in the cell schema corresponds to a feature space. The field name **must match** a registered feature space name.
 
 ## lancell API Reference
 
@@ -82,15 +77,6 @@ atlas = RaggedAtlas.create(
     },
 )
 ```
-
-Parameters:
-- `db_uri` — LanceDB connection URI (local path or remote)
-- `cell_table_name` — name for the cell table
-- `cell_schema` — the user's cell schema class (subclass of `LancellBaseSchema`)
-- `dataset_table_name` — name for the dataset metadata table
-- `dataset_schema` — the user's dataset schema class (subclass of `DatasetRecord`)
-- `store` — an obstore ObjectStore for zarr I/O
-- `registry_schemas` — mapping of feature space names to their registry schema classes
 
 ### Feature registration
 
@@ -138,33 +124,25 @@ version = atlas.snapshot()  # Validates consistency, pins a version
 
 ## Input Files
 
-### metadata.json
+### Resolved tables (accession level)
 
-Keyed by entry name (`{accession}_{n}`). Each entry has parallel lists for multimodal data:
-
-- `feature_spaces` — list of modality names
-- `source_files` — original filenames
-- `anndata` — h5ad filename per modality (or null)
-- `matrix_files` — matrix filename per modality (or null)
-- `var_metadata` — per-modality companion filenames
-- `cell_metadata` — shared companion filenames
-- `series_metadata` or `sample_metadata` — GEO record metadata
+`{ClassName}_resolved.csv` files contain feature/perturbation registry data with pre-assigned `uid` columns. These are produced by Phase A resolvers and consumed directly for feature registration and perturbation table creation.
 
 ### standardized_obs.csv
 
-Shares index with `adata.obs`. Contains `validated_*` prefixed columns produced by the preparer and resolver sub-agents.
+Shares index with `adata.obs`. Columns use schema field names directly (no `validated_` prefix). List columns (e.g., `perturbation_uids`, `perturbation_types`) are stored as JSON strings.
 
-**NaN semantics:** `validated_*` columns are never NaN unless there is genuinely no value. When resolution fails, the original value is preserved. NaN means "no metadata at all" — not "resolution failed."
+**NaN semantics:** Columns are never NaN unless there is genuinely no value. When resolution fails, the original value is preserved. NaN means "no metadata at all" — not "resolution failed."
 
 ### standardized_var.csv
 
-One per feature space per entry (e.g., `{key}_gene_expression_standardized_var.csv`). Contains resolved feature metadata (e.g., `validated_gene_symbol`, `validated_ensembl_gene_id`, `validated_organism`).
+One per feature space per experiment. Contains resolved feature metadata with `uid` column for linking to the registry.
 
 ## Workflow
 
 ### 1. Verify prerequisites
 
-Check that all expected files exist (data files, metadata.json, standardized CSVs). If anything is missing, stop and direct the user to run the preparer first.
+Check that all expected files exist (data files, resolved CSVs, standardized CSVs). If anything is missing, stop and direct the user to run the preparer first.
 
 ### 2. Read the schema file
 
@@ -172,12 +150,12 @@ Identify all schema classes and map pointer fields to feature spaces (see Schema
 
 ### 3. Plan the ingestion
 
-For each entry in metadata.json:
+For each experiment directory:
 
-- **Inspect standardized CSVs** to see which `validated_*` columns are present.
+- **Inspect standardized CSVs** to see which columns are present. Column names match schema field names directly.
 - **Determine the raw counts location**: `adata.X`, `adata.layers["counts"]`, or `adata.raw.X`.
-- **Plan obs preparation**: map `validated_*` columns to cell schema field names (strip the `validated_` prefix). Handle perturbation fields, control flags, and additional_metadata.
-- **Plan feature registration**: build feature registry records from standardized_var.csv columns, matching the registry schema's fields.
+- **Plan obs preparation**: map standardized_obs columns to cell schema field names (they already match — no prefix stripping needed). Parse JSON list columns into Python lists for perturbation fields.
+- **Plan feature registration**: read `{ClassName}_resolved.csv`, build feature registry records using the pre-assigned UIDs.
 
 ### 4. Write the ingestion script
 
@@ -201,58 +179,74 @@ atlas = RaggedAtlas.create(
 )
 ```
 
-#### b. Register features
+#### b. Register features from resolved tables
 
-Build feature records from standardized_var.csv and register them:
+Read the resolved CSV (which has pre-assigned UIDs) and register features:
 
 ```python
 import pandas as pd
-from lancell.schema import make_uid
 
-var_csv = data_dir / f"{key}_gene_expression_standardized_var.csv"
-standardized_var = pd.read_csv(var_csv, index_col=0)
+resolved_var = pd.read_csv(accession_dir / "GenomicFeature_resolved.csv", index_col=0)
 
-# Build feature records matching the registry schema
 features = []
-for idx, row in standardized_var.iterrows():
+for _, row in resolved_var.iterrows():
     features.append(GenomicFeatureSchema(
-        uid=make_uid(),
-        gene_name=row.get("validated_gene_symbol", idx),
-        ensembl_gene_id=row.get("validated_ensembl_gene_id"),
-        feature_id=str(idx),
-        feature_type="gene",
-        organism=row.get("validated_organism", "human"),
+        uid=row["uid"],  # pre-assigned UID from resolver
+        gene_name=row.get("gene_name"),
+        ensembl_gene_id=row.get("ensembl_gene_id"),
+        ncbi_gene_id=row.get("ncbi_gene_id"),
+        organism=row.get("organism", "Homo sapiens"),
     ))
 
 atlas.register_features("gene_expression", features)
 ```
 
-#### c. Prepare adata.obs
+#### c. Create perturbation registry tables (if applicable)
 
-Map validated columns from standardized_obs.csv to cell schema field names:
+For foreign key tables (e.g., `GeneticPerturbation`, `SmallMolecule`), create and populate LanceDB tables independently:
+
+```python
+import lancedb
+
+db = lancedb.connect(str(data_dir / "lance_db"))
+resolved_perturbations = pd.read_csv(accession_dir / "GeneticPerturbation_resolved.csv", index_col=0)
+# Build records with pre-assigned UIDs, write to table
+```
+
+#### d. Prepare adata.obs
+
+Map columns from standardized_obs.csv directly to cell schema field names — they already match:
 
 ```python
 standardized_obs = pd.read_csv(obs_csv, index_col=0)
 
-# Map validated_* columns to schema fields (strip "validated_" prefix)
 for col in standardized_obs.columns:
-    if col.startswith("validated_"):
-        schema_field = col.removeprefix("validated_")
-        if schema_field in CellIndex.model_fields:
-            adata.obs[schema_field] = standardized_obs[col].values
+    if col in CellIndex.model_fields:
+        adata.obs[col] = standardized_obs[col].values
 ```
 
-Handle perturbation fields according to the schema (these often need list construction).
-
-#### d. Set global_feature_uid on adata.var
-
-Link var rows to registered features:
+For list columns (JSON-encoded), parse them:
 
 ```python
-adata.var["global_feature_uid"] = [f.uid for f in features]
+import json
+
+for list_col in ["perturbation_uids", "perturbation_types", "perturbation_concentrations_um"]:
+    if list_col in standardized_obs.columns:
+        adata.obs[list_col] = standardized_obs[list_col].apply(
+            lambda x: json.loads(x) if pd.notna(x) else None
+        )
 ```
 
-#### e. Ingest data
+#### e. Set global_feature_uid on adata.var
+
+Link var rows to registered features using the `uid` column from the standardized var CSV:
+
+```python
+standardized_var = pd.read_csv(var_csv, index_col=0)
+adata.var["global_feature_uid"] = standardized_var["uid"].values
+```
+
+#### f. Ingest data
 
 ```python
 from lancell.ingestion import add_anndata_batch
@@ -271,7 +265,7 @@ add_anndata_batch(
 )
 ```
 
-#### f. Finalize
+#### g. Finalize
 
 ```python
 atlas.optimize()
@@ -310,10 +304,12 @@ These write zarr arrays directly. Refer to the utility function signatures for t
 
 - **Read the schema file before writing the ingestion script.** The script structure is driven by the user's schema.
 - **Always use raw counts.** Never use normalized or log-transformed data. Inspect the data to determine the raw counts location: `adata.X`, `adata.layers[name]`, or `adata.raw.X`. If no raw counts are found, raise an error.
-- **Use validated columns from standardized CSVs.** Map `validated_*` columns to cell schema field names.
+- **No `validated_` prefix.** Standardized CSV columns already use schema field names directly. No prefix stripping needed.
+- **UIDs are pre-assigned.** Resolved tables have `uid` columns from the resolvers. Use them directly — do not call `make_uid()` again for features or perturbations.
+- **Parse JSON list columns.** Perturbation list columns in standardized CSVs are JSON-encoded. Parse them before assigning to adata.obs.
 - **Open h5ad files in backed mode.** Use `ad.read_h5ad(path, backed="r")` to avoid loading the full matrix into memory.
 - **Use `add_from_anndata()` for convenience** — it handles backed mode automatically.
-- **Organism lowercase.** Always `"human"` (not "Homo sapiens"), `"mouse"` (not "Mus musculus").
+- **Organism as scientific name.** Always `"Homo sapiens"` (not "human"), `"Mus musculus"` (not "mouse"). Use the resolved scientific name from standardized CSVs.
 - **Script location.** Ingestion scripts go in `scripts/geo_ingestion/{accession}.py` under the project root, not the skill directory.
 - **Run with a subset first.** Test with a small number of cells before full ingestion.
 - **Do not handle multimodal ingestion.** If the dataset has multimodal entries, ingest only the primary feature space.

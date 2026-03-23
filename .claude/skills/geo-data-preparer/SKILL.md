@@ -13,8 +13,10 @@ This skill handles the full pre-ingestion pipeline:
 2. **Downloading** selected files via FTP
 3. **Classifying** files (e.g., h5ad vs matrix + companion files)
 4. **Writing metadata.json** that stores GEO series or sample metadata
-5. **Validating and standardizing** metadata against a user-provided schema
-6. **Delegating** resolution (e.g., genes, proteins, molecules, perturbation targets) to resolver sub-agents
+5. **Creating global tables** for feature registries and foreign keys (Phase A input)
+6. **Delegating** resolution to resolver sub-agents (Phase A: global tables, Phase B: per-experiment obs)
+7. **Mapping UIDs** from resolved tables back to per-experiment fragments
+8. **Assembling** fragments into final standardized CSVs
 
 It does NOT handle adding data to LanceDB or writing Zarr arrays.
 
@@ -26,16 +28,16 @@ You have access to scripts that can be used for common tasks. Run these via Bash
 |--------|-------|---------|
 | `scripts/list_geo_files.py` | `python scripts/list_geo_files.py GSE123456` | List supplementary files for any GEO accession (GSE or GSM) |
 | `scripts/download_geo_file.py` | `python scripts/download_geo_file.py GSE123456 file.h5ad [dest_dir]` | Download a supplementary file via FTP (default dest: `/tmp/geo_agent/<accession>/`) |
-| `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <data_dir> <entries.json>` | Fetch GEO metadata and write metadata.json from a file mapping |
+| `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <experiment_dir> <accession>` | Fetch GEO metadata and write metadata.json in the experiment directory |
 | (see **publication-resolver** skill) | `python scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write publication.json (delegated to publication-resolver skill) |
-| `scripts/reconcile_barcodes.py` | `python scripts/reconcile_barcodes.py <data_dir> <entry_key>` | Reconcile barcodes across modalities for a multimodal entry; writes `validated_multimodal_barcode` to preparer fragment |
-| `scripts/assemble_fragments.py` | `python scripts/assemble_fragments.py <data_dir> <entry_key> [--feature-spaces fs1 fs2]` | Merge resolver fragment CSVs column-wise into final `_standardized_obs.csv` and `_standardized_var.csv` |
+| `scripts/reconcile_barcodes.py` | `python scripts/reconcile_barcodes.py <experiment_dir>` | Reconcile barcodes across modalities; writes `multimodal_barcode` to each feature space's preparer fragment |
+| `scripts/assemble_fragments.py` | `python scripts/assemble_fragments.py <experiment_dir> [--feature-spaces fs1 fs2] [--schema path/to/schema.py]` | Merge resolver fragment CSVs column-wise into final standardized obs and var CSVs |
 
 ## Workflow
 
 ### 1. List and identify data files for the provided GEO accession
 
-Check the available files. If the user provides a series or super-series record from GEO, you may need to look for files at the sample-level. If the series record has aggregated and preprocessed files or a large tar file, those are generally preferable. However, if the series level has no files or only summary statistics, then check the sample-level for real data. If there are many sample records for a series its best to process them one at a time to avoid confusion. When this is the case, ask the user how they want to proceed. 
+Check the available files. If the user provides a series or super-series record from GEO, you may need to look for files at the sample-level. If the series record has aggregated and preprocessed files or a large tar file, those are generally preferable. However, if the series level has no files or only summary statistics, then check the sample-level for real data. If there are many sample records for a series its best to process them one at a time to avoid confusion. When this is the case, ask the user how they want to proceed.
 
 Currently, we support the following file formats:
 
@@ -58,7 +60,7 @@ If the file formats present on the GEO record fall outside of this list, raise i
 
 ### 2. Read the schema file
 
-This skill's validation workflow is driven by a **user-provided Python schema file**, which is of type lancedb.pydantic.LanceModel, a subclass of a pydantic BaseModel. The schema defines the tables and fields to populate with GEO data. 
+This skill's validation workflow is driven by a **user-provided Python schema file**, which is of type lancedb.pydantic.LanceModel, a subclass of a pydantic BaseModel. The schema defines the tables and fields to populate with GEO data.
 
 The user must provide the schema file path as part of their task prompt. Example:
 
@@ -71,8 +73,6 @@ If no schema was provided, ask the user for the path before going any further. R
 3. **Foreign key classes** — These inherit directly from `LanceModel`. These tables are referenced by either the obs table or a feature registry table through a foreign key.
 
 Our goal is to fill out each of the schemas and fields that apply to the provided GEO dataset, which will always include the obs class but may involve only a subset of the feature registry and foreign key classes in the schema file. If a field's purpose is unclear from its name, type, docstring or in-line comments, ask the user.
-
-<!-- Need to read metadata here -->
 
 ### 3. Download and read GEO metadata
 
@@ -104,180 +104,150 @@ Next group the files into subdirectories by experiment. Depending on the file fo
 
 ### 6. Create raw obs and var dataframes
 
-Each of the subdirectories should have dataframes that correspond to obs-level and typically var-level metadata as well. These dataframe might be csv or tsv or inside of an h5ad file. In either case, write new csv files with suffix `_raw_obs_{feature_space}.csv` and `_raw_var_{feature_space}.csv`, where the feature space might be "gene_expression", "chromatin_accessibility, "protein_abundance", etc. There shouldn't be more than 1 obs or var csv per modality.
+Each of the subdirectories should have dataframes that correspond to obs-level and typically var-level metadata as well. These dataframe might be csv or tsv or inside of an h5ad file. In either case, write new csv files with suffix `_raw_obs.csv` and `_raw_var.csv`, where the feature space might be "gene_expression", "chromatin_accessibility, "protein_abundance", etc. There shouldn't be more than 1 obs or var csv per modality.
 
 For the most part you should not remove any columns from the original dataframes, but you may add additional fields that were discovered from the GEO metadata or the downloaded publication text. For example, the raw dataframes associated might not include global metadata like organism, cell type, or donor information. If that information is in the metadata or publication, create new columns relevant to the schema. Do not worry about standardizing the terms that you find because that is delegated to the resolver subagents.
 
-### 7. Delegate resolution to resolver subagents
-
-Provide the top-level directory with experiment specific subdirectories and launch relevant subagents with the relevant skills, provide them with any other details that you believe would be helpful. The available resolvers skills are:
-
-| Skill | Purpose |
-|--------|---------|
-| `ontology-resolver` | Resolves obs-level metadata terms to standard ontologies for tissues, cell types and lines, disease, etc. |
-| `gene-resolver` | Resolves gene names from a gene expression var dataframe to ensembl ids with additional information collected as necessary |
-| `protein-resolver` | Resolves protein names in obs or var to UniProt with additional information collected as necessary |
-| `genetic-perturbation-resolver` | Resolves obs metadata fields to ensembl ids with additional information collected as necessary |
-| `molecule-resolver` | Resolves obs metadata fields to PubChem with additional information collected as necessary |
-
-You may need to use all or only a subset of the resolvers based on the experiment.
-
-<!-- Everything above this line describes the workflow that I want to use and should be treated a ground truth. Content below this line needs to be rewritten -->
-
-## Standardization Workflow
-
-This section expands on steps 6 and 7. Prerequisites: steps 1–5 must be complete (files downloaded, organized into experiment subdirectories, GEO metadata and publication fetched).
-
-### Directory and File Layout
-
-Each experiment lives in its own subdirectory under the accession directory. Name subdirectories descriptively based on the data they contain (e.g., cell line, sample name, or condition). Within each experiment directory, all CSV files are named by feature space — no entry key prefix.
-
-```
-/tmp/geo_agent/GSE264667/
-├── HepG2/
-│   ├── metadata.json
-│   ├── GSE264667_HepG2.h5ad
-│   ├── gene_expression_raw_obs.csv
-│   ├── gene_expression_raw_var.csv
-│   ├── gene_expression_fragment_preparer_obs.csv
-│   ├── gene_expression_fragment_ontology_obs.csv
-│   ├── gene_expression_fragment_gene_var.csv
-│   ├── gene_expression_standardized_obs.csv
-│   └── gene_expression_standardized_var.csv
-├── Jurkat/
-│   └── ...
-└── publication.json
-```
-
-**File naming within each experiment directory:**
-
-| Pattern | Purpose |
-|---------|---------|
-| `{fs}_raw_obs.csv` | Raw obs per feature space (read-only input) |
-| `{fs}_raw_var.csv` | Raw var per feature space (read-only input) |
-| `{fs}_fragment_preparer_obs.csv` | Preparer's pass-through obs fragment |
-| `{fs}_fragment_{resolver}_obs.csv` | Resolver obs fragment |
-| `{fs}_fragment_{resolver}_var.csv` | Resolver var fragment |
-| `{fs}_standardized_obs.csv` | Assembled final obs |
-| `{fs}_standardized_var.csv` | Assembled final var |
-| `metadata.json` | Experiment-level GEO metadata |
-
-Raw CSVs must NOT be modified after creation. They are read-only inputs shared by all resolvers.
-
-**Shared obs across feature spaces:** When multiple feature spaces share the same cells and obs metadata (common in multimodal experiments like CITE-seq), the preparer can write identical raw obs for each feature space, run obs resolvers once on one feature space, and copy the fragment for each. This avoids redundant resolution.
-
-### Schema Analysis
-
-Before delegating to resolvers, classify each schema field to determine what work is needed. Inspect `{fs}_raw_obs.csv` column names and unique values.
-
-| Category | Handled by | Examples |
-|----------|-----------|----------|
-| Ontology fields | ontology-resolver | cell_type, tissue, disease, organism, assay, development_stage, sex, ethnicity, cell_line |
-| Gene features | gene-resolver | gene_name, ensembl_gene_id, feature_type (var-level) |
-| Protein features | protein-resolver | uniprot_id, protein_name (var-level) |
-| Genetic perturbation | genetic-perturbation-resolver | perturbation_type, intended_gene_name, guide_sequence (obs-level) |
-| Small molecule | molecule-resolver | smiles, pubchem_cid, name (obs-level) |
-| Biologic perturbation | protein-resolver (biologic workflow) | biologic_name, biologic_type (obs-level) |
-| Pass-through | preparer fragment | days_in_vitro, replicate, batch_id, well_position, additional_metadata |
-| Auto-filled at ingestion | curator / atlas | uid, dataset_uid, zarr pointers, perturbation_search_string |
-
-For obs columns, scan for common aliases (hints, not exhaustive):
-
-- **cell_type**: "cell_type", "celltype", "CellType", "cluster", "cell_ontology_class", "annotation"
-- **cell_line**: "cell_line", "cellline" — may be a constant from GEO metadata
-- **tissue**: "tissue", "tissue_type", "organ"
-- **disease**: "disease", "condition", "diagnosis"
-- **organism**: "species", "organism" — often a constant from GEO metadata
-- **perturbation columns**: "gene", "target_gene", "sgRNA_target", "perturbation", "compound", "drug", "treatment", "dose", "concentration"
-
-Derived fields (`is_negative_control`, `negative_control_type`) are populated by resolver sub-agents, not mapped from obs columns.
-
-Print the complete field classification for the user's review before proceeding. If a mapping is ambiguous, ask.
-
-### Preparer Fragment
-
-The preparer writes `{fs}_fragment_preparer_obs.csv` for fields that need only type coercion or pass-through — no specialized resolution. These are schema-driven: only include fields present in the user's schema.
-
-Typical pass-through fields:
-- `validated_batch_id` — free-text string
-- `validated_replicate` — integer
-- `validated_well_position` — free-text string
-- `validated_days_in_vitro` — numeric
-- `validated_additional_metadata` — JSON string of extra obs columns not captured by other fields
-
-Include `preparer_resolved = True` (always true for pass-through fields).
-
-**Barcode reconciliation (multimodal entries):** For experiments with more than one feature space, reconcile barcodes across modalities after writing the preparer fragment:
+For any obs fields that need only pass-through or type coercion (e.g., batch_id, replicate, well_position, days_in_vitro), write them to `{fs}_fragment_preparer_obs.csv` using the schema field names directly. For multimodal experiments, also run barcode reconciliation:
 
 ```
 python scripts/reconcile_barcodes.py <experiment_dir>
 ```
 
-This writes `validated_multimodal_barcode` to each feature space's preparer fragment. Skip for single-modality experiments. Review overlap statistics — if the script warns about low overlap, investigate before proceeding.
+### 7. Create global feature and foreign key tables (Phase A input)
 
-### Resolver Delegation
+Before launching resolvers, create accession-level `_raw.csv` files that consolidate data across all experiments for entities that need global resolution.
 
-All resolvers use the **fragment pattern**: each reads from a raw CSV (read-only) and writes its own isolated fragment file. Since resolvers never write to the same file, they can all run in parallel.
+**For each feature registry schema** (e.g., `GenomicFeatureSchema`):
 
-**Obs resolvers** (schema-driven):
+1. Concatenate per-experiment `{fs}_raw_var.csv` files
+2. Add columns: `var_index` (the var index value), `experiment_subdir`, `source_var_column`
+3. Deduplicate on `var_index`
+4. Write `{ClassName}_raw.csv` at accession level (e.g., `GenomicFeature_raw.csv`)
 
-| Resolver skill | Output fragment | When to invoke |
-|---|---|---|
-| **ontology-resolver** | `{fs}_fragment_ontology_obs.csv` | Schema has ontology entity fields |
-| **genetic-perturbation-resolver** | `{fs}_fragment_genetic_perturbation_obs.csv` | Schema has genetic perturbation fields AND obs has perturbation columns |
-| **molecule-resolver** | `{fs}_fragment_molecule_obs.csv` | Schema has small molecule fields AND obs has compound columns |
-| **protein-resolver** (biologic) | `{fs}_fragment_biologic_obs.csv` | Schema has biologic perturbation fields AND obs has biologic columns |
+**For each foreign key schema** (e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`):
 
-**Var resolvers** (one per feature space):
+1. Extract relevant columns from obs across all experiments
+2. Add a key column (e.g., `reagent_id`) for mapping back
+3. Deduplicate on key
+4. Write `{ClassName}_raw.csv` at accession level
 
-| Feature space | Resolver skill | Output fragment |
-|---|---|---|
-| `gene_expression` | **gene-resolver** | `{fs}_fragment_gene_var.csv` |
-| `protein_abundance` | **protein-resolver** | `{fs}_fragment_protein_var.csv` |
-| `chromatin_accessibility` | **gene-resolver** | `{fs}_fragment_gene_var.csv` |
+Column misalignment across datasets is OK — union of columns with NaN fills.
 
-**Prompt template** (unified for all resolvers):
+**Enrich `_raw.csv` with supplementary data.** Before handing off to resolvers, merge supplementary info (guide library CSV, publication metadata, etc.) into `_raw.csv`. Rule: **`_raw.csv` contains all available information in unstandardized form.** The preparer never calls resolution functions; the resolver never hunts for supplementary files.
+
+**Naming convention:** Schema class name minus "Schema" suffix: `GenomicFeature`, `GeneticPerturbation`, `SmallMolecule`, `BiologicPerturbation`, `Protein`.
+
+### 8. Delegate resolution to resolver subagents
+
+Resolution is split into two phases:
+
+#### Phase A — Global tables (accession-level)
+
+Feature registries (var) and foreign key tables are resolved across ALL experiments in one pass. Same entity in multiple experiments gets one UID.
+
+Launch relevant resolvers for each global `_raw.csv`:
+
+| Input | Resolver Skill | Output |
+|-------|---------------|--------|
+| `GenomicFeature_raw.csv` | `gene-resolver` | `GenomicFeature_resolved.csv` |
+| `Protein_raw.csv` | `protein-resolver` | `Protein_resolved.csv` |
+| `GeneticPerturbation_raw.csv` | `genetic-perturbation-resolver` | `GeneticPerturbation_resolved.csv` |
+| `SmallMolecule_raw.csv` | `molecule-resolver` | `SmallMolecule_resolved.csv` |
+| `BiologicPerturbation_raw.csv` | `protein-resolver` | `BiologicPerturbation_resolved.csv` |
+
+**Prompt template for Phase A resolvers:**
 
 ```
 Agent tool call:
   prompt: |
-    You are the <resolver-name> skill. Read the skill file at
-    .claude/skills/<resolver-name>/SKILL.md and follow its complete workflow.
+    Read the skill file at .claude/skills/<resolver-name>/SKILL.md and follow its Phase A workflow.
+
+    Context:
+    - Accession directory: <accession_dir>
+    - Schema file: <schema_path>
+    - Input: <ClassName>_raw.csv
+    - Output: <ClassName>_resolved.csv (with UIDs assigned via make_uid())
+```
+
+All Phase A resolvers can run in parallel.
+
+#### Phase B — Per-experiment obs resolution
+
+After Phase A completes, resolve obs-level metadata per experiment:
+
+- **Ontology resolver**: cell_type, tissue, disease, organism, assay, etc.
+- **Perturbation obs fragments**: maps each cell's perturbation IDs to UIDs from Phase A resolved tables, constructs list columns using `|` convention
+
+**Prompt template for Phase B resolvers:**
+
+```
+Agent tool call:
+  prompt: |
+    Read the skill file at .claude/skills/<resolver-name>/SKILL.md and follow its Phase B workflow.
 
     Context:
     - Experiment directory: <experiment_dir>
-    - Organism: <organism>
     - Schema file: <schema_path>
-
-    Input CSV (READ-ONLY): <experiment_dir>/<fs>_raw_obs.csv   (or _raw_var.csv for var resolvers)
-    Columns to resolve: <list of precursor column names and their target fields>
-    Target schema fields: <list of validated_* field names from the schema>
-
-    Output fragment: <experiment_dir>/<fs>_fragment_<resolver_name>_obs.csv   (or _var.csv)
-    Write ONLY to the output fragment file. Do NOT modify the input CSV.
-    Do NOT write to any _standardized_ CSV.
+    - Resolved tables: <accession_dir>/<ClassName>_resolved.csv
 ```
 
-All resolvers run in **parallel** — obs resolvers, var resolvers, across feature spaces. No sequencing is required.
+Phase B resolvers for different experiments can run in parallel. Ontology and perturbation obs resolvers for the same experiment can also run in parallel.
 
-**Registry CSVs:** Some resolvers (genetic-perturbation-resolver, molecule-resolver) may also produce registry CSVs alongside their fragments (e.g., perturbation or molecule registries for foreign key tables). These are consumed by the downstream curator, not by the assembly script.
+### 9. Map UIDs from resolved tables back to per-experiment var fragments
 
-### Fragment Assembly
+After Phase A resolvers complete, join per-experiment `{fs}_raw_var.csv` with the relevant `{ClassName}_resolved.csv` on `var_index` to create per-experiment `{fs}_fragment_{resolver}_var.csv` files containing UIDs and resolved columns.
+
+```python
+import pandas as pd
+
+# Example for gene expression
+resolved = pd.read_csv(accession_dir / "GenomicFeature_resolved.csv", index_col=0)
+for experiment_dir in experiment_dirs:
+    raw_var = pd.read_csv(experiment_dir / "gene_expression_raw_var.csv", index_col=0)
+    # Join on var_index to get UIDs and resolved columns
+    fragment = raw_var.join(resolved[["uid", "gene_name", "ensembl_gene_id", "ncbi_gene_id", "organism", "resolved"]], how="left")
+    fragment.to_csv(experiment_dir / "gene_expression_fragment_gene_var.csv")
+```
+
+### 10. Fragment Assembly
 
 After all resolvers complete, merge fragments into final standardized CSVs:
 
 ```
-python scripts/assemble_fragments.py <experiment_dir> [--feature-spaces fs1 fs2 ...]
+python scripts/assemble_fragments.py <experiment_dir> --schema <schema_path> [--feature-spaces fs1 fs2 ...]
 ```
 
-The script auto-detects feature spaces from `{fs}_raw_var.csv` files if not specified. For each feature space it:
-1. Globs `{fs}_fragment_*_obs.csv` — loads each as a DataFrame with the raw obs index
-2. Merges all obs fragments column-wise
-3. Combines per-resolver `*_resolved` columns into a single `resolved` boolean
-4. Writes `{fs}_standardized_obs.csv`
-5. Same for var: globs `{fs}_fragment_*_var.csv`, merges, writes `{fs}_standardized_var.csv`
+The `--schema` argument enables type-aware merging of `|` columns (see below). The script auto-detects feature spaces from `{fs}_raw_var.csv` files if not specified. For each feature space it:
 
-### Verification
+1. Globs `{fs}_fragment_*_obs.csv` — loads each as a DataFrame with the raw obs index
+2. Detects `|` columns and merges them by schema field type:
+   - **List fields** (`list[str]`, `list[float]`): concatenate JSON lists across sources
+   - **Boolean fields** (`bool`): `all(non_null_values)` — cell is control only if ALL perturbations are controls
+   - **String fields** (`str`): `"|".join(non_null_values)`
+3. Combines per-resolver `*_resolved` columns into a single `resolved` boolean
+4. Generates `perturbation_search_string` from assembled `perturbation_uids` and `perturbation_types`
+5. Writes `{fs}_standardized_obs.csv`
+6. Same for var: globs `{fs}_fragment_*_var.csv`, merges, writes `{fs}_standardized_var.csv`
+
+#### The `|` Convention for Multi-Source Columns
+
+When multiple resolvers can contribute to the same schema field, column names use `{target_field}|{SourceClassName}`.
+
+**Example:** genetic-perturbation-resolver fragment:
+```
+perturbation_uids|GeneticPerturbation          → ["uid1", "uid2"]  (JSON list)
+perturbation_types|GeneticPerturbation         → ["genetic_perturbation", "genetic_perturbation"]
+perturbation_concentrations_um|GeneticPerturbation → [-1.0, -1.0]
+is_negative_control|GeneticPerturbation        → True
+negative_control_type|GeneticPerturbation      → "nontargeting"
+```
+
+If molecule-resolver also runs, it writes `perturbation_uids|SmallMolecule`, etc.
+
+For single-perturbation-type datasets (the common case), there's one `|` source per field and merging is trivially that value.
+
+### 11. Verification
 
 After assembly, delegate validation to the **standardization-verifier** sub-agent:
 
@@ -296,30 +266,33 @@ Agent tool call:
 
 If the verifier reports FAIL results, address them before proceeding to the curator.
 
-## Resolution Strategy
+## Directory Layout (after both phases)
 
-All `validated_*` columns follow the same principle: **never NaN unless there is genuinely no value.**
+```
+/tmp/geo_agent/GSE264667/
+├── GenomicFeature_raw.csv                              # Phase A input
+├── GenomicFeature_resolved.csv                         # Phase A output (with UIDs)
+├── GeneticPerturbation_raw.csv                         # Phase A input (enriched with guide library)
+├── GeneticPerturbation_resolved.csv                    # Phase A output (with UIDs)
+├── publication.json
+├── GSE264667_metadata.json
+├── HepG2/
+│   ├── GSE264667_HepG2.h5ad
+│   ├── gene_expression_raw_obs.csv
+│   ├── gene_expression_raw_var.csv
+│   ├── gene_expression_fragment_preparer_obs.csv       # pass-through fields
+│   ├── gene_expression_fragment_ontology_obs.csv       # ontology resolver (Phase B)
+│   ├── gene_expression_fragment_genetic_perturbation_obs.csv  # list cols with | (Phase B)
+│   ├── gene_expression_fragment_gene_var.csv           # UIDs mapped from resolved table
+│   ├── gene_expression_standardized_obs.csv            # assembled
+│   ├── gene_expression_standardized_var.csv            # assembled
+├── Jurkat/
+│   └── ...
+```
 
-1. **Resolution succeeds** → use the resolved canonical value (e.g., `"MCF7"` → `"MCF-7"`).
-2. **Resolution fails** → keep the original value as-is. The value is still meaningful even if unrecognized.
-3. **NaN only when there is no value** — e.g., the cell has no cell_type annotation, or a compound has no PubChem CID.
-4. **Control labels map to None** — "Vehicle", "DMSO", "non-targeting" etc. inform `is_control=True`, not the metadata field itself.
+## Column Naming Convention
 
-This applies to all resolvers and the preparer's own fragment.
-
-## Rules
-
-- **Read the schema file before standardization.** The download workflow (steps 1–5) can proceed without one; the standardization workflow cannot.
-- **One accession at a time.** Process a single GSE or GSM per invocation.
-- **One experiment per subdirectory.** Multiple modalities from the same cells belong together — do not split them into separate subdirectories.
-- **Process all feature spaces.** Do not skip modalities unless the user explicitly asks to.
-- **Preserve raw data.** Never normalize, filter, or transform expression matrices.
-- **No mandatory conversion to h5ad.** Matrix files can be validated directly.
-- **Fail loudly.** Raise clear errors on download or read failures.
-- **Prefix validated columns with `validated_`.** Never overwrite original obs/var columns.
-- **Never modify h5ad files or raw CSVs.** Write to fragment and standardized CSVs only.
-- **One obs and one var CSV per feature space.** After assembly: `{fs}_standardized_obs.csv` and `{fs}_standardized_var.csv` per feature space.
-- **All resolvers use the fragment pattern.** No direct writes to standardized CSVs.
-- **Control labels are not metadata.** Map to `None` in validated columns.
-- **Delegate all specialized resolution.** Never perform gene, protein, molecule, ontology, or perturbation resolution inline.
-- **Ask before guessing.** If a column mapping is ambiguous, ask the user.
+All resolvers output schema field names directly — no `validated_` prefix:
+- `cell_type` not `validated_cell_type`
+- `gene_name` not `validated_gene_name`
+- `organism` as resolved scientific name (e.g., "Homo sapiens", "Mus musculus")
