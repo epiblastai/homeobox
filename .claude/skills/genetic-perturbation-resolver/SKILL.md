@@ -1,26 +1,24 @@
 ---
 name: genetic-perturbation-resolver
-description: Resolve genetic perturbation targets in dataframes — gene names, guide RNA sequences, or genomic coordinates — and fill GeneticPerturbationSchema fields. Handles control detection, combinatorial splitting, perturbation method classification, and guide RNA alignment via BLAT. Use when a dataset has genetic perturbation columns (CRISPR, siRNA, shRNA, ORF, ASO) that need standardization.
+description: Use this skill to standardize genetic perturbation targets in dataframes — gene names, guide RNA sequences, or genomic coordinates - and to lookup missing metadata. Expects a dataframe with details about genetic perturbations. Handles control detection, combinatorial splitting, perturbation method classification, and guide RNA alignment via BLAT.
 ---
 
 # Genetic Perturbation Resolver
 
-Resolve genetic perturbation targets and fill `GeneticPerturbationSchema` fields. Handles three input types that may co-exist in a single dataset:
+Resolve genetic perturbation targets and schema fields. Handles three input types that may co-exist in a single dataset:
 
-1. **Gene names/symbols** — Target gene names (e.g., "TP53", "BRCA1"). Resolves to canonical symbols and Ensembl IDs.
-2. **Guide RNA sequences** — Raw 20bp guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context.
+1. **Gene names/symbols** — Target gene names (e.g., "TP53", "BRCA1").
+2. **Guide RNA sequences** — Raw ~20bp guide sequences from CRISPR screens. Aligns via BLAT to get genomic coordinates, then annotates with overlapping genes and target context.
 3. **Genomic coordinates** — Pre-computed target regions (e.g., enhancer/promoter-targeting screens). Annotates with overlapping genes and target context without BLAT.
 
 ## Interface
 
 **Input:**
 - Dataframe(s) with genetic perturbation information — gene names, guide sequences, and/or genomic coordinates
-- A user-specified target schema describing which output columns to produce
+- A user-specified target schema describing which output columns to produce. Ask questions if the schema field names are not descriptive enough.
 
 **Output:**
-- The same dataframe(s) with resolution columns added, named per the user's target schema
-
-When invoked from the geo-data-preparer pipeline, the input will be `{key}_standardized_obs.csv`, and output columns should use the `validated_` prefix convention.
+- The same dataframe(s) with standardized schema columns added, named per the user's target schema
 
 **Rule:** Save the CSV after adding each column to prevent losing work.
 
@@ -56,8 +54,6 @@ Identify which columns contain perturbation information and what input type(s) a
 - **Gene name column** — e.g., `"gene"`, `"target_gene"`, `"sgRNA_target"`, `"perturbation"`
 - **Guide sequence column** — e.g., `"guide_seq"`, `"sgRNA_sequence"`, `"protospacer"` — typically 20bp DNA strings
 - **Coordinate columns** — e.g., `"target_chr"`, `"target_start"`, `"target_end"` — or a combined format like `"chr17:7687490-7687510"`
-
-Print unique values for the user's review before proceeding.
 
 ---
 
