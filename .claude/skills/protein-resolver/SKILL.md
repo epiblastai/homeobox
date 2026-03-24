@@ -21,6 +21,7 @@ For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-pertu
 **Phase A Output:**
 - `Protein_resolved.csv` — with resolution columns, UIDs assigned via `make_uid()`, `resolved` boolean.
 - `BiologicPerturbation_resolved.csv` — same pattern.
+- `resolver_reports/protein-resolver.md` — markdown report written in the working directory. Summarize inputs, outputs, resolved/unresolved proteins or biologics, control handling, and any blank finalized fields with reasons.
 
 **Phase B Input (biologic perturbations only):**
 - Per-experiment raw obs CSV (`{fs}_raw_obs.csv`) — **read-only**
@@ -32,6 +33,21 @@ For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-pertu
 **Column naming:** No `validated_` prefix. Schema field names directly.
 
 **Rule:** Save the CSV after adding each column to prevent losing work.
+
+## Reporting
+
+Each run must write a markdown report to `resolver_reports/` in the working directory.
+
+- Create the directory if it does not exist.
+- Default report path: `resolver_reports/protein-resolver.md`
+- Overwrite the report for the current run unless the caller asks for a different naming scheme.
+- Include:
+  - input file path(s)
+  - output file path(s)
+  - row counts and resolved/unresolved counts
+  - control detection summary
+  - correction mappings or fallback logic used
+  - any finalized schema fields left blank, with reasons
 
 ## Imports
 

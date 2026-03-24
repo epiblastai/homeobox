@@ -12,6 +12,21 @@ Fetch publication metadata from PubMed and full text from PMC Open Access. Popul
 **Input:** A publication identifier — PMID (numeric), DOI, or paper title.
 
 **Output:** A `publication.json` file and/or populated schema fields for `PublicationSchema` + `PublicationSectionSchema`.
+- A markdown report at `resolver_reports/publication-resolver.md` in the working directory summarizing the identifier used, fetched metadata, full-text availability, output paths, and any missing publication fields with reasons.
+
+## Reporting
+
+Each run must write a markdown report to `resolver_reports/` in the working directory.
+
+- Create the directory if it does not exist.
+- Default report path: `resolver_reports/publication-resolver.md`
+- Overwrite the report for the current run unless the caller asks for a different naming scheme.
+- Include:
+  - input identifier(s)
+  - output file path(s)
+  - PMID/DOI/title/journal/date found
+  - whether PMC full text was available
+  - any schema fields left blank, with reasons
 
 ## Scripts
 
@@ -19,11 +34,11 @@ Run these via Bash from the **repository root**.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
-| `scripts/write_publication_json.py` | `python scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write publication.json |
+| `.claude/skills/publication-resolver/scripts/write_publication_json.py` | `python .claude/skills/publication-resolver/scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write publication.json |
 
-The script supports three modes:
+Prefer `--pmid` when you have one. The script supports three modes:
 
-1. **From metadata.json** (default): reads `<data_dir>/metadata.json` and extracts PMIDs. Note: the GEO metadata file produced by `geo-data-preparer` is named `{accession}_metadata.json` (not `metadata.json`), so prefer using `--pmid` or `--title` explicitly.
+1. **From metadata JSON** (default): reads `<data_dir>/{accession}_metadata.json` if present, otherwise `<data_dir>/metadata.json`, and extracts PMIDs.
 2. **`--pmid PMID`**: fetch metadata for a specific PubMed ID.
 3. **`--title TITLE`**: search PubMed by title, then fetch metadata.
 
@@ -116,10 +131,10 @@ for section in text.sections:
 When working within a data preparation pipeline, use the script:
 
 ```bash
-python scripts/write_publication_json.py /tmp/geo_agent/GSE123456 --pmid 31806696
+python .claude/skills/publication-resolver/scripts/write_publication_json.py /tmp/geo_agent/GSE123456 --pmid 31806696
 ```
 
-This writes a flat `publication.json` with keys: `pmid`, `doi`, `title`, `journal`, `publication_date`, `full_text`.
+This writes a flat `publication.json` with keys: `pmid`, `doi`, `title`, `journal`, `publication_date`, `authors`, `text_source`, `full_text`.
 
 For programmatic access (e.g., in ingestion scripts), use `fetch_publication_metadata()` which returns the same dict:
 
@@ -133,6 +148,7 @@ pub_dict = fetch_publication_metadata("31806696")
 - **PMC before abstract.** Always attempt PMC full text before falling back to abstract. Many biology papers have PMC full text (~40% of PubMed-indexed papers).
 - **DOI is best-effort.** If no DOI is found in the PubMed record, the field will be None. Do not fail on missing DOI.
 - **Multiple PMIDs.** For datasets with multiple associated publications (multiple PMIDs in metadata.json), process each one. The shared script uses the first PMID by default.
+- **Title mismatches are not necessarily errors.** If the caller provides a title and PubMed returns a slightly different canonical published title, prefer the PubMed title in `publication.json`.
 - **Identifier auto-detection.** `fetch_publication()` auto-detects PMID vs DOI vs title. No need to classify the identifier manually.
 - **PubMed-only.** Resolution goes through PubMed. Papers not yet indexed in PubMed (e.g., very recent preprints with only a DOI) will fail with a clear error message.
 - **Section titles for PMC.** PMC full text sections use the article's own headings (e.g., "Introduction", "Methods", "Results"). Nested subsections are flattened with `>` separators (e.g., "Methods > Cell Culture").

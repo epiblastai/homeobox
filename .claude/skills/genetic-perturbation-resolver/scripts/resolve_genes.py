@@ -13,6 +13,8 @@ Usage
     python resolve_genes.py <input_csv> <gene_column> <method> \
         [--organism human] \
         [--ensembl-column ensembl_gene_id] \
+        [--split-column reagent_id] \
+        [--split-delimiter "|"] \
         [--output-dir <dir>]
 
 Arguments
@@ -26,6 +28,9 @@ Options
 --organism          Organism for gene resolution (default: human).
 --ensembl-column    Column with existing Ensembl IDs to cross-check.
                     If provided, mismatches are reported.
+--split-column      Column containing paired or multi-reagent identifiers to
+                    split into one row per reagent before resolution.
+--split-delimiter   Delimiter for --split-column (default: "|").
 --output-dir        Directory for output CSV. Defaults to same directory as
                     input_csv.
 """
@@ -37,13 +42,41 @@ from pathlib import Path
 import pandas as pd
 
 from lancell.standardization import (
-    resolve_genes,
-    detect_control_labels,
     classify_perturbation_method,
-    parse_combinatorial_perturbations,
+    detect_control_labels,
     is_control_label,
+    parse_combinatorial_perturbations,
+    resolve_genes,
 )
 from lancell.schema import make_uid
+
+
+def _split_rows(raw_df: pd.DataFrame, split_column: str, delimiter: str) -> pd.DataFrame:
+    split_series = raw_df.index.to_series(index=raw_df.index) if split_column == "__index__" else raw_df[split_column]
+
+    rows = []
+    for idx, row in raw_df.iterrows():
+        raw_value = split_series.loc[idx]
+        if pd.isna(raw_value):
+            parts = [None]
+        else:
+            parts = [part.strip() for part in str(raw_value).split(delimiter)]
+            parts = [part for part in parts if part]
+            if not parts:
+                parts = [None]
+
+        for part in parts:
+            new_row = row.copy()
+            if split_column == "__index__":
+                new_row.name = part if part is not None else idx
+            else:
+                new_row[split_column] = part
+            rows.append(new_row)
+
+    split_df = pd.DataFrame(rows)
+    if split_column == "__index__":
+        split_df.index.name = raw_df.index.name
+    return split_df
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -55,6 +88,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("method", help="Perturbation method string (e.g. CRISPRi)")
     parser.add_argument("--organism", default="human", help="Organism (default: human)")
     parser.add_argument("--ensembl-column", default=None, help="Column with existing Ensembl IDs to cross-check")
+    parser.add_argument("--split-column", default=None, help='Column to split before resolution, or "__index__" for the index')
+    parser.add_argument("--split-delimiter", default="|", help='Delimiter for --split-column (default: "|")')
     parser.add_argument("--output-dir", type=Path, default=None, help="Output directory (default: same as input)")
     args = parser.parse_args(argv)
 
@@ -65,6 +100,17 @@ def main(argv: list[str] | None = None) -> None:
     if gene_col not in raw_df.columns:
         print(f"ERROR: column '{gene_col}' not found. Available: {list(raw_df.columns)}", file=sys.stderr)
         sys.exit(1)
+
+    if args.split_column:
+        if args.split_column != "__index__" and args.split_column not in raw_df.columns:
+            print(
+                f"ERROR: split column '{args.split_column}' not found. Available: {list(raw_df.columns)}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        before = len(raw_df)
+        raw_df = _split_rows(raw_df, args.split_column, args.split_delimiter)
+        print(f"Split {before} rows into {len(raw_df)} using {args.split_column!r}")
 
     print(f"Perturbations: {len(raw_df)}, Columns: {list(raw_df.columns)}")
 
@@ -84,14 +130,13 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  Possible missed control: '{t}'")
 
     # ------------------------------------------------------------------
-    # Combinatorial check — split if needed
+    # Gene-column combinatorial check
     # ------------------------------------------------------------------
     sample_parts = [parse_combinatorial_perturbations(t) for t in actual_targets[:50]]
-    max_parts = max(len(p) for p in sample_parts)
-    is_combinatorial = max_parts > 1
+    max_parts = max((len(p) for p in sample_parts), default=1)
 
-    if is_combinatorial:
-        print(f"Combinatorial perturbations detected (max parts: {max_parts})")
+    if max_parts > 1:
+        print(f"Gene column appears combinatorial (max parts: {max_parts})")
         all_individual = set()
         for target in actual_targets:
             for part in parse_combinatorial_perturbations(target):
@@ -99,7 +144,6 @@ def main(argv: list[str] | None = None) -> None:
                 if part and not is_control_label(part):
                     all_individual.add(part)
         resolve_list = sorted(all_individual)
-        print(f"Unique individual targets after splitting: {len(resolve_list)}")
     else:
         resolve_list = actual_targets
 

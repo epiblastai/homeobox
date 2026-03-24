@@ -14,6 +14,8 @@ Options:
     --ensembl-col COL   Column with Ensembl IDs. Default: auto-detect from index.
     --symbol-col COL    Column with gene symbols (used for fallback). Default: auto-detect.
     --organism ORG      Override organism instead of auto-detecting from Ensembl prefixes.
+    --index-col COL     CSV column to use as index. Use "none" to disable index handling.
+    --dry-run           Print detected columns and planned operations without writing output.
 """
 
 import argparse
@@ -176,13 +178,15 @@ def resolve_gene_csv(
     ensembl_col: str | None = None,
     symbol_col: str | None = None,
     organism: str | None = None,
+    index_col: int | None = 0,
+    dry_run: bool = False,
 ) -> pd.DataFrame:
     """Resolve gene identifiers in a CSV and write results.
 
     Adds columns: gene_name, ensembl_gene_id, organism, resolved, uid.
     Returns the resolved DataFrame.
     """
-    df = pd.read_csv(input_path, index_col=0)
+    df = pd.read_csv(input_path, index_col=index_col)
     print(f"Loaded {len(df)} features, columns: {list(df.columns)}")
 
     # Detect columns
@@ -217,11 +221,25 @@ def resolve_gene_csv(
             if ensembl_is_index
             else df[ensembl_col].astype(str).tolist()
         )
+        if dry_run:
+            print("Dry run summary:")
+            print(f"  index_col={index_col}")
+            print(f"  ensembl source={'index' if ensembl_is_index else ensembl_col}")
+            print(f"  symbol source={symbol_col}")
+            print("  action=resolve Ensembl IDs with symbol fallback")
+            return df
         all_results, organism_map = _resolve_ensembl_ids(ensembl_ids, symbols)
     elif symbols is not None:
         if organism is None:
             print("ERROR: No Ensembl IDs found. Must provide --organism when resolving by symbol only.", file=sys.stderr)
             sys.exit(1)
+        if dry_run:
+            print("Dry run summary:")
+            print(f"  index_col={index_col}")
+            print(f"  symbol source={symbol_col}")
+            print(f"  organism={organism}")
+            print("  action=resolve symbols only")
+            return df
         all_results, organism_map = _resolve_symbols(symbols, organism)
     else:
         print("ERROR: No gene identifiers found. Provide --ensembl-col or --symbol-col.", file=sys.stderr)
@@ -275,7 +293,15 @@ if __name__ == "__main__":
     parser.add_argument("--ensembl-col", default=None, help="Column with Ensembl IDs (default: auto-detect)")
     parser.add_argument("--symbol-col", default=None, help="Column with gene symbols (default: auto-detect)")
     parser.add_argument("--organism", default=None, help="Override organism (e.g. 'human', 'mouse')")
+    parser.add_argument(
+        "--index-col",
+        default="0",
+        help='CSV column to use as index. Use "none" to disable index handling (default: 0).',
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Print detected columns and planned operations only")
     args = parser.parse_args()
+
+    index_col = None if str(args.index_col).lower() == "none" else int(args.index_col)
 
     resolve_gene_csv(
         args.input_csv,
@@ -283,4 +309,6 @@ if __name__ == "__main__":
         ensembl_col=args.ensembl_col,
         symbol_col=args.symbol_col,
         organism=args.organism,
+        index_col=index_col,
+        dry_run=args.dry_run,
     )

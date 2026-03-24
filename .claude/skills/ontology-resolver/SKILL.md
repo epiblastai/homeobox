@@ -34,10 +34,26 @@ This resolver operates in **Phase B** (per-experiment obs resolution). It reads 
   - `{field}` — canonical ontology term name (schema field name directly, no prefix)
   - `{field}_ontology_id` — CURIE (e.g., `"CL:0000540"`)
   - `ontology_resolved` boolean indicating whether all ontology fields resolved successfully
+- A markdown report at `resolver_reports/ontology-resolver.md` in the working directory summarizing the experiment, fields resolved, unresolved values, and any omitted output columns with reasons.
 
 **Column naming:** Output uses schema field names directly — `cell_type` not `validated_cell_type`. For organism fields, output the resolved scientific name (e.g., `"Homo sapiens"`, `"Mus musculus"`) — do not convert to common names.
 
 **Rule:** Save the fragment CSV after adding each pair of columns to prevent losing work.
+
+## Reporting
+
+Each run must write a markdown report to `resolver_reports/` in the working directory.
+
+- Create the directory if it does not exist.
+- Default report path: `resolver_reports/ontology-resolver.md`
+- Overwrite the report for the current run unless the caller asks for a different naming scheme.
+- Include:
+  - experiment directory and input file path
+  - output fragment path
+  - ontology fields attempted
+  - resolved/unresolved counts per field
+  - correction mappings or manual normalizations used
+  - any omitted or blank output fields, with reasons
 
 ## Imports
 
@@ -72,21 +88,20 @@ fragment = pd.DataFrame(index=raw_obs.index)
 Identify which obs columns map to which ontology entities. The caller provides this mapping, or derive it from the schema field classification:
 
 ```python
-# Example mapping from the caller
+# Example mapping from raw obs columns to schema fields + ontology entities
 ontology_fields = {
-    "<cell_type_column>": OntologyEntity.CELL_TYPE,
-    "<tissue_column>": OntologyEntity.TISSUE,
-    "<disease_column>": OntologyEntity.DISEASE,
-    # ... one entry per ontology field present in this dataset
+    "cell_type_annotation": ("cell_type", OntologyEntity.CELL_TYPE),
+    "donor_tissue": ("tissue", OntologyEntity.TISSUE),
+    "diagnosis": ("disease", OntologyEntity.DISEASE),
 }
 
-for col, entity in ontology_fields.items():
+for col, (field_name, entity) in ontology_fields.items():
     unique_values = raw_obs[col].dropna().unique().tolist()
-    print(f"{col} -> {entity.value}: {len(unique_values)} unique values")
+    print(f"{col} -> {field_name} ({entity.value}): {len(unique_values)} unique values")
     print(f"  Sample: {unique_values[:10]}")
 ```
 
-Not every dataset has every ontology field. Only process fields that exist as columns in the obs data. If a schema ontology field does not exist in the raw obs, omit it from the fragment — it will be null in the final obs.
+Not every dataset has every ontology field. If a schema ontology field is missing from the raw obs, omit it from the fragment. If the column exists but is entirely null, skip resolution for that field and either omit it or write null column pairs consistently for that dataset.
 
 ---
 
@@ -95,7 +110,7 @@ Not every dataset has every ontology field. Only process fields that exist as co
 Some ontology columns (especially `cell_type`, `disease`) may contain control-like values from perturbation datasets.
 
 ```python
-for col, entity in ontology_fields.items():
+for col, (_, entity) in ontology_fields.items():
     unique_values = raw_obs[col].dropna().unique().tolist()
     control_flags = detect_control_labels(unique_values)
     controls = [v for v, is_ctrl in zip(unique_values, control_flags) if is_ctrl]
@@ -115,6 +130,7 @@ Process each ontology field one at a time. For each field:
 
 ```python
 col = "<column_name>"
+field_name = "<schema_field_name>"
 entity = OntologyEntity.<ENTITY>
 unique_values = raw_obs[col].dropna().unique().tolist()
 
@@ -284,7 +300,7 @@ All output columns follow the same principle: **never NaN unless there is genuin
 - **Read-only input.** Never modify the `_raw_obs.csv` file. Write all output to the fragment file.
 - **No `validated_` prefix.** Output columns use schema field names directly: `cell_type`, `tissue`, etc.
 - **Organism as scientific name.** Output the resolved scientific name (e.g., `"Homo sapiens"`, `"Mus musculus"`). Do not convert to common names.
-- **One column pair at a time.** Process each ontology field sequentially, save the fragment after each pair.
+- **One column pair at a time.** Process each ontology field sequentially, save the fragment after each pair. This is a durability tradeoff; for simple uniform-value datasets the extra writes may be unnecessary but are still acceptable.
 - **Use `resolve_ontology_terms()` for all entities.** It handles the dispatch to DB lookup, OLS4, or hardcoded tables internally.
 - **Pass `organism` for development_stage.** Without it, both HsapDv and MmusDv are searched — this can produce wrong matches for organism-specific stages.
 - **Fuzzy cell_line matches.** OLS4 fuzzy matches (confidence 0.8) should be accepted by default but logged with a warning. Present alternatives to the user if possible. Note: CLO catalogs cell bank deposits, so names like "RCB0806 cell" instead of "Jurkat" are expected — this is a known CLO limitation (Cellosaurus integration is planned).

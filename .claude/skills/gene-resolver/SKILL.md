@@ -18,6 +18,21 @@ For genetic perturbation target resolution (obs-level: control detection, combin
 **Output (two files):**
 - `GenomicFeatureSchema_resolved.csv` — all raw columns plus resolved columns (`gene_name`, `ensembl_gene_id`, `organism`, `resolved`, `uid`). This is the full intermediate output for inspection and debugging.
 - `GenomicFeatureSchema.csv` — validated against the target schema. Contains exactly the schema fields, no `resolved` column, no raw columns. Every row passes `schema_class.model_validate()`.
+- `resolver_reports/gene-resolver.md` — markdown report written in the working directory. Summarize inputs, output paths, resolved/unresolved counts, notable ambiguities, and any fields left blank in the finalized schema output.
+
+## Reporting
+
+Each run must write a markdown report to `resolver_reports/` in the working directory.
+
+- Create the directory if it does not exist.
+- Default report path: `resolver_reports/gene-resolver.md`
+- Overwrite the report for the current run unless the caller asks for a different naming scheme.
+- Include:
+  - input file path(s)
+  - output file path(s)
+  - row counts and resolved/unresolved counts
+  - major assumptions or fallback logic used
+  - any finalized schema fields left blank, with reasons
 
 ## Scripts
 
@@ -28,12 +43,15 @@ Auto-detects identifier format (Ensembl IDs vs symbols), detects organisms from 
 ```bash
 python .claude/skills/gene-resolver/scripts/resolve_genes.py \
     <input_csv> <output_csv> \
-    [--ensembl-col COL] [--symbol-col COL] [--organism ORG]
+    [--ensembl-col COL] [--symbol-col COL] [--organism ORG] \
+    [--index-col COL] [--dry-run]
 ```
 
-- `--ensembl-col`: Column with Ensembl IDs. Default: auto-detect from index, then columns.
+- `--ensembl-col`: Column with Ensembl IDs. Default: auto-detect from index, then columns. If the CSV is read with `index_col=0`, this may be the raw column name that became `df.index.name`.
 - `--symbol-col`: Column with gene symbols for fallback. Default: auto-detect (`gene_name`, `gene_symbol`, etc.).
 - `--organism`: Override organism instead of auto-detecting from Ensembl prefixes. Required when resolving by symbol only (no Ensembl IDs).
+- `--index-col`: Override which CSV column becomes the DataFrame index. Use `--index-col none` to disable index handling.
+- `--dry-run`: Print detected columns and planned operations without writing output.
 
 #### Columns produced
 
@@ -85,7 +103,7 @@ Review the output for resolved/unresolved counts and any barnyard detection.
 
 ### 2. Finalize against the target schema
 
-Read the target schema to determine which columns need to be added (e.g., `feature_type`, `feature_id`). Then run:
+Read the target schema to determine which columns need to be added, then run:
 
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
@@ -97,6 +115,15 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 ```
 
 The script will error if any row fails schema validation.
+
+### 3. Write the markdown report
+
+After finalization, write `resolver_reports/gene-resolver.md` in the working directory with the run summary and blank-field audit.
+
+Common cases:
+- Use `--column feature_id=ensembl_gene_id` when the schema wants a stable gene foreign key.
+- Use literal constants such as `--column feature_type=gene` for schema-wide values.
+- Only populate fields like `ensembl_version` when the input explicitly contains that exact value. Do not infer it from dataset-specific labels like `gene_version9`.
 
 ---
 
@@ -118,5 +145,7 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 - **Resolve per organism** when multiple organisms are detected (barnyard experiments).
 - **Old Ensembl versions:** If a large fraction of Ensembl IDs fail, attempt recovery via gene symbols.
 - **Never set resolved columns to NaN for failed resolution.** Use the original value and set `resolved=False`.
+- **Output columns may overwrite raw columns.** In particular, resolved `organism` replaces any raw `organism` column.
+- **Index collisions are renamed.** If the input index name collides with an output column such as `gene_name`, the script renames the index to `raw_<name>` before writing.
 - **Column names follow the user's schema.** Do not assume specific column names — use whatever the user's target schema specifies.
 - **Two output files.** `GenomicFeatureSchema_resolved.csv` retains `resolved` for inspection. `GenomicFeatureSchema.csv` is schema-validated and production-ready.

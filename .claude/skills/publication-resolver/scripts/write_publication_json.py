@@ -2,8 +2,9 @@
 
 Three modes of operation:
 
-1. From metadata.json (default): reads <data_dir>/metadata.json and extracts PMIDs
-   from series_metadata.pmids (or resolves GSE from sample_metadata.gse).
+1. From metadata JSON (default): reads <data_dir>/{accession}_metadata.json if
+   present, otherwise <data_dir>/metadata.json, and extracts PMIDs from
+   series_metadata.pmids (or resolves GSE from sample_metadata.gse).
 2. --pmid: fetch metadata for a specific PMID.
 3. --title: search PubMed by title to find the PMID, then fetch metadata.
 
@@ -17,7 +18,9 @@ from pathlib import Path
 
 from lancell.standardization import (
     fetch_geo_series,
+    fetch_publication,
     fetch_publication_metadata,
+    fetch_publication_text,
     search_pubmed_by_title,
 )
 
@@ -68,6 +71,18 @@ def _extract_pmids_from_metadata(metadata: dict) -> list[str]:
     return unique
 
 
+def _find_metadata_path(data_dir: Path) -> Path | None:
+    accession_metadata = sorted(data_dir.glob("*_metadata.json"))
+    if accession_metadata:
+        return accession_metadata[0]
+
+    metadata_path = data_dir / "metadata.json"
+    if metadata_path.exists():
+        return metadata_path
+
+    return None
+
+
 def write_publication_json(data_dir: str, pmid: str | None = None, title: str | None = None) -> Path:
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -80,17 +95,21 @@ def write_publication_json(data_dir: str, pmid: str | None = None, title: str | 
         assert resolved_pmid, f"No PubMed result found for title: {title}"
         print(f"Found PMID: {resolved_pmid}")
     else:
-        metadata_path = data_dir / "metadata.json"
-        assert metadata_path.exists(), f"No metadata.json found at {metadata_path}. Use --pmid or --title."
+        metadata_path = _find_metadata_path(data_dir)
+        assert metadata_path is not None, f"No metadata JSON found in {data_dir}. Use --pmid or --title."
         metadata = json.loads(metadata_path.read_text())
         pmids = _extract_pmids_from_metadata(metadata)
-        assert pmids, "No PMIDs found in metadata.json. Use --pmid or --title."
+        assert pmids, f"No PMIDs found in {metadata_path.name}. Use --pmid or --title."
         resolved_pmid = pmids[0]
         if len(pmids) > 1:
             print(f"Multiple PMIDs found: {pmids}. Using first: {resolved_pmid}")
 
     print(f"Fetching publication metadata for PMID {resolved_pmid}...")
     pub = fetch_publication_metadata(resolved_pmid)
+    publication = fetch_publication(str(resolved_pmid))
+    text_data = fetch_publication_text(publication.pmid, publication.pmc_id)
+    pub["authors"] = publication.authors
+    pub["text_source"] = text_data.source
 
     output_path = data_dir / "publication.json"
     output_path.write_text(json.dumps(pub, indent=2))

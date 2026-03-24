@@ -5,7 +5,7 @@ description: Use this skill to standardize genetic perturbation targets in dataf
 
 # Genetic Perturbation Resolver
 
-Resolve genetic perturbation targets and schema fields at the accession level: resolve `GeneticPerturbationSchema_raw.csv` → assign UIDs → write `GeneticPerturbationSchema_resolved.csv`.
+Resolve genetic perturbation targets and schema fields at the accession level: resolve `GeneticPerturbationSchema_raw.csv` → enrich missing schema fields from available sources → assign UIDs → write `GeneticPerturbationSchema_resolved.csv`.
 
 Handles three input types that may co-exist in a single dataset:
 
@@ -16,22 +16,50 @@ Handles three input types that may co-exist in a single dataset:
 ## Interface
 
 **Input:**
-- `GeneticPerturbationSchema_raw.csv` — consolidated perturbation data across all experiments, at the accession level. Enriched by preparer with supplementary data (guide library, etc.).
+- `GeneticPerturbationSchema_raw.csv` — consolidated perturbation data across all experiments, at the accession level. It may be sparse and does not need to be fully enriched by the preparer.
 - A user-specified target schema.
 - Experiment directories with per-experiment obs CSVs, the column linking cells to perturbations, and the feature space name.
+- Any supplementary files or file paths available for enrichment, such as guide libraries, reagent manifests, vendor sheets, or publication-derived tables.
 
 **Output:**
 
 *Accession-level (global foreign key table):*
 - `GeneticPerturbationSchema_resolved.csv` — all raw columns plus resolved columns, UIDs, `resolved` boolean. Full intermediate output for inspection and debugging.
 - `GeneticPerturbationSchema.csv` — validated against the target schema. Contains exactly the schema fields, no `resolved` column, no raw columns. Every row passes `schema_class.model_validate()`.
+- `resolver_reports/genetic-perturbation-resolver.md` — markdown report written in the working directory. Summarize enrichment sources used, outputs written, counts, unresolved items, and a field-by-field blank justification audit.
 
 *Per-experiment (obs-level fragment):*
 - `{feature_space}_fragment_perturbation_obs.csv` — one per experiment directory. Contains perturbation-related obs columns: `is_negative_control`, `negative_control_type`, `perturbation_uids`, `perturbation_types`, `perturbation_concentrations_um`, `perturbation_durations_hr`. The cell barcode column is preserved as the index for joining.
 
-**Column naming:** No `validated_` prefix. Schema field names directly.
+**Column naming:** No `validated_` prefix. Use schema field names directly.
 
-**Rule:** Save the CSV after adding each column to prevent losing work.
+## Ownership
+
+This resolver owns completion of the target perturbation schema. Do not assume the preparer has already filled dataset-specific fields.
+
+The resolver must:
+
+1. Inspect the target schema and determine every field that must be populated.
+2. Inspect the raw CSV, experiment directories, and any supplementary files or paths provided by the caller.
+3. Fill every schema field that can be derived from the available evidence.
+4. Leave a field blank only after attempting resolution and documenting why the value is unavailable or unjustified.
+
+The preparer may pass helpful context, but the resolver is responsible for the final content of `GeneticPerturbationSchema_resolved.csv` and `GeneticPerturbationSchema.csv`.
+
+## Reporting
+
+Each run must write a markdown report to `resolver_reports/` in the working directory.
+
+- Create the directory if it does not exist.
+- Default report path: `resolver_reports/genetic-perturbation-resolver.md`
+- Overwrite the report for the current run unless the caller asks for a different naming scheme.
+- Include:
+  - input file path(s)
+  - supplementary files inspected
+  - output file path(s)
+  - row counts and resolved/unresolved counts
+  - enrichment decisions and join keys used
+  - schema field completeness audit, including reasons for blanks
 
 ## Imports
 
@@ -55,13 +83,15 @@ from lancell.schema import make_uid
 
 ### `scripts/resolve_genes.py`
 
-Handles the general gene-name resolution workflow (A1–A5, A8): control detection, combinatorial splitting, method classification, gene resolution via `resolve_genes`, Ensembl ID cross-checking, UID assignment, and CSV output.
+Handles the standard gene-name workflow: optional reagent splitting, control detection, method classification, gene resolution via `resolve_genes`, Ensembl ID cross-checking, UID assignment, and CSV output.
 
 ```
 python .claude/skills/genetic-perturbation-resolver/scripts/resolve_genes.py \
     <input_csv> <gene_column> <method> \
     [--organism human] \
     [--ensembl-column ensembl_gene_id] \
+    [--split-column reagent_id] \
+    [--split-delimiter "|"] \
     [--output-dir <dir>]
 ```
 
@@ -72,11 +102,13 @@ python .claude/skills/genetic-perturbation-resolver/scripts/resolve_genes.py \
 | `method` | Perturbation method string (e.g. `CRISPRi`, `CRISPRko`, `siRNA`) |
 | `--organism` | Organism for gene resolution (default: `human`) |
 | `--ensembl-column` | Column with existing Ensembl IDs; mismatches are reported |
+| `--split-column` | Column to split into one reagent per row before resolution. If omitted, no row-splitting is performed. |
+| `--split-delimiter` | Delimiter for `--split-column` (default: `|`) |
 | `--output-dir` | Output directory (default: same as input) |
 
-The script writes `GeneticPerturbationSchema_resolved.csv` with these columns populated: `perturbation_type`, `intended_gene_name`, `intended_ensembl_gene_id`, `reagent_id` (from index), `uid`, `resolved`. It adds placeholder `None` columns for fields that require dataset-specific enrichment: `target_sequence_uid`, `target_start`, `target_end`, `target_strand`, `target_context`, `library_name`.
+The script writes `GeneticPerturbationSchema_resolved.csv` with these columns populated: `perturbation_type`, `intended_gene_name`, `intended_ensembl_gene_id`, `reagent_id` (from index), `uid`, `resolved`. It may leave placeholder `None` columns for fields that still require dataset-specific enrichment.
 
-**After running the script**, enrich dataset-specific fields as needed (coordinates from sgID parsing or BLAT, library metadata, target context). See A6–A7 below.
+**After running the script**, the resolver must continue enrichment until every target schema field is either populated or explicitly justified as blank. Placeholder `None` values are not a stopping point.
 
 ### `finalize_perturbations.py` — Schema validation and finalization (shared)
 
@@ -102,24 +134,68 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 
 ---
 
-## Critical Rule: One Perturbation Per Row
+## Core Constraints
 
-Each row in the output must represent **exactly one perturbation reagent** — one guide RNA, one siRNA, one target gene, etc. Never combine multiple reagents into a single row. If the input contains combined or paired entries (e.g., dual-guide pairs, combinatorial targets), split them into individual rows before resolution.
+- **One perturbation per row.** Each accession-level row must represent exactly one reagent.
+- **Controls are not perturbations.** Control labels map to `None` in perturbation target fields and drive `is_negative_control` at the obs level.
+- **Do not guess required guide-level fields.** If the schema requires `guide_sequence`, coordinates, strand, or `target_context` and the data is missing, stop and ask the user unless they explicitly approve nulls.
+- **Use schema field names directly.** Do not introduce `validated_` prefixes or ad hoc column names.
+- **Resolver owns enrichment.** If a field can be filled from supplementary files, raw identifiers, publication text, or deterministic parsing, do that work here rather than assuming the preparer already did it.
+- **Every blank needs a reason.** In the final report, enumerate any schema fields left blank and justify why they could not be filled safely.
 
 ## Resolution Workflow
 
+### A0. Inspect schema and enrichment sources first
+
+Before running any resolution step:
+
+1. Read the target `GeneticPerturbationSchema`.
+2. List its fields and identify which are already present in `GeneticPerturbationSchema_raw.csv`.
+3. Inspect any supplementary files or file paths provided by the caller, especially guide libraries and reagent manifests.
+4. Determine which fields require:
+   - direct pass-through from raw columns
+   - deterministic parsing from reagent identifiers
+   - lookup from supplementary files
+   - biological resolution via `resolve_genes`, `resolve_guide_sequences`, or `annotate_genomic_coordinates`
+5. Keep notes so the final report can justify any remaining blanks.
+
 ### A1–A5, A8: Gene resolution (use the script)
 
-For the standard gene-name workflow, run `resolve_genes.py` as above. The steps it performs are:
+For the standard gene-name workflow, run `resolve_genes.py` as above. Use `--split-column` when reagent identifiers are paired or pipe-delimited. In paired-guide screens, split on reagent IDs, not just gene names, because the gene column can stay constant across both guides.
 
 1. **Load & inspect** — reads the raw CSV, identifies columns
 2. **Control detection** — `detect_control_labels` on the gene column, plus numbered-prefix check
-3. **Combinatorial splitting** — `parse_combinatorial_perturbations` on a sample; splits and deduplicates if needed
+3. **Optional row splitting** — if a reagent column contains paired entries such as `guideA|guideB`, split that column first so the output becomes one reagent per row
 4. **Classify perturbation method** — `classify_perturbation_method` on the method string
-5. **Resolve genes** — `resolve_genes` on unique non-control targets; cross-checks Ensembl IDs if `--ensembl-column` given
+5. **Resolve genes** — `resolve_genes` on unique non-control targets; if `--ensembl-column` is present, report mismatches and let the resolver's current Ensembl IDs take precedence unless the dataset explicitly requires a pinned release
 6. **Build output** — maps results to schema fields, assigns UIDs, writes CSV
 
-### A6. Resolve by guide RNA sequence (if applicable)
+If you split rows first, expect the row count to increase. For dual-guide pairs it will usually double. If the accession spans multiple experiments, deduplicate on the reagent key after splitting so the accession-level FK table has one row per unique reagent.
+
+### A6. Perform resolver-owned enrichment for all remaining schema fields
+
+After the base gene-resolution script runs, inspect the partially resolved CSV and fill the remaining schema fields from the best available evidence source:
+
+- `guide_sequence`:
+  - Prefer a supplementary guide library or reagent manifest.
+  - Join on `reagent_id`, guide ID, or other dataset-specific reagent keys.
+  - If multiple possible joins exist, prefer the one that preserves one reagent per row and document the join key.
+- `library_name`:
+  - Prefer the library metadata file itself, then raw columns, then publication text if needed.
+- `target_start`, `target_end`, `target_strand`:
+  - Prefer explicit columns from a guide library or manifest.
+  - If absent, deterministically parse coordinates from reagent IDs when the identifier format encodes them.
+- `target_context`:
+  - Prefer explicit annotation from the library.
+  - Otherwise infer from `resolve_guide_sequences()` or `annotate_genomic_coordinates()`.
+  - For transcript-targeted CRISPRi screens, `promoter` is an acceptable fallback only when supported by the dataset design.
+- `target_sequence_uid`:
+  - Populate when the target sequence can be mapped unambiguously to a `ReferenceSequenceSchema` record already available to the workflow.
+  - Otherwise leave null and justify it in the report.
+
+Do not finalize while a schema field is still blank merely because the preparer omitted it. The resolver must inspect the available evidence itself.
+
+### A7. Resolve by guide RNA sequence (if applicable)
 
 ```python
 guide_col = "<guide_sequence_column>"
@@ -128,7 +204,9 @@ report = resolve_guide_sequences(unique_guides, organism="human")
 print(f"Resolved: {report.resolved}/{report.total}, Ambiguous: {report.ambiguous}")
 ```
 
-### A7. Resolve by genomic coordinates (if applicable)
+Deduplicate guide sequences before BLAT-backed resolution because guides are reused across many cells and BLAT is rate-limited. After inferring coordinates or target context, spot-check 3-5 guides with `resolve_guide_sequences()`. For ~20 bp CRISPR guides, low BLAT resolution rates are expected and are not by themselves a data quality problem.
+
+### A8. Resolve by genomic coordinates (if applicable)
 
 ```python
 coordinates = []
@@ -143,7 +221,20 @@ for _, row in raw_df[raw_df["<chr_col>"].notna()].iterrows():
 report = annotate_genomic_coordinates(coordinates, organism="human")
 ```
 
-### A9. Finalize against the target schema
+For transcript-targeted CRISPRi guides, use `target_context=promoter` unless the dataset provides stronger evidence for another context.
+
+### A9. Validate completeness before finalization
+
+Before finalizing:
+
+1. Compare the resolved CSV against the target schema field list.
+2. For each schema field, confirm one of:
+   - populated for all applicable rows
+   - intentionally null for control rows only
+   - partially or fully blank with a documented justification
+3. If a required field is blank and you have not yet inspected the obvious enrichment source for it, go back and do that work.
+
+### A10. Finalize against the target schema
 
 After resolution and any dataset-specific enrichment (A6/A7), run the finalize script:
 
@@ -155,6 +246,10 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 ```
 
 The script will error if any row fails schema validation.
+
+### A11. Write the markdown report
+
+After finalization and obs-fragment writing, write `resolver_reports/genetic-perturbation-resolver.md` in the working directory with the run summary and field-completeness audit.
 
 ---
 
@@ -169,7 +264,7 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 
 ## Obs-Level Fragment Workflow (B1–B4)
 
-After the global foreign key table is resolved and finalized (A1–A9), write per-experiment obs fragments that map each cell to its perturbation UIDs and control status.
+After the global foreign key table is resolved and finalized (A1–A10), write per-experiment obs fragments that map each cell to its perturbation UIDs and control status.
 
 The preparer provides:
 - A list of experiment directories (each containing `{feature_space}_raw_obs.csv`)
@@ -179,7 +274,7 @@ The preparer provides:
 
 ### B1. Load the resolved foreign key table
 
-Load `GeneticPerturbationSchema.csv` (the finalized table with UIDs). Build a lookup from reagent identifiers (e.g., `reagent_id`, `guide_sequence`, or `intended_gene_name`) to `uid` values.
+Load `GeneticPerturbationSchema.csv` (the finalized table with UIDs). Build a lookup from reagent identifiers such as `reagent_id`, `guide_sequence`, or `intended_gene_name` to `uid` values.
 
 ### B2. Map cells to perturbation UIDs
 
@@ -204,6 +299,8 @@ Use `detect_control_labels` and `is_control_label` on the perturbation column va
 - `negative_control_type`: the control label (e.g., `"non-targeting"`) if `is_negative_control` is True, else None
 - For control cells, `perturbation_uids` and `perturbation_types` should be None (controls are not perturbations)
 
+NaN or missing perturbation values do not imply control.
+
 ### B4. Write the fragment
 
 Write `{feature_space}_fragment_perturbation_obs.csv` in the experiment directory with columns:
@@ -219,22 +316,10 @@ Lists should be serialized as JSON strings so they survive CSV round-tripping.
 
 ---
 
-## Rules
+## Notes
 
-- **Accession-level resolution.** Resolves globally and assigns UIDs.
-- **No `validated_` prefix.** Output columns use schema field names directly.
-- **Assign UIDs via `make_uid()`.** Every unique perturbation gets a UID.
-- **`is_negative_control=True` ONLY for explicit controls.** NaN/None perturbation does NOT imply control.
-- **Combinatorial screens:** A cell is only a control if **all** perturbations are control type.
-- **Control labels map to None in perturbation columns.** They inform `is_negative_control`, not the gene target.
-- **Watch for multiple control label variants.** Inspect unique values for numbered controls.
-- **Resolve each combinatorial part independently.** Split targets and resolve each as its own gene symbol.
-- **Deduplicate guide sequences before BLAT.** Guides are shared across many cells; BLAT is rate-limited (~1 req/s).
-- **BLAT spot-check inferred metadata.** After gene resolution, run `resolve_guide_sequences` on 3–5 guides to verify that inferred metadata (e.g., `target_context`, coordinates, strand) matches what BLAT returns. Dataset descriptions can be misleading — e.g., a "promoter-targeting" CRISPRi screen may have guides that actually land in `5_UTR` per Ensembl annotation. **Caveat:** BLAT is unreliable for 20bp guide sequences (most CRISPR screens). Low resolution rates for short guides are expected and not a data quality concern.
-- **Ensembl ID mismatches.** When cross-checking Ensembl IDs, the resolver's current IDs take precedence over the raw data's IDs unless the dataset explicitly requires a specific Ensembl version.
-- **`GuideRnaResolution` attributes.** The result objects from `resolve_guide_sequences` use `intended_gene_name`, `intended_ensembl_gene_id`, and `target_context` (see `lancell.standardization.types.GuideRnaResolution`).
-- **Save after each column** to prevent losing work on interruption.
-- **Column names follow the user's schema.** Do not assume specific column names — use whatever the user's target schema specifies.
-- **Two output files.** `GeneticPerturbationSchema_resolved.csv` retains `resolved` and raw columns for inspection. `GeneticPerturbationSchema.csv` is schema-validated and production-ready.
-- **Ask before guessing.** If the delimiter or control labels are ambiguous, ask the user.
-- **Do not silently leave schema fields null.** If the target schema requires guide-level information (e.g., `guide_sequence`, `target_start`, `target_end`, `target_strand`, `target_context`) and the input dataframe does not contain it and no supplementary file (guide library, etc.) has been provided, **stop and ask the user** before proceeding. Do not fill these columns with nulls and move on — the user may have a file they forgot to mention, or the prompt may need updating. Only proceed with nulls after explicit user approval.
+- Save the accession-level CSV after each added column if the environment is fragile or the table is expensive to rebuild.
+- `GuideRnaResolution` objects expose `intended_gene_name`, `intended_ensembl_gene_id`, and `target_context`.
+- The skill produces two accession-level files: `GeneticPerturbationSchema_resolved.csv` for inspection and `GeneticPerturbationSchema.csv` for schema-validated output.
+- If delimiters or control labels are ambiguous, ask the user instead of guessing.
+- Final reports must include a short field-completeness audit for the target schema. For each schema field, state the source used to populate it or the reason it remains blank.
