@@ -9,20 +9,21 @@ description: Use this skill to write scripts for ingesting GEO datasets into a l
 
 This skill writes per-accession ingestion scripts that take the prepared and standardized outputs from `geo-data-preparer` and ingest them into a lancell `RaggedAtlas`. The workflow covers:
 
-1. **Validating** obs DataFrames against the schema (stripping non-schema columns, parsing JSON lists, coercing types)
-2. **Creating or opening** a `RaggedAtlas` at the user-provided path
-3. **Populating foreign key tables** (perturbation registries, publications, donors, etc.)
-4. **Registering features** in the atlas feature registries
-5. **Ingesting data** (zarr writes + validated obs) via `add_anndata_batch`
+1. **Assembling** resolver fragment CSVs into standardized obs/var CSVs
+2. **Validating** obs DataFrames against the schema (stripping non-schema columns, parsing JSON lists, coercing types)
+3. **Creating or opening** a `RaggedAtlas` at the user-provided path
+4. **Populating foreign key tables** (perturbation registries, publications, donors, etc.)
+5. **Registering features** in the atlas feature registries
+6. **Ingesting data** (zarr writes + validated obs) via `add_anndata_batch`
 
-It does NOT handle downloading, metadata extraction, resolver delegation, or fragment assembly — those are handled by `geo-data-preparer`.
+It does NOT handle downloading, metadata extraction, or resolver delegation — those are handled by `geo-data-preparer`.
 
 ## Prerequisites
 
 This skill consumes outputs from the `geo-data-preparer` skill. Before starting, you need:
 
-- **Standardized CSVs** per experiment: `{fs}_standardized_obs.csv`, `{fs}_standardized_var.csv`
-- **Finalized global tables**: `{SchemaClassName}.csv` (e.g., `GenomicFeatureSchema.csv`, `GeneticPerturbationSchema.csv`) — these are the schema-validated outputs from the resolvers, NOT the `_resolved.csv` files
+- **Fragment CSVs** per experiment: `{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv` — produced by the preparer and its resolver subagents
+- **Finalized global tables**: `{SchemaClassName}.parquet` (e.g., `GenomicFeatureSchema.parquet`, `GeneticPerturbationSchema.parquet`) — these are the type-coerced parquet outputs from the resolvers, NOT the `_resolved.csv` files
 - **Schema file path** — the Python file with `LancellBaseSchema`, `FeatureBaseSchema`, `DatasetRecord`, and foreign key schema classes
 - **Atlas path** — directory for the atlas (new or existing), containing `lance_db/` and `zarr_store/`
 - **Data files** — the h5ad, mtx bundles, or other matrix files for each experiment
@@ -35,11 +36,18 @@ Run these via Bash. All paths are relative to this skill directory.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
-| `scripts/validate_obs.py` | `python scripts/validate_obs.py <standardized_obs_csv> <output_csv> <schema_module> <schema_class> [--column KEY=VALUE ...]` | Validate standardized obs against schema, strip non-schema columns, parse JSON lists, coerce types |
+| `scripts/assemble_fragments.py` | `python scripts/assemble_fragments.py <experiment_dir> [--feature-spaces fs1 fs2 ...] [--schema path/to/schema.py]` | Merge resolver fragment CSVs into final `{fs}_standardized_obs.csv` and `{fs}_standardized_var.csv` |
+| `scripts/validate_obs.py` | `python scripts/validate_obs.py <standardized_obs_csv> <output_parquet> <schema_module> <schema_class> [--column KEY=VALUE ...]` | Validate standardized obs against schema, strip non-schema columns, coerce types, write parquet |
 
-The `--column KEY=VALUE` flag adds columns: if VALUE matches an existing column name, copies that column; otherwise uses VALUE as a constant. Useful for adding fields not in the standardized CSV.
+**`assemble_fragments.py`** merges all `{fs}_fragment_*_obs.csv` files column-wise into a single standardized obs CSV. It handles:
+- Preparer vs resolver fragment priority (resolver columns override preparer columns when both provide the same field)
+- The `|` convention for multi-source columns (e.g., `perturbation_uids|GeneticPerturbationResolver`) — merged using type-aware rules derived from the schema
+- `_resolved` column merging (AND across all resolver-specific resolved flags)
+- `--schema` is required when fragments use the `|` convention, so the script can determine merge rules by field type (list → concatenate, bool → AND, str → pipe-join)
 
-Note: var validation is already handled by resolvers during preparation (e.g., `finalize_features.py` in gene-resolver). The curator consumes finalized var CSVs directly.
+**`validate_obs.py`**: The `--column KEY=VALUE` flag adds columns: if VALUE matches an existing column name, copies that column; if VALUE is `None` or `null` (case-insensitive), sets actual Python None; otherwise uses VALUE as a string constant. Use this to fill schema fields that are not present in the standardized CSV — e.g., fields that don't apply to this dataset (`--column cell_type=None --column tissue=None`) or fields with a known constant value (`--column days_in_vitro=3.0`).
+
+Note: var/FK table finalization is already handled by resolvers during preparation (e.g., `finalize_features.py` in gene-resolver). The curator consumes finalized parquet files directly — types are preserved, no re-validation needed.
 
 ## Workflow
 
@@ -47,38 +55,47 @@ Note: var validation is already handled by resolvers during preparation (e.g., `
 
 Check that all expected files exist before writing any ingestion code:
 
-- Per-experiment standardized CSVs: `{experiment_dir}/{fs}_standardized_obs.csv` and `{fs}_standardized_var.csv`
-- Global finalized CSVs at accession level: `{SchemaClassName}.csv` for each feature registry and foreign key schema used
+- Per-experiment fragment CSVs: `{experiment_dir}/{fs}_fragment_*_obs.csv` and `{fs}_raw_obs.csv`, `{fs}_raw_var.csv`
+- Global finalized parquets at accession level: `{SchemaClassName}.parquet` for each feature registry and foreign key schema used
 - Data files (h5ad, etc.) for each experiment
 - `metadata.json` and `publication.json` at the accession level
 
 Read `metadata.json` to extract series/sample metadata needed for `DatasetRecord` fields.
 
-### 2. Validate obs DataFrames
+### 2. Assemble fragment CSVs
+
+For each experiment directory, run `assemble_fragments.py` to merge the resolver fragment CSVs into standardized obs/var CSVs:
+
+```
+python scripts/assemble_fragments.py <experiment_dir> --schema <schema_file>
+```
+
+This produces `{fs}_standardized_obs.csv` and `{fs}_standardized_var.csv` in each experiment directory. Feature spaces are auto-detected from existing `{fs}_raw_var.csv` files.
+
+### 3. Validate obs DataFrames
 
 For each experiment and feature space, run `validate_obs.py`:
 
 ```
 python scripts/validate_obs.py \
     <experiment_dir>/<fs>_standardized_obs.csv \
-    <experiment_dir>/<fs>_validated_obs.csv \
+    <experiment_dir>/<fs>_validated_obs.parquet \
     <schema_module> <obs_schema_class> \
     [--column KEY=VALUE ...]
 ```
 
 This script:
 - Loads the standardized obs CSV
-- Identifies validatable fields from the schema (excludes ZarrPointer fields and auto-managed fields like `perturbation_search_string`)
-- Parses JSON-encoded list columns (e.g., `perturbation_uids`, `perturbation_types`)
-- Coerces boolean columns from string "True"/"False" to actual bool
-- Fills missing nullable fields with None
+- Applies `--column` defaults for missing fields (e.g., `--column cell_type=None`)
+- Identifies schema fields, excluding auto-managed fields (uid, dataset_uid, ZarrPointers, perturbation_search_string)
+- Fills missing nullable fields with None; errors on missing required non-nullable fields
 - Drops columns not in the schema
-- Validates every row via Pydantic `model_validate()`
-- Writes the validated CSV
+- Coerces column types: JSON strings → Python lists, int/float/bool/str casting
+- Writes to **parquet** (not CSV) to preserve types and null semantics
 
-Fix any validation errors before proceeding to ingestion.
+The ingestion script reads the parquet directly — no further type coercion needed.
 
-### 3. Create or open the atlas
+### 4. Create or open the atlas
 
 Read the schema file to identify:
 - The **obs schema** (`LancellBaseSchema` subclass) — e.g., `CellIndex`
@@ -101,7 +118,7 @@ atlas = RaggedAtlas.create(
     db_uri=db_uri,
     cell_table_name="cells",
     cell_schema=CellIndex,
-    dataset_table_name="_datasets",
+    dataset_table_name="datasets",
     dataset_schema=DatasetSchema,
     store=store,
     registry_schemas={
@@ -125,7 +142,9 @@ atlas = RaggedAtlas.open(
 
 When opening an existing atlas, you may need to create new registry tables if this dataset introduces a feature space the atlas doesn't already have.
 
-### 4. Create foreign key tables
+### 5. Create foreign key tables
+
+**Important:** Create publications first, since `DatasetSchema.publication_uid` references the publication record's UID. Save the generated `publication_uid` for use in step 7.
 
 For each foreign key schema relevant to this dataset:
 
@@ -142,17 +161,11 @@ else:
 pub_table.add(pa.Table.from_pylist([pub_record.model_dump()], schema=PublicationSchema.to_arrow_schema()))
 ```
 
-**Perturbation / other foreign key tables** — from finalized CSVs:
+**Perturbation / other foreign key tables** — from finalized parquets:
 
 ```python
-# Read the finalized CSV (e.g., GeneticPerturbationSchema.csv)
-fk_df = pd.read_csv(accession_dir / "GeneticPerturbationSchema.csv")
-
-# Parse each row into the schema model
-records = []
-for _, row in fk_df.iterrows():
-    row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
-    records.append(SchemaClass(**row_dict))
+# Read the finalized parquet (types are already correct)
+fk_df = pd.read_parquet(accession_dir / "GeneticPerturbationSchema.parquet")
 
 # Create or open table
 table_name = "genetic_perturbations"  # use a descriptive table name
@@ -160,10 +173,7 @@ if table_name not in db.table_names():
     table = db.create_table(table_name, schema=SchemaClass.to_arrow_schema())
 else:
     table = db.open_table(table_name)
-table.add(pa.Table.from_pylist(
-    [r.model_dump() for r in records],
-    schema=SchemaClass.to_arrow_schema(),
-))
+table.add(pa.Table.from_pandas(fk_df, schema=SchemaClass.to_arrow_schema()))
 ```
 
 Foreign key table naming convention:
@@ -174,22 +184,21 @@ Foreign key table naming convention:
 - `biologic_perturbations` for `BiologicPerturbationSchema`
 - `donors` for `DonorSchema`
 
-### 5. Register features
+### 6. Register features
 
 For each feature space in this dataset:
 
 ```python
-# Read the finalized feature CSV (NOT _resolved.csv)
-feature_df = pd.read_csv(accession_dir / "GenomicFeatureSchema.csv")
+# Read the finalized feature parquet (types are already correct)
+feature_df = pd.read_parquet(accession_dir / "GenomicFeatureSchema.parquet")
 
-# Build schema records
+# Build schema records — parquet preserves types, so no NaN handling needed
 records = []
 var_index_to_uid = {}
 for _, row in feature_df.iterrows():
-    row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
-    record = GenomicFeatureSchema(**row_dict)
+    record = GenomicFeatureSchema(**row.to_dict())
     records.append(record)
-    # Map var_index to uid for use in step 6
+    # Map var_index to uid for use in step 7
     var_index_to_uid[row["var_index"]] = record.uid
 
 # Register with the atlas
@@ -197,9 +206,11 @@ n_new = atlas.register_features("gene_expression", records)
 print(f"Registered {n_new} new features ({len(records)} total)")
 ```
 
-The `var_index` column links features back to the per-experiment var DataFrames. The `var_index_to_uid` mapping is needed in step 6 to set `global_feature_uid` on `adata.var`.
+The feature identifier column (e.g., `ensembl_gene_id` for genomic features) links features back to the per-experiment h5ad var index. The mapping to `uid` is needed in step 7 to set `global_feature_uid` on `adata.var`.
 
-### 6. Ingest per-experiment data
+**Important:** Before ingestion, verify that every var index value in each h5ad has a matching entry in the feature registry. The gene resolver's union/dedup step can occasionally drop features that exist in only one experiment. If features are missing, add them to the registry CSV before registering.
+
+### 7. Ingest per-experiment data
 
 For each experiment:
 
@@ -212,31 +223,24 @@ adata = ad.read_h5ad(h5ad_path, backed="r")
 if limit > 0:
     adata = adata[:limit].to_memory()
 
-# Load validated obs (from step 2)
-obs = pd.read_csv(validated_obs_path, index_col=0)
+# Load validated obs (parquet preserves types — no JSON parsing needed)
+obs = pd.read_parquet(validated_obs_parquet_path)
 if limit > 0:
     obs = obs.iloc[:limit]
-
-# Parse JSON list columns back to actual lists for LanceDB
-list_cols = ["perturbation_uids", "perturbation_types",
-             "perturbation_concentrations_um", "perturbation_durations_hr",
-             "perturbation_additional_metadata"]
-for col in list_cols:
-    if col in obs.columns:
-        obs[col] = obs[col].apply(
-            lambda v: json.loads(v) if isinstance(v, str) else v
-        )
-
-# Set obs on adata
 adata.obs = obs
 
-# Set global_feature_uid on var using the mapping from step 5
+# Set global_feature_uid on var using the mapping from step 6
 gene_ids = list(adata.var.index)
 adata.var["global_feature_uid"] = [var_index_to_uid[gid] for gid in gene_ids]
 
-# Create dataset record
+# Create dataset record — zarr_group MUST be the auto-generated dataset uid.
+# Do NOT use accession IDs, experiment names, or feature spaces as zarr_group.
+# All dataset metadata (accession, organism, cell_line, etc.) belongs in the
+# DatasetRecord fields — that is what the datasets table is for.
+dataset_uid = make_uid()
 dataset_record = DatasetSchema(
-    zarr_group=f"{entry_key}/{feature_space}",
+    uid=dataset_uid,
+    zarr_group=dataset_uid,
     feature_space=feature_space,
     n_cells=adata.n_obs,
     publication_uid=publication_uid,
@@ -258,7 +262,7 @@ n_ingested = add_anndata_batch(
 print(f"Ingested {n_ingested:,} cells")
 ```
 
-### 7. Print summary
+### 8. Print summary
 
 Print a summary of what was ingested:
 
@@ -280,11 +284,11 @@ Standardized obs CSVs may contain list columns that reference foreign key tables
 - `perturbation_types` — JSON-encoded list determining which FK table each UID references (e.g., `["genetic_perturbation", "small_molecule"]`)
 - `perturbation_concentrations_um`, `perturbation_durations_hr`, `perturbation_additional_metadata` — parallel lists
 
-These columns were assembled by `assemble_fragments.py` during preparation from `|`-delimited fragment columns. By the time they reach the curator, they are already merged into the final schema field names with JSON-encoded values.
+These columns are assembled by `assemble_fragments.py` (step 2) from `|`-delimited fragment columns. After assembly, they are JSON-encoded strings in the standardized CSV.
 
 **Key rules:**
 - Parse JSON strings to actual Python lists before setting on `adata.obs` (LanceDB stores native lists, not JSON strings)
-- `perturbation_search_string` is auto-generated by the `CellIndex` model validator — do NOT set it manually; it will be computed when records are inserted into LanceDB
+- `perturbation_search_string` is auto-computed by `add_anndata_batch` via the schema's `compute_auto_fields()` classmethod — do NOT set it manually
 - All perturbation list columns must have matching lengths per row
 - For datasets with multiple perturbation types, UIDs from different FK tables are interleaved in the same list
 
@@ -310,15 +314,20 @@ from lancell.schema import make_uid, DatasetRecord, FeatureBaseSchema, LancellBa
 
 ```
 /tmp/geo_agent/GSE123456/
-├── GenomicFeatureSchema.csv                   # finalized feature registry
-├── GeneticPerturbationSchema.csv              # finalized FK table (if applicable)
+├── GenomicFeatureSchema.parquet                      # finalized feature registry (types preserved)
+├── GeneticPerturbationSchema.parquet                 # finalized FK table (if applicable)
 ├── publication.json
 ├── metadata.json
 ├── HepG2/
 │   ├── data.h5ad
-│   ├── gene_expression_standardized_obs.csv
-│   ├── gene_expression_standardized_var.csv
-│   ├── gene_expression_validated_obs.csv      # output of validate_obs.py
+│   ├── gene_expression_raw_obs.csv                   # from preparer
+│   ├── gene_expression_raw_var.csv                   # from preparer
+│   ├── gene_expression_fragment_preparer_obs.csv     # from preparer
+│   ├── gene_expression_fragment_ontology_obs.csv     # from ontology resolver
+│   ├── gene_expression_fragment_perturbation_obs.csv # from perturbation resolver
+│   ├── gene_expression_standardized_obs.csv          # output of assemble_fragments.py
+│   ├── gene_expression_standardized_var.csv          # output of assemble_fragments.py
+│   ├── gene_expression_validated_obs.parquet         # output of validate_obs.py
 ├── Jurkat/
 │   └── ...
 ```

@@ -234,32 +234,6 @@ def _merge_str_columns(df: pd.DataFrame, cols: list[str]) -> pd.Series:
     return df[cols].apply(join_strs, axis=1)
 
 
-def generate_perturbation_search_string(assembled: pd.DataFrame) -> pd.DataFrame:
-    """Generate perturbation_search_string from perturbation_uids and perturbation_types.
-
-    Format: "type1:uid1,type2:uid2,..." — enables efficient text search over perturbations.
-    Only generated if both columns exist in the assembled DataFrame.
-    """
-    if "perturbation_uids" not in assembled.columns or "perturbation_types" not in assembled.columns:
-        return assembled
-
-    def build_search_string(row):
-        uids_val = row["perturbation_uids"]
-        types_val = row["perturbation_types"]
-        if pd.isna(uids_val) or pd.isna(types_val):
-            return None
-        uids = json.loads(uids_val) if isinstance(uids_val, str) else uids_val
-        types = json.loads(types_val) if isinstance(types_val, str) else types_val
-        if not uids or not types:
-            return None
-        parts = [f"{t}:{u}" for t, u in zip(types, uids, strict=False)]
-        return ",".join(parts)
-
-    assembled["perturbation_search_string"] = assembled.apply(build_search_string, axis=1)
-    print("  generated perturbation_search_string")
-    return assembled
-
-
 def coerce_string_dtypes(assembled: pd.DataFrame) -> pd.DataFrame:
     """Coerce object columns: replace NaN with None for proper null semantics."""
     for col in assembled.columns:
@@ -309,9 +283,6 @@ def assemble_obs(experiment_dir: Path, feature_space: str, schema_class: type | 
 
     # Merge resolved columns
     assembled = merge_resolved_columns(assembled)
-
-    # Generate perturbation_search_string (derived field)
-    assembled = generate_perturbation_search_string(assembled)
 
     # Coerce string dtypes (NaN → None)
     assembled = coerce_string_dtypes(assembled)

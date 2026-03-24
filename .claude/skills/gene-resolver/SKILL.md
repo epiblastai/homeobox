@@ -17,7 +17,7 @@ For genetic perturbation target resolution (obs-level: control detection, combin
 
 **Output (two files):**
 - `GenomicFeatureSchema_resolved.csv` — all raw columns plus resolved columns (`gene_name`, `ensembl_gene_id`, `organism`, `resolved`, `uid`). This is the full intermediate output for inspection and debugging.
-- `GenomicFeatureSchema.csv` — validated against the target schema. Contains exactly the schema fields, no `resolved` column, no raw columns. Every row passes `schema_class.model_validate()`.
+- `GenomicFeatureSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types (nullable ints, lists, bools) so the file can be loaded directly into LanceDB.
 - `resolver_reports/gene-resolver.md` — markdown report written in the working directory. Summarize inputs, output paths, resolved/unresolved counts, notable ambiguities, and any fields left blank in the finalized schema output.
 
 ## Reporting
@@ -63,24 +63,26 @@ python .claude/skills/gene-resolver/scripts/resolve_genes.py \
 | `resolved` | Boolean — `True` if resolution succeeded |
 | `uid` | Unique ID via `make_uid()` |
 
-### `finalize_features.py` — Schema validation and finalization
+### `finalize_features.py` — Schema finalization with type coercion
 
-Takes the resolved CSV, adds any schema-specific columns, drops everything not in the schema (including `resolved`), validates every row against the Pydantic schema, and writes the final CSV.
+Takes the resolved CSV, adds any schema-specific columns, drops everything not in the schema (including `resolved`), coerces types (JSON lists, bools, numerics), and writes parquet with correct types so the output can be loaded directly into LanceDB without further manipulation.
+
+Does NOT do per-row pydantic validation — type coercion + parquet schema enforcement is sufficient. Type errors surface at LanceDB insertion time.
 
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
-    <resolved_csv> <output_csv> <schema_module> <schema_class> \
+    <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
 
-- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. Otherwise uses VALUE as a constant for all rows.
+- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. If VALUE is `None` or `null` (case-insensitive), sets actual Python None. Otherwise uses VALUE as a constant for all rows.
 
 Example:
 
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/GenomicFeatureSchema_resolved.csv \
-    /tmp/GSE123/GenomicFeatureSchema.csv \
+    /tmp/GSE123/GenomicFeatureSchema.parquet \
     lancell_examples.multimodal_perturbation_atlas.schema \
     GenomicFeatureSchema \
     --column feature_type=gene \
@@ -108,13 +110,13 @@ Read the target schema to determine which columns need to be added, then run:
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /path/to/GenomicFeatureSchema_resolved.csv \
-    /path/to/GenomicFeatureSchema.csv \
+    /path/to/GenomicFeatureSchema.parquet \
     <schema_module> <schema_class> \
     --column feature_type=gene \
     --column feature_id=ensembl_gene_id
 ```
 
-The script will error if any row fails schema validation.
+The script coerces types and writes parquet — the output is ready for direct LanceDB ingestion.
 
 ### 3. Write the markdown report
 
@@ -148,4 +150,4 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 - **Output columns may overwrite raw columns.** In particular, resolved `organism` replaces any raw `organism` column.
 - **Index collisions are renamed.** If the input index name collides with an output column such as `gene_name`, the script renames the index to `raw_<name>` before writing.
 - **Column names follow the user's schema.** Do not assume specific column names — use whatever the user's target schema specifies.
-- **Two output files.** `GenomicFeatureSchema_resolved.csv` retains `resolved` for inspection. `GenomicFeatureSchema.csv` is schema-validated and production-ready.
+- **Two output files.** `GenomicFeatureSchema_resolved.csv` retains `resolved` for inspection. `GenomicFeatureSchema.parquet` is type-coerced and production-ready for direct LanceDB ingestion.

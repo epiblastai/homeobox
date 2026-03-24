@@ -25,7 +25,7 @@ Handles three input types that may co-exist in a single dataset:
 
 *Accession-level (global foreign key table):*
 - `GeneticPerturbationSchema_resolved.csv` — all raw columns plus resolved columns, UIDs, `resolved` boolean. Full intermediate output for inspection and debugging.
-- `GeneticPerturbationSchema.csv` — validated against the target schema. Contains exactly the schema fields, no `resolved` column, no raw columns. Every row passes `schema_class.model_validate()`.
+- `GeneticPerturbationSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types so the file can be loaded directly into LanceDB.
 - `resolver_reports/genetic-perturbation-resolver.md` — markdown report written in the working directory. Summarize enrichment sources used, outputs written, counts, unresolved items, and a field-by-field blank justification audit.
 
 *Per-experiment (obs-level fragment):*
@@ -44,7 +44,7 @@ The resolver must:
 3. Fill every schema field that can be derived from the available evidence.
 4. Leave a field blank only after attempting resolution and documenting why the value is unavailable or unjustified.
 
-The preparer may pass helpful context, but the resolver is responsible for the final content of `GeneticPerturbationSchema_resolved.csv` and `GeneticPerturbationSchema.csv`.
+The preparer may pass helpful context, but the resolver is responsible for the final content of `GeneticPerturbationSchema_resolved.csv` and `GeneticPerturbationSchema.parquet`.
 
 ## Reporting
 
@@ -110,24 +110,24 @@ The script writes `GeneticPerturbationSchema_resolved.csv` with these columns po
 
 **After running the script**, the resolver must continue enrichment until every target schema field is either populated or explicitly justified as blank. Placeholder `None` values are not a stopping point.
 
-### `finalize_perturbations.py` — Schema validation and finalization (shared)
+### `finalize_perturbations.py` — Schema finalization with type coercion (shared)
 
-Uses the shared `gene-resolver/scripts/finalize_features.py` script. Takes the resolved CSV, drops everything not in the schema (including `resolved` and raw columns), validates every row against the Pydantic schema, and writes the final CSV.
+Uses the shared `gene-resolver/scripts/finalize_features.py` script. Takes the resolved CSV, drops everything not in the schema (including `resolved` and raw columns), coerces types, and writes parquet with correct types for direct LanceDB ingestion.
 
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
-    <resolved_csv> <output_csv> <schema_module> <schema_class> \
+    <resolved_csv> <output_parquet> <schema_module> <schema_class> \
     [--column KEY=VALUE ...]
 ```
 
-- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. Otherwise uses VALUE as a constant for all rows.
+- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. If VALUE is `None` or `null` (case-insensitive), sets actual Python None. Otherwise uses VALUE as a constant for all rows.
 
 Example:
 
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/GeneticPerturbationSchema_resolved.csv \
-    /tmp/GSE123/GeneticPerturbationSchema.csv \
+    /tmp/GSE123/GeneticPerturbationSchema.parquet \
     lancell_examples.multimodal_perturbation_atlas.schema \
     GeneticPerturbationSchema
 ```
@@ -241,11 +241,11 @@ After resolution and any dataset-specific enrichment (A6/A7), run the finalize s
 ```bash
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /path/to/GeneticPerturbationSchema_resolved.csv \
-    /path/to/GeneticPerturbationSchema.csv \
+    /path/to/GeneticPerturbationSchema.parquet \
     <schema_module> <schema_class>
 ```
 
-The script will error if any row fails schema validation.
+The script coerces types and writes parquet — the output is ready for direct LanceDB ingestion.
 
 ### A11. Write the markdown report
 
@@ -274,7 +274,7 @@ The preparer provides:
 
 ### B1. Load the resolved foreign key table
 
-Load `GeneticPerturbationSchema.csv` (the finalized table with UIDs). Build a lookup from reagent identifiers such as `reagent_id`, `guide_sequence`, or `intended_gene_name` to `uid` values.
+Load `GeneticPerturbationSchema.parquet` (the finalized table with UIDs). Build a lookup from reagent identifiers such as `reagent_id`, `guide_sequence`, or `intended_gene_name` to `uid` values.
 
 ### B2. Map cells to perturbation UIDs
 
@@ -320,6 +320,6 @@ Lists should be serialized as JSON strings so they survive CSV round-tripping.
 
 - Save the accession-level CSV after each added column if the environment is fragile or the table is expensive to rebuild.
 - `GuideRnaResolution` objects expose `intended_gene_name`, `intended_ensembl_gene_id`, and `target_context`.
-- The skill produces two accession-level files: `GeneticPerturbationSchema_resolved.csv` for inspection and `GeneticPerturbationSchema.csv` for schema-validated output.
+- The skill produces two accession-level files: `GeneticPerturbationSchema_resolved.csv` for inspection and `GeneticPerturbationSchema.parquet` for type-coerced, LanceDB-ready output.
 - If delimiters or control labels are ambiguous, ask the user instead of guessing.
 - Final reports must include a short field-completeness audit for the target schema. For each schema field, state the source used to populate it or the reason it remains blank.

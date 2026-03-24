@@ -174,19 +174,15 @@ Agent tool call:
 
 Avoid giving the resolver skill any instructions about how to resolve the data. It already knows the correct procedure, such instructions in your prompt might contradict the skill.
 
-**For the genetic-perturbation-resolver specifically**, also provide the obs-level mapping context so it can write perturbation obs fragments (see B1–B4 in the resolver skill):
+**For the genetic-perturbation-resolver specifically**, also provide experiment subdirectories so it can write perturbation obs fragments (see B1–B4 in the resolver skill):
 
 ```
     Additional context for obs-level fragment writing:
     - Experiment directories: [list of experiment subdirectory paths]
-    - Perturbation column in obs: <column_name> (e.g., "sgID_AB")
     - Feature space: <feature_space> (e.g., "gene_expression")
-    - Delimiter for multi-guide: <delimiter> (e.g., "|" for pipe-separated dual guides)
-    - Dose column: <column_name or None>
-    - Duration column: <column_name or None>
 ```
 
-All resolvers can run in parallel.
+All resolvers can run in parallel, except for `publication-resolver` which should have been run previously.
 
 **Note:** The ontology resolver operates per-experiment (writing `{fs}_fragment_ontology_obs.csv` directly in each experiment directory), unlike other resolvers which write global accession-level tables.
 
@@ -206,10 +202,10 @@ The preparer is now complete. Hand off to the `geo-data-curator` skill for assem
 /tmp/geo_agent/GSE264667/
 ├── GenomicFeatureSchema_raw.csv                        # resolver input
 ├── GenomicFeatureSchema_resolved.csv                   # resolver intermediate (with UIDs + raw columns)
-├── GenomicFeatureSchema.csv                            # finalized, schema-validated
+├── GenomicFeatureSchema.parquet                        # finalized, type-coerced parquet
 ├── GeneticPerturbationSchema_raw.csv                   # resolver input
 ├── GeneticPerturbationSchema_resolved.csv              # resolver intermediate (with UIDs + raw columns)
-├── GeneticPerturbationSchema.csv                       # finalized, schema-validated
+├── GeneticPerturbationSchema.parquet                   # finalized, type-coerced parquet
 ├── publication.json
 ├── GSE264667_metadata.json
 ├── HepG2/
