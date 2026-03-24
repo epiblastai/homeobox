@@ -5,10 +5,7 @@ description: Use this skill to standardize genetic perturbation targets in dataf
 
 # Genetic Perturbation Resolver
 
-Resolve genetic perturbation targets and schema fields. Operates in two phases:
-
-- **Phase A** (accession-level): Resolve `GeneticPerturbation_raw.csv` → assign UIDs → write `GeneticPerturbation_resolved.csv`
-- **Phase B** (per-experiment): Write obs fragment with perturbation list columns using the `|` convention
+Resolve genetic perturbation targets and schema fields at the accession level: resolve `GeneticPerturbationSchema_raw.csv` → assign UIDs → write `GeneticPerturbationSchema_resolved.csv`.
 
 Handles three input types that may co-exist in a single dataset:
 
@@ -18,24 +15,19 @@ Handles three input types that may co-exist in a single dataset:
 
 ## Interface
 
-**Phase A Input:**
-- `GeneticPerturbation_raw.csv` — consolidated perturbation data across all experiments, at the accession level. Enriched by preparer with supplementary data (guide library, etc.).
+**Input:**
+- `GeneticPerturbationSchema_raw.csv` — consolidated perturbation data across all experiments, at the accession level. Enriched by preparer with supplementary data (guide library, etc.).
 - A user-specified target schema.
+- Experiment directories with per-experiment obs CSVs, the column linking cells to perturbations, and the feature space name.
 
-**Phase A Output:**
-- `GeneticPerturbation_resolved.csv` — with resolution columns, UIDs assigned via `make_uid()`, `resolved` boolean.
+**Output:**
 
-**Phase B Input:**
-- Per-experiment raw obs CSV (`{fs}_raw_obs.csv`) — **read-only**
-- `GeneticPerturbation_resolved.csv` from Phase A (for UID lookup)
+*Accession-level (global foreign key table):*
+- `GeneticPerturbationSchema_resolved.csv` — all raw columns plus resolved columns, UIDs, `resolved` boolean. Full intermediate output for inspection and debugging.
+- `GeneticPerturbationSchema.csv` — validated against the target schema. Contains exactly the schema fields, no `resolved` column, no raw columns. Every row passes `schema_class.model_validate()`.
 
-**Phase B Output:**
-- Per-experiment obs fragment (`{fs}_fragment_genetic_perturbation_obs.csv`) with `|` convention columns:
-  - `perturbation_uids|GeneticPerturbation` — JSON list of UIDs
-  - `perturbation_types|GeneticPerturbation` — JSON list of perturbation type strings
-  - `perturbation_concentrations_um|GeneticPerturbation` — JSON list of floats (-1.0 for genetic)
-  - `is_negative_control|GeneticPerturbation` — boolean
-  - `negative_control_type|GeneticPerturbation` — string or None
+*Per-experiment (obs-level fragment):*
+- `{feature_space}_fragment_perturbation_obs.csv` — one per experiment directory. Contains perturbation-related obs columns: `is_negative_control`, `negative_control_type`, `perturbation_uids`, `perturbation_types`, `perturbation_concentrations_um`, `perturbation_durations_hr`. The cell barcode column is preserved as the index for joining.
 
 **Column naming:** No `validated_` prefix. Schema field names directly.
 
@@ -59,98 +51,73 @@ from lancell.standardization.types import GeneResolution, GuideRnaResolution, Re
 from lancell.schema import make_uid
 ```
 
+## Scripts
+
+### `scripts/resolve_genes.py`
+
+Handles the general gene-name resolution workflow (A1–A5, A8): control detection, combinatorial splitting, method classification, gene resolution via `resolve_genes`, Ensembl ID cross-checking, UID assignment, and CSV output.
+
+```
+python .claude/skills/genetic-perturbation-resolver/scripts/resolve_genes.py \
+    <input_csv> <gene_column> <method> \
+    [--organism human] \
+    [--ensembl-column ensembl_gene_id] \
+    [--output-dir <dir>]
+```
+
+| Argument | Description |
+|---|---|
+| `input_csv` | Path to `GeneticPerturbationSchema_raw.csv` (must have `index_col=0`) |
+| `gene_column` | Column containing gene names / control labels |
+| `method` | Perturbation method string (e.g. `CRISPRi`, `CRISPRko`, `siRNA`) |
+| `--organism` | Organism for gene resolution (default: `human`) |
+| `--ensembl-column` | Column with existing Ensembl IDs; mismatches are reported |
+| `--output-dir` | Output directory (default: same as input) |
+
+The script writes `GeneticPerturbationSchema_resolved.csv` with these columns populated: `perturbation_type`, `intended_gene_name`, `intended_ensembl_gene_id`, `reagent_id` (from index), `uid`, `resolved`. It adds placeholder `None` columns for fields that require dataset-specific enrichment: `target_sequence_uid`, `target_start`, `target_end`, `target_strand`, `target_context`, `library_name`.
+
+**After running the script**, enrich dataset-specific fields as needed (coordinates from sgID parsing or BLAT, library metadata, target context). See A6–A7 below.
+
+### `finalize_perturbations.py` — Schema validation and finalization (shared)
+
+Uses the shared `gene-resolver/scripts/finalize_features.py` script. Takes the resolved CSV, drops everything not in the schema (including `resolved` and raw columns), validates every row against the Pydantic schema, and writes the final CSV.
+
+```bash
+python .claude/skills/gene-resolver/scripts/finalize_features.py \
+    <resolved_csv> <output_csv> <schema_module> <schema_class> \
+    [--column KEY=VALUE ...]
+```
+
+- `--column KEY=VALUE`: Add a column. If VALUE is an existing column name, copies that column. Otherwise uses VALUE as a constant for all rows.
+
+Example:
+
+```bash
+python .claude/skills/gene-resolver/scripts/finalize_features.py \
+    /tmp/GSE123/GeneticPerturbationSchema_resolved.csv \
+    /tmp/GSE123/GeneticPerturbationSchema.csv \
+    lancell_examples.multimodal_perturbation_atlas.schema \
+    GeneticPerturbationSchema
+```
+
 ---
 
-## Phase A: Global Resolution
+## Critical Rule: One Perturbation Per Row
 
-### A1. Load & inspect
+Each row in the output must represent **exactly one perturbation reagent** — one guide RNA, one siRNA, one target gene, etc. Never combine multiple reagents into a single row. If the input contains combined or paired entries (e.g., dual-guide pairs, combinatorial targets), split them into individual rows before resolution.
 
-```python
-import pandas as pd
-from pathlib import Path
+## Resolution Workflow
 
-accession_dir = Path("<accession_dir>")
-raw_path = accession_dir / "GeneticPerturbation_raw.csv"
-raw_df = pd.read_csv(raw_path, index_col=0)
-print(f"Perturbations: {len(raw_df)}, Columns: {list(raw_df.columns)}")
-```
+### A1–A5, A8: Gene resolution (use the script)
 
-Identify which columns contain perturbation information and what input type(s) are available:
+For the standard gene-name workflow, run `resolve_genes.py` as above. The steps it performs are:
 
-- **Gene name column** — e.g., `"gene"`, `"target_gene"`, `"sgRNA_target"`, `"perturbation"`
-- **Guide sequence column** — e.g., `"guide_seq"`, `"sgRNA_sequence"`, `"protospacer"` — typically 20bp DNA strings
-- **Coordinate columns** — e.g., `"target_chr"`, `"target_start"`, `"target_end"`
-
-### A2. Control detection
-
-```python
-target_col = "<target_column>"
-unique_targets = raw_df[target_col].dropna().unique().tolist()
-
-control_mask = detect_control_labels(unique_targets)
-control_labels = [t for t, is_ctrl in zip(unique_targets, control_mask) if is_ctrl]
-actual_targets = [t for t, is_ctrl in zip(unique_targets, control_mask) if not is_ctrl]
-print(f"Control labels: {control_labels}")
-print(f"Actual targets: {len(actual_targets)}")
-```
-
-**Check for numbered control prefixes** not caught by `detect_control_labels`:
-
-```python
-for t in actual_targets:
-    v = t.strip().lower()
-    if v.startswith("negctrl") or v.startswith("neg_ctrl") or v.startswith("neg-ctrl"):
-        print(f"  Possible missed control: '{t}'")
-```
-
-### A3. Combinatorial splitting
-
-```python
-sample_parts = [parse_combinatorial_perturbations(t) for t in actual_targets[:20]]
-max_parts = max(len(p) for p in sample_parts)
-if max_parts > 1:
-    print(f"Combinatorial perturbations detected (max targets: {max_parts})")
-```
-
-`parse_combinatorial_perturbations` uses `+`, `&`, `;`, `|`, and comma-space as delimiters. If the dataset uses `_` as a combinatorial delimiter (e.g., `"AHR_KLF1"`), investigate manually — resolve a sample of split parts as gene symbols to confirm splitting produces valid genes before proceeding.
-
-### A4. Classify perturbation method
-
-```python
-method_string = "<method>"  # from GEO metadata or obs column
-method_result = classify_perturbation_method(method_string)
-if method_result is not None:
-    perturbation_method = method_result.value
-    print(f"Classified method: {perturbation_method}")
-else:
-    print(f"WARNING: Could not classify method '{method_string}'")
-    perturbation_method = method_string  # keep original
-```
-
-### A5. Resolve by gene name
-
-```python
-report = resolve_genes(actual_targets, organism="human", input_type="symbol")
-target_map = {}
-for res in report.results:
-    target_map[res.input_value] = res
-
-if report.unresolved_values:
-    print(f"{len(report.unresolved_values)} targets unresolved: {report.unresolved_values[:10]}")
-```
-
-For combinatorial datasets, split and resolve each part independently:
-
-```python
-all_individual_targets = set()
-for target in actual_targets:
-    for part in parse_combinatorial_perturbations(target):
-        part = part.strip()
-        if part and not is_control_label(part):
-            all_individual_targets.add(part)
-
-report = resolve_genes(list(all_individual_targets), organism="human", input_type="symbol")
-```
+1. **Load & inspect** — reads the raw CSV, identifies columns
+2. **Control detection** — `detect_control_labels` on the gene column, plus numbered-prefix check
+3. **Combinatorial splitting** — `parse_combinatorial_perturbations` on a sample; splits and deduplicates if needed
+4. **Classify perturbation method** — `classify_perturbation_method` on the method string
+5. **Resolve genes** — `resolve_genes` on unique non-control targets; cross-checks Ensembl IDs if `--ensembl-column` given
+6. **Build output** — maps results to schema fields, assigns UIDs, writes CSV
 
 ### A6. Resolve by guide RNA sequence (if applicable)
 
@@ -176,113 +143,18 @@ for _, row in raw_df[raw_df["<chr_col>"].notna()].iterrows():
 report = annotate_genomic_coordinates(coordinates, organism="human")
 ```
 
-### A8. Assign UIDs and write resolved output
+### A9. Finalize against the target schema
 
-```python
-resolved_df = raw_df.copy()
+After resolution and any dataset-specific enrichment (A6/A7), run the finalize script:
 
-# Map resolution results to schema field names (no validated_ prefix)
-resolved_df["intended_gene_name"] = [...]
-resolved_df["intended_ensembl_gene_id"] = [...]
-resolved_df["perturbation_method"] = perturbation_method
-resolved_df["resolved"] = [...]
-
-# Controls get None for gene fields
-for label in control_labels:
-    mask = resolved_df[target_col] == label
-    resolved_df.loc[mask, "intended_gene_name"] = None
-    resolved_df.loc[mask, "intended_ensembl_gene_id"] = None
-
-# Assign UIDs — one per unique perturbation
-resolved_df["uid"] = [make_uid() for _ in range(len(resolved_df))]
-
-output_path = accession_dir / "GeneticPerturbation_resolved.csv"
-resolved_df.to_csv(output_path)
-print(f"Wrote {output_path.name}: {len(resolved_df)} perturbations, {resolved_df['resolved'].sum()} resolved")
+```bash
+python .claude/skills/gene-resolver/scripts/finalize_features.py \
+    /path/to/GeneticPerturbationSchema_resolved.csv \
+    /path/to/GeneticPerturbationSchema.csv \
+    <schema_module> <schema_class>
 ```
 
----
-
-## Phase B: Per-Experiment Obs Fragments
-
-### B1. Load resolved table and raw obs
-
-```python
-accession_dir = Path("<accession_dir>")
-experiment_dir = Path("<experiment_dir>")
-
-resolved = pd.read_csv(accession_dir / "GeneticPerturbation_resolved.csv", index_col=0)
-raw_obs = pd.read_csv(experiment_dir / f"{fs}_raw_obs.csv", index_col=0)
-
-# Build lookup: perturbation key → uid
-uid_map = dict(zip(resolved["<key_column>"], resolved["uid"]))
-
-fragment = pd.DataFrame(index=raw_obs.index)
-```
-
-### B2. Build perturbation list columns with `|` convention
-
-For each cell, map its perturbation(s) to UIDs from the resolved table:
-
-```python
-import json
-
-def build_perturbation_lists(value):
-    """Map a cell's perturbation value to UID list and type list."""
-    if pd.isna(value):
-        return None, None, None
-    if is_control_label(str(value)):
-        return None, None, None
-
-    parts = parse_combinatorial_perturbations(str(value))
-    uids = []
-    types = []
-    concentrations = []
-    for part in parts:
-        part = part.strip()
-        if not part or is_control_label(part):
-            continue
-        uid = uid_map.get(part)
-        if uid:
-            uids.append(uid)
-            types.append("genetic_perturbation")
-            concentrations.append(-1.0)  # not applicable for genetic
-
-    if not uids:
-        return None, None, None
-    return json.dumps(uids), json.dumps(types), json.dumps(concentrations)
-
-results = raw_obs[perturbation_col].apply(build_perturbation_lists)
-fragment["perturbation_uids|GeneticPerturbation"] = results.apply(lambda x: x[0])
-fragment["perturbation_types|GeneticPerturbation"] = results.apply(lambda x: x[1])
-fragment["perturbation_concentrations_um|GeneticPerturbation"] = results.apply(lambda x: x[2])
-```
-
-### B3. Derive control columns with `|` convention
-
-```python
-def derive_is_control(value) -> bool:
-    if pd.isna(value):
-        return False  # NaN perturbation does NOT imply control
-    return is_control_label(str(value))
-
-fragment["is_negative_control|GeneticPerturbation"] = raw_obs[perturbation_col].apply(derive_is_control)
-
-fragment["negative_control_type|GeneticPerturbation"] = raw_obs[perturbation_col].apply(
-    lambda v: detect_negative_control_type(str(v)) if not pd.isna(v) and is_control_label(str(v)) else None
-)
-```
-
-**Combinatorial screens:** A cell is only a control if **all** of its perturbations are control type. If a cell received two sgRNAs where one targets a gene and the other is non-targeting, that cell is **not** a control.
-
-### B4. Write fragment
-
-```python
-fragment["genetic_perturbation_resolved"] = True  # or derive from resolution status
-fragment_path = experiment_dir / f"{fs}_fragment_genetic_perturbation_obs.csv"
-fragment.to_csv(fragment_path)
-print(f"Wrote {fragment_path.name}: {len(fragment)} rows")
-```
+The script will error if any row fails schema validation.
 
 ---
 
@@ -295,18 +167,74 @@ All resolved columns follow the same principle: **never NaN unless there is genu
 3. **NaN only when no value exists** — e.g., a cell has no perturbation target.
 4. **Control labels → None** — "non-targeting", "NegCtrl0", etc. become None in perturbation columns (they inform `is_negative_control`, not the gene field).
 
+## Obs-Level Fragment Workflow (B1–B4)
+
+After the global foreign key table is resolved and finalized (A1–A9), write per-experiment obs fragments that map each cell to its perturbation UIDs and control status.
+
+The preparer provides:
+- A list of experiment directories (each containing `{feature_space}_raw_obs.csv`)
+- The obs column that links cells to perturbations (e.g., `sgID_AB`, `guide_id`, `perturbation`)
+- The feature space name (e.g., `gene_expression`)
+- Dose/duration columns and their units, if applicable
+
+### B1. Load the resolved foreign key table
+
+Load `GeneticPerturbationSchema.csv` (the finalized table with UIDs). Build a lookup from reagent identifiers (e.g., `reagent_id`, `guide_sequence`, or `intended_gene_name`) to `uid` values.
+
+### B2. Map cells to perturbation UIDs
+
+For each experiment directory:
+
+1. Read `{feature_space}_raw_obs.csv`
+2. Parse the perturbation column. Handle:
+   - **Pipe-delimited dual/multi-guide pairs** (e.g., `guideA|guideB`) — split and look up each independently
+   - **Single perturbation per cell** — direct lookup
+   - **Combinatorial perturbations** — split by delimiter, look up each
+3. For each cell, build:
+   - `perturbation_uids`: list of UIDs (one per reagent acting on the cell)
+   - `perturbation_types`: list of `"genetic_perturbation"` (matching length)
+   - `perturbation_concentrations_um`: list of concentrations if available, else `[-1]` per reagent
+   - `perturbation_durations_hr`: list of durations if available, else `[-1]` per reagent
+
+### B3. Detect controls at the cell level
+
+Use `detect_control_labels` and `is_control_label` on the perturbation column values:
+
+- `is_negative_control = True` only if **all** perturbations for that cell are control-type (non-targeting, intergenic, etc.)
+- `negative_control_type`: the control label (e.g., `"non-targeting"`) if `is_negative_control` is True, else None
+- For control cells, `perturbation_uids` and `perturbation_types` should be None (controls are not perturbations)
+
+### B4. Write the fragment
+
+Write `{feature_space}_fragment_perturbation_obs.csv` in the experiment directory with columns:
+- The cell barcode column (as index or first column, for joining)
+- `is_negative_control`
+- `negative_control_type`
+- `perturbation_uids` (JSON-serialized list)
+- `perturbation_types` (JSON-serialized list)
+- `perturbation_concentrations_um` (JSON-serialized list)
+- `perturbation_durations_hr` (JSON-serialized list)
+
+Lists should be serialized as JSON strings so they survive CSV round-tripping.
+
+---
+
 ## Rules
 
-- **Two-phase workflow.** Phase A resolves globally and assigns UIDs. Phase B maps UIDs to per-experiment obs.
+- **Accession-level resolution.** Resolves globally and assigns UIDs.
 - **No `validated_` prefix.** Output columns use schema field names directly.
-- **Use `|` convention in Phase B.** All obs columns that could also be written by other perturbation resolvers use `{field}|GeneticPerturbation` naming.
-- **Assign UIDs via `make_uid()` in Phase A.** Every unique perturbation gets a UID.
+- **Assign UIDs via `make_uid()`.** Every unique perturbation gets a UID.
 - **`is_negative_control=True` ONLY for explicit controls.** NaN/None perturbation does NOT imply control.
 - **Combinatorial screens:** A cell is only a control if **all** perturbations are control type.
 - **Control labels map to None in perturbation columns.** They inform `is_negative_control`, not the gene target.
 - **Watch for multiple control label variants.** Inspect unique values for numbered controls.
 - **Resolve each combinatorial part independently.** Split targets and resolve each as its own gene symbol.
 - **Deduplicate guide sequences before BLAT.** Guides are shared across many cells; BLAT is rate-limited (~1 req/s).
+- **BLAT spot-check inferred metadata.** After gene resolution, run `resolve_guide_sequences` on 3–5 guides to verify that inferred metadata (e.g., `target_context`, coordinates, strand) matches what BLAT returns. Dataset descriptions can be misleading — e.g., a "promoter-targeting" CRISPRi screen may have guides that actually land in `5_UTR` per Ensembl annotation. **Caveat:** BLAT is unreliable for 20bp guide sequences (most CRISPR screens). Low resolution rates for short guides are expected and not a data quality concern.
+- **Ensembl ID mismatches.** When cross-checking Ensembl IDs, the resolver's current IDs take precedence over the raw data's IDs unless the dataset explicitly requires a specific Ensembl version.
+- **`GuideRnaResolution` attributes.** The result objects from `resolve_guide_sequences` use `intended_gene_name`, `intended_ensembl_gene_id`, and `target_context` (see `lancell.standardization.types.GuideRnaResolution`).
 - **Save after each column** to prevent losing work on interruption.
 - **Column names follow the user's schema.** Do not assume specific column names — use whatever the user's target schema specifies.
+- **Two output files.** `GeneticPerturbationSchema_resolved.csv` retains `resolved` and raw columns for inspection. `GeneticPerturbationSchema.csv` is schema-validated and production-ready.
 - **Ask before guessing.** If the delimiter or control labels are ambiguous, ask the user.
+- **Do not silently leave schema fields null.** If the target schema requires guide-level information (e.g., `guide_sequence`, `target_start`, `target_end`, `target_strand`, `target_context`) and the input dataframe does not contain it and no supplementary file (guide library, etc.) has been provided, **stop and ask the user** before proceeding. Do not fill these columns with nulls and move on — the user may have a file they forgot to mention, or the prompt may need updating. Only proceed with nulls after explicit user approval.

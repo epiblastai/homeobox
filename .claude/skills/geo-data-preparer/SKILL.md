@@ -13,12 +13,17 @@ This skill handles the full pre-ingestion pipeline:
 2. **Downloading** selected files via FTP
 3. **Classifying** files (e.g., h5ad vs matrix + companion files)
 4. **Writing metadata.json** that stores GEO series or sample metadata
-5. **Creating global tables** for feature registries and foreign keys (Phase A input)
-6. **Delegating** resolution to resolver sub-agents (Phase A: global tables, Phase B: per-experiment obs)
-7. **Mapping UIDs** from resolved tables back to per-experiment fragments
-8. **Assembling** fragments into final standardized CSVs
+5. **Creating global tables** for feature registries and foreign keys
+6. **Delegating** resolution to resolver sub-agents (accession-level global tables)
 
-It does NOT handle adding data to LanceDB or writing Zarr arrays.
+It does NOT handle assembling standardized CSVs, adding data to LanceDB, or writing Zarr arrays. Those responsibilities belong to the `geo-data-curator` skill. Mapping resolved perturbation UIDs back to per-experiment obs is handled by the perturbation resolver subagents (e.g., `genetic-perturbation-resolver` writes `{fs}_fragment_perturbation_obs.csv`).
+
+> **HARD BOUNDARY: The preparer is a logistics role, not an interpretation role.** You download files, extract raw dataframes, and hand them to resolvers. You do NOT:
+> - Read, parse, or inspect supplementary library files (guide libraries, reagent libraries, compound libraries). Pass the file path to the resolver.
+> - Make design decisions about how resolvers should interpret data (e.g., how dual-guide pairs map to schema rows, how control labels are detected, how transcript IDs map to target context). The resolver skills already encode this logic.
+> - Ask the user questions that a resolver would answer (e.g., "should each guide be its own row?", "what does this column mean for the perturbation schema?"). If you don't know, the resolver does.
+>
+> Your job is to relay column names, file paths, and delimiters to resolvers — not to understand what's inside them. When in doubt, pass more context to the resolver rather than trying to interpret it yourself.
 
 ## Scripts
 
@@ -31,7 +36,6 @@ You have access to scripts that can be used for common tasks. Run these via Bash
 | `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <experiment_dir> <accession>` | Fetch GEO metadata and write metadata.json in the experiment directory |
 | (see **publication-resolver** skill) | `python scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write publication.json (delegated to publication-resolver skill) |
 | `scripts/reconcile_barcodes.py` | `python scripts/reconcile_barcodes.py <experiment_dir>` | Reconcile barcodes across modalities; writes `multimodal_barcode` to each feature space's preparer fragment |
-| `scripts/assemble_fragments.py` | `python scripts/assemble_fragments.py <experiment_dir> [--feature-spaces fs1 fs2] [--schema path/to/schema.py]` | Merge resolver fragment CSVs column-wise into final standardized obs and var CSVs |
 
 ## Workflow
 
@@ -92,7 +96,7 @@ Launch a subagent with `publication-resolver` skill to create `publication.json`
 
 ### 5. Download and organize files by experiment
 
-Download the necessary files from GEO:
+Download the necessary files from GEO (be sure to use long enough timeouts for large files):
 
 ```
 python scripts/download_geo_file.py <accession> <filename> [dest_dir]
@@ -114,7 +118,7 @@ For any obs fields that need only pass-through or type coercion (e.g., batch_id,
 python scripts/reconcile_barcodes.py <experiment_dir>
 ```
 
-### 7. Create global feature and foreign key tables (Phase A input)
+### 7. Create global feature and foreign key tables
 
 Before launching resolvers, create accession-level `_raw.csv` files that consolidate data across all experiments for entities that need global resolution.
 
@@ -123,26 +127,24 @@ Before launching resolvers, create accession-level `_raw.csv` files that consoli
 1. Concatenate per-experiment `{fs}_raw_var.csv` files
 2. Add columns: `var_index` (the var index value), `experiment_subdir`, `source_var_column`
 3. Deduplicate on `var_index`
-4. Write `{ClassName}_raw.csv` at accession level (e.g., `GenomicFeature_raw.csv`)
+4. Write `{SchemaClassName}_raw.csv` at accession level (e.g., `GenomicFeatureSchema_raw.csv`)
 
 **For each foreign key schema** (e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`):
 
 1. Extract relevant columns from obs across all experiments
 2. Add a key column (e.g., `reagent_id`) for mapping back
 3. Deduplicate on key
-4. Write `{ClassName}_raw.csv` at accession level
+4. Write `{SchemaClassName}_raw.csv` at accession level
 
 Column misalignment across datasets is OK — union of columns with NaN fills.
 
-**Enrich `_raw.csv` with supplementary data.** Before handing off to resolvers, merge supplementary info (guide library CSV, publication metadata, etc.) into `_raw.csv`. Rule: **`_raw.csv` contains all available information in unstandardized form.** The preparer never calls resolution functions; the resolver never hunts for supplementary files.
+**Enrich `_raw.csv` with supplementary data.** Before handing off to resolvers, add supplementary info (e.g., publication metadata, global experimental variables, etc.) into `_raw.csv`. **`_raw.csv` contains all available information in unstandardized form.** The preparer never calls resolution functions; the resolver never hunts for supplementary files.
 
-**Naming convention:** Schema class name minus "Schema" suffix: `GenomicFeature`, `GeneticPerturbation`, `SmallMolecule`, `BiologicPerturbation`, `Protein`.
+> **STOP: Do not read, parse, inspect, or make decisions about supplementary library files (guide libraries, reagent libraries, compound libraries, etc.).** Do not ask the user questions about their contents or format. Do not try to understand the data format or make schema-mapping decisions based on them. Pass the file path directly to the appropriate resolver subagent in its prompt. The resolver skills already know how to handle these files. Your only job is to relay the path. This applies equally to perturbation columns in obs — extract them into `_raw.csv` but do not interpret their structure (e.g., delimiters, ID formats, control labels). Tell the resolver what the column is called and let it do the rest.
+
+**Naming convention:** Use the full schema class name: `GenomicFeatureSchema`, `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `BiologicPerturbationSchema`, `ProteinSchema`.
 
 ### 8. Delegate resolution to resolver subagents
-
-Resolution is split into two phases:
-
-#### Phase A — Global tables (accession-level)
 
 Feature registries (var) and foreign key tables are resolved across ALL experiments in one pass. Same entity in multiple experiments gets one UID.
 
@@ -150,142 +152,71 @@ Launch relevant resolvers for each global `_raw.csv`:
 
 | Input | Resolver Skill | Output |
 |-------|---------------|--------|
-| `GenomicFeature_raw.csv` | `gene-resolver` | `GenomicFeature_resolved.csv` |
-| `Protein_raw.csv` | `protein-resolver` | `Protein_resolved.csv` |
-| `GeneticPerturbation_raw.csv` | `genetic-perturbation-resolver` | `GeneticPerturbation_resolved.csv` |
-| `SmallMolecule_raw.csv` | `molecule-resolver` | `SmallMolecule_resolved.csv` |
-| `BiologicPerturbation_raw.csv` | `protein-resolver` | `BiologicPerturbation_resolved.csv` |
+| `GenomicFeatureSchema_raw.csv` | `gene-resolver` | `GenomicFeatureSchema_resolved.csv` |
+| `ProteinSchema_raw.csv` | `protein-resolver` | `ProteinSchema_resolved.csv` |
+| `GeneticPerturbationSchema_raw.csv` | `genetic-perturbation-resolver` | `GeneticPerturbationSchema_resolved.csv` |
+| `SmallMoleculeSchema_raw.csv` | `molecule-resolver` | `SmallMoleculeSchema_resolved.csv` |
+| `BiologicPerturbationSchema_raw.csv` | `protein-resolver` | `BiologicPerturbationSchema_resolved.csv` |
 
-**Prompt template for Phase A resolvers:**
+**Prompt template for resolvers:**
 
 ```
 Agent tool call:
   prompt: |
-    Read the skill file at .claude/skills/<resolver-name>/SKILL.md and follow its Phase A workflow.
+    Read the skill file at .claude/skills/<resolver-name>/SKILL.md and follow its workflow.
 
     Context:
     - Accession directory: <accession_dir>
     - Schema file: <schema_path>
-    - Input: <ClassName>_raw.csv
-    - Output: <ClassName>_resolved.csv (with UIDs assigned via make_uid())
+    - Input: <SchemaClassName>_raw.csv
+    - Output: <SchemaClassName>_resolved.csv (with UIDs assigned via make_uid())
 ```
 
-All Phase A resolvers can run in parallel.
-
-#### Phase B — Per-experiment obs resolution
-
-After Phase A completes, resolve obs-level metadata per experiment:
-
-- **Ontology resolver**: cell_type, tissue, disease, organism, assay, etc.
-- **Perturbation obs fragments**: maps each cell's perturbation IDs to UIDs from Phase A resolved tables, constructs list columns using `|` convention
-
-**Prompt template for Phase B resolvers:**
+**For the genetic-perturbation-resolver specifically**, also provide the obs-level mapping context so it can write perturbation obs fragments (see B1–B4 in the resolver skill):
 
 ```
-Agent tool call:
-  prompt: |
-    Read the skill file at .claude/skills/<resolver-name>/SKILL.md and follow its Phase B workflow.
-
-    Context:
-    - Experiment directory: <experiment_dir>
-    - Schema file: <schema_path>
-    - Resolved tables: <accession_dir>/<ClassName>_resolved.csv
+    Additional context for obs-level fragment writing:
+    - Experiment directories: [list of experiment subdirectory paths]
+    - Perturbation column in obs: <column_name> (e.g., "sgID_AB")
+    - Feature space: <feature_space> (e.g., "gene_expression")
+    - Delimiter for multi-guide: <delimiter> (e.g., "|" for pipe-separated dual guides)
+    - Dose column: <column_name or None>
+    - Duration column: <column_name or None>
 ```
 
-Phase B resolvers for different experiments can run in parallel. Ontology and perturbation obs resolvers for the same experiment can also run in parallel.
+All resolvers can run in parallel.
 
-### 9. Map UIDs from resolved tables back to per-experiment var fragments
+**Note:** The ontology resolver operates per-experiment (writing `{fs}_fragment_ontology_obs.csv` directly in each experiment directory), unlike other resolvers which write global accession-level tables.
 
-After Phase A resolvers complete, join per-experiment `{fs}_raw_var.csv` with the relevant `{ClassName}_resolved.csv` on `var_index` to create per-experiment `{fs}_fragment_{resolver}_var.csv` files containing UIDs and resolved columns.
+### 9. Verification
 
-```python
-import pandas as pd
+After all resolvers complete, verify that the expected output files exist:
 
-# Example for gene expression
-resolved = pd.read_csv(accession_dir / "GenomicFeature_resolved.csv", index_col=0)
-for experiment_dir in experiment_dirs:
-    raw_var = pd.read_csv(experiment_dir / "gene_expression_raw_var.csv", index_col=0)
-    # Join on var_index to get UIDs and resolved columns
-    fragment = raw_var.join(resolved[["uid", "gene_name", "ensembl_gene_id", "ncbi_gene_id", "organism", "resolved"]], how="left")
-    fragment.to_csv(experiment_dir / "gene_expression_fragment_gene_var.csv")
-```
+- Finalized global tables: `{SchemaClassName}.csv` for each feature registry and foreign key schema
+- Per-experiment: raw obs/var CSVs, resolver fragment obs CSVs (e.g., ontology fragments), preparer fragment obs CSVs
+- Accession-level: `metadata.json`, `publication.json`
 
-### 10. Fragment Assembly
+The preparer is now complete. Hand off to the `geo-data-curator` skill for assembly, validation, and ingestion.
 
-After all resolvers complete, merge fragments into final standardized CSVs:
-
-```
-python scripts/assemble_fragments.py <experiment_dir> --schema <schema_path> [--feature-spaces fs1 fs2 ...]
-```
-
-The `--schema` argument enables type-aware merging of `|` columns (see below). The script auto-detects feature spaces from `{fs}_raw_var.csv` files if not specified. For each feature space it:
-
-1. Globs `{fs}_fragment_*_obs.csv` — loads each as a DataFrame with the raw obs index
-2. Detects `|` columns and merges them by schema field type:
-   - **List fields** (`list[str]`, `list[float]`): concatenate JSON lists across sources
-   - **Boolean fields** (`bool`): `all(non_null_values)` — cell is control only if ALL perturbations are controls
-   - **String fields** (`str`): `"|".join(non_null_values)`
-3. Combines per-resolver `*_resolved` columns into a single `resolved` boolean
-4. Generates `perturbation_search_string` from assembled `perturbation_uids` and `perturbation_types`
-5. Writes `{fs}_standardized_obs.csv`
-6. Same for var: globs `{fs}_fragment_*_var.csv`, merges, writes `{fs}_standardized_var.csv`
-
-#### The `|` Convention for Multi-Source Columns
-
-When multiple resolvers can contribute to the same schema field, column names use `{target_field}|{SourceClassName}`.
-
-**Example:** genetic-perturbation-resolver fragment:
-```
-perturbation_uids|GeneticPerturbation          → ["uid1", "uid2"]  (JSON list)
-perturbation_types|GeneticPerturbation         → ["genetic_perturbation", "genetic_perturbation"]
-perturbation_concentrations_um|GeneticPerturbation → [-1.0, -1.0]
-is_negative_control|GeneticPerturbation        → True
-negative_control_type|GeneticPerturbation      → "nontargeting"
-```
-
-If molecule-resolver also runs, it writes `perturbation_uids|SmallMolecule`, etc.
-
-For single-perturbation-type datasets (the common case), there's one `|` source per field and merging is trivially that value.
-
-### 11. Verification
-
-After assembly, delegate validation to the **standardization-verifier** sub-agent:
-
-```
-Agent tool call:
-  prompt: |
-    You are the standardization-verifier skill. Read the skill file at
-    .claude/skills/standardization-verifier/SKILL.md and follow its workflow.
-
-    Context:
-    - Experiment directory: <experiment_dir>
-    - Schema file: <schema_path>
-
-    Verify the assembled standardized CSVs against the schema.
-```
-
-If the verifier reports FAIL results, address them before proceeding to the curator.
-
-## Directory Layout (after both phases)
+## Directory Layout
 
 ```
 /tmp/geo_agent/GSE264667/
-├── GenomicFeature_raw.csv                              # Phase A input
-├── GenomicFeature_resolved.csv                         # Phase A output (with UIDs)
-├── GeneticPerturbation_raw.csv                         # Phase A input (enriched with guide library)
-├── GeneticPerturbation_resolved.csv                    # Phase A output (with UIDs)
+├── GenomicFeatureSchema_raw.csv                        # resolver input
+├── GenomicFeatureSchema_resolved.csv                   # resolver intermediate (with UIDs + raw columns)
+├── GenomicFeatureSchema.csv                            # finalized, schema-validated
+├── GeneticPerturbationSchema_raw.csv                   # resolver input
+├── GeneticPerturbationSchema_resolved.csv              # resolver intermediate (with UIDs + raw columns)
+├── GeneticPerturbationSchema.csv                       # finalized, schema-validated
 ├── publication.json
 ├── GSE264667_metadata.json
 ├── HepG2/
 │   ├── GSE264667_HepG2.h5ad
-│   ├── gene_expression_raw_obs.csv
-│   ├── gene_expression_raw_var.csv
-│   ├── gene_expression_fragment_preparer_obs.csv       # pass-through fields
-│   ├── gene_expression_fragment_ontology_obs.csv       # ontology resolver (Phase B)
-│   ├── gene_expression_fragment_genetic_perturbation_obs.csv  # list cols with | (Phase B)
-│   ├── gene_expression_fragment_gene_var.csv           # UIDs mapped from resolved table
-│   ├── gene_expression_standardized_obs.csv            # assembled
-│   ├── gene_expression_standardized_var.csv            # assembled
+│   ├── gene_expression_raw_obs.csv                     # all obs columns from the h5ad + metadata
+│   ├── gene_expression_raw_var.csv                     # all var columns from the h5ad
+│   ├── gene_expression_fragment_preparer_obs.csv       # pass-through fields (batch_id, etc.)
+│   ├── gene_expression_fragment_ontology_obs.csv       # ontology-resolved fields (organism, assay, etc.)
+│   ├── gene_expression_fragment_perturbation_obs.csv   # perturbation UIDs, control flags (from genetic-perturbation-resolver)
 ├── Jurkat/
 │   └── ...
 ```

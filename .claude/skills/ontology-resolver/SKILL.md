@@ -86,7 +86,7 @@ for col, entity in ontology_fields.items():
     print(f"  Sample: {unique_values[:10]}")
 ```
 
-Not every dataset has every ontology field. Only process fields that exist as columns in the obs data.
+Not every dataset has every ontology field. Only process fields that exist as columns in the obs data. If a schema ontology field does not exist in the raw obs, omit it from the fragment — it will be null in the final obs.
 
 ---
 
@@ -287,7 +287,7 @@ All output columns follow the same principle: **never NaN unless there is genuin
 - **One column pair at a time.** Process each ontology field sequentially, save the fragment after each pair.
 - **Use `resolve_ontology_terms()` for all entities.** It handles the dispatch to DB lookup, OLS4, or hardcoded tables internally.
 - **Pass `organism` for development_stage.** Without it, both HsapDv and MmusDv are searched — this can produce wrong matches for organism-specific stages.
-- **Flag fuzzy cell_line matches.** OLS4 fuzzy matches (confidence 0.8) should be presented to the user with alternatives before accepting.
+- **Fuzzy cell_line matches.** OLS4 fuzzy matches (confidence 0.8) should be accepted by default but logged with a warning. Present alternatives to the user if possible. Note: CLO catalogs cell bank deposits, so names like "RCB0806 cell" instead of "Jurkat" are expected — this is a known CLO limitation (Cellosaurus integration is planned).
 - **Do not derive control fields from ontology columns.** `is_negative_control` and `negative_control_type` are perturbation-level concepts populated by perturbation resolvers.
 - **Use `detect_control_labels()` for control detection.** Do not hardcode control label sets.
 - **Never set output columns to NaN for failed resolution.** Keep the original value. Only the `_ontology_id` column is None when resolution fails.

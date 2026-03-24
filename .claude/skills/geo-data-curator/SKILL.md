@@ -1,316 +1,324 @@
 ---
 name: geo-data-curator
-description: Write LanceDB ingestion scripts for GEO datasets using the lancell RaggedAtlas API. Requires a user-provided schema file and outputs from the geo-data-preparer skill. Covers atlas creation, feature registration, AnnData ingestion, and validation.
+description: Use this skill to write scripts for ingesting GEO datasets into a lancell RaggedAtlas. Requires a user-provided schema file, a new or existing path to the atlas, and outputs from the geo-data-preparer skill. Covers atlas creation or appending, feature registration, foreign key tables, and validation.
 ---
 
 # GEO Data Curator
 
-Write a correct ingestion script for curated GEO data into a lancell `RaggedAtlas`.
+## Scope
+
+This skill writes per-accession ingestion scripts that take the prepared and standardized outputs from `geo-data-preparer` and ingest them into a lancell `RaggedAtlas`. The workflow covers:
+
+1. **Validating** obs DataFrames against the schema (stripping non-schema columns, parsing JSON lists, coercing types)
+2. **Creating or opening** a `RaggedAtlas` at the user-provided path
+3. **Populating foreign key tables** (perturbation registries, publications, donors, etc.)
+4. **Registering features** in the atlas feature registries
+5. **Ingesting data** (zarr writes + validated obs) via `add_anndata_batch`
+
+It does NOT handle downloading, metadata extraction, resolver delegation, or fragment assembly — those are handled by `geo-data-preparer`.
 
 ## Prerequisites
 
-This skill consumes outputs from the `geo-data-preparer` skill. Before starting, verify that the expected files exist in `/tmp/geo_agent/<accession>/`:
+This skill consumes outputs from the `geo-data-preparer` skill. Before starting, you need:
 
-```
-/tmp/geo_agent/<accession>/
-├── GenomicFeature_resolved.csv                         # feature registry with UIDs (from gene-resolver)
-├── Protein_resolved.csv                                # optional: protein feature registry with UIDs
-├── GeneticPerturbation_resolved.csv                    # optional: perturbation registry with UIDs
-├── SmallMolecule_resolved.csv                          # optional: molecule registry with UIDs
-├── BiologicPerturbation_resolved.csv                   # optional: biologic registry with UIDs
-├── publication.json                                    # from geo-data-preparer (optional)
-├── <accession>_metadata.json                           # from geo-data-preparer
-├── <SubDir>/
-│   ├── metadata.json
-│   ├── <original_data_files>.*
-│   ├── gene_expression_standardized_obs.csv            # assembled obs (columns = schema field names)
-│   ├── gene_expression_standardized_var.csv            # assembled var (with uid column)
-│   └── ...
-```
+- **Standardized CSVs** per experiment: `{fs}_standardized_obs.csv`, `{fs}_standardized_var.csv`
+- **Finalized global tables**: `{SchemaClassName}.csv` (e.g., `GenomicFeatureSchema.csv`, `GeneticPerturbationSchema.csv`) — these are the schema-validated outputs from the resolvers, NOT the `_resolved.csv` files
+- **Schema file path** — the Python file with `LancellBaseSchema`, `FeatureBaseSchema`, `DatasetRecord`, and foreign key schema classes
+- **Atlas path** — directory for the atlas (new or existing), containing `lance_db/` and `zarr_store/`
+- **Data files** — the h5ad, mtx bundles, or other matrix files for each experiment
+- **metadata.json** — GEO series/sample metadata (written by `geo-data-preparer`)
+- **publication.json** — publication metadata (written by `publication-resolver`)
 
-**Important:** Standardized CSVs use schema field names directly (no `validated_` prefix). Resolved tables at the accession level have pre-assigned `uid` columns.
+## Scripts
 
-**If any of these files are missing, STOP and instruct the user to run the `geo-data-preparer` skill first.** Do NOT attempt to download, convert, or validate data inline.
+Run these via Bash. All paths are relative to this skill directory.
 
-The user must also provide a **schema file** — the same Python file used by the preparer. If no schema is provided, ask for it before proceeding.
+| Script | Usage | Purpose |
+|--------|-------|---------|
+| `scripts/validate_obs.py` | `python scripts/validate_obs.py <standardized_obs_csv> <output_csv> <schema_module> <schema_class> [--column KEY=VALUE ...]` | Validate standardized obs against schema, strip non-schema columns, parse JSON lists, coerce types |
 
-## Schema File
+The `--column KEY=VALUE` flag adds columns: if VALUE matches an existing column name, copies that column; otherwise uses VALUE as a constant. Useful for adding fields not in the standardized CSV.
 
-Read the user-provided Python schema file and identify:
-
-1. **The cell schema class** — inherits `LancellBaseSchema`. Has `SparseZarrPointer` or `DenseZarrPointer` fields that define the feature spaces. Also has metadata fields (cell_type, organism, perturbation fields, etc.) that must be populated from standardized CSVs.
-
-2. **The dataset schema class** — inherits `DatasetRecord`. May extend it with additional fields (e.g., publication_uid, accession_database, accession_id, dataset_description).
-
-3. **Feature registry schemas** — inherit `FeatureBaseSchema`. One per feature space (e.g., `GenomicFeatureSchema` for gene_expression, `ProteinSchema` for protein_abundance). These define the var-level metadata that gets registered in the atlas.
-
-4. **Perturbation registry schemas** — standalone `LanceModel` classes (e.g., `SmallMoleculeSchema`, `GeneticPerturbationSchema`, `BiologicPerturbationSchema`). These are separate LanceDB tables, not managed by `RaggedAtlas` directly — the script creates and populates them independently.
-
-### Mapping pointer fields to feature spaces
-
-Each `SparseZarrPointer` or `DenseZarrPointer` field in the cell schema corresponds to a feature space. The field name **must match** a registered feature space name.
-
-## lancell API Reference
-
-### Core imports
-
-```python
-import obstore
-from lancell.atlas import RaggedAtlas
-from lancell.ingestion import add_anndata_batch, add_from_anndata
-from lancell.schema import DatasetRecord, FeatureBaseSchema, LancellBaseSchema, make_uid
-```
-
-### Atlas creation
-
-```python
-atlas = RaggedAtlas.create(
-    db_uri="path/to/lance_db",
-    cell_table_name="cells",
-    cell_schema=CellIndex,
-    dataset_table_name="_datasets",
-    dataset_schema=DatasetSchema,
-    store=obstore.store.LocalStore(prefix="path/to/zarr_store"),
-    registry_schemas={
-        "gene_expression": GenomicFeatureSchema,
-        "protein_abundance": ProteinSchema,
-    },
-)
-```
-
-### Feature registration
-
-```python
-n_new = atlas.register_features("gene_expression", features)
-```
-
-- `features` — a list of `FeatureBaseSchema` records or a polars DataFrame with a `uid` column
-- Uses `merge_insert` on uid — safe to call repeatedly, skips duplicates
-- Features are inserted with `global_index = None`; indices are assigned by `optimize()`
-
-### Data ingestion
-
-```python
-dataset_record = DatasetRecord(
-    zarr_group="GSE123456_0/gene_expression",
-    feature_space="gene_expression",
-    n_cells=adata.n_obs,
-)
-n_ingested = add_anndata_batch(
-    atlas, adata,
-    feature_space="gene_expression",
-    zarr_layer="counts",
-    dataset_record=dataset_record,
-)
-```
-
-Requirements:
-- `adata.obs` columns must match the cell schema fields. `validate_obs_columns()` checks this automatically. Fields in the schema that are missing from obs are filled with null.
-- `adata.var` must have a `global_feature_uid` column linking each var row to a registered feature uid.
-- Sparse data: the function handles CSR format (backed h5ad or in-memory scipy sparse).
-- Dense data: standard 2D arrays.
-- `zarr_layer` names the destination layer within the zarr group (e.g., `"counts"`).
-
-**Convenience wrapper:** `add_from_anndata(atlas, "path/to/file.h5ad", ...)` opens h5ad files in backed mode automatically.
-
-### Optimization and validation
-
-```python
-atlas.optimize()       # Compacts tables, assigns global_index to features
-version = atlas.snapshot()  # Validates consistency, pins a version
-```
-
-`optimize()` must be called before `snapshot()`. `snapshot()` raises `ValueError` if validation fails.
-
-## Input Files
-
-### Resolved tables (accession level)
-
-`{ClassName}_resolved.csv` files contain feature/perturbation registry data with pre-assigned `uid` columns. These are produced by Phase A resolvers and consumed directly for feature registration and perturbation table creation.
-
-### standardized_obs.csv
-
-Shares index with `adata.obs`. Columns use schema field names directly (no `validated_` prefix). List columns (e.g., `perturbation_uids`, `perturbation_types`) are stored as JSON strings.
-
-**NaN semantics:** Columns are never NaN unless there is genuinely no value. When resolution fails, the original value is preserved. NaN means "no metadata at all" — not "resolution failed."
-
-### standardized_var.csv
-
-One per feature space per experiment. Contains resolved feature metadata with `uid` column for linking to the registry.
+Note: var validation is already handled by resolvers during preparation (e.g., `finalize_features.py` in gene-resolver). The curator consumes finalized var CSVs directly.
 
 ## Workflow
 
 ### 1. Verify prerequisites
 
-Check that all expected files exist (data files, resolved CSVs, standardized CSVs). If anything is missing, stop and direct the user to run the preparer first.
+Check that all expected files exist before writing any ingestion code:
 
-### 2. Read the schema file
+- Per-experiment standardized CSVs: `{experiment_dir}/{fs}_standardized_obs.csv` and `{fs}_standardized_var.csv`
+- Global finalized CSVs at accession level: `{SchemaClassName}.csv` for each feature registry and foreign key schema used
+- Data files (h5ad, etc.) for each experiment
+- `metadata.json` and `publication.json` at the accession level
 
-Identify all schema classes and map pointer fields to feature spaces (see Schema File section above).
+Read `metadata.json` to extract series/sample metadata needed for `DatasetRecord` fields.
 
-### 3. Plan the ingestion
+### 2. Validate obs DataFrames
 
-For each experiment directory:
+For each experiment and feature space, run `validate_obs.py`:
 
-- **Inspect standardized CSVs** to see which columns are present. Column names match schema field names directly.
-- **Determine the raw counts location**: `adata.X`, `adata.layers["counts"]`, or `adata.raw.X`.
-- **Plan obs preparation**: map standardized_obs columns to cell schema field names (they already match — no prefix stripping needed). Parse JSON list columns into Python lists for perturbation fields.
-- **Plan feature registration**: read `{ClassName}_resolved.csv`, build feature registry records using the pre-assigned UIDs.
+```
+python scripts/validate_obs.py \
+    <experiment_dir>/<fs>_standardized_obs.csv \
+    <experiment_dir>/<fs>_validated_obs.csv \
+    <schema_module> <obs_schema_class> \
+    [--column KEY=VALUE ...]
+```
 
-### 4. Write the ingestion script
+This script:
+- Loads the standardized obs CSV
+- Identifies validatable fields from the schema (excludes ZarrPointer fields and auto-managed fields like `perturbation_search_string`)
+- Parses JSON-encoded list columns (e.g., `perturbation_uids`, `perturbation_types`)
+- Coerces boolean columns from string "True"/"False" to actual bool
+- Fills missing nullable fields with None
+- Drops columns not in the schema
+- Validates every row via Pydantic `model_validate()`
+- Writes the validated CSV
 
-The script goes in `scripts/geo_ingestion/{accession}.py` under the **project root**. It should:
+Fix any validation errors before proceeding to ingestion.
 
-#### a. Create the atlas
+### 3. Create or open the atlas
+
+Read the schema file to identify:
+- The **obs schema** (`LancellBaseSchema` subclass) — e.g., `CellIndex`
+- The **dataset schema** (`DatasetRecord` subclass) — e.g., `DatasetSchema`
+- **Feature registry schemas** (`FeatureBaseSchema` subclasses) — e.g., `GenomicFeatureSchema`, `ProteinSchema`
+- **Foreign key schemas** (`LanceModel` subclasses that are not feature registries) — e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `PublicationSchema`
+
+Determine which feature spaces are present in this dataset from the standardized CSV filenames.
+
+**If the atlas does not exist:**
 
 ```python
-import obstore
-from lancell.atlas import RaggedAtlas
+atlas_dir.mkdir(parents=True, exist_ok=True)
+zarr_path = atlas_dir / "zarr_store"
+zarr_path.mkdir(parents=True, exist_ok=True)
+db_uri = str(atlas_dir / "lance_db")
+store = obstore.store.LocalStore(str(zarr_path))
 
-store = obstore.store.LocalStore(prefix=str(data_dir / "zarr_store"))
 atlas = RaggedAtlas.create(
-    db_uri=str(data_dir / "lance_db"),
+    db_uri=db_uri,
     cell_table_name="cells",
     cell_schema=CellIndex,
     dataset_table_name="_datasets",
     dataset_schema=DatasetSchema,
     store=store,
-    registry_schemas={...},  # from schema analysis
+    registry_schemas={
+        "gene_expression": GenomicFeatureSchema,
+        # add other feature spaces as needed
+    },
 )
 ```
 
-#### b. Register features from resolved tables
-
-Read the resolved CSV (which has pre-assigned UIDs) and register features:
+**If the atlas already exists:**
 
 ```python
-import pandas as pd
-
-resolved_var = pd.read_csv(accession_dir / "GenomicFeature_resolved.csv", index_col=0)
-
-features = []
-for _, row in resolved_var.iterrows():
-    features.append(GenomicFeatureSchema(
-        uid=row["uid"],  # pre-assigned UID from resolver
-        gene_name=row.get("gene_name"),
-        ensembl_gene_id=row.get("ensembl_gene_id"),
-        ncbi_gene_id=row.get("ncbi_gene_id"),
-        organism=row.get("organism", "Homo sapiens"),
-    ))
-
-atlas.register_features("gene_expression", features)
+store = obstore.store.LocalStore(str(atlas_dir / "zarr_store"))
+atlas = RaggedAtlas.open(
+    db_uri=str(atlas_dir / "lance_db"),
+    cell_table_name="cells",
+    cell_schema=CellIndex,
+    store=store,
+)
 ```
 
-#### c. Create perturbation registry tables (if applicable)
+When opening an existing atlas, you may need to create new registry tables if this dataset introduces a feature space the atlas doesn't already have.
 
-For foreign key tables (e.g., `GeneticPerturbation`, `SmallMolecule`), create and populate LanceDB tables independently:
+### 4. Create foreign key tables
+
+For each foreign key schema relevant to this dataset:
+
+**Publication table** — from `publication.json`:
 
 ```python
-import lancedb
-
-db = lancedb.connect(str(data_dir / "lance_db"))
-resolved_perturbations = pd.read_csv(accession_dir / "GeneticPerturbation_resolved.csv", index_col=0)
-# Build records with pre-assigned UIDs, write to table
+db = lancedb.connect(db_uri)
+# Read publication.json, create PublicationSchema record
+# Create or open the "publications" table
+if "publications" not in db.table_names():
+    pub_table = db.create_table("publications", schema=PublicationSchema.to_arrow_schema())
+else:
+    pub_table = db.open_table("publications")
+pub_table.add(pa.Table.from_pylist([pub_record.model_dump()], schema=PublicationSchema.to_arrow_schema()))
 ```
 
-#### d. Prepare adata.obs
-
-Map columns from standardized_obs.csv directly to cell schema field names — they already match:
+**Perturbation / other foreign key tables** — from finalized CSVs:
 
 ```python
-standardized_obs = pd.read_csv(obs_csv, index_col=0)
+# Read the finalized CSV (e.g., GeneticPerturbationSchema.csv)
+fk_df = pd.read_csv(accession_dir / "GeneticPerturbationSchema.csv")
 
-for col in standardized_obs.columns:
-    if col in CellIndex.model_fields:
-        adata.obs[col] = standardized_obs[col].values
+# Parse each row into the schema model
+records = []
+for _, row in fk_df.iterrows():
+    row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
+    records.append(SchemaClass(**row_dict))
+
+# Create or open table
+table_name = "genetic_perturbations"  # use a descriptive table name
+if table_name not in db.table_names():
+    table = db.create_table(table_name, schema=SchemaClass.to_arrow_schema())
+else:
+    table = db.open_table(table_name)
+table.add(pa.Table.from_pylist(
+    [r.model_dump() for r in records],
+    schema=SchemaClass.to_arrow_schema(),
+))
 ```
 
-For list columns (JSON-encoded), parse them:
+Foreign key table naming convention:
+- `publications` for `PublicationSchema`
+- `publication_sections` for `PublicationSectionSchema`
+- `genetic_perturbations` for `GeneticPerturbationSchema`
+- `small_molecules` for `SmallMoleculeSchema`
+- `biologic_perturbations` for `BiologicPerturbationSchema`
+- `donors` for `DonorSchema`
+
+### 5. Register features
+
+For each feature space in this dataset:
 
 ```python
-import json
+# Read the finalized feature CSV (NOT _resolved.csv)
+feature_df = pd.read_csv(accession_dir / "GenomicFeatureSchema.csv")
 
-for list_col in ["perturbation_uids", "perturbation_types", "perturbation_concentrations_um"]:
-    if list_col in standardized_obs.columns:
-        adata.obs[list_col] = standardized_obs[list_col].apply(
-            lambda x: json.loads(x) if pd.notna(x) else None
+# Build schema records
+records = []
+var_index_to_uid = {}
+for _, row in feature_df.iterrows():
+    row_dict = {k: (None if pd.isna(v) else v) for k, v in row.to_dict().items()}
+    record = GenomicFeatureSchema(**row_dict)
+    records.append(record)
+    # Map var_index to uid for use in step 6
+    var_index_to_uid[row["var_index"]] = record.uid
+
+# Register with the atlas
+n_new = atlas.register_features("gene_expression", records)
+print(f"Registered {n_new} new features ({len(records)} total)")
+```
+
+The `var_index` column links features back to the per-experiment var DataFrames. The `var_index_to_uid` mapping is needed in step 6 to set `global_feature_uid` on `adata.var`.
+
+### 6. Ingest per-experiment data
+
+For each experiment:
+
+```python
+# Load data (backed mode for large files)
+adata = ad.read_h5ad(h5ad_path, backed="r")
+# Or for mtx bundles: adata = sc.read_10x_h5(path) etc.
+
+# Optionally limit cells for testing
+if limit > 0:
+    adata = adata[:limit].to_memory()
+
+# Load validated obs (from step 2)
+obs = pd.read_csv(validated_obs_path, index_col=0)
+if limit > 0:
+    obs = obs.iloc[:limit]
+
+# Parse JSON list columns back to actual lists for LanceDB
+list_cols = ["perturbation_uids", "perturbation_types",
+             "perturbation_concentrations_um", "perturbation_durations_hr",
+             "perturbation_additional_metadata"]
+for col in list_cols:
+    if col in obs.columns:
+        obs[col] = obs[col].apply(
+            lambda v: json.loads(v) if isinstance(v, str) else v
         )
-```
 
-#### e. Set global_feature_uid on adata.var
+# Set obs on adata
+adata.obs = obs
 
-Link var rows to registered features using the `uid` column from the standardized var CSV:
+# Set global_feature_uid on var using the mapping from step 5
+gene_ids = list(adata.var.index)
+adata.var["global_feature_uid"] = [var_index_to_uid[gid] for gid in gene_ids]
 
-```python
-standardized_var = pd.read_csv(var_csv, index_col=0)
-adata.var["global_feature_uid"] = standardized_var["uid"].values
-```
-
-#### f. Ingest data
-
-```python
-from lancell.ingestion import add_anndata_batch
-from lancell.schema import DatasetRecord
-
-dataset_record = DatasetRecord(
-    zarr_group=f"{key}/gene_expression",
-    feature_space="gene_expression",
+# Create dataset record
+dataset_record = DatasetSchema(
+    zarr_group=f"{entry_key}/{feature_space}",
+    feature_space=feature_space,
     n_cells=adata.n_obs,
+    publication_uid=publication_uid,
+    accession_database="GEO",
+    accession_id=accession,
+    dataset_description=metadata.get("summary"),
+    organism=[...],  # from metadata
+    # ... other fields from metadata
 )
-add_anndata_batch(
-    atlas, adata,
-    feature_space="gene_expression",
+
+# Ingest
+n_ingested = add_anndata_batch(
+    atlas,
+    adata,
+    feature_space=feature_space,
     zarr_layer="counts",
     dataset_record=dataset_record,
 )
+print(f"Ingested {n_ingested:,} cells")
 ```
 
-#### g. Finalize
+### 7. Print summary
+
+Print a summary of what was ingested:
 
 ```python
-atlas.optimize()
-version = atlas.snapshot()
-print(f"Atlas snapshot version: {version}")
+print(f"Ingestion complete for {accession}")
+print(f"  Entries: {n_entries}")
+print(f"  Total cells ingested: {total_cells:,}")
+print(f"  Feature spaces: {feature_spaces}")
+print(f"  Foreign key records: {n_fk_records}")
 ```
 
-### 5. Run with a limit
+**IMPORTANT: NEVER call `atlas.optimize()` or `atlas.snapshot()` in an ingestion script.** These are expensive operations that should only be run manually by the user after all datasets have been ingested. Ingestion scripts must only add data.
 
-Run the script with a subset of cells (e.g., first 5000) to verify correctness before full ingestion. Do not remove the temporary atlas after running — the user will want to inspect it.
+## Reconciling Obs with Foreign Key Tables
 
-### 6. Summarize
+Standardized obs CSVs may contain list columns that reference foreign key tables:
 
-Write a short summary of successes and any problems (OOM errors, missing raw counts, unmapped fields).
+- `perturbation_uids` — JSON-encoded list of UIDs (e.g., `["uid1", "uid2"]`)
+- `perturbation_types` — JSON-encoded list determining which FK table each UID references (e.g., `["genetic_perturbation", "small_molecule"]`)
+- `perturbation_concentrations_um`, `perturbation_durations_hr`, `perturbation_additional_metadata` — parallel lists
 
-## Multimodal Datasets
+These columns were assembled by `assemble_fragments.py` during preparation from `|`-delimited fragment columns. By the time they reach the curator, they are already merged into the final schema field names with JSON-encoded values.
 
-Multimodal ingestion (multiple feature spaces for the same physical cells) is **out of scope** for this skill. If a dataset has multimodal entries, ingest only the primary modality and note the limitation.
+**Key rules:**
+- Parse JSON strings to actual Python lists before setting on `adata.obs` (LanceDB stores native lists, not JSON strings)
+- `perturbation_search_string` is auto-generated by the `CellIndex` model validator — do NOT set it manually; it will be computed when records are inserted into LanceDB
+- All perturbation list columns must have matching lengths per row
+- For datasets with multiple perturbation types, UIDs from different FK tables are interleaved in the same list
 
-## Chromatin Accessibility (Fragment Files)
+## Column Naming Convention
 
-Fragment files (`.bed.gz`, `_fragments.tsv.gz`) don't use `add_anndata_batch`. Instead, use the fragment parsing utilities:
+- Standardized CSVs use schema field names directly (e.g., `cell_type`, `organism`, `gene_name`)
+- There is no `validated_` prefix — resolvers output canonical field names
+
+## Key Imports
 
 ```python
-from lancell_examples.multimodal_perturbation_atlas.ingestion import (
-    parse_bed_fragments,
-    sort_fragments_by_cell,
-    sort_fragments_by_genome,
-    build_chrom_order,
-)
+import anndata as ad
+import lancedb
+import obstore.store
+import pandas as pd
+import pyarrow as pa
+from lancell.atlas import RaggedAtlas
+from lancell.ingestion import add_anndata_batch
+from lancell.schema import make_uid, DatasetRecord, FeatureBaseSchema, LancellBaseSchema
 ```
 
-These write zarr arrays directly. Refer to the utility function signatures for the exact workflow.
+## Directory Layout (Expected Input)
 
-## Rules
-
-- **Read the schema file before writing the ingestion script.** The script structure is driven by the user's schema.
-- **Always use raw counts.** Never use normalized or log-transformed data. Inspect the data to determine the raw counts location: `adata.X`, `adata.layers[name]`, or `adata.raw.X`. If no raw counts are found, raise an error.
-- **No `validated_` prefix.** Standardized CSV columns already use schema field names directly. No prefix stripping needed.
-- **UIDs are pre-assigned.** Resolved tables have `uid` columns from the resolvers. Use them directly — do not call `make_uid()` again for features or perturbations.
-- **Parse JSON list columns.** Perturbation list columns in standardized CSVs are JSON-encoded. Parse them before assigning to adata.obs.
-- **Open h5ad files in backed mode.** Use `ad.read_h5ad(path, backed="r")` to avoid loading the full matrix into memory.
-- **Use `add_from_anndata()` for convenience** — it handles backed mode automatically.
-- **Organism as scientific name.** Always `"Homo sapiens"` (not "human"), `"Mus musculus"` (not "mouse"). Use the resolved scientific name from standardized CSVs.
-- **Script location.** Ingestion scripts go in `scripts/geo_ingestion/{accession}.py` under the project root, not the skill directory.
-- **Run with a subset first.** Test with a small number of cells before full ingestion.
-- **Do not handle multimodal ingestion.** If the dataset has multimodal entries, ingest only the primary feature space.
-- **Do NOT attempt to download, convert, or validate data inline.** Those are handled by the upstream preparer and resolver skills.
+```
+/tmp/geo_agent/GSE123456/
+├── GenomicFeatureSchema.csv                   # finalized feature registry
+├── GeneticPerturbationSchema.csv              # finalized FK table (if applicable)
+├── publication.json
+├── metadata.json
+├── HepG2/
+│   ├── data.h5ad
+│   ├── gene_expression_standardized_obs.csv
+│   ├── gene_expression_standardized_var.csv
+│   ├── gene_expression_validated_obs.csv      # output of validate_obs.py
+├── Jurkat/
+│   └── ...
+```

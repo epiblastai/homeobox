@@ -15,7 +15,7 @@ Fetch publication metadata from PubMed and full text from PMC Open Access. Popul
 
 ## Scripts
 
-Run these via Bash. All paths are relative to this skill directory.
+Run these via Bash from the **repository root**.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
@@ -23,7 +23,7 @@ Run these via Bash. All paths are relative to this skill directory.
 
 The script supports three modes:
 
-1. **From metadata.json** (default): reads `<data_dir>/metadata.json` and extracts PMIDs from `series_metadata.pmids` or resolves GSE accessions.
+1. **From metadata.json** (default): reads `<data_dir>/metadata.json` and extracts PMIDs. Note: the GEO metadata file produced by `geo-data-preparer` is named `{accession}_metadata.json` (not `metadata.json`), so prefer using `--pmid` or `--title` explicitly.
 2. **`--pmid PMID`**: fetch metadata for a specific PubMed ID.
 3. **`--title TITLE`**: search PubMed by title, then fetch metadata.
 
