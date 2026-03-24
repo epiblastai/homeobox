@@ -62,6 +62,16 @@ class GuideRnaResolution(Resolution):
 
 
 @dataclass
+class CellLineResolution(Resolution):
+    cellosaurus_id: str | None = None  # e.g., "CVCL_0030"
+    cell_line_name: str | None = None  # e.g., "HeLa"
+    species: str | None = None  # e.g., "Homo sapiens"
+    disease: str | None = None  # e.g., "Cervical adenocarcinoma"
+    sex: str | None = None
+    category: str | None = None  # e.g., "Cancer cell line"
+
+
+@dataclass
 class OntologyResolution(Resolution):
     ontology_term_id: str | None = None  # e.g., "CL:0000540", "UBERON:0002048"
     ontology_name: str | None = None  # e.g., "Cell Ontology", "UBERON"
@@ -124,6 +134,13 @@ class ResolutionReport:
                 row["target_context"] = r.target_context
                 row["assembly"] = r.assembly
                 row["blat_pct_match"] = r.blat_pct_match
+            elif isinstance(r, CellLineResolution):
+                row["cellosaurus_id"] = r.cellosaurus_id
+                row["cell_line_name"] = r.cell_line_name
+                row["species"] = r.species
+                row["disease"] = r.disease
+                row["sex"] = r.sex
+                row["category"] = r.category
             elif isinstance(r, OntologyResolution):
                 row["ontology_term_id"] = r.ontology_term_id
                 row["ontology_name"] = r.ontology_name

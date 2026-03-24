@@ -63,6 +63,7 @@ from lancell.standardization.perturbations import (
 )
 from lancell.standardization.proteins import resolve_proteins
 from lancell.standardization.types import (
+    CellLineResolution,
     GeneResolution,
     GuideRnaResolution,
     MoleculeResolution,
@@ -75,6 +76,7 @@ from lancell.standardization.types import (
 __all__ = [
     # Types
     "Resolution",
+    "CellLineResolution",
     "GeneResolution",
     "GuideRnaResolution",
     "MoleculeResolution",
