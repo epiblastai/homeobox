@@ -1,7 +1,10 @@
 import hashlib
 from datetime import datetime
 from enum import Enum
-from typing import Self
+from typing import TYPE_CHECKING, Self
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
@@ -74,6 +77,22 @@ class PerturbationType(str, Enum):
     SMALL_MOLECULE = "small_molecule"
     GENETIC_PERTURBATION = "genetic_perturbation"
     BIOLOGIC_PERTURBATION = "biologic_perturbation"
+
+
+_PERTURBATION_TYPE_PREFIX: dict[str, str] = {
+    PerturbationType.SMALL_MOLECULE: "SM",
+    PerturbationType.GENETIC_PERTURBATION: "GP",
+    PerturbationType.BIOLOGIC_PERTURBATION: "BIO",
+}
+
+
+def _build_perturbation_search_string(uids: list[str] | None, types: list[str] | None) -> str:
+    """Build a search string from perturbation UIDs and types."""
+    tokens: list[str] = []
+    for uid, ptype in zip(uids or [], types or [], strict=False):
+        prefix = _PERTURBATION_TYPE_PREFIX.get(ptype, ptype)
+        tokens.append(f"{prefix}:{uid}")
+    return " ".join(tokens)
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +431,9 @@ class CellIndex(LancellBaseSchema):
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
     # Json dump string with additional metadata that doesn't fit in the schema
+    # Important: If the dataset has a cell barcode or unique ID already, store it in this
+    # field, its great for provenance if we ever need to go back to the original
+    # dataset for more metadata.
     additional_metadata: str | None
 
     # Batch information
@@ -482,23 +504,31 @@ class CellIndex(LancellBaseSchema):
 
     @model_validator(mode="after")
     def generate_search_string(self) -> Self:
-        self.perturbation_search_string = self.generate_perturbation_search_tokens(self)
+        self.perturbation_search_string = _build_perturbation_search_string(
+            self.perturbation_uids, self.perturbation_types
+        )
         return self
 
-    @staticmethod
-    def generate_perturbation_search_tokens(record: Self) -> str:
-        """Build perturbation search tokens from a record's perturbation fields."""
-        tokens: list[str] = []
-        for uid, ptype in zip(
-            record.perturbation_uids or [], record.perturbation_types or [], strict=False
-        ):
-            if ptype == PerturbationType.SMALL_MOLECULE:
-                tokens.append(f"SM:{uid}")
-            elif ptype == PerturbationType.GENETIC_PERTURBATION:
-                tokens.append(f"GP:{uid}")
-            elif ptype == PerturbationType.BIOLOGIC_PERTURBATION:
-                tokens.append(f"BIO:{uid}")
-        return " ".join(tokens)
+    @classmethod
+    def compute_auto_fields(cls, obs_df: "pd.DataFrame") -> "pd.DataFrame":
+        import json
+
+        import pandas as pd
+
+        def _row_search_string(row):
+            uids_val = row.get("perturbation_uids")
+            types_val = row.get("perturbation_types")
+            if uids_val is None or (isinstance(uids_val, float) and pd.isna(uids_val)):
+                return ""
+            uids = json.loads(uids_val) if isinstance(uids_val, str) else list(uids_val)
+            types = json.loads(types_val) if isinstance(types_val, str) else list(types_val)
+            return _build_perturbation_search_string(uids, types)
+
+        if "perturbation_uids" in obs_df.columns and "perturbation_types" in obs_df.columns:
+            obs_df["perturbation_search_string"] = obs_df.apply(_row_search_string, axis=1)
+        else:
+            obs_df["perturbation_search_string"] = ""
+        return obs_df
 
 
 # ---------------------------------------------------------------------------

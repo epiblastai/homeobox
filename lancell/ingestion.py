@@ -33,7 +33,43 @@ _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
 
 def _is_backed_csr(adata: ad.AnnData) -> bool:
     """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
-    return adata.isbacked and "X" in adata.file._file and "data" in adata.file._file["X"]
+    import h5py
+
+    return (
+        adata.isbacked
+        and "X" in adata.file._file
+        and isinstance(adata.file._file["X"], h5py.Group)
+        and "data" in adata.file._file["X"]
+    )
+
+
+def _is_backed_dense(adata: ad.AnnData) -> bool:
+    """Return True if adata.X is a backed HDF5 dense matrix."""
+    import h5py
+
+    return (
+        adata.isbacked
+        and "X" in adata.file._file
+        and isinstance(adata.file._file["X"], h5py.Dataset)
+    )
+
+
+def _count_nnz_batched(h5_dataset, batch_rows: int) -> tuple[int, np.ndarray]:
+    """Count nonzeros in a backed dense HDF5 dataset without loading it all.
+
+    Returns ``(total_nnz, nnz_per_row)`` where ``nnz_per_row`` has one entry
+    per row in the dataset.
+    """
+    n_rows = h5_dataset.shape[0]
+    nnz_per_row = np.empty(n_rows, dtype=np.int64)
+    total_nnz = 0
+    for start in range(0, n_rows, batch_rows):
+        end = min(start + batch_rows, n_rows)
+        batch = h5_dataset[start:end]
+        row_nnz = np.count_nonzero(batch, axis=1)
+        nnz_per_row[start:end] = row_nnz
+        total_nnz += int(row_nnz.sum())
+    return total_nnz, nnz_per_row
 
 
 def _write_sparse_batched(
@@ -47,23 +83,27 @@ def _write_sparse_batched(
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pre-allocate and stream-write CSR data in shard-sized batches.
 
-    For backed h5ad files, reads directly from the HDF5 CSR datasets without
-    materialising the full matrix.  For in-memory AnnData, converts to scipy
-    CSR first, then streams the flat arrays.
+    Supports three input modes:
+
+    1. **Backed CSR** — reads directly from HDF5 CSR datasets (data/indices/indptr).
+    2. **Backed dense** — reads row batches from HDF5, converts each to CSR,
+       and streams without loading the full matrix.  Requires two passes: one
+       to count nonzeros, one to write.
+    3. **In-memory** — converts to scipy CSR then streams the flat arrays.
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
         ``(starts, ends)`` — per-cell indptr start/end positions.
     """
-    batch_size = shard_shape[0]
-
     from lancell.codecs.bitpacking import BitpackingCodec
 
     indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
     layer_kwargs: dict = {}
     if use_bitpacking:
         layer_kwargs["compressors"] = BitpackingCodec(transform="none")
+
+    backed_dense = _is_backed_dense(adata)
 
     if _is_backed_csr(adata):
         h5x = adata.file._file["X"]
@@ -72,6 +112,19 @@ def _write_sparse_batched(
         src_indices = h5x["indices"]
         src_data = h5x["data"]
         data_dtype = src_data.dtype
+    elif backed_dense:
+        # Two-pass approach to avoid loading the full dense matrix.
+        h5x = adata.file._file["X"]
+        data_dtype = h5x.dtype
+        # Pass 1: count nonzeros per row in batches.
+        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
+        batch_rows = max(batch_rows, 256)  # floor to avoid tiny batches
+        nnz, nnz_per_row = _count_nnz_batched(h5x, batch_rows)
+        # Build indptr from nnz_per_row.
+        indptr = np.zeros(len(nnz_per_row) + 1, dtype=np.int64)
+        np.cumsum(nnz_per_row, out=indptr[1:])
+        src_indices = None  # sentinel: pass 2 will stream
+        src_data = None
     else:
         csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
         nnz = csr.nnz
@@ -80,6 +133,7 @@ def _write_sparse_batched(
         src_data = csr.data
         data_dtype = csr.data.dtype
 
+    # Create zarr arrays.
     prefix = spec.layers.prefix
     if prefix:
         prefix_group = group.create_group(prefix)
@@ -111,12 +165,32 @@ def _write_sparse_batched(
         **layer_kwargs,
     )
 
-    written = 0
-    while written < nnz:
-        end = min(written + batch_size, nnz)
-        zarr_indices[written:end] = src_indices[written:end].astype(np.uint32, copy=False)
-        zarr_values[written:end] = src_data[written:end]
-        written = end
+    if backed_dense:
+        # Pass 2: read row batches, convert to CSR, write flat arrays.
+        n_rows = adata.n_obs
+        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
+        batch_rows = max(batch_rows, 256)
+        written = 0
+        for row_start in range(0, n_rows, batch_rows):
+            row_end = min(row_start + batch_rows, n_rows)
+            batch_csr = sp.csr_matrix(h5x[row_start:row_end])
+            batch_nnz = batch_csr.nnz
+            if batch_nnz == 0:
+                continue
+            zarr_indices[written : written + batch_nnz] = batch_csr.indices.astype(
+                np.uint32, copy=False
+            )
+            zarr_values[written : written + batch_nnz] = batch_csr.data
+            written += batch_nnz
+    else:
+        # Stream flat CSR arrays (backed CSR or in-memory).
+        batch_size = shard_shape[0]
+        written = 0
+        while written < nnz:
+            end = min(written + batch_size, nnz)
+            zarr_indices[written:end] = src_indices[written:end].astype(np.uint32, copy=False)
+            zarr_values[written:end] = src_data[written:end]
+            written = end
 
     starts = indptr[:-1].astype(np.int64)
     ends = indptr[1:].astype(np.int64)
@@ -251,11 +325,11 @@ def add_anndata_batch(
                 f"Sparse feature space '{feature_space}' requires 1-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
-        data_dtype = (
-            np.dtype(adata.file._file["X"]["data"].dtype)
-            if _is_backed_csr(adata)
-            else adata.X.dtype
-        )
+        if _is_backed_csr(adata):
+            data_dtype = np.dtype(adata.file._file["X"]["data"].dtype)
+        else:
+            # Works for both backed dense (h5py.Dataset) and in-memory.
+            data_dtype = np.dtype(adata.X.dtype)
         use_bitpacking = data_dtype in _INTEGER_DTYPES
     else:
         n_vars = adata.n_vars

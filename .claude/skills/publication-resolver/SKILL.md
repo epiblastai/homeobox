@@ -5,14 +5,21 @@ description: Fetch publication metadata (title, DOI, journal, date) from PubMed 
 
 # Publication Resolver
 
-Fetch publication metadata from PubMed and full text from PMC Open Access. Populates `PublicationSchema` and `PublicationSectionSchema` records for downstream ingestion.
+Fetch publication metadata from PubMed and full text from PMC Open Access. Produces validated parquet files for `PublicationSchema` and (optionally) `PublicationSectionSchema` — ready for direct LanceDB ingestion.
 
 ## Interface
 
-**Input:** A publication identifier — PMID (numeric), DOI, or paper title.
+**Input:** A publication identifier — PMID (numeric), DOI, or paper title. A target schema module and publication schema class name.
 
-**Output:** A `publication.json` file and/or populated schema fields for `PublicationSchema` + `PublicationSectionSchema`.
-- A markdown report at `resolver_reports/publication-resolver.md` in the working directory summarizing the identifier used, fetched metadata, full-text availability, output paths, and any missing publication fields with reasons.
+**Output:**
+
+*Accession-level (global foreign key tables):*
+- `PublicationSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, one row per publication. Parquet preserves types so the file can be loaded directly into LanceDB.
+- `PublicationSectionSchema.parquet` — one row per text section (abstract paragraphs or PMC full-text sections), with `publication_uid` FK. Only produced when `--section-schema` is provided and the target schema includes a section table.
+- `publication.json` — backward-compatible sidecar for human inspection and downstream use. Includes the generated `publication_uid` so the curator can reference it when building `DatasetSchema` records.
+- `resolver_reports/publication-resolver.md` — markdown report summarizing the identifier used, fetched metadata, full-text availability, output paths, field completeness audit, and any missing fields with reasons.
+
+**Column naming:** No `validated_` prefix. Use schema field names directly.
 
 ## Reporting
 
@@ -26,7 +33,8 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
   - output file path(s)
   - PMID/DOI/title/journal/date found
   - whether PMC full text was available
-  - any schema fields left blank, with reasons
+  - number of text sections produced
+  - schema field completeness audit, including reasons for blanks
 
 ## Scripts
 
@@ -34,13 +42,41 @@ Run these via Bash from the **repository root**.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
-| `.claude/skills/publication-resolver/scripts/write_publication_json.py` | `python .claude/skills/publication-resolver/scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write publication.json |
+| `scripts/write_publication_parquet.py` | `python .claude/skills/publication-resolver/scripts/write_publication_parquet.py <data_dir> <schema_module> <pub_schema_class> [--section-schema <section_class>] [--pmid PMID] [--title TITLE]` | **Primary.** Fetch publication metadata, write validated parquet files + publication.json |
+| `scripts/write_publication_json.py` | `python .claude/skills/publication-resolver/scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | **Legacy.** Write only publication.json (no schema validation or parquet) |
 
-Prefer `--pmid` when you have one. The script supports three modes:
+### `write_publication_parquet.py`
+
+The primary script. Prefer `--pmid` when you have one. Supports three identifier modes:
 
 1. **From metadata JSON** (default): reads `<data_dir>/{accession}_metadata.json` if present, otherwise `<data_dir>/metadata.json`, and extracts PMIDs.
 2. **`--pmid PMID`**: fetch metadata for a specific PubMed ID.
 3. **`--title TITLE`**: search PubMed by title, then fetch metadata.
+
+| Argument | Description |
+|---|---|
+| `data_dir` | Directory to write output files to |
+| `schema_module` | Dotted module path (e.g. `lancell_examples.multimodal_perturbation_atlas.schema`) |
+| `pub_schema_class` | Publication schema class name (e.g. `PublicationSchema`) |
+| `--section-schema` | Section schema class name (e.g. `PublicationSectionSchema`). Omit if schema has no section table. |
+| `--pmid` | PubMed ID to fetch directly |
+| `--title` | Paper title to search PubMed for |
+
+Example:
+
+```bash
+python .claude/skills/publication-resolver/scripts/write_publication_parquet.py \
+    /tmp/geo_agent/GSE123456 \
+    lancell_examples.multimodal_perturbation_atlas.schema \
+    PublicationSchema \
+    --section-schema PublicationSectionSchema \
+    --pmid 31806696
+```
+
+Outputs:
+- `PublicationSchema.parquet` — 1 row with uid, doi, pmid, title, journal, publication_date
+- `PublicationSectionSchema.parquet` — N rows (one per section) with publication_uid, section_text, section_title
+- `publication.json` — backward-compatible JSON with `publication_uid` included
 
 ## Imports
 
@@ -54,6 +90,7 @@ from lancell.standardization import (
     PublicationFullText,
     PublicationSection,
 )
+from lancell.schema import make_uid
 ```
 
 ## Workflow
@@ -99,57 +136,68 @@ for section in text.sections:
 
 PMC full text is attempted first. If the article is not in PMC Open Access, the abstract is returned as a single section (or multiple sections for structured abstracts with labeled parts like "Background", "Methods", "Results").
 
-### 4. Map to schema
+### 4. Assign UID and build schema records
 
-#### PublicationSchema
+Generate a publication UID via `make_uid()` — this UID is used as the primary key in `PublicationSchema` and as the foreign key in `PublicationSectionSchema`.
 
 ```python
-from datetime import datetime
+from lancell.schema import make_uid
 
-schema_record = {
-    "doi": pub.doi or "",       # Required field — almost always present
-    "pmid": pub.pmid,           # int | None
-    "title": pub.title,         # Required field
-    "journal": pub.journal,     # str | None
-    "publication_date": pub.publication_date,  # datetime | None
+publication_uid = make_uid()
+
+# PublicationSchema record
+pub_record = {
+    "uid": publication_uid,
+    "doi": pub.doi or "",
+    "pmid": pub.pmid,
+    "title": pub.title,
+    "journal": pub.journal,
+    "publication_date": pub.publication_date,
 }
-```
 
-#### PublicationSectionSchema (one row per section)
-
-```python
-for section in text.sections:
-    section_record = {
-        "publication_uid": publication_uid,  # FK from PublicationSchema
+# PublicationSectionSchema records (one per section)
+section_records = [
+    {
+        "publication_uid": publication_uid,
         "section_text": section.section_text,
         "section_title": section.section_title,
     }
+    for section in text.sections
+]
 ```
 
-### 5. Write publication.json (for CLI workflow)
+### 5. Finalize and write parquet
 
-When working within a data preparation pipeline, use the script:
+Build DataFrames, coerce types against the target schema, and write parquet. The script handles this automatically:
 
 ```bash
-python .claude/skills/publication-resolver/scripts/write_publication_json.py /tmp/geo_agent/GSE123456 --pmid 31806696
+python .claude/skills/publication-resolver/scripts/write_publication_parquet.py \
+    /tmp/geo_agent/GSE123456 \
+    lancell_examples.multimodal_perturbation_atlas.schema \
+    PublicationSchema \
+    --section-schema PublicationSectionSchema \
+    --pmid 31806696
 ```
 
-This writes a flat `publication.json` with keys: `pmid`, `doi`, `title`, `journal`, `publication_date`, `authors`, `text_source`, `full_text`.
+The script also writes `publication.json` with the `publication_uid` included for backward compatibility.
 
-For programmatic access (e.g., in ingestion scripts), use `fetch_publication_metadata()` which returns the same dict:
+### 6. Write the markdown report
 
-```python
-pub_dict = fetch_publication_metadata("31806696")
-# {"pmid": 31806696, "doi": "10.1016/...", "title": "...", ...}
-```
+After finalization, write `resolver_reports/publication-resolver.md` in the working directory with:
+- Input identifier and resolution method
+- Output file paths
+- PMID, DOI, title, journal, publication date
+- PMC full-text availability and section count
+- Schema field completeness audit (for each field: populated or reason for blank)
 
 ## Rules
 
 - **PMC before abstract.** Always attempt PMC full text before falling back to abstract. Many biology papers have PMC full text (~40% of PubMed-indexed papers).
 - **DOI is best-effort.** If no DOI is found in the PubMed record, the field will be None. Do not fail on missing DOI.
 - **Multiple PMIDs.** For datasets with multiple associated publications (multiple PMIDs in metadata.json), process each one. The shared script uses the first PMID by default.
-- **Title mismatches are not necessarily errors.** If the caller provides a title and PubMed returns a slightly different canonical published title, prefer the PubMed title in `publication.json`.
+- **Title mismatches are not necessarily errors.** If the caller provides a title and PubMed returns a slightly different canonical published title, prefer the PubMed title.
 - **Identifier auto-detection.** `fetch_publication()` auto-detects PMID vs DOI vs title. No need to classify the identifier manually.
 - **PubMed-only.** Resolution goes through PubMed. Papers not yet indexed in PubMed (e.g., very recent preprints with only a DOI) will fail with a clear error message.
 - **Section titles for PMC.** PMC full text sections use the article's own headings (e.g., "Introduction", "Methods", "Results"). Nested subsections are flattened with `>` separators (e.g., "Methods > Cell Culture").
 - **Structured abstracts.** Some PubMed abstracts have labeled sections (e.g., "Background", "Methods", "Conclusions"). These are returned as separate `PublicationSection` entries rather than a single block.
+- **UID ownership.** The publication resolver generates and owns the `publication_uid`. The curator reads it from the parquet (or from `publication.json`) — it does not generate its own.

@@ -1,7 +1,10 @@
 import datetime
 import uuid
 from types import UnionType
-from typing import Union, get_args, get_origin
+from typing import TYPE_CHECKING, Union, get_args, get_origin
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
@@ -60,6 +63,15 @@ class LancellBaseSchema(LanceModel):
 
     uid: str = Field(default_factory=make_uid)
     dataset_uid: str = ""
+
+    @classmethod
+    def compute_auto_fields(cls, obs_df: "pd.DataFrame") -> "pd.DataFrame":
+        """Compute auto-generated fields on an obs DataFrame.
+
+        Override in subclasses to populate fields that are derived from other columns.
+        Must return the DataFrame (may modify in-place).
+        """
+        return obs_df
 
     def __init_subclass__(cls, **kwargs):
         """Class-definition-time: subclass must declare at least one pointer field."""

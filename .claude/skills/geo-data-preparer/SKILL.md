@@ -34,7 +34,7 @@ You have access to scripts that can be used for common tasks. Run these via Bash
 | `scripts/list_geo_files.py` | `python scripts/list_geo_files.py GSE123456` | List supplementary files for any GEO accession (GSE or GSM) |
 | `scripts/download_geo_file.py` | `python scripts/download_geo_file.py GSE123456 file.h5ad [dest_dir]` | Download a supplementary file via FTP (default dest: `/tmp/geo_agent/<accession>/`) |
 | `scripts/write_metadata_json.py` | `python scripts/write_metadata_json.py <experiment_dir> <accession>` | Fetch GEO metadata and write metadata.json in the experiment directory |
-| (see **publication-resolver** skill) | `python scripts/write_publication_json.py <data_dir> [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write publication.json (delegated to publication-resolver skill) |
+| (see **publication-resolver** skill) | `python scripts/write_publication_parquet.py <data_dir> <schema_module> <pub_schema_class> [--section-schema <section_class>] [--pmid PMID] [--title TITLE]` | Fetch publication metadata from PubMed/PMC and write validated parquet files + publication.json (delegated to publication-resolver skill) |
 | `scripts/reconcile_barcodes.py` | `python scripts/reconcile_barcodes.py <experiment_dir>` | Reconcile barcodes across modalities; writes `multimodal_barcode` to each feature space's preparer fragment |
 
 ## Workflow
@@ -92,7 +92,9 @@ Read the relevant json files. These often include helpful information about how 
 
 ### 4. Download and parse the publication
 
-Launch a subagent with `publication-resolver` skill to create `publication.json`. Provide it with a publication title, PMID, DOI, or author names and search terms and it will do the work of finding the publication on pubmed and downloading and parsing it. Often the requisite information will be found in the GEO metadata json files that you just downloaded in the previous step.
+Launch a subagent with `publication-resolver` skill to create `PublicationSchema.parquet` (and optionally `PublicationSectionSchema.parquet`) plus the backward-compatible `publication.json`. Provide it with a publication title, PMID, DOI, or author names and search terms, the schema module path and publication schema class name, and optionally the section schema class name. Often the requisite identifier information will be found in the GEO metadata json files that you just downloaded in the previous step.
+
+The publication resolver produces validated parquet files with UIDs already assigned, following the same pattern as other resolvers. The `publication_uid` is included in `publication.json` for downstream reference.
 
 ### 5. Download and organize files by experiment
 
@@ -200,9 +202,9 @@ All resolvers can run in parallel, except for `publication-resolver` which shoul
 
 After all resolvers complete, verify that the expected output files exist:
 
-- Finalized global tables: `{SchemaClassName}.csv` for each feature registry and foreign key schema
+- Finalized global tables: `{SchemaClassName}.parquet` for each feature registry, foreign key schema, and publication schema
 - Per-experiment: raw obs/var CSVs, resolver fragment obs CSVs (e.g., ontology fragments), preparer fragment obs CSVs
-- Accession-level: `metadata.json`, `publication.json`
+- Accession-level: `metadata.json`, `publication.json` (with `publication_uid`), `PublicationSchema.parquet`
 
 The preparer is now complete. Hand off to the `geo-data-curator` skill for assembly, validation, and ingestion.
 
@@ -216,7 +218,9 @@ The preparer is now complete. Hand off to the `geo-data-curator` skill for assem
 ├── GeneticPerturbationSchema_raw.csv                   # resolver input
 ├── GeneticPerturbationSchema_resolved.csv              # resolver intermediate (with UIDs + raw columns)
 ├── GeneticPerturbationSchema.parquet                   # finalized, type-coerced parquet
-├── publication.json
+├── PublicationSchema.parquet                           # finalized publication table (from publication-resolver)
+├── PublicationSectionSchema.parquet                    # finalized publication sections (optional)
+├── publication.json                                    # backward-compatible sidecar (includes publication_uid)
 ├── GSE264667_metadata.json
 ├── HepG2/
 │   ├── GSE264667_HepG2.h5ad

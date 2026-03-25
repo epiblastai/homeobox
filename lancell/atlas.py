@@ -193,7 +193,7 @@ class RaggedAtlas:
         db_uri: str,
         cell_table_name: str,
         cell_schema: type[LancellBaseSchema] | None = None,
-        dataset_table_name: str = "_datasets",
+        dataset_table_name: str = "datasets",
         *,
         store: obstore.store.ObjectStore,
         registry_tables: dict[str, str] | None = None,
