@@ -174,12 +174,22 @@ Agent tool call:
 
 Avoid giving the resolver skill any instructions about how to resolve the data. It already knows the correct procedure, such instructions in your prompt might contradict the skill.
 
+**For the gene-resolver specifically**, also provide experiment subdirectories and feature space so it can write per-experiment standardized var CSVs (step 3 in the gene-resolver workflow):
+
+```
+    Additional context for per-experiment standardized var writing:
+    - Experiment directories: [list of experiment subdirectory paths]
+    - Feature space: <feature_space> (e.g., "gene_expression")
+```
+
 **For the genetic-perturbation-resolver specifically**, also provide experiment subdirectories so it can write perturbation obs fragments (see B1–B4 in the resolver skill):
 
 ```
     Additional context for obs-level fragment writing:
     - Experiment directories: [list of experiment subdirectory paths]
     - Feature space: <feature_space> (e.g., "gene_expression")
+    - Schema: <ObsLevelSchemaClassName>
+    - Columns you are responsible for: [list of columns in ObsLevelSchemaClassName]
 ```
 
 All resolvers can run in parallel, except for `publication-resolver` which should have been run previously.
@@ -212,6 +222,7 @@ The preparer is now complete. Hand off to the `geo-data-curator` skill for assem
 │   ├── GSE264667_HepG2.h5ad
 │   ├── gene_expression_raw_obs.csv                     # all obs columns from the h5ad + metadata
 │   ├── gene_expression_raw_var.csv                     # all var columns from the h5ad
+│   ├── gene_expression_standardized_var.csv            # var index + global_feature_uid (from gene-resolver)
 │   ├── gene_expression_fragment_preparer_obs.csv       # pass-through fields (batch_id, etc.)
 │   ├── gene_expression_fragment_ontology_obs.csv       # ontology-resolved fields (organism, assay, etc.)
 │   ├── gene_expression_fragment_perturbation_obs.csv   # perturbation UIDs, control flags (from genetic-perturbation-resolver)

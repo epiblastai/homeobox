@@ -55,7 +55,7 @@ Note: var/FK table finalization is already handled by resolvers during preparati
 
 Check that all expected files exist before writing any ingestion code:
 
-- Per-experiment fragment CSVs: `{experiment_dir}/{fs}_fragment_*_obs.csv` and `{fs}_raw_obs.csv`, `{fs}_raw_var.csv`
+- Per-experiment fragment CSVs: `{experiment_dir}/{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv`, and `{fs}_standardized_var.csv` (written by gene-resolver)
 - Global finalized parquets at accession level: `{SchemaClassName}.parquet` for each feature registry and foreign key schema used
 - Data files (h5ad, etc.) for each experiment
 - `metadata.json` and `publication.json` at the accession level
@@ -70,7 +70,9 @@ For each experiment directory, run `assemble_fragments.py` to merge the resolver
 python scripts/assemble_fragments.py <experiment_dir> --schema <schema_file>
 ```
 
-This produces `{fs}_standardized_obs.csv` and `{fs}_standardized_var.csv` in each experiment directory. Feature spaces are auto-detected from existing `{fs}_raw_var.csv` files.
+This produces `{fs}_standardized_obs.csv` in each experiment directory. Feature spaces are auto-detected from existing `{fs}_raw_var.csv` files.
+
+Note: `{fs}_standardized_var.csv` is already written by the gene-resolver (or other feature resolver) during preparation — it contains the var index and `global_feature_uid`. The assembler only handles obs.
 
 ### 3. Validate obs DataFrames
 
@@ -193,20 +195,12 @@ For each feature space in this dataset:
 feature_df = pd.read_parquet(accession_dir / "GenomicFeatureSchema.parquet")
 
 # Build schema records — parquet preserves types, so no NaN handling needed
-records = []
-var_index_to_uid = {}
-for _, row in feature_df.iterrows():
-    record = GenomicFeatureSchema(**row.to_dict())
-    records.append(record)
-    # Map var_index to uid for use in step 7
-    var_index_to_uid[row["var_index"]] = record.uid
+records = [GenomicFeatureSchema(**row.to_dict()) for _, row in feature_df.iterrows()]
 
 # Register with the atlas
 n_new = atlas.register_features("gene_expression", records)
 print(f"Registered {n_new} new features ({len(records)} total)")
 ```
-
-The feature identifier column (e.g., `ensembl_gene_id` for genomic features) links features back to the per-experiment h5ad var index. The mapping to `uid` is needed in step 7 to set `global_feature_uid` on `adata.var`.
 
 **Important:** Before ingestion, verify that every var index value in each h5ad has a matching entry in the feature registry. The gene resolver's union/dedup step can occasionally drop features that exist in only one experiment. If features are missing, add them to the registry CSV before registering.
 
@@ -229,9 +223,9 @@ if limit > 0:
     obs = obs.iloc[:limit]
 adata.obs = obs
 
-# Set global_feature_uid on var using the mapping from step 6
-gene_ids = list(adata.var.index)
-adata.var["global_feature_uid"] = [var_index_to_uid[gid] for gid in gene_ids]
+# Set global_feature_uid on var from the standardized var CSV (written by gene-resolver)
+var_df = pd.read_csv(exp_dir / f"{feature_space}_standardized_var.csv", index_col=0)
+adata.var["global_feature_uid"] = var_df["global_feature_uid"].values
 
 # Create dataset record — zarr_group MUST be the auto-generated dataset uid.
 # Do NOT use accession IDs, experiment names, or feature spaces as zarr_group.
@@ -288,7 +282,6 @@ These columns are assembled by `assemble_fragments.py` (step 2) from `|`-delimit
 
 **Key rules:**
 - Parse JSON strings to actual Python lists before setting on `adata.obs` (LanceDB stores native lists, not JSON strings)
-- `perturbation_search_string` is auto-computed by `add_anndata_batch` via the schema's `compute_auto_fields()` classmethod — do NOT set it manually
 - All perturbation list columns must have matching lengths per row
 - For datasets with multiple perturbation types, UIDs from different FK tables are interleaved in the same list
 
@@ -326,7 +319,7 @@ from lancell.schema import make_uid, DatasetRecord, FeatureBaseSchema, LancellBa
 │   ├── gene_expression_fragment_ontology_obs.csv     # from ontology resolver
 │   ├── gene_expression_fragment_perturbation_obs.csv # from perturbation resolver
 │   ├── gene_expression_standardized_obs.csv          # output of assemble_fragments.py
-│   ├── gene_expression_standardized_var.csv          # output of assemble_fragments.py
+│   ├── gene_expression_standardized_var.csv          # var index + global_feature_uid (from gene-resolver)
 │   ├── gene_expression_validated_obs.parquet         # output of validate_obs.py
 ├── Jurkat/
 │   └── ...

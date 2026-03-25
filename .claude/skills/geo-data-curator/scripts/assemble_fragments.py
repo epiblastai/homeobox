@@ -295,8 +295,23 @@ def assemble_obs(experiment_dir: Path, feature_space: str, schema_class: type | 
 
 
 def assemble_var(experiment_dir: Path, feature_space: str, schema_class: type | None) -> Path:
-    """Merge all var fragment CSVs for a feature space into {fs}_standardized_var.csv."""
+    """Merge all var fragment CSVs for a feature space into {fs}_standardized_var.csv.
+
+    If a standardized var file already exists (e.g., written by the gene-resolver
+    with ``global_feature_uid``), it is left untouched unless there are var
+    fragment files that need merging.
+    """
     print(f"Assembling var for {feature_space}...")
+
+    output_path = experiment_dir / f"{feature_space}_standardized_var.csv"
+
+    # Check for var fragment files that need merging
+    pattern = f"{feature_space}_fragment_*_var.csv"
+    fragment_paths = sorted(experiment_dir.glob(pattern))
+
+    if not fragment_paths and output_path.exists():
+        print(f"  {output_path.name} already exists (written by resolver), skipping")
+        return output_path
 
     # Load raw var for the authoritative index
     raw_var_path = experiment_dir / f"{feature_space}_raw_var.csv"
@@ -305,7 +320,6 @@ def assemble_var(experiment_dir: Path, feature_space: str, schema_class: type | 
     raw_var_index = pd.read_csv(raw_var_path, index_col=0, usecols=[0]).index
 
     # Load all var fragments for this feature space
-    pattern = f"{feature_space}_fragment_*_var.csv"
     fragments = load_fragments(experiment_dir, pattern)
 
     if not fragments:
@@ -327,7 +341,6 @@ def assemble_var(experiment_dir: Path, feature_space: str, schema_class: type | 
     assembled = coerce_string_dtypes(assembled)
 
     # Write final standardized var
-    output_path = experiment_dir / f"{feature_space}_standardized_var.csv"
     assembled.to_csv(output_path)
     print(f"  wrote {output_path.name}: {len(assembled.columns)} columns, {len(assembled)} rows")
     return output_path

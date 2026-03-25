@@ -38,8 +38,6 @@ This resolver operates in **Phase B** (per-experiment obs resolution). It reads 
 
 **Column naming:** Output uses schema field names directly — `cell_type` not `validated_cell_type`. For organism fields, output the resolved scientific name (e.g., `"Homo sapiens"`, `"Mus musculus"`) — do not convert to common names.
 
-**Rule:** Save the fragment CSV after adding each pair of columns to prevent losing work.
-
 ## Reporting
 
 Each run must write a markdown report to `resolver_reports/` in the working directory.
@@ -68,249 +66,160 @@ from lancell.standardization import (
 from lancell.standardization.types import OntologyResolution, ResolutionReport
 ```
 
+## Scripts
+
+### `scripts/resolve_ontology.py`
+
+Handles the standard ontology resolution workflow: control detection, resolution via `resolve_ontology_terms`, column writing, and report generation.
+
+```
+python .claude/skills/ontology-resolver/scripts/resolve_ontology.py \
+    <input_csv> <output_csv> \
+    --field <obs_col>:<schema_field>:<entity> [...] \
+    [--organism human] \
+    [--corrections corrections.json] \
+    [--report-dir resolver_reports]
+```
+
+| Argument | Description |
+|---|---|
+| `input_csv` | Path to `{fs}_raw_obs.csv` (must have `index_col=0`) |
+| `output_csv` | Path to fragment output (`{fs}_fragment_ontology_obs.csv`) |
+| `--field` | Repeatable. Format: `obs_column:schema_field:ENTITY_TYPE`. Entity is the `OntologyEntity` enum name (e.g., `CELL_TYPE`, `TISSUE`, `DISEASE`). |
+| `--organism` | Organism for development_stage resolution (default: `human`) |
+| `--corrections` | JSON file with correction mappings (see below) |
+| `--report-dir` | Output directory for markdown report (default: `resolver_reports` in input dir) |
+
+The script writes the fragment CSV with `{schema_field}`, `{schema_field}_ontology_id` column pairs plus the `ontology_resolved` boolean. It prints per-field resolution stats and unresolved values to stdout.
+
+### Corrections format
+
+A JSON file mapping obs column names to `{original: corrected}` dictionaries:
+
+```json
+{
+    "cell_type_annotation": {
+        "T-cell": "T cell",
+        "B-cell": "B cell",
+        "Monocyte/Macrophage": "monocyte"
+    }
+}
+```
+
+Corrections are applied before resolution. Build these after reviewing unresolved values from a first pass.
+
+### `finalize_features.py` — Schema finalization with type coercion (shared)
+
+Uses the shared `gene-resolver/scripts/finalize_features.py` script if the ontology fragment needs to be written to parquet for direct LanceDB ingestion.
+
+```bash
+python .claude/skills/gene-resolver/scripts/finalize_features.py \
+    <resolved_csv> <output_parquet> <schema_module> <schema_class> \
+    [--column KEY=VALUE ...]
+```
+
 ---
 
-## Step 1: Load and inspect
+## Agent Workflow
+
+### 1. Inspect raw obs and determine field mappings
+
+Read the raw obs CSV. Identify which columns contain ontology-resolvable metadata and map each to a schema field name and `OntologyEntity`:
 
 ```python
 import pandas as pd
-from pathlib import Path
-
-experiment_dir = Path("<experiment_dir>")
-raw_obs_path = experiment_dir / f"{fs}_raw_obs.csv"
-raw_obs = pd.read_csv(raw_obs_path, index_col=0)
-
-# Initialize the fragment DataFrame (same index as raw obs, no columns yet)
-fragment_path = experiment_dir / f"{fs}_fragment_ontology_obs.csv"
-fragment = pd.DataFrame(index=raw_obs.index)
+raw_obs = pd.read_csv("<experiment_dir>/<fs>_raw_obs.csv", index_col=0)
+for col in raw_obs.columns:
+    unique = raw_obs[col].dropna().unique()
+    print(f"{col}: {len(unique)} unique — {list(unique[:5])}")
 ```
 
-Identify which obs columns map to which ontology entities. The caller provides this mapping, or derive it from the schema field classification:
+Not every dataset has every ontology field. If a column is absent or entirely null, skip it.
 
-```python
-# Example mapping from raw obs columns to schema fields + ontology entities
-ontology_fields = {
-    "cell_type_annotation": ("cell_type", OntologyEntity.CELL_TYPE),
-    "donor_tissue": ("tissue", OntologyEntity.TISSUE),
-    "diagnosis": ("disease", OntologyEntity.DISEASE),
-}
+### 2. Determine organism context
 
-for col, (field_name, entity) in ontology_fields.items():
-    unique_values = raw_obs[col].dropna().unique().tolist()
-    print(f"{col} -> {field_name} ({entity.value}): {len(unique_values)} unique values")
-    print(f"  Sample: {unique_values[:10]}")
+Identify the organism from the dataset metadata or a dedicated organism column. Pass it to `--organism` for correct development_stage dispatch (HsapDv for human, MmusDv for mouse).
+
+### 3. Run the script
+
+```bash
+python .claude/skills/ontology-resolver/scripts/resolve_ontology.py \
+    /path/to/{fs}_raw_obs.csv \
+    /path/to/{fs}_fragment_ontology_obs.csv \
+    --field cell_type_annotation:cell_type:CELL_TYPE \
+    --field donor_tissue:tissue:TISSUE \
+    --field diagnosis:disease:DISEASE \
+    --organism human
 ```
 
-Not every dataset has every ontology field. If a schema ontology field is missing from the raw obs, omit it from the fragment. If the column exists but is entirely null, skip resolution for that field and either omit it or write null column pairs consistently for that dataset.
+### 4. Review unresolved values
 
----
+The script prints unresolved values to stdout. For each:
 
-## Step 2: Control detection
-
-Some ontology columns (especially `cell_type`, `disease`) may contain control-like values from perturbation datasets.
-
-```python
-for col, (_, entity) in ontology_fields.items():
-    unique_values = raw_obs[col].dropna().unique().tolist()
-    control_flags = detect_control_labels(unique_values)
-    controls = [v for v, is_ctrl in zip(unique_values, control_flags) if is_ctrl]
-    if controls:
-        print(f"{col}: detected control labels: {controls}")
-```
-
-Control labels in ontology columns are less common than in perturbation columns. When they appear, they map to `None` in the output column — they are not ontology terms.
-
-**Important:** Do not derive `is_negative_control` / `negative_control_type` from ontology columns. Those fields are populated by perturbation resolvers (molecule-resolver, genetic-perturbation-resolver) from perturbation target columns, not from metadata like cell_type or tissue.
-
----
-
-## Step 3: Resolve each entity
-
-Process each ontology field one at a time. For each field:
+- **Case/whitespace issues** — already handled by `resolve_ontology_terms`, but check for unusual Unicode
+- **Abbreviations** — `"T cell"` vs `"T-cell"` vs `"T lymphocyte"`. Build corrections.
+- **Concatenated annotations** — `"CD4+ T cell (activated)"` may need qualifier stripping
+- **Dataset-specific labels** — `"Cluster_5"`, `"Unknown"`, `"Other"` are not ontology terms; accept as unresolved
+- **Near-misses** — use hierarchy navigation to find the correct term:
 
 ```python
-col = "<column_name>"
-field_name = "<schema_field_name>"
-entity = OntologyEntity.<ENTITY>
-unique_values = raw_obs[col].dropna().unique().tolist()
-
-# Filter out control labels
-control_flags = detect_control_labels(unique_values)
-actual_values = [v for v, is_ctrl in zip(unique_values, control_flags) if not is_ctrl]
-control_values = [v for v, is_ctrl in zip(unique_values, control_flags) if is_ctrl]
-
-# Resolve
-report = resolve_ontology_terms(actual_values, entity, organism=organism)
-print(f"{entity.value}: Resolved {report.resolved}/{report.total}, Unresolved: {report.unresolved}")
-if report.unresolved_values:
-    print(f"  Unresolved: {report.unresolved_values}")
-if report.ambiguous_values:
-    print(f"  Ambiguous: {report.ambiguous_values}")
-```
-
-### Entity-specific notes
-
-**organism** — Common values: `"Homo sapiens"`, `"Mus musculus"`. These resolve against NCBITaxon. Use the resolved scientific name directly — do not convert to common names.
-
-**development_stage** — Pass the `organism` parameter to select the correct ontology prefix:
-
-```python
-report = resolve_ontology_terms(actual_values, OntologyEntity.DEVELOPMENT_STAGE, organism="human")
-# Uses HsapDv for human, MmusDv for mouse
-```
-
-**sex** — Only 3 canonical values: `"female"` (PATO:0000383), `"male"` (PATO:0000384), `"unknown"` (PATO:0000461). The value `"other"` also maps to `"unknown sex"`. Resolution is hardcoded (not from the local DB).
-
-**cell_line** — Uses the OLS4 API (CLO is OWL-only, not in the local ontology_terms table). Exact matches get confidence 1.0; fuzzy matches get confidence 0.8 and may include alternatives. Flag fuzzy matches for user review:
-
-```python
-for res in report.results:
-    if isinstance(res, OntologyResolution) and res.confidence == 0.8:
-        print(f"  Fuzzy match: '{res.input_value}' -> '{res.resolved_value}' ({res.ontology_term_id})")
-        if res.alternatives:
-            print(f"    Alternatives: {res.alternatives}")
-```
-
-**assay** — Free-text assay names (e.g., `"10x 3' v3"`, `"Smart-seq2"`, `"sci-RNA-seq"`) must match EFO terms. Many assay descriptions in GEO metadata do not match EFO exactly — investigate failures carefully.
-
----
-
-## Step 4: Investigate failures
-
-When values fail resolution, investigate each one before giving up.
-
-### Common failure patterns
-
-- **Case/whitespace issues:** Already handled by `resolve_ontology_terms` (case-insensitive match), but check for leading/trailing whitespace or unusual Unicode characters
-- **Abbreviations:** `"T cell"` vs `"T-cell"` vs `"T lymphocyte"` — the synonym index covers many of these, but not all
-- **Concatenated annotations:** `"CD4+ T cell (activated)"` — may need to strip qualifiers
-- **Dataset-specific labels:** `"Cluster_5"`, `"Unknown"`, `"Other"` — these are not ontology terms; keep as-is with `resolved=False`
-- **Deprecated terms:** Rarely, a term was obsoleted in a newer ontology version
-
-### Use hierarchy navigation to find near-misses
-
-If a value looks like a valid ontology term but doesn't match, search for similar terms:
-
-```python
-from lancell.standardization import get_ontology_ancestors, get_ontology_descendants
-
-# If you know a parent term, look at its descendants
+from lancell.standardization import get_ontology_descendants
 descendants = get_ontology_descendants("CL:0000084", OntologyEntity.CELL_TYPE, max_depth=2)
-for term_id, name in descendants:
-    print(f"  {term_id}: {name}")
 ```
 
-### Build correction mappings and re-resolve
+### 5. Re-run with corrections (if needed)
 
-```python
-corrections = {
-    "T-cell": "T cell",
-    "B-cell": "B cell",
-    "Monocyte/Macrophage": "monocyte",
-    # ... build by inspecting unresolved values
-}
+Build a corrections JSON and re-run:
 
-corrected_values = list(set(corrections.values()))
-correction_report = resolve_ontology_terms(corrected_values, entity, organism=organism)
-
-# Merge results
-resolution_map = {res.input_value: res for res in report.results if res.resolved_value is not None}
-for orig, fixed in corrections.items():
-    for res in correction_report.results:
-        if res.input_value == fixed and res.resolved_value is not None:
-            resolution_map[orig] = res
-            break
+```bash
+python .claude/skills/ontology-resolver/scripts/resolve_ontology.py \
+    /path/to/{fs}_raw_obs.csv \
+    /path/to/{fs}_fragment_ontology_obs.csv \
+    --field cell_type_annotation:cell_type:CELL_TYPE \
+    --corrections /path/to/corrections.json \
+    --organism human
 ```
+
+### 6. Verify fragment output
+
+Confirm the fragment has the expected columns and the `ontology_resolved` counts are acceptable.
 
 ---
 
-## Step 5: Write columns
+## Entity-Specific Notes
 
-For each ontology field, write two columns to the **fragment** (not the raw obs):
+**organism** — Common values: `"Homo sapiens"`, `"Mus musculus"`. Use the resolved scientific name directly — do not convert to common names.
 
-```python
-# Build value maps from resolution results
-name_map = {}
-id_map = {}
-for res in report.results:
-    if res.resolved_value is not None:
-        name_map[res.input_value] = res.resolved_value
-        id_map[res.input_value] = res.ontology_term_id
-    else:
-        # Keep original value for name, None for ontology_id
-        name_map[res.input_value] = res.input_value
-        id_map[res.input_value] = None
+**development_stage** — Pass `--organism` to select the correct ontology (HsapDv for human, MmusDv for mouse). Without it, both are searched and may produce wrong matches.
 
-# Controls map to None
-for ctrl in control_values:
-    name_map[ctrl] = None
-    id_map[ctrl] = None
+**sex** — Only 3 canonical values: `"female"` (PATO:0000383), `"male"` (PATO:0000384), `"unknown"` (PATO:0000461). `"other"` maps to `"unknown sex"`. Resolution is hardcoded (not from the local DB).
 
-# Write columns to fragment using schema field names directly (no validated_ prefix)
-field_name = "<schema_field_name>"  # e.g., "cell_type", "tissue"
-fragment[field_name] = raw_obs[col].map(name_map)
-fragment[f"{field_name}_ontology_id"] = raw_obs[col].map(id_map)
-fragment.to_csv(fragment_path)
-```
+**cell_line** — Uses Cellosaurus local DB with FTS fuzzy search fallback. Exact matches get confidence 1.0; fuzzy matches get confidence 0.7. Flag fuzzy matches for user review.
 
-After processing all ontology fields, write the `ontology_resolved` column. A row is resolved only if **all** its ontology fields resolved:
-
-```python
-# A row is resolved if every non-None field has a corresponding ontology_id
-fragment["ontology_resolved"] = True
-for field_name in ontology_fields_processed:
-    id_col = f"{field_name}_ontology_id"
-    # Mark unresolved where value exists but ontology_id is missing
-    has_value = fragment[field_name].notna()
-    has_id = fragment[id_col].notna()
-    fragment.loc[has_value & ~has_id, "ontology_resolved"] = False
-
-fragment.to_csv(fragment_path)
-```
+**assay** — Free-text assay names (e.g., `"10x 3' v3"`, `"Smart-seq2"`) must match EFO terms. Many GEO assay descriptions don't match EFO exactly — investigate failures carefully.
 
 ---
-
-## Step 6: Summary
-
-Print resolution statistics per field:
-
-```python
-for field_name, entity in ontology_fields.items():
-    id_col = f"{field_name}_ontology_id"
-    total = fragment[field_name].notna().sum()
-    resolved = fragment[id_col].notna().sum()
-    print(f"{field_name} ({entity.value}): {resolved}/{total} resolved")
-```
-
-Flag any remaining unresolved values for user review. Do not silently drop them.
-
----
-
-## Resolution Strategy
-
-All output columns follow the same principle: **never NaN unless there is genuinely no value**, and **always flag resolution status.**
-
-1. **Resolution succeeds** (`resolved_value` is not None) — use the canonical ontology name. Write the CURIE to the `_ontology_id` column. Row is resolved.
-2. **Resolution fails** (`resolved_value` is None) — keep the original value in `{field}`. Set `{field}_ontology_id` to None. Row is unresolved.
-3. **NaN only when no value exists** — e.g., the cell has no cell_type annotation. Both `{field}` and `{field}_ontology_id` are NaN.
-4. **Control labels → None** — Control values (if present in ontology columns) map to None in both columns.
 
 ## Rules
 
 - **Read-only input.** Never modify the `_raw_obs.csv` file. Write all output to the fragment file.
-- **No `validated_` prefix.** Output columns use schema field names directly: `cell_type`, `tissue`, etc.
-- **Organism as scientific name.** Output the resolved scientific name (e.g., `"Homo sapiens"`, `"Mus musculus"`). Do not convert to common names.
-- **One column pair at a time.** Process each ontology field sequentially, save the fragment after each pair. This is a durability tradeoff; for simple uniform-value datasets the extra writes may be unnecessary but are still acceptable.
-- **Use `resolve_ontology_terms()` for all entities.** It handles the dispatch to DB lookup, OLS4, or hardcoded tables internally.
-- **Pass `organism` for development_stage.** Without it, both HsapDv and MmusDv are searched — this can produce wrong matches for organism-specific stages.
-- **Fuzzy cell_line matches.** OLS4 fuzzy matches (confidence 0.8) should be accepted by default but logged with a warning. Present alternatives to the user if possible. Note: CLO catalogs cell bank deposits, so names like "RCB0806 cell" instead of "Jurkat" are expected — this is a known CLO limitation (Cellosaurus integration is planned).
+- **No `validated_` prefix.** Output columns use schema field names directly.
+- **Organism as scientific name.** Do not convert to common names.
+- **Use `resolve_ontology_terms()` for all entities.** It handles dispatch to DB lookup, OLS4, or hardcoded tables internally.
+- **Pass `organism` for development_stage.** Without it, wrong matches are possible.
 - **Do not derive control fields from ontology columns.** `is_negative_control` and `negative_control_type` are perturbation-level concepts populated by perturbation resolvers.
 - **Use `detect_control_labels()` for control detection.** Do not hardcode control label sets.
-- **Never set output columns to NaN for failed resolution.** Keep the original value. Only the `_ontology_id` column is None when resolution fails.
-- **Always write an `ontology_resolved` boolean column** after all ontology fields are processed (named `ontology_resolved`, not `resolved`, to avoid collision during assembly).
-- **Column names follow the user's schema.** Use `{schema_field_name}`, not `{obs_column_name}`.
-- **Save after each column pair** to prevent losing work on interruption.
+- **Never set output columns to NaN for failed resolution.** Keep the original value. Only `_ontology_id` is None when resolution fails.
+- **Always write `ontology_resolved` boolean.** Named `ontology_resolved` to avoid collision during assembly.
+- **Save after each column pair** to prevent losing work.
 - **Never modify h5ad files.** All validated data goes into the fragment CSV only.
-- **Investigate failures before giving up.** Build correction mappings for values that are close but don't match exactly.
-- **Dataset-specific labels are acceptable as unresolved.** Cluster IDs, "Unknown", "Other" are not ontology terms — keep as-is with `ontology_resolved=False`.
-- **Ask before guessing.** If a column's entity type is ambiguous, present the options and ask the user.
+- **Investigate failures before giving up.** Build correction mappings for close-but-not-exact values.
+- **Dataset-specific labels are acceptable as unresolved.** Cluster IDs, "Unknown", "Other" are not ontology terms.
+- **Ask before guessing.** If a column's entity type is ambiguous, ask the user.
+
+## Resolution Strategy
+
+1. **Resolution succeeds** — use the canonical ontology name. Write the CURIE to `_ontology_id`. Row is resolved.
+2. **Resolution fails** — keep the original value in `{field}`. Set `{field}_ontology_id` to None. Row is unresolved.
+3. **NaN only when no value exists** — both `{field}` and `{field}_ontology_id` are NaN.
+4. **Control labels → None** — Control values map to None in both columns.
