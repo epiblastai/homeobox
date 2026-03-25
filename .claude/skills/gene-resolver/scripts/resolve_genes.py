@@ -121,14 +121,15 @@ def _resolve_ensembl_ids(
                 if not org_sub:
                     continue
                 org_symbols = [symbols[orig_idx] for _, orig_idx in org_sub]
-                valid = [(j, sym) for (j, _), sym in zip(org_sub, org_symbols) if not is_placeholder_symbol(sym)]
+                valid = [(k, orig_idx, sym) for k, ((_, orig_idx), sym) in enumerate(zip(org_sub, org_symbols)) if not is_placeholder_symbol(sym)]
                 if valid:
-                    valid_indices, valid_symbols = zip(*valid)
+                    valid_orig_indices = [orig_idx for _, orig_idx, _ in valid]
+                    valid_symbols = [sym for _, _, sym in valid]
                     fb_report = resolve_genes(list(valid_symbols), organism=organism, input_type="symbol")
                     print(f"  Symbol fallback for {organism}: {fb_report.resolved}/{fb_report.total} resolved")
-                    for j, fb_res in zip(valid_indices, fb_report.results):
+                    for orig_idx, fb_res in zip(valid_orig_indices, fb_report.results):
                         if fb_res.resolved_value is not None:
-                            all_results[org_sub[j][1]] = fb_res
+                            all_results[orig_idx] = fb_res
 
     # Handle unknowns — try first detected organism as default
     unknown_indices = [i for i, r in enumerate(all_results) if r is None]
