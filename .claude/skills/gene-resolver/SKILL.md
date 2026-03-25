@@ -15,9 +15,10 @@ For genetic perturbation target resolution (obs-level: control detection, combin
 - `GenomicFeatureSchema_raw.csv` — consolidated var data across all experiments, at the accession level. Contains `var_index`, `experiment_subdir`, and gene identifiers (symbols, Ensembl IDs, or both).
 - A user-specified target schema describing which output columns to produce.
 
-**Output (two files):**
+**Output:**
 - `GenomicFeatureSchema_resolved.csv` — all raw columns plus resolved columns (`gene_name`, `ensembl_gene_id`, `organism`, `resolved`, `uid`). This is the full intermediate output for inspection and debugging.
 - `GenomicFeatureSchema.parquet` — finalized against the target schema with correct types. Contains exactly the schema fields, no `resolved` column, no raw columns. Parquet preserves types (nullable ints, lists, bools) so the file can be loaded directly into LanceDB.
+- `{fs}_standardized_var.csv` — per-experiment var CSV with the original var index and a `global_feature_uid` column mapping each feature to its resolved UID. Written in each experiment subdirectory.
 - `resolver_reports/gene-resolver.md` — markdown report written in the working directory. Summarize inputs, output paths, resolved/unresolved counts, notable ambiguities, and any fields left blank in the finalized schema output.
 
 ## Reporting
@@ -62,6 +63,22 @@ python .claude/skills/gene-resolver/scripts/resolve_genes.py \
 | `organism` | Scientific name via `resolve_organisms()` (e.g., `"Homo sapiens"`) |
 | `resolved` | Boolean — `True` if resolution succeeded |
 | `uid` | Unique ID via `make_uid()` |
+
+### `write_standardized_var.py` — Per-experiment standardized var CSVs
+
+Reads the resolved CSV to build a `var_index → uid` mapping, then writes `{fs}_standardized_var.csv` in each experiment subdirectory containing the original var index and a `global_feature_uid` column.
+
+```bash
+python .claude/skills/gene-resolver/scripts/write_standardized_var.py \
+    <accession_dir> \
+    [--resolved-csv GenomicFeatureSchema_resolved.csv] \
+    [--feature-space gene_expression]
+```
+
+- `--resolved-csv`: Filename of the resolved CSV in the accession directory. Default: `GenomicFeatureSchema_resolved.csv`.
+- `--feature-space`: Feature space name used to find `{fs}_raw_var.csv` per experiment and name the output. Default: `gene_expression`.
+
+Experiment directories are auto-discovered by scanning for `{fs}_raw_var.csv` files under the accession directory.
 
 ### `finalize_features.py` — Schema finalization with type coercion
 
@@ -118,7 +135,20 @@ python .claude/skills/gene-resolver/scripts/finalize_features.py \
 
 The script coerces types and writes parquet — the output is ready for direct LanceDB ingestion.
 
-### 3. Write the markdown report
+### 3. Write per-experiment standardized var CSVs
+
+After finalization, write per-experiment `{fs}_standardized_var.csv` files that map each experiment's var index to the resolved UIDs:
+
+```bash
+python .claude/skills/gene-resolver/scripts/write_standardized_var.py \
+    /path/to/accession_dir \
+    --resolved-csv GenomicFeatureSchema_resolved.csv \
+    --feature-space gene_expression
+```
+
+This requires the caller (preparer) to provide the accession directory path and feature space name.
+
+### 4. Write the markdown report
 
 After finalization, write `resolver_reports/gene-resolver.md` in the working directory with the run summary and blank-field audit.
 
