@@ -93,9 +93,12 @@ def _pubchem_get_cids(identifier: str, namespace: str = "name") -> list[int]:
     """Rate-limited PubChem CID lookup."""
     import pubchempy as pcp
 
+    if not identifier or not identifier.strip():
+        return []
+
     try:
         return pcp.get_cids(identifier, namespace=namespace)
-    except pcp.BadRequestError:
+    except (pcp.BadRequestError, ValueError):
         return []
 
 
