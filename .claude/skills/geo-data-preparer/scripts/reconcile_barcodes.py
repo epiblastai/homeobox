@@ -61,8 +61,13 @@ def extract_barcodes(data_dir: Path, meta: dict, feature_space: str, idx: int) -
         frag_path = data_dir / matrix_file
         # Sample first 200K lines to get a representative barcode set
         chunks = pd.read_csv(
-            frag_path, sep="\t", header=None, comment="#",
-            usecols=[3], names=["barcode"], chunksize=200_000,
+            frag_path,
+            sep="\t",
+            header=None,
+            comment="#",
+            usecols=[3],
+            names=["barcode"],
+            chunksize=200_000,
         )
         barcodes = set()
         for chunk in chunks:
@@ -83,9 +88,7 @@ def extract_barcodes(data_dir: Path, meta: dict, feature_space: str, idx: int) -
             return set(adt_sample.columns)
         else:
             # cells×proteins: barcodes are in the index; read just the index column
-            adt_full_idx = pd.read_csv(
-                data_dir / matrix_file, sep=sep, usecols=[0]
-            )
+            adt_full_idx = pd.read_csv(data_dir / matrix_file, sep=sep, usecols=[0])
             return set(adt_full_idx.iloc[:, 0].tolist())
 
     if anndata_file:
@@ -120,7 +123,9 @@ def extract_barcodes(data_dir: Path, meta: dict, feature_space: str, idx: int) -
             adata = sc.read_10x_mtx(matrix_path.parent)
             return set(adata.obs.index)
 
-    raise ValueError(f"Cannot extract barcodes for {feature_space} from {anndata_file or matrix_file}")
+    raise ValueError(
+        f"Cannot extract barcodes for {feature_space} from {anndata_file or matrix_file}"
+    )
 
 
 def reconcile(barcode_sets: dict[str, set[str]]) -> tuple[dict[str, str], str]:
@@ -177,7 +182,9 @@ def main(experiment_dir: str) -> None:
     feature_spaces = meta["feature_spaces"]
 
     if len(feature_spaces) < 2:
-        print(f"{experiment_dir.name}: single modality ({feature_spaces[0]}), skipping reconciliation")
+        print(
+            f"{experiment_dir.name}: single modality ({feature_spaces[0]}), skipping reconciliation"
+        )
         return
 
     # Extract barcodes from each modality

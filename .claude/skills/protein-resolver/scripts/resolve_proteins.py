@@ -106,19 +106,23 @@ def resolve_protein_csv(
     # Separate isotype controls from actual proteins
     isotype_mask = [_is_isotype_control(p) for p in protein_aliases]
     control_mask = [is_control_label(p) for p in protein_aliases]
-    exclude_mask = [iso or ctrl for iso, ctrl in zip(isotype_mask, control_mask)]
+    exclude_mask = [iso or ctrl for iso, ctrl in zip(isotype_mask, control_mask, strict=False)]
 
-    actual_proteins = [p for p, exc in zip(protein_aliases, exclude_mask) if not exc]
+    actual_proteins = [p for p, exc in zip(protein_aliases, exclude_mask, strict=False) if not exc]
     isotype_count = sum(isotype_mask)
     control_count = sum(control_mask)
-    print(f"Actual proteins: {len(actual_proteins)}, Isotype controls: {isotype_count}, Other controls: {control_count}")
+    print(
+        f"Actual proteins: {len(actual_proteins)}, Isotype controls: {isotype_count}, Other controls: {control_count}"
+    )
 
     if dry_run:
         print("Dry run summary:")
         print(f"  index_col={index_col}")
         print(f"  protein source={'index' if protein_is_index else protein_col}")
         print(f"  organism={organism}")
-        print(f"  action=resolve {len(actual_proteins)} proteins, skip {sum(exclude_mask)} controls")
+        print(
+            f"  action=resolve {len(actual_proteins)} proteins, skip {sum(exclude_mask)} controls"
+        )
         return df
 
     # Resolve actual proteins
@@ -148,40 +152,37 @@ def resolve_protein_csv(
     out = df.copy()
 
     # Avoid column name collisions with the index
-    output_col_names = {"feature_name", "uniprot_id", "protein_name", "gene_name",
-                        "organism", "sequence", "sequence_length", "resolved", "uid"}
+    output_col_names = {
+        "feature_name",
+        "uniprot_id",
+        "protein_name",
+        "gene_name",
+        "organism",
+        "sequence",
+        "sequence_length",
+        "resolved",
+        "uid",
+    }
     if out.index.name in output_col_names:
         out.index = out.index.rename(f"raw_{out.index.name}")
 
     out["feature_name"] = protein_aliases
 
-    out["uniprot_id"] = [
-        res.uniprot_id if res is not None else None
-        for res in all_results
-    ]
+    out["uniprot_id"] = [res.uniprot_id if res is not None else None for res in all_results]
     out["protein_name"] = [
         res.protein_name if res is not None and res.protein_name else protein_aliases[i]
         for i, res in enumerate(all_results)
     ]
-    out["gene_name"] = [
-        res.gene_name if res is not None else None
-        for res in all_results
-    ]
+    out["gene_name"] = [res.gene_name if res is not None else None for res in all_results]
     out["organism"] = organism_scientific
-    out["sequence"] = [
-        res.sequence if res is not None else None
-        for res in all_results
-    ]
+    out["sequence"] = [res.sequence if res is not None else None for res in all_results]
     out["sequence_length"] = [
-        res.sequence_length if res is not None else None
-        for res in all_results
+        res.sequence_length if res is not None else None for res in all_results
     ]
-    out["resolved"] = [
-        res is not None and res.resolved_value is not None
-        for res in all_results
-    ]
+    out["resolved"] = [res is not None and res.resolved_value is not None for res in all_results]
     out["uid"] = [
-        res.stable_uid if res is not None
+        res.stable_uid
+        if res is not None
         else make_stable_uid("control", protein_aliases[i].lower())
         for i, res in enumerate(all_results)
     ]
@@ -190,17 +191,21 @@ def resolve_protein_csv(
 
     resolved_count = out["resolved"].sum()
     unresolved_count = (~out["resolved"]).sum()
-    print(f"\nWrote {output_path}: {len(out)} features, {resolved_count} resolved, {unresolved_count} unresolved")
+    print(
+        f"\nWrote {output_path}: {len(out)} features, {resolved_count} resolved, {unresolved_count} unresolved"
+    )
 
     # Show unresolved
     unresolved = out[~out["resolved"]]
     if len(unresolved) > 0:
-        print(f"\nUnresolved examples:")
+        print("\nUnresolved examples:")
         for idx, row in unresolved.head(20).iterrows():
             is_iso = _is_isotype_control(str(row["feature_name"]))
             is_ctrl = is_control_label(str(row["feature_name"]))
-            print(f"  {idx} -> feature_name={row['feature_name']}, "
-                  f"isotype_control={is_iso}, other_control={is_ctrl}")
+            print(
+                f"  {idx} -> feature_name={row['feature_name']}, "
+                f"isotype_control={is_iso}, other_control={is_ctrl}"
+            )
 
     return out
 
@@ -209,14 +214,20 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Resolve protein identifiers in a CSV")
     parser.add_argument("input_csv", help="Input CSV with protein identifiers")
     parser.add_argument("output_csv", help="Output CSV path")
-    parser.add_argument("--protein-col", default=None, help="Column with protein identifiers (default: auto-detect)")
-    parser.add_argument("--organism", default="human", help="Organism for resolution (default: human)")
+    parser.add_argument(
+        "--protein-col", default=None, help="Column with protein identifiers (default: auto-detect)"
+    )
+    parser.add_argument(
+        "--organism", default="human", help="Organism for resolution (default: human)"
+    )
     parser.add_argument(
         "--index-col",
         default="0",
         help='CSV column to use as index. Use "none" to disable index handling (default: 0).',
     )
-    parser.add_argument("--dry-run", action="store_true", help="Print detected columns and planned operations only")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print detected columns and planned operations only"
+    )
     args = parser.parse_args()
 
     index_col = None if str(args.index_col).lower() == "none" else int(args.index_col)

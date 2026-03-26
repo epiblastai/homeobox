@@ -132,8 +132,7 @@ def _get_schema_fields(schema_class: type) -> dict[str, dict]:
         if name in _ATLAS_AUTO_FIELDS:
             continue
         has_default = (
-            field_info.default is not PydanticUndefined
-            or field_info.default_factory is not None
+            field_info.default is not PydanticUndefined or field_info.default_factory is not None
         )
         fields[name] = {
             "category": _get_field_type_category(field_info.annotation),
@@ -145,21 +144,25 @@ def _get_schema_fields(schema_class: type) -> dict[str, dict]:
 
 def _coerce_column(series: pd.Series, category: str) -> pd.Series:
     if category == "list":
+
         def _parse(v):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return None
             if isinstance(v, str):
                 return json.loads(v)
             return v
+
         return series.apply(_parse)
 
     if category == "bool":
+
         def _to_bool(v):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return None
             if isinstance(v, bool):
                 return v
             return str(v).lower() in ("true", "1", "yes")
+
         return series.apply(_to_bool)
 
     if category == "int":
@@ -169,12 +172,14 @@ def _coerce_column(series: pd.Series, category: str) -> pd.Series:
         return series.astype("Float64")
 
     if category == "datetime":
+
         def _to_datetime(v):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return None
             if isinstance(v, datetime):
                 return v
             return datetime.fromisoformat(str(v))
+
         return series.apply(_to_datetime)
 
     # str
@@ -232,7 +237,9 @@ def resolve_pmid(data_dir: Path, pmid: str | None, title: str | None) -> str:
         return str(resolved)
 
     metadata_path = _find_metadata_path(data_dir)
-    assert metadata_path is not None, f"No metadata JSON found in {data_dir}. Use --pmid or --title."
+    assert metadata_path is not None, (
+        f"No metadata JSON found in {data_dir}. Use --pmid or --title."
+    )
     metadata = json.loads(metadata_path.read_text())
     pmids = _extract_pmids_from_metadata(metadata)
     assert pmids, f"No PMIDs found in {metadata_path.name}. Use --pmid or --title."
@@ -307,7 +314,9 @@ def write_publication_parquet(
 
         section_parquet_path = data_dir / f"{section_schema_class}.parquet"
         section_df.to_parquet(section_parquet_path, index=False)
-        print(f"Wrote {section_parquet_path.name}: {len(section_df)} rows, {len(section_df.columns)} columns")
+        print(
+            f"Wrote {section_parquet_path.name}: {len(section_df)} rows, {len(section_df.columns)} columns"
+        )
         outputs["section_parquet"] = section_parquet_path
     elif section_schema:
         print("No text sections available (no PMC full text or abstract), skipping section parquet")
@@ -336,10 +345,16 @@ if __name__ == "__main__":
         description="Fetch publication metadata and write validated parquet files"
     )
     parser.add_argument("data_dir", help="Directory to write output files to")
-    parser.add_argument("schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)")
-    parser.add_argument("publication_schema_class", help="Publication schema class name (e.g. PublicationSchema)")
     parser.add_argument(
-        "--section-schema", dest="section_schema_class", default=None,
+        "schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)"
+    )
+    parser.add_argument(
+        "publication_schema_class", help="Publication schema class name (e.g. PublicationSchema)"
+    )
+    parser.add_argument(
+        "--section-schema",
+        dest="section_schema_class",
+        default=None,
         help="Section schema class name (e.g. PublicationSectionSchema). Omit if schema has no section table.",
     )
     parser.add_argument("--pmid", help="PubMed ID to fetch directly")

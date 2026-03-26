@@ -44,9 +44,7 @@ def discover_feature_spaces(experiment_dir: Path) -> list[str]:
     return feature_spaces
 
 
-def load_fragments(
-    experiment_dir: Path, glob_pattern: str
-) -> list[pd.DataFrame]:
+def load_fragments(experiment_dir: Path, glob_pattern: str) -> list[pd.DataFrame]:
     """Load all fragment CSVs matching a glob pattern.
 
     The preparer fragment (filename contains ``fragment_preparer``) provides
@@ -347,7 +345,9 @@ def assemble_var(experiment_dir: Path, feature_space: str, schema_class: type | 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Assemble resolver fragments into standardized CSVs")
+    parser = argparse.ArgumentParser(
+        description="Assemble resolver fragments into standardized CSVs"
+    )
     parser.add_argument("experiment_dir", type=str, help="Path to the experiment directory")
     parser.add_argument(
         "--feature-spaces",

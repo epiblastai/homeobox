@@ -87,6 +87,7 @@ def _coerce_column(series: pd.Series, category: str) -> pd.Series:
         return series.apply(_parse)
 
     if category == "bool":
+
         def _to_bool(v):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return None
@@ -105,7 +106,9 @@ def _coerce_column(series: pd.Series, category: str) -> pd.Series:
 
     # str: cast to string, preserving nulls as None.
     # Handles int→str (e.g. batch_id) and all-null float64 columns.
-    return series.apply(lambda v: None if v is None or (isinstance(v, float) and pd.isna(v)) else str(v))
+    return series.apply(
+        lambda v: None if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
+    )
 
 
 def _get_obs_fields(schema_class: type) -> dict[str, dict]:
@@ -125,8 +128,7 @@ def _get_obs_fields(schema_class: type) -> dict[str, dict]:
             continue
 
         has_default = (
-            field_info.default is not PydanticUndefined
-            or field_info.default_factory is not None
+            field_info.default is not PydanticUndefined or field_info.default_factory is not None
         )
         fields[name] = {
             "category": _get_field_type_category(field_info.annotation),
@@ -196,12 +198,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate standardized obs against schema")
     parser.add_argument("standardized_obs_csv", help="Input standardized obs CSV")
     parser.add_argument("output_parquet", help="Output validated obs parquet")
-    parser.add_argument("schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)")
+    parser.add_argument(
+        "schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)"
+    )
     parser.add_argument("schema_class", help="Schema class name (e.g. CellIndex)")
     parser.add_argument(
-        "--column", action="append", default=[],
+        "--column",
+        action="append",
+        default=[],
         help="KEY=VALUE to add. If VALUE is a column name, copies it; "
-             "if 'None'/'null', sets None; otherwise uses as constant.",
+        "if 'None'/'null', sets None; otherwise uses as constant.",
     )
     args = parser.parse_args()
 

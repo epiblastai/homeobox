@@ -83,7 +83,9 @@ def _find_metadata_path(data_dir: Path) -> Path | None:
     return None
 
 
-def write_publication_json(data_dir: str, pmid: str | None = None, title: str | None = None) -> Path:
+def write_publication_json(
+    data_dir: str, pmid: str | None = None, title: str | None = None
+) -> Path:
     data_dir = Path(data_dir)
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -96,7 +98,9 @@ def write_publication_json(data_dir: str, pmid: str | None = None, title: str | 
         print(f"Found PMID: {resolved_pmid}")
     else:
         metadata_path = _find_metadata_path(data_dir)
-        assert metadata_path is not None, f"No metadata JSON found in {data_dir}. Use --pmid or --title."
+        assert metadata_path is not None, (
+            f"No metadata JSON found in {data_dir}. Use --pmid or --title."
+        )
         metadata = json.loads(metadata_path.read_text())
         pmids = _extract_pmids_from_metadata(metadata)
         assert pmids, f"No PMIDs found in {metadata_path.name}. Use --pmid or --title."
@@ -118,7 +122,9 @@ def write_publication_json(data_dir: str, pmid: str | None = None, title: str | 
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Fetch publication metadata and write publication.json")
+    parser = argparse.ArgumentParser(
+        description="Fetch publication metadata and write publication.json"
+    )
     parser.add_argument("data_dir", help="Directory to write publication.json to")
     parser.add_argument("--pmid", help="PubMed ID to fetch directly")
     parser.add_argument("--title", help="Paper title to search PubMed for")

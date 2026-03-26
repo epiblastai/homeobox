@@ -64,17 +64,13 @@ def _parse_field(field_str: str) -> tuple[str, str, OntologyEntity]:
     """Parse a --field argument into (obs_column, schema_field, entity)."""
     parts = field_str.split(":")
     if len(parts) != 3:
-        raise ValueError(
-            f"--field must be obs_column:schema_field:ENTITY_TYPE, got: {field_str!r}"
-        )
+        raise ValueError(f"--field must be obs_column:schema_field:ENTITY_TYPE, got: {field_str!r}")
     obs_col, schema_field, entity_name = parts
     try:
         entity = OntologyEntity[entity_name.upper()]
     except KeyError:
         valid = [e.name for e in OntologyEntity]
-        raise ValueError(
-            f"Unknown entity type {entity_name!r}. Valid: {valid}"
-        ) from None
+        raise ValueError(f"Unknown entity type {entity_name!r}. Valid: {valid}") from None
     return obs_col, schema_field, entity
 
 
@@ -93,8 +89,10 @@ def _resolve_field(
 
     # Control detection
     control_mask = detect_control_labels(unique_values)
-    control_labels = [v for v, is_ctrl in zip(unique_values, control_mask) if is_ctrl]
-    actual_values = [v for v, is_ctrl in zip(unique_values, control_mask) if not is_ctrl]
+    control_labels = [v for v, is_ctrl in zip(unique_values, control_mask, strict=False) if is_ctrl]
+    actual_values = [
+        v for v, is_ctrl in zip(unique_values, control_mask, strict=False) if not is_ctrl
+    ]
 
     # Apply corrections
     corrected_originals = {}
@@ -155,11 +153,7 @@ def _resolve_field(
     unresolved = [v for v in actual_values if id_map.get(v) is None]
 
     # Build resolved mappings for the report (canonical name → CURIE)
-    resolved_mappings = {
-        name_map[v]: id_map[v]
-        for v in actual_values
-        if id_map.get(v) is not None
-    }
+    resolved_mappings = {name_map[v]: id_map[v] for v in actual_values if id_map.get(v) is not None}
 
     stats = {
         "obs_col": obs_col,
@@ -271,7 +265,7 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Loaded {len(raw_obs)} rows from {args.input_csv}")
 
     # Validate columns exist
-    for obs_col, schema_field, entity in fields:
+    for obs_col, _schema_field, _entity in fields:
         if obs_col not in raw_obs.columns:
             print(
                 f"ERROR: column '{obs_col}' not found. Available: {list(raw_obs.columns)}",
@@ -325,7 +319,9 @@ def main(argv: list[str] | None = None) -> None:
 
     # Write report
     report_dir = args.report_dir or (args.input_csv.parent / "resolver_reports")
-    report_path = _write_report(report_dir, args.input_csv, args.output_csv, args.organism, all_stats)
+    report_path = _write_report(
+        report_dir, args.input_csv, args.output_csv, args.organism, all_stats
+    )
 
     # Summary
     resolved_count = fragment["ontology_resolved"].sum()

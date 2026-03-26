@@ -37,17 +37,15 @@ def write_standardized_var(
         )
     if "uid" not in resolved.columns:
         raise ValueError(
-            f"Expected 'uid' column in {resolved_path}. "
-            f"Available columns: {list(resolved.columns)}"
+            f"Expected 'uid' column in {resolved_path}. Available columns: {list(resolved.columns)}"
         )
 
-    var_to_uid = dict(zip(resolved["var_index"].astype(str), resolved["uid"]))
+    var_to_uid = dict(zip(resolved["var_index"].astype(str), resolved["uid"], strict=False))
 
     # Discover experiment directories containing raw var CSVs
     raw_var_pattern = f"{feature_space}_raw_var.csv"
     exp_dirs = sorted(
-        d for d in accession_dir.iterdir()
-        if d.is_dir() and (d / raw_var_pattern).exists()
+        d for d in accession_dir.iterdir() if d.is_dir() and (d / raw_var_pattern).exists()
     )
 
     if not exp_dirs:

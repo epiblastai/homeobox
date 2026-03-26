@@ -32,7 +32,6 @@ from typing import Union, get_args, get_origin
 import pandas as pd
 from pydantic_core import PydanticUndefined
 
-
 # -- Type introspection helpers (same logic as validate_obs.py) ----------------
 
 
@@ -67,6 +66,7 @@ def _is_nullable(annotation: type) -> bool:
 def _coerce_column(series: pd.Series, category: str) -> pd.Series:
     """Coerce a pandas Series so its dtype matches what pyarrow expects."""
     if category == "list":
+
         def _parse(v):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return None
@@ -77,6 +77,7 @@ def _coerce_column(series: pd.Series, category: str) -> pd.Series:
         return series.apply(_parse)
 
     if category == "bool":
+
         def _to_bool(v):
             if v is None or (isinstance(v, float) and pd.isna(v)):
                 return None
@@ -116,8 +117,7 @@ def _get_schema_fields(schema_class: type) -> dict[str, dict]:
             continue
 
         has_default = (
-            field_info.default is not PydanticUndefined
-            or field_info.default_factory is not None
+            field_info.default is not PydanticUndefined or field_info.default_factory is not None
         )
         fields[name] = {
             "category": _get_field_type_category(field_info.annotation),
@@ -209,12 +209,16 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Finalize resolved data against a schema")
     parser.add_argument("resolved_csv", help="Input resolved CSV")
     parser.add_argument("output_parquet", help="Output finalized parquet")
-    parser.add_argument("schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)")
+    parser.add_argument(
+        "schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)"
+    )
     parser.add_argument("schema_class", help="Schema class name (e.g. GenomicFeatureSchema)")
     parser.add_argument(
-        "--column", action="append", default=[],
+        "--column",
+        action="append",
+        default=[],
         help="KEY=VALUE to add. If VALUE is a column name, copies it; "
-             "if 'None'/'null', sets None; otherwise uses as constant.",
+        "if 'None'/'null', sets None; otherwise uses as constant.",
     )
     args = parser.parse_args()
 

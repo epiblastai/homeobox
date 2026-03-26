@@ -52,9 +52,7 @@ def download_geo_file(accession: str, filename: str, dest_dir: str) -> str:
 
 
 if __name__ == "__main__":
-    assert len(sys.argv) >= 3, (
-        f"Usage: {sys.argv[0]} <accession> <filename> [dest_dir]"
-    )
+    assert len(sys.argv) >= 3, f"Usage: {sys.argv[0]} <accession> <filename> [dest_dir]"
     accession = sys.argv[1]
     filename = sys.argv[2]
     dest_dir = sys.argv[3] if len(sys.argv) > 3 else f"/tmp/geo_agent/{accession}/"

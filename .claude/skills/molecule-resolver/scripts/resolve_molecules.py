@@ -52,7 +52,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--smiles-column", default=None, help="Column with SMILES strings")
     parser.add_argument("--vendor-column", default=None, help="Column with vendor names")
     parser.add_argument("--catalog-column", default=None, help="Column with catalog numbers")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Output directory (default: same as input)")
+    parser.add_argument(
+        "--output-dir", type=Path, default=None, help="Output directory (default: same as input)"
+    )
     args = parser.parse_args(argv)
 
     raw_df = pd.read_csv(args.input_csv, index_col=0)
@@ -60,7 +62,10 @@ def main(argv: list[str] | None = None) -> None:
     output_dir = args.output_dir or args.input_csv.parent
 
     if compound_col not in raw_df.columns:
-        print(f"ERROR: column '{compound_col}' not found. Available: {list(raw_df.columns)}", file=sys.stderr)
+        print(
+            f"ERROR: column '{compound_col}' not found. Available: {list(raw_df.columns)}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     print(f"Compounds: {len(raw_df)}, Columns: {list(raw_df.columns)}")
@@ -70,8 +75,12 @@ def main(argv: list[str] | None = None) -> None:
     # ------------------------------------------------------------------
     unique_compounds = raw_df[compound_col].dropna().unique().tolist()
     control_mask = detect_control_labels(unique_compounds)
-    control_labels = [c for c, is_ctrl in zip(unique_compounds, control_mask) if is_ctrl]
-    actual_compounds = [c for c, is_ctrl in zip(unique_compounds, control_mask) if not is_ctrl]
+    control_labels = [
+        c for c, is_ctrl in zip(unique_compounds, control_mask, strict=False) if is_ctrl
+    ]
+    actual_compounds = [
+        c for c, is_ctrl in zip(unique_compounds, control_mask, strict=False) if not is_ctrl
+    ]
     print(f"Control labels: {control_labels}")
     print(f"Actual compounds: {len(actual_compounds)}")
 
@@ -110,7 +119,10 @@ def main(argv: list[str] | None = None) -> None:
             inchi_keys.append(None)
             chembl_ids.append(None)
             resolved_flags.append(True)
-        elif str(compound) in resolution_map and resolution_map[str(compound)].resolved_value is not None:
+        elif (
+            str(compound) in resolution_map
+            and resolution_map[str(compound)].resolved_value is not None
+        ):
             res = resolution_map[str(compound)]
             names.append(res.resolved_value or res.input_value)
             smiles_list.append(res.canonical_smiles)
@@ -156,7 +168,10 @@ def main(argv: list[str] | None = None) -> None:
         compound = row[compound_col]
         if pd.isna(compound) or is_control_label(str(compound)):
             uids.append(make_stable_uid("control", str(compound).lower()))
-        elif str(compound) in resolution_map and resolution_map[str(compound)].resolved_value is not None:
+        elif (
+            str(compound) in resolution_map
+            and resolution_map[str(compound)].resolved_value is not None
+        ):
             uids.append(resolution_map[str(compound)].stable_uid)
         else:
             uids.append(make_stable_uid("unresolved", str(compound)))
@@ -166,7 +181,8 @@ def main(argv: list[str] | None = None) -> None:
     resolved_df.to_csv(output_path)
 
     n_controls = sum(
-        1 for _, row in resolved_df.iterrows()
+        1
+        for _, row in resolved_df.iterrows()
         if pd.notna(row[compound_col]) and is_control_label(str(row[compound_col]))
     )
     n_resolved = resolved_df["resolved"].sum()
