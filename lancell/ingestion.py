@@ -63,6 +63,49 @@ def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
         )
 
 
+def deduplicate_var(
+    mat: sp.spmatrix,
+    var_df: pd.DataFrame,
+    uid_column: str = "global_feature_uid",
+) -> tuple[sp.csr_matrix, pd.DataFrame]:
+    """Merge matrix columns that share the same feature UID by summing.
+
+    When multiple original features (e.g. Ensembl IDs) map to the same
+    canonical feature UID, this function collapses them by summing the
+    corresponding matrix columns. The returned var keeps the first row
+    for each unique UID.
+
+    Uses a sparse aggregation matrix (n_orig × n_deduped) so the cost is
+    a single sparse matmul — no Python loops over columns.
+
+    Returns the input unchanged if there are no duplicates.
+    """
+    if uid_column not in var_df.columns:
+        return sp.csr_matrix(mat), var_df
+
+    uids = var_df[uid_column].values
+    unique_uids, inverse = np.unique(uids, return_inverse=True)
+
+    if len(unique_uids) == len(uids):
+        return sp.csr_matrix(mat), var_df
+
+    n_orig = len(uids)
+    n_dedup = len(unique_uids)
+
+    # Build aggregation matrix: A[i, j] = 1 iff original col i maps to deduped col j
+    agg = sp.csc_matrix(
+        (np.ones(n_orig, dtype=mat.dtype), (np.arange(n_orig), inverse)),
+        shape=(n_orig, n_dedup),
+    )
+    mat_dedup = sp.csr_matrix(mat @ agg)
+
+    # Keep the first row in var for each unique UID
+    first_indices = np.unique(inverse, return_index=True)[1]
+    var_dedup = var_df.iloc[first_indices].copy()
+
+    return mat_dedup, var_dedup
+
+
 def _is_backed_csr(adata: ad.AnnData) -> bool:
     """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
     import h5py
