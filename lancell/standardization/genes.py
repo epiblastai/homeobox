@@ -16,6 +16,7 @@ from lancell.standardization.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
     ORGANISMS_TABLE,
+    fts_fuzzy_search,
     get_reference_db,
 )
 from lancell.standardization.types import GeneResolution, ResolutionReport
@@ -412,6 +413,74 @@ def resolve_genes(
         for org, org_ids in ids_by_organism.items():
             ensembl_results = _resolve_ensembl_ids(org_ids, org)
             results.update(ensembl_results)
+
+    # FTS fuzzy fallback for unresolved symbols
+    unresolved_symbols = [s for s in symbols if s not in results]
+    if unresolved_symbols:
+        org_record = _get_organism_record(organism)
+        scientific_name = org_record["scientific_name"]
+        where_clause = f"organism = '{sql_escape(scientific_name)}'"
+
+        fts_resolved_ids: list[str] = []
+        fts_symbol_map: dict[str, str] = {}  # symbol -> best ensembl_gene_id
+
+        for sym in unresolved_symbols:
+            hits = fts_fuzzy_search(
+                GENOMIC_FEATURE_ALIASES_TABLE,
+                "alias",
+                sym,
+                where=where_clause,
+                fuzziness=1,
+                limit=5,
+                select=["alias", "alias_original", "ensembl_gene_id", "is_canonical"],
+            )
+            if not hits:
+                continue
+
+            # Deduplicate by ensembl_gene_id, prefer canonical
+            seen: dict[str, bool] = {}
+            for h in hits:
+                eid = h["ensembl_gene_id"]
+                is_can = h["is_canonical"]
+                if eid not in seen:
+                    seen[eid] = is_can
+                else:
+                    seen[eid] = seen[eid] or is_can
+
+            unique_ids = list(seen.keys())
+            canonical_ids = [eid for eid, is_can in seen.items() if is_can]
+
+            if len(canonical_ids) == 1:
+                best_id = canonical_ids[0]
+            elif len(unique_ids) == 1:
+                best_id = unique_ids[0]
+            else:
+                sorted_ids = sorted(canonical_ids) if canonical_ids else sorted(unique_ids)
+                best_id = sorted_ids[0]
+
+            alternatives = sorted(eid for eid in unique_ids if eid != best_id)
+            fts_symbol_map[sym] = best_id
+            fts_resolved_ids.append(best_id)
+
+            results[sym] = GeneResolution(
+                input_value=sym,
+                resolved_value=best_id,
+                confidence=0.8,
+                source="lancedb_fts",
+                ensembl_gene_id=best_id,
+                organism=organism,
+                alternatives=alternatives,
+            )
+
+        # Enrich FTS results with symbol/ncbi_gene_id
+        if fts_resolved_ids:
+            features_df = _batch_lookup_features(list(set(fts_resolved_ids)), scientific_name)
+            feature_map = {row["ensembl_gene_id"]: row for row in features_df.iter_rows(named=True)}
+            for sym, eid in fts_symbol_map.items():
+                feat = feature_map.get(eid)
+                if feat and sym in results:
+                    results[sym].symbol = feat["symbol"]
+                    results[sym].ncbi_gene_id = feat["ncbi_gene_id"]
 
     # Build final results list aligned with input
     final_results: list[GeneResolution] = []

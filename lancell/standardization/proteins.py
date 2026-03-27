@@ -10,6 +10,7 @@ from lancell.standardization.genes import _get_organism_record
 from lancell.standardization.metadata_table import (
     PROTEIN_ALIASES_TABLE,
     PROTEINS_TABLE,
+    fts_fuzzy_search,
     get_reference_db,
 )
 from lancell.standardization.types import ProteinResolution, ResolutionReport
@@ -162,6 +163,71 @@ def resolve_proteins(
                 res.gene_name = prot["gene_name"]
                 res.sequence = prot["sequence"]
                 res.sequence_length = prot["sequence_length"]
+
+    # FTS fuzzy fallback for unresolved values
+    unresolved_values = [v for v in values if v not in results]
+    if unresolved_values:
+        where_clause = f"organism = '{sql_escape(scientific_name)}'"
+
+        fts_resolved_ids: list[str] = []
+        fts_value_map: dict[str, str] = {}  # value -> best uniprot_id
+
+        for val in unresolved_values:
+            hits = fts_fuzzy_search(
+                PROTEIN_ALIASES_TABLE,
+                "alias",
+                val,
+                where=where_clause,
+                fuzziness=1,
+                limit=5,
+                select=["alias", "alias_original", "uniprot_id", "is_canonical"],
+            )
+            if not hits:
+                continue
+
+            # Deduplicate by uniprot_id, prefer canonical
+            seen: dict[str, bool] = {}
+            for h in hits:
+                uid = h["uniprot_id"]
+                is_can = h["is_canonical"]
+                if uid not in seen:
+                    seen[uid] = is_can
+                else:
+                    seen[uid] = seen[uid] or is_can
+
+            unique_ids = list(seen.keys())
+            canonical_ids = [uid for uid, is_can in seen.items() if is_can]
+
+            if len(canonical_ids) == 1:
+                best_id = canonical_ids[0]
+            elif len(unique_ids) == 1:
+                best_id = unique_ids[0]
+            else:
+                sorted_ids = sorted(canonical_ids) if canonical_ids else sorted(unique_ids)
+                best_id = sorted_ids[0]
+
+            alternatives = sorted(uid for uid in unique_ids if uid != best_id)
+            fts_value_map[val] = best_id
+            fts_resolved_ids.append(best_id)
+
+            results[val] = ProteinResolution(
+                input_value=val,
+                resolved_value=best_id,
+                confidence=0.8,
+                source="lancedb_fts",
+                uniprot_id=best_id,
+                organism=organism,
+                alternatives=alternatives,
+            )
+
+        # Enrich FTS results with protein_name and gene_name
+        if fts_resolved_ids:
+            protein_map = _batch_lookup_proteins(list(set(fts_resolved_ids)))
+            for val, uid in fts_value_map.items():
+                prot = protein_map.get(uid)
+                if prot and val in results:
+                    results[val].protein_name = prot["protein_name"]
+                    results[val].gene_name = prot["gene_name"]
 
     # Build final results list aligned with input order
     final_results: list[ProteinResolution] = []

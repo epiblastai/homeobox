@@ -7,7 +7,8 @@ sex (PATO), cell_line (Cellosaurus).
 Strategy:
 1. Exact name match (case-insensitive) against ontology_terms table → confidence 1.0
 2. Synonym match (pipe-delimited, case-insensitive) → confidence 0.9
-3. No match → unresolved (confidence 0.0)
+3. FTS fuzzy match (name then synonyms, fuzziness=2) → confidence 0.8
+4. No match → unresolved (confidence 0.0)
 
 Cell lines use a local Cellosaurus table (cell_lines + cell_line_synonyms).
 """
@@ -22,6 +23,7 @@ from lancell.standardization.metadata_table import (
     CELL_LINE_SYNONYMS_TABLE,
     CELL_LINES_TABLE,
     ONTOLOGY_TERMS_TABLE,
+    fts_fuzzy_search,
     get_reference_db,
 )
 from lancell.standardization.types import CellLineResolution, OntologyResolution, ResolutionReport
@@ -327,6 +329,7 @@ def _resolve_against_db(
     values: list[str],
     entity: OntologyEntity,
     organism: str | None = None,
+    min_similarity: float = 0.8,
 ) -> list[OntologyResolution]:
     """Resolve values against the local ontology_terms table."""
     ontology_name = _ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
@@ -384,6 +387,52 @@ def _resolve_against_db(
             )
         )
 
+    # Step 4: FTS fuzzy fallback for unresolved terms
+    if min_similarity > 0.8:
+        return results
+
+    unresolved_indices = [i for i, r in enumerate(results) if r.confidence == 0.0]
+    if not unresolved_indices:
+        return results
+
+    prefix_filter = " OR ".join(f"ontology_prefix = '{sql_escape(p)}'" for p in prefixes)
+    where_clause = f"({prefix_filter}) AND is_obsolete = false"
+
+    for idx in unresolved_indices:
+        query = results[idx].input_value.strip()
+        if not query:
+            continue
+
+        # Try name column first
+        hits = fts_fuzzy_search(
+            ONTOLOGY_TERMS_TABLE,
+            "name",
+            query,
+            where=where_clause,
+            limit=1,
+            select=["ontology_term_id", "name"],
+        )
+        if not hits:
+            # Fall back to synonyms column
+            hits = fts_fuzzy_search(
+                ONTOLOGY_TERMS_TABLE,
+                "synonyms",
+                query,
+                where=where_clause,
+                limit=1,
+                select=["ontology_term_id", "name"],
+            )
+        if hits:
+            hit = hits[0]
+            results[idx] = OntologyResolution(
+                input_value=results[idx].input_value,
+                resolved_value=hit["name"],
+                confidence=0.8,
+                source="reference_db_fts",
+                ontology_term_id=hit["ontology_term_id"],
+                ontology_name=ontology_name,
+            )
+
     return results
 
 
@@ -404,8 +453,9 @@ def resolve_ontology_terms(
     organism
         Organism context (required for development_stage, ignored for most others).
     min_similarity
-        Minimum fuzzy match score (0-1) to accept a match. Currently unused
-        since resolution is exact name/synonym only, kept for API compatibility.
+        Minimum fuzzy match score (0-1) to accept a match. FTS fuzzy
+        matches have confidence 0.8, so setting this above 0.8 disables
+        fuzzy fallback.
 
     Returns
     -------
@@ -417,7 +467,7 @@ def resolve_ontology_terms(
     elif entity == OntologyEntity.CELL_LINE:
         results = _resolve_cell_lines(values)
     else:
-        results = _resolve_against_db(values, entity, organism)
+        results = _resolve_against_db(values, entity, organism, min_similarity)
 
     resolved_count = sum(1 for r in results if r.resolved_value is not None)
     ambiguous_count = sum(1 for r in results if len(r.alternatives) > 1)
