@@ -403,6 +403,28 @@ class BiologicPerturbationSchema(LanceModel):
 
 
 # ---------------------------------------------------------------------------
+# Registry schemas mapping (feature space → registry schema)
+# ---------------------------------------------------------------------------
+
+REGISTRY_SCHEMAS: dict[str, type[FeatureBaseSchema]] = {
+    "gene_expression": GenomicFeatureSchema,
+    "chromatin_accessibility": ReferenceSequenceSchema,
+    "protein_abundance": ProteinSchema,
+    "image_features": ImageFeatureSchema,
+}
+
+# Foreign-key tables that should be pre-created when initializing the atlas.
+# Keyed by table name → LanceModel subclass.
+FK_TABLE_SCHEMAS: dict[str, type[LanceModel]] = {
+    "publications": PublicationSchema,
+    "publication_sections": PublicationSectionSchema,
+    "genetic_perturbations": GeneticPerturbationSchema,
+    "small_molecules": SmallMoleculeSchema,
+    "biologic_perturbations": BiologicPerturbationSchema,
+}
+
+
+# ---------------------------------------------------------------------------
 # Cell index (obs table)
 # ---------------------------------------------------------------------------
 

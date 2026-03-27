@@ -12,7 +12,7 @@ lines (PC9, M14, A549) treated with various small-molecule inhibitors:
   - GSE160244  PC9 + osimertinib/crizotinib, Drop-seq (4 GSMs, ~119k cells)
 
 Prerequisites:
-  - Prepared data in /tmp/geo_agent/GSE149383/ (from geo-data-preparer)
+  - Prepared data in /home/ubuntu/geo_agent_resolution/GSE149383/ (from geo-data-preparer)
 
 Usage:
     python -m lancell_examples.multimodal_perturbation_atlas.scripts.ingest_GSE149383 \
@@ -28,19 +28,19 @@ from pathlib import Path
 import anndata as ad
 import lancedb
 import numpy as np
-import obstore.store
 import pandas as pd
 import pyarrow as pa
 import scipy.io as sio
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas
-from lancell.ingestion import add_anndata_batch, deduplicate_var
+from lancell.atlas import RaggedAtlas, create_or_open_atlas
+from lancell.ingestion import add_anndata_batch, add_csc, deduplicate_var
 from lancell.schema import make_uid
 
 from lancell_examples.multimodal_perturbation_atlas.schema import (
     CellIndex,
     DatasetSchema,
+    REGISTRY_SCHEMAS,
     GenomicFeatureSchema,
     PublicationSchema,
     PublicationSectionSchema,
@@ -57,7 +57,7 @@ VALIDATE_SCRIPT = (
 # ---------------------------------------------------------------------------
 
 ACCESSION = "GSE149383"
-ACCESSION_DIR = Path("/tmp/geo_agent/GSE149383")
+ACCESSION_DIR = Path("/home/ubuntu/geo_agent_resolution/GSE149383")
 FEATURE_SPACE = "gene_expression"
 
 # Sub-series and their data format
@@ -358,44 +358,6 @@ def load_experiment(
 
 
 # ---------------------------------------------------------------------------
-# Step 4: Create or open atlas
-# ---------------------------------------------------------------------------
-
-
-def create_or_open_atlas(atlas_path: Path) -> RaggedAtlas:
-    """Create a new atlas or open an existing one."""
-    atlas_path.mkdir(parents=True, exist_ok=True)
-    zarr_path = atlas_path / "zarr_store"
-    zarr_path.mkdir(parents=True, exist_ok=True)
-    db_uri = str(atlas_path / "lance_db")
-    store = obstore.store.LocalStore(str(zarr_path))
-
-    db = lancedb.connect(db_uri)
-    existing_tables = db.list_tables().tables
-    if "cells" in existing_tables:
-        print("Opening existing atlas...")
-        return RaggedAtlas.open(
-            db_uri=db_uri,
-            cell_table_name="cells",
-            cell_schema=CellIndex,
-            store=store,
-        )
-    else:
-        print("Creating new atlas...")
-        return RaggedAtlas.create(
-            db_uri=db_uri,
-            cell_table_name="cells",
-            cell_schema=CellIndex,
-            dataset_table_name="datasets",
-            dataset_schema=DatasetSchema,
-            store=store,
-            registry_schemas={
-                "gene_expression": GenomicFeatureSchema,
-            },
-        )
-
-
-# ---------------------------------------------------------------------------
 # Step 5: Populate foreign key tables
 # ---------------------------------------------------------------------------
 
@@ -420,7 +382,7 @@ def populate_fk_tables(db_uri: str) -> str:
         )
     else:
         pub_table = db.open_table("publications")
-    pub_table.add(
+    pub_table.merge_insert(on="uid").when_not_matched_insert_all().execute(
         pa.Table.from_pandas(pub_df, schema=PublicationSchema.to_arrow_schema())
     )
     print(f"  Added {len(pub_df)} publication record(s)")
@@ -434,14 +396,27 @@ def populate_fk_tables(db_uri: str) -> str:
                 "publication_sections",
                 schema=PublicationSectionSchema.to_arrow_schema(),
             )
+            sec_table.add(
+                pa.Table.from_pandas(
+                    section_df, schema=PublicationSectionSchema.to_arrow_schema()
+                )
+            )
+            print(f"  Added {len(section_df)} publication section(s)")
         else:
             sec_table = db.open_table("publication_sections")
-        sec_table.add(
-            pa.Table.from_pandas(
-                section_df, schema=PublicationSectionSchema.to_arrow_schema()
+            existing_pubs = set(
+                sec_table.search()
+                .select(["publication_uid"])
+                .to_pandas()["publication_uid"]
             )
-        )
-        print(f"  Added {len(section_df)} publication section(s)")
+            new_sections = section_df[~section_df["publication_uid"].isin(existing_pubs)]
+            if not new_sections.empty:
+                sec_table.add(
+                    pa.Table.from_pandas(
+                        new_sections, schema=PublicationSectionSchema.to_arrow_schema()
+                    )
+                )
+            print(f"  Added {len(new_sections)} publication section(s) (skipped {len(section_df) - len(new_sections)} existing)")
 
     # --- Small molecules ---
     sm_parquet = ACCESSION_DIR / "SmallMoleculeSchema.parquet"
@@ -453,7 +428,7 @@ def populate_fk_tables(db_uri: str) -> str:
         )
     else:
         sm_table = db.open_table("small_molecules")
-    sm_table.add(
+    sm_table.merge_insert(on="uid").when_not_matched_insert_all().execute(
         pa.Table.from_pandas(
             sm_df, schema=SmallMoleculeSchema.to_arrow_schema()
         )
@@ -542,7 +517,7 @@ def ingest_experiment(
         dataset_record=dataset_record,
     )
     print(f"  Ingested {n_ingested:,} cells for {experiment} (dataset_uid={dataset_uid})")
-    return n_ingested
+    return n_ingested, dataset_uid
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +567,14 @@ def main() -> None:
     print(f"\n{'='*60}")
     print("Step 3: Create or open atlas")
     print(f"{'='*60}")
-    atlas = create_or_open_atlas(atlas_path)
+    atlas = create_or_open_atlas(
+        str(atlas_path),
+        cell_table_name="cells",
+        cell_schema=CellIndex,
+        dataset_table_name="datasets",
+        dataset_schema=DatasetSchema,
+        registry_schemas=REGISTRY_SCHEMAS,
+    )
 
     # Step 4: Populate FK tables
     print(f"\n{'='*60}")
@@ -612,9 +594,20 @@ def main() -> None:
     print("Step 6: Ingest experiments")
     print(f"{'='*60}")
     total_cells = 0
+    dataset_uids = []
     for exp in EXPERIMENTS:
-        n = ingest_experiment(atlas, exp, publication_uid, args.limit)
+        n, dataset_uid = ingest_experiment(atlas, exp, publication_uid, args.limit)
         total_cells += n
+        dataset_uids.append(dataset_uid)
+
+    # Build CSC arrays for feature-filtered queries
+    print(f"\n{'='*60}")
+    print("Building CSC arrays")
+    print(f"{'='*60}")
+    for dataset_uid in dataset_uids:
+        print(f"  Building CSC for {dataset_uid}...")
+        add_csc(atlas, zarr_group=dataset_uid, feature_space=FEATURE_SPACE)
+    print("  Done.")
 
     # Step 7: Summary
     print(f"\n{'='*60}")

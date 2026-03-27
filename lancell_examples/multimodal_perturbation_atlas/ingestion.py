@@ -280,45 +280,57 @@ def add_metadata_only_batch(
 
 def add_fragment_batch(
     atlas: RaggedAtlas,
-    bed_path: Path,
+    bed_path: Path | None = None,
     *,
     obs_df: pd.DataFrame,
     chrom_uids: dict[str, str],
     feature_space: str,
     dataset_record: DatasetRecord,
     barcode_col: str = "barcode",
+    fragments: pl.DataFrame | None = None,
 ) -> int:
-    """Ingest a BED fragment file into the atlas.
+    """Ingest fragment data into the atlas.
 
-    Parses the BED file, writes cell-sorted and genome-sorted fragment
-    arrays to zarr, writes the feature layout, and inserts cell records
-    with ``SparseZarrPointer`` values.
+    Accepts either a BED file path or a pre-parsed polars DataFrame of
+    fragments (but not both). Writes cell-sorted and genome-sorted
+    fragment arrays to zarr, writes the feature layout, and inserts cell
+    records with ``SparseZarrPointer`` values.
 
     Parameters
     ----------
     atlas
         Open RaggedAtlas.
     bed_path
-        Path to a (possibly gzipped) 4-column BED fragment file.
+        Path to a (possibly gzipped) BED fragment file (4- or 5-column).
+        Mutually exclusive with *fragments*.
     obs_df
         Validated obs DataFrame. Its index must be cell barcodes that
-        appear in the BED file. Order determines cell record order.
+        appear in the fragment data. Order determines cell record order.
     chrom_uids
         ``{chromosome_name: global_feature_uid}`` mapping for all
-        chromosomes that may appear in the BED file. Chromosomes not
-        in this dict are silently dropped.
+        chromosomes that may appear in the fragment data. Chromosomes
+        not in this dict are silently dropped.
     feature_space
         Feature space name (``"chromatin_accessibility"``).
     dataset_record
         Dataset record to register.
     barcode_col
         Name of the barcode column used internally. Defaults to ``"barcode"``.
+    fragments
+        Pre-parsed polars DataFrame with columns ``chrom`` (str),
+        ``start`` (uint32), ``length`` (uint16), and ``<barcode_col>``
+        (str) — the same schema returned by
+        :func:`~lancell.fragments.ingestion.parse_bed_fragments`.
+        Mutually exclusive with *bed_path*.
 
     Returns
     -------
     int
         Number of cells ingested.
     """
+    if (bed_path is None) == (fragments is None):
+        raise ValueError("Exactly one of bed_path or fragments must be provided.")
+
     if atlas._cell_schema is None:
         raise ValueError(
             "Cannot ingest data into an atlas opened without a cell schema."
@@ -328,8 +340,9 @@ def add_fragment_batch(
     zarr_group = dataset_record.zarr_group
 
     # --- Parse and filter fragments ---
-    print(f"  Parsing BED file: {bed_path.name} ...")
-    fragments = parse_bed_fragments(bed_path, barcode_col=barcode_col)
+    if fragments is None:
+        print(f"  Parsing BED file: {bed_path.name} ...")
+        fragments = parse_bed_fragments(bed_path, barcode_col=barcode_col)
 
     # Keep only chromosomes we have registered features for
     known_chroms = set(chrom_uids.keys())
