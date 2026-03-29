@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from lancell.atlas import RaggedAtlas
+from lancell.standardization.assemblies import get_assembly_report
 from lancell_examples.multimodal_perturbation_atlas.schema import (
     FK_TABLE_SCHEMAS,
     DatasetPerturbationIndex,
@@ -74,6 +75,60 @@ class PerturbationAtlas(RaggedAtlas):
     @cached_property
     def dataset_perturbation_index_table(self) -> "lancedb.table.Table":
         return self.db.open_table("dataset_perturbation_index")
+
+    # -- Genomic coordinate search ------------------------------------------
+
+    def search_perturbations_by_region(
+        self,
+        chromosome: str,
+        start: int,
+        end: int,
+        *,
+        organism: str = "human",
+        assembly: str = "GRCh38",
+    ) -> pl.DataFrame:
+        """Find genetic perturbations whose target overlaps a genomic region.
+
+        Parameters
+        ----------
+        chromosome:
+            UCSC chromosome name (e.g. ``"chr1"``).
+        start:
+            Start of the query region (0-based).
+        end:
+            End of the query region.
+        organism:
+            Organism common name (default ``"human"``).
+        assembly:
+            Genome assembly (default ``"GRCh38"``).
+
+        Returns
+        -------
+        pl.DataFrame
+            All rows from ``genetic_perturbations`` whose
+            ``[target_start, target_end]`` interval intersects ``[start, end]``.
+        """
+        report = get_assembly_report(organism, assembly)
+        seq = report.lookup(chromosome)
+        if seq is None or seq.genbank_accession is None:
+            raise ValueError(
+                f"Could not resolve chromosome {chromosome!r} to a GenBank accession "
+                f"in {organism} {assembly}."
+            )
+
+        genbank = seq.genbank_accession
+        # Overlap condition: target_start <= end AND target_end >= start
+        where = (
+            f"target_chromosome = '{genbank}' "
+            f"AND target_start <= {end} "
+            f"AND target_end >= {start}"
+        )
+        return (
+            self.genetic_perturbations_table
+            .search()
+            .where(where, prefilter=True)
+            .to_polars()
+        )
 
     # -- FK table maintenance -----------------------------------------------
 

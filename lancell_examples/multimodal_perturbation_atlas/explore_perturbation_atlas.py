@@ -73,42 +73,52 @@ def _():
     from lancell_examples.multimodal_perturbation_atlas.atlas import PerturbationAtlas
     from lancell_examples.multimodal_perturbation_atlas.schema import CellIndex
 
-    ATLAS_DIR = Path.home() / "multimodal_perturbation_atlas"
+    # ATLAS_DIR = Path.home() / "multimodal_perturbation_atlas"
+    ATLAS_DIR = "s3://epiblast-public/multimodal_perturbation_atlas"
     # ATLAS_DIR = Path("/tmp/atlas/cpg0021_test")
-    DB_URI = str(ATLAS_DIR / "lance_db")
-    ZARR_PATH = str(ATLAS_DIR / "zarr_store")
-    return (
-        CellIndex,
-        DB_URI,
-        PerturbationAtlas,
-        RaggedAtlas,
-        ZARR_PATH,
-        obstore,
-        pl,
-        plt,
-    )
+    DB_URI = str(ATLAS_DIR + "/lance_db")
+    ZARR_PATH = str(ATLAS_DIR + "/zarr_store")
+    return DB_URI, PerturbationAtlas, RaggedAtlas, pl, plt
 
 
 @app.cell
-def _(RaggedAtlas):
-    _atlas_restore = RaggedAtlas.restore(
-      db_uri="/home/ubuntu/multimodal_perturbation_atlas/lance_db",
-      version=3,  # or whatever your snapshot version is
-    )
+def _():
+    # _atlas_restore = RaggedAtlas.restore(
+    #     # db_uri="/home/ubuntu/multimodal_perturbation_atlas/lance_db",
+    #     db_uri=DB_URI,
+    #     version=3,  # or whatever your snapshot version is
+    # )
     return
 
 
 @app.cell
-def _(CellIndex, DB_URI, RaggedAtlas, ZARR_PATH, obstore):
-    # # --- Run once after ingestion, then comment out ---
-    _store = obstore.store.LocalStore(ZARR_PATH)
-    _atlas_rw = RaggedAtlas.open(
-        db_uri=DB_URI,
-        cell_table_name="cells",
-        cell_schema=CellIndex,
-        store=_store,
-    )
-    print(_atlas_rw.cell_table.count_rows())
+def _():
+    # import zarr
+    # _store = obstore.store.from_url("s3://epiblast-public/multimodal_perturbation_atlas/zarr_store/")
+    # zarray = zarr.open(zarr.storage.ObjectStore(store=_store), mode="r")
+    # plt.imshow(zarray["e519e04f0c8d4b3c"]["data"][6_000_000].max(0))
+    return
+
+
+@app.cell
+def _():
+    # import lancedb
+    # lancedb.connect(DB_URI).open_table("datasets").search().to_pandas()
+    return
+
+
+@app.cell
+def _():
+    # --- Run once after ingestion, then comment out ---
+    # _store = obstore.store.LocalStore(ZARR_PATH)
+    # _store = obstore.store.from_url(ZARR_PATH)
+    # _atlas_rw = RaggedAtlas.open(
+    #     db_uri=DB_URI,
+    #     cell_table_name="cells",
+    #     cell_schema=CellIndex,
+    #     store=_store,
+    # )
+    # print(_atlas_rw.cell_table.count_rows())
     # _atlas_rw.optimize()
     # version = _atlas_rw.snapshot()
     # print(f"Optimized and snapshotted: version {version}")
@@ -130,6 +140,33 @@ def _(DB_URI, PerturbationAtlas):
     atlas_rw = PerturbationAtlas.checkout_latest(db_uri=DB_URI)
     atlas_rw
     return (atlas_rw,)
+
+
+@app.cell
+def _(atlas_rw):
+    atlas_rw.list_datasets()
+    return
+
+
+@app.cell
+def _():
+    # from lancell_examples.multimodal_perturbation_atlas.atlas import PerturbationAtlas
+
+    # ATLAS_DIR = "s3://epiblast-public/multimodal_perturbation_atlas"
+    # DB_URI = str(ATLAS_DIR + "/lance_db")
+    # ZARR_PATH = str(ATLAS_DIR + "/zarr_store")
+
+    # atlas_rw = PerturbationAtlas.checkout_latest(db_uri=DB_URI)
+
+    # adata_sample = (
+    #     atlas_rw.query()
+    #     .where("dataset_uid == '8273719e7ec44b93'")
+    #     .feature_spaces("image_features")
+    #     .limit(5_000)
+    #     .to_anndata()
+    # )
+    # adata_sample
+    return
 
 
 @app.cell(hide_code=True)
@@ -336,11 +373,13 @@ def _(mo):
 
 
 @app.cell
-def _(atlas_rw, sample_uid):
+def _(atlas_rw):
     adata_sample = (
         atlas_rw.query()
-        .where(f"dataset_uid = '{sample_uid}'")
-        .feature_spaces("gene_expression")
+        # .where(f"dataset_uid = '{sample_uid}'")
+        .where("dataset_uid == '8273719e7ec44b93'")
+        # .feature_spaces("gene_expression")
+        .feature_spaces("image_features")
         .limit(5_000)
         .to_anndata()
     )
@@ -423,6 +462,24 @@ def _(mo):
     The container has a shared `obs` DataFrame for all cells, and per-modality
     `present` masks showing which cells have each modality.
     """)
+    return
+
+
+@app.cell
+def _(atlas_rw):
+    atlas_rw.db.open_table("image_features_registry").search().to_pandas()
+    return
+
+
+@app.cell
+def _(atlas_rw):
+    atlas_rw.list_datasets().to_pandas().query("uid == '8273719e7ec44b93'")
+    return
+
+
+@app.cell
+def _(atlas_rw):
+    atlas_rw.cell_table.search().where("dataset_uid == '8ff483ff97574d78'").limit(10).to_pandas()
     return
 
 
@@ -522,11 +579,6 @@ def _(atlas_rw):
 
 
 @app.cell
-def _():
-    return
-
-
-@app.cell
 def _(atlas_rw, pl):
     # Count controls vs perturbed cells
     control_counts = (
@@ -564,6 +616,12 @@ def _(atlas_rw):
     )
     print(f"{pparg_cells.height} cells with PPARG perturbation")
     pparg_cells.head(10)
+    return
+
+
+@app.cell
+def _(atlas_rw):
+    atlas_rw.search_perturbations_by_region("chr1", 1000000, 2000000)
     return
 
 

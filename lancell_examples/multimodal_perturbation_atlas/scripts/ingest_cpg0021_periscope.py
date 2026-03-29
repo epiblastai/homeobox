@@ -555,6 +555,21 @@ def run_stage2(
         shards=tile_shard,
     )
 
+    # Register dataset records (must come before write_feature_layout so
+    # add_or_reuse_layout can set layout_uid on the existing record)
+    for ds_uid, fs, nc in [(feat_ds_uid, FEATURE_SPACE, total_cells),
+                           (tile_ds_uid, TILE_FEATURE_SPACE, total_cells)]:
+        ds = DatasetSchema(
+            uid=ds_uid, zarr_group=ds_uid, feature_space=fs, n_cells=nc,
+            publication_uid=publication_uid,
+            accession_database="cellpainting-gallery", accession_id=ACCESSION,
+            dataset_description=pub_json.get("title"),
+            organism=["Homo sapiens"], tissue=None, cell_line=["HeLa"], disease=None,
+        )
+        atlas._dataset_table.add(
+            pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
+        )
+
     # Write feature layout
     var_csv = data_dir / ACCESSION / f"{FEATURE_SPACE}_standardized_var.csv"
     if var_csv.exists():
@@ -569,20 +584,6 @@ def run_stage2(
     dummy_adata = ad.AnnData(X=np.empty((1, len(var_df)), dtype=np.float32), var=var_df)
     dummy_adata.var.index = dummy_adata.var.index.astype(str)
     write_feature_layout(atlas, dummy_adata, FEATURE_SPACE, feat_ds_uid, feat_ds_uid)
-
-    # Register dataset records
-    for ds_uid, fs, nc in [(feat_ds_uid, FEATURE_SPACE, total_cells),
-                           (tile_ds_uid, TILE_FEATURE_SPACE, total_cells)]:
-        ds = DatasetSchema(
-            uid=ds_uid, zarr_group=ds_uid, feature_space=fs, n_cells=nc,
-            publication_uid=publication_uid,
-            accession_database="cellpainting-gallery", accession_id=ACCESSION,
-            dataset_description=pub_json.get("title"),
-            organism=["Homo sapiens"], tissue=None, cell_line=["HeLa"], disease=None,
-        )
-        atlas._dataset_table.add(
-            pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
-        )
 
     # Open temp zarr for batched reads (obstore-backed for BatchArray)
     temp_store = zarr.storage.ObjectStore(obstore.store.LocalStore(str(temp_zarr_path)))
