@@ -1,12 +1,14 @@
-"""Ingest cpg0021-periscope (Ramezani et al. 2025) into a RaggedAtlas.
+"""Ingest cpg0021-periscope A549 (Ramezani et al. 2025) into a RaggedAtlas.
 
-Genome-wide CRISPRko optical pooled screen (Cell Painting) in HeLa cells.
+Genome-wide CRISPRko optical pooled screen (Cell Painting) in A549 cells.
 Two-stage streaming pipeline:
 
   Stage 1 — Feature buffering
-      Stream CSV.gz shards through a process pool into a temporary dense zarr
-      array.  Collect lightweight per-cell metadata (site, coordinates, obs
-      fields) in memory.  Discard cells with invalid coordinates.
+      Stream normalized CSV.gz shards through a process pool into a temporary
+      dense zarr array.  Each shard is merged with a pre-extracted coordinates
+      parquet (raw nucleus centers from CellProfiler analysis Nuclei.csv) on
+      (Metadata_Foci_site, Metadata_Nuclei_ObjectNumber_x).  Cells that fail
+      the merge or have invalid coordinates are discarded.
 
   Stage 2 — Site-grouped tiling + final write
       Group cell metadata by imaging site.  For each site: download the
@@ -16,23 +18,28 @@ Two-stage streaming pipeline:
       LanceDB.
 
 Design rationale:
+  - A549 normalized CSVs lack raw pixel coordinates (unlike HeLa).  Raw
+    nucleus centers must be extracted from per-site analysis/Nuclei.csv
+    files and joined back via a coordinates parquet.
   - Features CSVs are per-guide, but tiles are per-site.  We cannot group
     by site during feature streaming.
-  - 15M cells × 3,766 features won't fit in memory (~210 GB float32).
   - The temp zarr acts as a random-access buffer; BatchArray.read_ranges
     provides efficient batched reads from sharded zarr.
   - Each site image is downloaded exactly once; tiles are cropped instantly.
 
 Prerequisites:
-  - Feature CSV.gz shards in --features-dir
+  - Feature CSV.gz shards in --features-dir (normalized, per-guide)
+  - Coordinates parquet in --coords-parquet (from extract_coordinates.py
+    run on per-site analysis/Nuclei.csv files)
   - GeneticPerturbationSchema.parquet, PublicationSchema.parquet,
     ImageFeatureSchema.parquet, publication.json in --data-dir
 
 Usage:
-    python -m lancell_examples.multimodal_perturbation_atlas.scripts.ingest_cpg0021_periscope \\
+    python -m lancell_examples.multimodal_perturbation_atlas.scripts.ingest_cpg0021_periscope_a549 \\
         --atlas-path /tmp/atlas/perturbation_atlas \\
-        --features-dir /tmp/geo_agent/cpg0021-periscope/features_full \\
-        --data-dir /tmp/geo_agent/cpg0021-periscope \\
+        --features-dir /tmp/periscope_a549/ \\
+        --coords-parquet /tmp/nucleus_coordinates.parquet \\
+        --data-dir /tmp/geo_agent/cpg0021-periscope_a549 \\
         [--max-per-shard 1000] [--csv-workers 8] [--flush-every 10000]
 """
 
@@ -89,16 +96,28 @@ CHANNEL_NAMES = ["DNA", "ER", "Mito", "Phalloidin", "WGA"]
 N_CHANNELS = len(CHANNEL_NAMES)
 TILE_SIZE = 72
 
-# CSV column names
+# CSV column names (from the normalized per-guide CSVs)
 META_SITE = "Metadata_Foci_site"
 META_PLATE = "Metadata_Foci_plate"
 META_WELL = "Metadata_Foci_well"
 META_SITE_LOC = "Metadata_Foci_site_location"
 META_OBJ_NUM = "Metadata_Cells_ObjectNumber"
-CENTER_X = "Nuclei_AreaShape_Center_X_x"
-CENTER_Y = "Nuclei_AreaShape_Center_Y_x"
 ALIGN_X = "Align_Xshift_ConA"
 ALIGN_Y = "Align_Yshift_ConA"
+
+# Merge keys for joining raw coordinates onto normalized features.
+# The normalized A549 CSVs lack raw pixel coordinates, so we merge
+# with a pre-extracted coordinates parquet (from analysis/Nuclei.csv).
+MERGE_OBJ_NUM = "Metadata_Nuclei_ObjectNumber_x"
+MERGE_KEYS = [META_SITE, MERGE_OBJ_NUM]
+
+# Raw coordinate columns (from the coords parquet, NOT the normalized CSVs)
+RAW_CENTER_X = "Nuclei_AreaShape_Center_X"
+RAW_CENTER_Y = "Nuclei_AreaShape_Center_Y"
+
+# Coords parquet grouping columns (for pre-filtering per guide)
+COORDS_BARCODE_COL = "Metadata_Foci_Barcode_MatchedTo_Barcode"
+COORDS_GENE_COL = "Metadata_Foci_Barcode_MatchedTo_GeneCode"
 
 CONTROL_GENE_CODE = "nontargeting"
 FEATURE_PREFIXES = ("Nuclei", "Cells", "Cytoplasm")
@@ -122,17 +141,21 @@ def process_shard(
     csv_path: Path,
     feature_columns: list[str],
     max_rows: int,
+    coords_df: pd.DataFrame,
 ) -> tuple[np.ndarray, pd.DataFrame]:
-    """Read one CSV shard → (feature_matrix, metadata_df).
+    """Read one CSV shard, merge coordinates, → (feature_matrix, metadata_df).
 
-    Drops cells with invalid coordinates.
+    Merges the normalized per-guide CSV with the pre-filtered ``coords_df``
+    (matching this shard's barcode + gene) on MERGE_KEYS to obtain raw
+    nucleus pixel coordinates, then applies alignment shifts.
+
+    Drops cells that fail the coordinate merge or have invalid coordinates.
     """
-    df = pd.read_csv(csv_path, nrows=max_rows)
-    if df.empty:
+    try:
+        df = pd.read_csv(csv_path, nrows=max_rows)
+    except pd.errors.EmptyDataError:
         return np.empty((0, len(feature_columns)), dtype=np.float32), pd.DataFrame()
-
-    if CENTER_X not in df.columns or CENTER_Y not in df.columns:
-        print(f"Warning: Missing center coordinate columns in {csv_path.name}, skipping...")
+    if df.empty:
         return np.empty((0, len(feature_columns)), dtype=np.float32), pd.DataFrame()
 
     # Parse guide/gene from filename
@@ -141,19 +164,9 @@ def process_shard(
     guide_seq = parts.split("_", 1)[0]
     gene_name = parts.split("_", 1)[1]
 
-    # Compute adjusted coordinates and filter invalid
-    cx = df[CENTER_X].values + df.get(ALIGN_X, pd.Series(0, index=df.index)).values
-    cy = df[CENTER_Y].values + df.get(ALIGN_Y, pd.Series(0, index=df.index)).values
-    valid = np.isfinite(cx) & np.isfinite(cy)
-    df = df[valid].reset_index(drop=True)
-    cx = cx[valid]
-    cy = cy[valid]
-
-    if df.empty:
-        return np.empty((0, len(feature_columns)), dtype=np.float32), pd.DataFrame()
-
-    # Extract features — some shards have merge-artifact columns (e.g. _x suffix);
-    # fill missing columns with 0.0 so the output width is always n_features.
+    # Extract features BEFORE merge to avoid column name collisions
+    # (the normalized CSV has Nuclei_AreaShape_Center_X as a feature column,
+    #  and the coords parquet has it as a raw coordinate column).
     present = [c for c in feature_columns if c in df.columns]
     feat = np.zeros((len(df), len(feature_columns)), dtype=np.float32)
     if present:
@@ -163,33 +176,67 @@ def process_shard(
     if bad.any():
         feat[bad] = 0.0
 
+    # Tag rows so we can realign features after the merge filters some out
+    df["_row_idx"] = np.arange(len(df))
+
+    # Merge with coords to get raw nucleus pixel coordinates
+    merged = df.merge(coords_df[MERGE_KEYS + [RAW_CENTER_X, RAW_CENTER_Y]],
+                      on=MERGE_KEYS, how="inner", suffixes=("", "_coord"))
+
+    if merged.empty:
+        return np.empty((0, len(feature_columns)), dtype=np.float32), pd.DataFrame()
+
+    # Compute adjusted coordinates: raw nucleus center + alignment shift
+    cx = merged[RAW_CENTER_X + "_coord"].values + merged[ALIGN_X].values
+    cy = merged[RAW_CENTER_Y + "_coord"].values + merged[ALIGN_Y].values
+    valid = np.isfinite(cx) & np.isfinite(cy)
+    merged = merged[valid].reset_index(drop=True)
+    cx = cx[valid]
+    cy = cy[valid]
+
+    if merged.empty:
+        return np.empty((0, len(feature_columns)), dtype=np.float32), pd.DataFrame()
+
+    # Realign features with the surviving rows
+    feat = feat[merged["_row_idx"].values]
+
     meta = pd.DataFrame({
         "original_cell_id": (
-            df[META_PLATE].astype(str) + "_" +
-            df[META_WELL].astype(str) + "_" +
-            df[META_SITE_LOC].astype(int).astype(str) + "_" +
-            df[META_OBJ_NUM].astype(int).astype(str)
+            merged[META_PLATE].astype(str) + "_" +
+            merged[META_WELL].astype(str) + "_" +
+            merged[META_SITE_LOC].astype(int).astype(str) + "_" +
+            merged[META_OBJ_NUM].astype(int).astype(str)
         ),
-        "metadata_site": df[META_SITE].astype(str),
+        "metadata_site": merged[META_SITE].astype(str),
         "center_x": cx,
         "center_y": cy,
         "guide_sequence": guide_seq,
         "gene_symbol": gene_name,
-        "batch_id": df[META_PLATE].astype(str),
-        "well_position": df[META_WELL].astype(str),
+        "batch_id": merged[META_PLATE].astype(str),
+        "well_position": merged[META_WELL].astype(str),
     })
     return feat, meta
 
 
 def _count_shard(csv_path: Path, max_rows: int) -> int:
-    """Count cells with valid coordinates in a CSV shard (for parallel use)."""
-    df = pd.read_csv(csv_path, usecols=[CENTER_X], nrows=max_rows)
-    return int(np.isfinite(df[CENTER_X].values).sum())
+    """Count rows in a CSV shard (upper bound — actual count depends on coords merge)."""
+    try:
+        df = pd.read_csv(csv_path, usecols=[META_SITE], nrows=max_rows)
+    except pd.errors.EmptyDataError:
+        return 0
+    return len(df)
+
+
+def _parse_guide_gene(csv_path: Path) -> tuple[str, str]:
+    """Extract (barcode, gene) from a per-guide CSV filename."""
+    parts = csv_path.name.split("__")[-1].removesuffix(".csv.gz")
+    return parts.split("_", 1)
 
 
 def buffer_features_to_temp_zarr(
     features_dir: Path,
     feature_columns: list[str],
+    coords_parquet: Path,
     max_per_shard: int,
     csv_workers: int,
     total_cells: int | None = None,
@@ -199,10 +246,39 @@ def buffer_features_to_temp_zarr(
     The temp zarr is at ``{temp_dir}/features.zarr`` as a 2D array
     (n_cells, n_features).  The metadata DataFrame has a ``temp_position``
     column with the row index into this array.
+
+    Each CSV shard is merged with the matching subset of the coordinates
+    parquet to obtain raw nucleus pixel coordinates.
     """
     csv_paths = sorted(features_dir.glob("*.csv.gz"))
     assert csv_paths, f"No CSV.gz files in {features_dir}"
     n_features = len(feature_columns)
+
+    # Load coordinates and build per-guide lookup
+    print(f"  Loading coordinates parquet: {coords_parquet}")
+    coords_full = pd.read_parquet(coords_parquet)
+    coords_by_guide: dict[tuple[str, str], pd.DataFrame] = {}
+    for (barcode, gene), group in coords_full.groupby(
+        [COORDS_BARCODE_COL, COORDS_GENE_COL]
+    ):
+        coords_by_guide[(barcode, gene)] = group
+    print(f"  Indexed {len(coords_by_guide):,} unique (barcode, gene) groups")
+    del coords_full
+
+    # Build per-shard coords lookup
+    shard_coords: dict[Path, pd.DataFrame] = {}
+    missing_coords = []
+    for p in csv_paths:
+        barcode, gene = _parse_guide_gene(p)
+        subset = coords_by_guide.get((barcode, gene))
+        if subset is None:
+            missing_coords.append(p.name)
+            shard_coords[p] = pd.DataFrame(columns=MERGE_KEYS + [RAW_CENTER_X, RAW_CENTER_Y])
+        else:
+            shard_coords[p] = subset
+    if missing_coords:
+        print(f"  Warning: {len(missing_coords)} shards have no matching coordinates")
+    del coords_by_guide
 
     if total_cells is None:
         # Count cells per shard in parallel
@@ -264,7 +340,10 @@ def buffer_features_to_temp_zarr(
 
         # Fill initial window
         for i in range(min(csv_workers * 2, len(csv_paths))):
-            fut = executor.submit(process_shard, csv_paths[i], feature_columns, max_per_shard)
+            fut = executor.submit(
+                process_shard, csv_paths[i], feature_columns, max_per_shard,
+                shard_coords[csv_paths[i]],
+            )
             window.append((i, fut))
             submitted = i + 1
 
@@ -280,7 +359,8 @@ def buffer_features_to_temp_zarr(
             # Submit next shard to keep window full
             if submitted < len(csv_paths):
                 nfut = executor.submit(
-                    process_shard, csv_paths[submitted], feature_columns, max_per_shard
+                    process_shard, csv_paths[submitted], feature_columns, max_per_shard,
+                    shard_coords[csv_paths[submitted]],
                 )
                 window.append((submitted, nfut))
                 submitted += 1
@@ -328,10 +408,8 @@ def buffer_features_to_temp_zarr(
 def construct_s3_keys(metadata_site: str) -> list[str]:
     """Construct S3 keys for the 5 channel TIFFs of a site."""
     base = "cpg0021-periscope/broad/images/"
-    if "CP257" in metadata_site:
-        experiment_dir = "20210422_6W_CP257"
-    elif "CP228" in metadata_site:
-        experiment_dir = "20210124_6W_CP228"
+    if "CP186" in metadata_site:
+        experiment_dir = "20200805_A549_WG_Screen"
     else:
         raise ValueError(f"Unknown experiment in site: {metadata_site}")
     plate, well, site = metadata_site.split("-")
@@ -373,7 +451,7 @@ def build_obs_batch(
 
     obs["assay"] = "high content screen"
     obs["organism"] = "Homo sapiens"
-    obs["cell_line"] = "HeLa"
+    obs["cell_line"] = "A549"
     obs["cell_type"] = None
     obs["development_stage"] = None
     obs["disease"] = None
@@ -545,8 +623,8 @@ def run_stage2(
 
     # Pre-allocate final tile zarr
     tile_group = atlas._root.create_group(tile_ds_uid)
-    tile_chunk = (8, N_CHANNELS, TILE_SIZE, TILE_SIZE)
-    tile_shard = (min(8192, total_cells), N_CHANNELS, TILE_SIZE, TILE_SIZE)
+    tile_chunk = (4, N_CHANNELS, TILE_SIZE, TILE_SIZE)
+    tile_shard = (min(4096, total_cells), N_CHANNELS, TILE_SIZE, TILE_SIZE)
     tile_zarr = tile_group.create_array(
         "data",
         shape=(total_cells, N_CHANNELS, TILE_SIZE, TILE_SIZE),
@@ -578,7 +656,7 @@ def run_stage2(
             publication_uid=publication_uid,
             accession_database="cellpainting-gallery", accession_id=ACCESSION,
             dataset_description=pub_json.get("title"),
-            organism=["Homo sapiens"], tissue=None, cell_line=["HeLa"], disease=None,
+            organism=["Homo sapiens"], tissue=None, cell_line=["A549"], disease=None,
         )
         atlas._dataset_table.add(
             pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
@@ -769,11 +847,13 @@ def register_features(atlas: RaggedAtlas, data_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ingest cpg0021-periscope image features + tiles into a RaggedAtlas"
+        description="Ingest cpg0021-periscope A549 image features + tiles into a RaggedAtlas"
     )
     parser.add_argument("--atlas-path", type=str, required=True)
     parser.add_argument("--features-dir", type=str, required=True,
-                        help="Directory with CSV.gz feature shards")
+                        help="Directory with normalized CSV.gz feature shards")
+    parser.add_argument("--coords-parquet", type=str, required=True,
+                        help="Parquet with raw nucleus coordinates (from extract_coordinates.py)")
     parser.add_argument("--data-dir", type=str, required=True,
                         help="Directory with resolved parquets and publication.json")
     parser.add_argument("--max-per-shard", type=int, default=1000,
@@ -788,14 +868,15 @@ def main() -> None:
                         help="Temp dir from a previous stage-1 run to skip directly to stage 2")
     args = parser.parse_args()
 
-    #atlas_path = Path(args.atlas_path)
     atlas_path = str(args.atlas_path)
     features_dir = Path(args.features_dir)
+    coords_parquet = Path(args.coords_parquet)
     data_dir = Path(args.data_dir)
 
-    print(f"Dataset: cpg0021-periscope (Ramezani et al. 2025)")
+    print(f"Dataset: cpg0021-periscope A549 (Ramezani et al. 2025)")
     print(f"Atlas: {atlas_path}")
     print(f"Features: {features_dir}")
+    print(f"Coordinates: {coords_parquet}")
     print(f"Flush every: {args.flush_every:,} cells")
 
     # Setup atlas
@@ -807,7 +888,6 @@ def main() -> None:
         dataset_schema=DatasetSchema,
         registry_schemas=REGISTRY_SCHEMAS,
     )
-    # db_uri = str(atlas_path / "lance_db")
     db_uri = os.path.join(atlas_path, "lance_db")
 
     print(f"\n{'='*60}")
@@ -842,7 +922,8 @@ def main() -> None:
         print(f"  Feature columns: {len(feature_columns)}")
 
         temp_dir, meta_df, n_features = buffer_features_to_temp_zarr(
-            features_dir, feature_columns, args.max_per_shard, args.csv_workers,
+            features_dir, feature_columns, coords_parquet,
+            args.max_per_shard, args.csv_workers,
             total_cells=args.total_cells,
         )
         temp_zarr_path = temp_dir / "features.zarr"
