@@ -515,14 +515,15 @@ class AtlasQuery:
     def to_cell_dataset(
         self,
         feature_space: str,
-        layer: str,
+        layer: str | None = None,
         metadata_columns: list[str] | None = None,
     ) -> "CellDataset":
         """Create a CellDataset for fast ML training iteration.
 
         Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
         this returns a :class:`~homeobox.dataloader.CellDataset` that yields
-        lightweight :class:`~homeobox.dataloader.SparseBatch` objects via
+        lightweight :class:`~homeobox.dataloader.SparseBatch` or
+        :class:`~homeobox.dataloader.DenseBatch` objects via
         :meth:`~homeobox.dataloader.CellDataset.__getitems__`.
 
         Pair with a :class:`~homeobox.sampler.CellSampler` for batch planning,
@@ -534,9 +535,11 @@ class AtlasQuery:
         feature_space:
             Which feature space to read.
         layer:
-            Which layer to read within the feature space.
+            Which layer to read within the feature space.  When ``None``,
+            auto-resolved to the first required layer for layered specs
+            or ignored for layer-less specs (e.g. ``image_tiles``).
         metadata_columns:
-            Obs column names to include as metadata on each SparseBatch.
+            Obs column names to include as metadata on each batch.
 
         Notes
         -----
@@ -547,11 +550,16 @@ class AtlasQuery:
         the filtered count).
         """
         from homeobox.dataloader import CellDataset
+        from homeobox.group_specs import get_spec
+
+        spec = get_spec(feature_space)
+        if layer is None:
+            layer = spec.layers.required[0] if spec.layers.required else ""
 
         cells_pl = self._materialize_cells_for_dataset()
 
         wanted_globals = None
-        if feature_space in self._feature_filter:
+        if feature_space in self._feature_filter and spec.has_var_df:
             from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
@@ -592,20 +600,26 @@ class AtlasQuery:
             the "primary" space used to derive ``groups_np``.
         layers:
             ``{feature_space: layer_name}`` mapping.  Defaults to
-            ``"counts"`` for each space when omitted.
+            ``"counts"`` for layered spaces and ``""`` for layer-less
+            spaces (e.g. ``image_tiles``) when omitted.
         metadata_columns:
             Obs column names to include as metadata on each batch.
         """
         from homeobox.dataloader import MultimodalCellDataset
+        from homeobox.group_specs import get_spec
 
         cells_pl = self._materialize_cells_for_dataset()
 
         if layers is None:
-            layers = {fs: "counts" for fs in feature_spaces}
+            layers = {}
+            for fs in feature_spaces:
+                fs_spec = get_spec(fs)
+                layers[fs] = fs_spec.layers.required[0] if fs_spec.layers.required else ""
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fs in feature_spaces:
-            if fs in self._feature_filter:
+            fs_spec = get_spec(fs)
+            if fs in self._feature_filter and fs_spec.has_var_df:
                 from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
                 wg = resolve_feature_uids_to_global_indices(

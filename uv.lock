@@ -1422,7 +1422,7 @@ wheels = [
 
 [[package]]
 name = "homeobox"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "anndata" },
@@ -1562,11 +1562,11 @@ name = "homeobox-examples"
 version = "0.1.0"
 source = { editable = "homeobox_examples" }
 dependencies = [
-    { name = "homeobox", extra = ["all"] },
+    { name = "homeobox" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "homeobox", extras = ["all"], editable = "." }]
+requires-dist = [{ name = "homeobox", editable = "." }]
 
 [[package]]
 name = "httpcore"

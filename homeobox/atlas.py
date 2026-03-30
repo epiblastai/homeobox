@@ -92,6 +92,21 @@ def _resolve_db_uri(uri: str) -> str:
     return stripped
 
 
+def _check_atlas_exists(db_uri: str) -> None:
+    """Raise :class:`FileNotFoundError` if a local atlas does not exist.
+
+    *db_uri* must already be resolved (ending with ``/lance_db``).
+    Remote URIs are not checked.
+    """
+    if db_uri.startswith(("s3://", "gs://", "az://")):
+        return
+    if not os.path.isdir(db_uri):
+        atlas_root = db_uri.rsplit("/lance_db", 1)[0]
+        raise FileNotFoundError(
+            f"No atlas found at '{atlas_root}'. Create one first with create_or_open_atlas()."
+        )
+
+
 def _zarr_uri_from_db_uri(db_uri: str) -> str:
     """Derive a zarr store URI from a db_uri using naming convention.
 
@@ -194,6 +209,7 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
+        db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
@@ -260,6 +276,7 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
+        db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         cell_table = db.open_table(cell_table_name)
         dataset_table = db.open_table(dataset_table_name)
@@ -834,6 +851,7 @@ class RaggedAtlas:
             Name of the version tracking table.
         """
         db_uri = _resolve_db_uri(db_uri)
+        _check_atlas_exists(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
         return version_table.search().to_polars().sort("version")
@@ -872,6 +890,7 @@ class RaggedAtlas:
             Name of the version tracking table.
         """
         db_uri = _resolve_db_uri(db_uri)
+        _check_atlas_exists(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
 
@@ -961,6 +980,7 @@ class RaggedAtlas:
             Name of the version tracking table.
         """
         db_uri = _resolve_db_uri(db_uri)
+        _check_atlas_exists(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
 

@@ -1,5 +1,7 @@
 """Tests for atlas versioning: snapshot(), list_versions(), checkout()."""
 
+import os
+
 import anndata as ad
 import numpy as np
 import obstore
@@ -49,9 +51,12 @@ def _make_sparse_adata(n_obs: int, n_vars: int, feature_uids: list[str]) -> ad.A
     return ad.AnnData(X=X, var=var)
 
 
-def _make_atlas(tmp_path, store) -> RaggedAtlas:
+def _make_atlas(tmp_path) -> RaggedAtlas:
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
-        db_uri=str(tmp_path / "atlas.lancedb"),
+        db_uri=atlas_dir,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -65,7 +70,7 @@ def _make_atlas(tmp_path, store) -> RaggedAtlas:
         [GeneFeatureSchema(uid=uid, gene_name=f"GENE{i}") for i, uid in enumerate(gene_uids)],
     )
     reindex_registry(atlas._registry_tables["gene_expression"])
-    return atlas, gene_uids
+    return atlas, gene_uids, atlas_dir, store
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +80,7 @@ def _make_atlas(tmp_path, store) -> RaggedAtlas:
 
 class TestSnapshot:
     def test_first_snapshot_returns_zero(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -91,8 +95,7 @@ class TestSnapshot:
         assert v == 0
 
     def test_second_snapshot_returns_one(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -116,8 +119,7 @@ class TestSnapshot:
         assert v1 == 1
 
     def test_snapshot_records_total_cells(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -139,15 +141,27 @@ class TestSnapshot:
         )
         atlas.snapshot()
 
-        versions = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
+        versions = RaggedAtlas.list_versions(atlas_dir)
         assert versions["total_cells"].to_list() == [20, 35]
 
     def test_snapshot_raises_without_version_table(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas_dir = str(tmp_path / "atlas")
+        os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+        store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
+        # Create a valid atlas first so the cell table exists.
+        RaggedAtlas.create(
+            db_uri=atlas_dir,
+            cell_table_name="cells",
+            cell_schema=TestCellSchema,
+            store=store,
+            registry_schemas={"gene_expression": GeneFeatureSchema},
+            dataset_table_name="datasets",
+            dataset_schema=DatasetRecord,
+        )
         # Opening with a non-existent version table name raises immediately.
         with pytest.raises(ValueError, match="not found"):
             RaggedAtlas.open(
-                db_uri=str(tmp_path / "atlas.lancedb"),
+                db_uri=atlas_dir,
                 cell_table_name="cells",
                 cell_schema=TestCellSchema,
                 dataset_table_name="datasets",
@@ -158,9 +172,11 @@ class TestSnapshot:
 
     def test_snapshot_raises_if_registry_invalid(self, tmp_path):
         """snapshot() must fail if registries are not fully indexed."""
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas_dir = str(tmp_path / "atlas")
+        os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+        store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
         atlas = RaggedAtlas.create(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             cell_table_name="cells",
             cell_schema=TestCellSchema,
             store=store,
@@ -179,8 +195,7 @@ class TestSnapshot:
 
 class TestListVersions:
     def test_returns_two_rows_sorted(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -202,13 +217,12 @@ class TestListVersions:
         )
         atlas.snapshot()
 
-        df = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
+        df = RaggedAtlas.list_versions(atlas_dir)
         assert len(df) == 2
         assert df["version"].to_list() == [0, 1]
 
     def test_returns_polars_dataframe(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -220,14 +234,13 @@ class TestListVersions:
         )
         atlas.snapshot()
 
-        df = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
+        df = RaggedAtlas.list_versions(atlas_dir)
         assert isinstance(df, pl.DataFrame)
 
 
 class TestCheckout:
     def test_checkout_v0_sees_only_first_batch(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -250,7 +263,7 @@ class TestCheckout:
         atlas.snapshot()  # v1: 35 cells
 
         old = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=0,
             cell_schema=TestCellSchema,
             store=store,
@@ -258,8 +271,7 @@ class TestCheckout:
         assert old.cell_table.count_rows() == 20
 
     def test_checkout_v1_sees_both_batches(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata1 = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -282,7 +294,7 @@ class TestCheckout:
         atlas.snapshot()
 
         new = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=1,
             cell_schema=TestCellSchema,
             store=store,
@@ -290,8 +302,7 @@ class TestCheckout:
         assert new.cell_table.count_rows() == 35
 
     def test_checkout_invalid_version_raises(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -305,15 +316,14 @@ class TestCheckout:
 
         with pytest.raises(ValueError, match="version 99 not found"):
             RaggedAtlas.checkout(
-                db_uri=str(tmp_path / "atlas.lancedb"),
+                db_uri=atlas_dir,
                 version=99,
                 cell_schema=TestCellSchema,
                 store=store,
             )
 
     def test_checkout_feature_layouts_pinned(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(10, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -345,7 +355,7 @@ class TestCheckout:
 
         # Checkout v0 — _feature_layouts must be pinned to the snapshot version
         pinned = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=0,
             cell_schema=TestCellSchema,
             store=store,
@@ -358,8 +368,7 @@ class TestSchemalessCheckout:
     """Checkout without providing cell_schema — pointer fields inferred from Arrow."""
 
     def _make_snapshotted_atlas(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -369,13 +378,12 @@ class TestSchemalessCheckout:
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
-        return atlas, store
+        return atlas_dir, store
 
     def test_checkout_without_schema(self, tmp_path):
-        self._make_snapshotted_atlas(tmp_path)
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas_dir, store = self._make_snapshotted_atlas(tmp_path)
         checked = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=0,
             store=store,
         )
@@ -384,20 +392,18 @@ class TestSchemalessCheckout:
         assert checked._cell_schema is None
 
     def test_checkout_latest_without_schema(self, tmp_path):
-        self._make_snapshotted_atlas(tmp_path)
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas_dir, store = self._make_snapshotted_atlas(tmp_path)
         checked = RaggedAtlas.checkout_latest(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             store=store,
         )
         assert checked.cell_table.count_rows() == 20
         assert "gene_expression" in checked._pointer_fields
 
     def test_query_works_without_schema(self, tmp_path):
-        self._make_snapshotted_atlas(tmp_path)
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas_dir, store = self._make_snapshotted_atlas(tmp_path)
         checked = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=0,
             store=store,
         )
@@ -409,8 +415,7 @@ class TestStorelessCheckout:
     """Checkout without providing store — reconstructed from version record."""
 
     def test_checkout_without_store(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -422,14 +427,13 @@ class TestStorelessCheckout:
         atlas.snapshot()
 
         checked = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=0,
         )
         assert checked.cell_table.count_rows() == 20
 
     def test_checkout_latest_without_store(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -441,13 +445,12 @@ class TestStorelessCheckout:
         atlas.snapshot()
 
         checked = RaggedAtlas.checkout_latest(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
         )
         assert checked.cell_table.count_rows() == 20
 
     def test_version_record_has_uris(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -458,7 +461,7 @@ class TestStorelessCheckout:
         )
         atlas.snapshot()
 
-        versions = RaggedAtlas.list_versions(str(tmp_path / "atlas.lancedb"))
+        versions = RaggedAtlas.list_versions(atlas_dir)
         row = versions.row(0, named=True)
         assert row["zarr_store_uri"] != ""
 
@@ -476,8 +479,7 @@ class TestIngestionGuard:
     """Ingestion must fail with a clear message when schema is None."""
 
     def test_ingest_without_schema_raises(self, tmp_path):
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -489,7 +491,7 @@ class TestIngestionGuard:
         atlas.snapshot()
 
         checked = RaggedAtlas.checkout(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             version=0,
             store=store,
         )
@@ -508,9 +510,7 @@ class TestOpenDefaults:
     """open() with optional parameters."""
 
     def test_open_with_defaults(self, tmp_path):
-        (tmp_path / "zarr_store").mkdir()
-        store = obstore.store.LocalStore(prefix=str(tmp_path / "zarr_store"))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
             atlas,
@@ -521,7 +521,7 @@ class TestOpenDefaults:
         )
 
         reopened = RaggedAtlas.open(
-            db_uri=str(tmp_path / "atlas.lancedb"),
+            db_uri=atlas_dir,
             cell_table_name="cells",
             store=store,
         )
@@ -533,8 +533,7 @@ class TestOpenDefaults:
 class TestBackwardCompat:
     def test_open_without_version_table_raises(self, tmp_path):
         """Opening with a non-existent version table name raises immediately."""
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
-        atlas, gene_uids = _make_atlas(tmp_path, store)
+        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -547,7 +546,7 @@ class TestBackwardCompat:
 
         with pytest.raises(ValueError, match="not found"):
             RaggedAtlas.open(
-                db_uri=str(tmp_path / "atlas.lancedb"),
+                db_uri=atlas_dir,
                 cell_table_name="cells",
                 cell_schema=TestCellSchema,
                 dataset_table_name="datasets",
