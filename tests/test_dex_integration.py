@@ -353,7 +353,7 @@ class TestDexMWUOnDensePath:
                 atlas,
                 adata,
                 feature_space="image_features",
-                zarr_layer="raw",
+                zarr_layer="ctrl_standardized",
                 dataset_record=DatasetRecord(
                     uid=label,
                     zarr_group=f"{label}/image_features",
