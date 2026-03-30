@@ -62,6 +62,19 @@ def _store_from_uri(
     return obstore.store.from_url(uri, **store_kwargs)
 
 
+def _store_kwargs_to_storage_options(store_kwargs: dict | None) -> dict[str, str] | None:
+    """Convert obstore-style kwargs to lancedb ``storage_options``.
+
+    obstore accepts ``{"config": {"skip_signature": True, "region": "us-east-2"}}``
+    while lancedb expects a flat dict with string values:
+    ``{"skip_signature": "true", "region": "us-east-2"}``.
+    """
+    if not store_kwargs:
+        return store_kwargs
+    options = store_kwargs.get("config", store_kwargs)
+    return {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in options.items()}
+
+
 def _zarr_uri_from_db_uri(db_uri: str) -> str:
     """Derive a zarr store URI from a db_uri using naming convention.
 
@@ -164,7 +177,7 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
-        db = lancedb.connect(db_uri, storage_options=store_kwargs)
+        db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
@@ -230,7 +243,7 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
-        db = lancedb.connect(db_uri, storage_options=store_kwargs)
+        db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         cell_table = db.open_table(cell_table_name)
         dataset_table = db.open_table(dataset_table_name)
 
@@ -803,7 +816,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
-        db = lancedb.connect(db_uri, storage_options=store_kwargs)
+        db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
         return version_table.search().to_polars().sort("version")
 
@@ -840,7 +853,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
-        db = lancedb.connect(db_uri, storage_options=store_kwargs)
+        db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
 
         records = version_table.search().where(f"version = {version}", prefilter=True).to_polars()
@@ -928,7 +941,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
-        db = lancedb.connect(db_uri, storage_options=store_kwargs)
+        db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
 
         records = version_table.search().where(f"version = {version}", prefilter=True).to_polars()
@@ -1090,7 +1103,7 @@ def create_or_open_atlas(
     else:
         store = _store_from_uri(zarr_uri, **(store_kwargs or {}))
 
-    db = lancedb.connect(db_uri, storage_options=store_kwargs)
+    db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
     existing_tables = set(db.list_tables().tables)
 
     if cell_table_name in existing_tables:
