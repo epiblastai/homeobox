@@ -172,6 +172,10 @@ class AtlasQuery:
             q = q.offset(self._offset_n)
         if self._limit_n is not None:
             q = q.limit(self._limit_n)
+        elif self._search_query is not None:
+            # lancedb search() defaults to 10 rows when no limit is set.
+            # For FTS MatchQuery this is safe: it only returns actual matches.
+            q = q.limit(1_000_000)
         return q
 
     def _build_scanner(self) -> "LanceQueryBuilder":
@@ -183,11 +187,18 @@ class AtlasQuery:
             q = q.select(columns)
         return q
 
+    @staticmethod
+    def _drop_score(df: pl.DataFrame) -> pl.DataFrame:
+        """Drop the ``_score`` column injected by lancedb search, if present."""
+        if "_score" in df.columns:
+            return df.drop("_score")
+        return df
+
     def _materialize_cells(self) -> pl.DataFrame:
         """Materialise the cell DataFrame, respecting balanced_limit if set."""
         if self._balanced_limit_n is not None:
-            return self._materialize_balanced()
-        return self._build_scanner().to_polars()
+            return self._drop_score(self._materialize_balanced())
+        return self._drop_score(self._build_scanner().to_polars())
 
     def _materialize_cells_for_dataset(self) -> pl.DataFrame:
         """Materialise a lightweight cell DataFrame with row IDs for CellDataset.
@@ -196,22 +207,30 @@ class AtlasQuery:
         Metadata is loaded lazily per batch via ``take_row_ids``.
         """
         if self._balanced_limit_n is not None:
-            return self._materialize_balanced_for_dataset()
+            return self._drop_score(self._materialize_balanced_for_dataset())
 
         q = self._build_base_query().with_row_id(True)
         pointer_cols = list(self._atlas._pointer_fields.keys())
         q = q.select(pointer_cols)
-        return q.to_polars()
+        return self._drop_score(q.to_polars())
+
+    def _discover_balanced_groups(self, column: str) -> list:
+        """Discover unique values of *column* across all matching rows."""
+        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        if self._where_clause is not None:
+            q = q.where(self._where_clause)
+        if self._search_query is not None:
+            # lancedb search() defaults to 10 rows; override so discovery
+            # sees all matching rows (MatchQuery returns only real matches).
+            q = q.limit(1_000_000)
+        return q.select([column]).to_polars()[column].unique().to_list()
 
     def _materialize_balanced_for_dataset(self) -> pl.DataFrame:
         """Two-phase balanced materialisation returning only pointers + _rowid."""
         column = self._balanced_limit_column
         assert column is not None
 
-        discovery_q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
-        if self._where_clause is not None:
-            discovery_q = discovery_q.where(self._where_clause)
-        unique_values = discovery_q.select([column]).to_polars()[column].unique().to_list()
+        unique_values = self._discover_balanced_groups(column)
         n_groups = len(unique_values)
         if n_groups == 0:
             pointer_cols = list(self._atlas._pointer_fields.keys())
@@ -242,11 +261,7 @@ class AtlasQuery:
         column = self._balanced_limit_column
         assert column is not None
 
-        # Phase 1: discover unique values (fetch only the balance column)
-        discovery_q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
-        if self._where_clause is not None:
-            discovery_q = discovery_q.where(self._where_clause)
-        unique_values = discovery_q.select([column]).to_polars()[column].unique().to_list()
+        unique_values = self._discover_balanced_groups(column)
         n_groups = len(unique_values)
         if n_groups == 0:
             return self._build_scanner().to_polars().head(0)
@@ -329,13 +344,16 @@ class AtlasQuery:
             return _build_obs_only_anndata(cells_pl)
 
         active_pfs = self._active_pointer_fields()
-        # Pick the first feature space for X
         if not active_pfs:
             return _build_obs_only_anndata(cells_pl)
 
-        # Use first pointer field
-        pf = next(iter(active_pfs.values()))
-        return self._reconstruct_single_space_anndata(cells_pl, pf)
+        # Pick the first feature space that has data for the queried cells
+        for pf in active_pfs.values():
+            zg = cells_pl[pf.field_name].struct.field("zarr_group")
+            if (zg != "").any():
+                return self._reconstruct_single_space_anndata(cells_pl, pf)
+
+        return _build_obs_only_anndata(cells_pl)
 
     def to_mudata(self) -> "mu.MuData":
         """Execute the query and return a MuData with one modality per feature space.
