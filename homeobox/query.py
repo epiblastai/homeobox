@@ -34,6 +34,7 @@ class AtlasQuery:
         self._search_query: np.ndarray | list[float] | str | None = None
         self._search_kwargs: dict = {}
         self._where_clause: str | None = None
+        self._offset_n: int | None = None
         self._limit_n: int | None = None
         self._select_columns: list[str] | None = None
         self._feature_spaces: list[str] | None = None
@@ -94,6 +95,11 @@ class AtlasQuery:
     def where(self, condition: str) -> "AtlasQuery":
         """Add a SQL WHERE filter (LanceDB syntax)."""
         self._where_clause = condition
+        return self
+
+    def offset(self, n: int) -> "AtlasQuery":
+        """Skip the first *n* cells before returning results."""
+        self._offset_n = n
         return self
 
     def limit(self, n: int) -> "AtlasQuery":
@@ -162,6 +168,8 @@ class AtlasQuery:
         q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
+        if self._offset_n is not None:
+            q = q.offset(self._offset_n)
         if self._limit_n is not None:
             q = q.limit(self._limit_n)
         return q

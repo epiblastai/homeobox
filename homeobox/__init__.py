@@ -4,6 +4,7 @@ import homeobox.codecs.bitpacking  # noqa: F401  # register bitpacking codec
 __all__ = [
     # Atlas
     "RaggedAtlas",
+    "create_or_open_atlas",
     # Query
     "AtlasQuery",
     # Dataloader
@@ -40,6 +41,7 @@ def __getattr__(name: str):
     """Lazy imports for public API to avoid heavy import costs at init."""
     _import_map = {
         "RaggedAtlas": "homeobox.atlas",
+        "create_or_open_atlas": "homeobox.atlas",
         "AtlasQuery": "homeobox.query",
         "CellDataset": "homeobox.dataloader",
         "MultimodalCellDataset": "homeobox.dataloader",

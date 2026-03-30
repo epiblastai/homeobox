@@ -137,6 +137,7 @@ class RaggedAtlas:
         store: obstore.store.ObjectStore,
         registry_schemas: dict[str, type[FeatureBaseSchema]],
         version_table_name: str = "atlas_versions",
+        store_kwargs: dict | None = None,
     ) -> "RaggedAtlas":
         """Create a new atlas, initialising the LanceDB tables.
 
@@ -159,8 +160,11 @@ class RaggedAtlas:
             Table names default to ``"{feature_space}_registry"``.
         version_table_name:
             Name for the version tracking table.
+        store_kwargs:
+            Extra keyword arguments forwarded to ``lancedb.connect`` as
+            ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
-        db = lancedb.connect(db_uri)
+        db = lancedb.connect(db_uri, storage_options=store_kwargs)
         cell_table = db.create_table(cell_table_name, schema=cell_schema)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
@@ -199,6 +203,7 @@ class RaggedAtlas:
         store: obstore.store.ObjectStore,
         registry_tables: dict[str, str] | None = None,
         version_table_name: str = "atlas_versions",
+        store_kwargs: dict | None = None,
     ) -> "RaggedAtlas":
         """Open an existing atlas.
 
@@ -221,8 +226,11 @@ class RaggedAtlas:
             convention ``{feature_space}_registry``.
         version_table_name:
             Name of the version tracking table.
+        store_kwargs:
+            Extra keyword arguments forwarded to ``lancedb.connect`` as
+            ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
-        db = lancedb.connect(db_uri)
+        db = lancedb.connect(db_uri, storage_options=store_kwargs)
         cell_table = db.open_table(cell_table_name)
         dataset_table = db.open_table(dataset_table_name)
 
@@ -780,6 +788,7 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         *,
+        store_kwargs: dict | None = None,
         version_table_name: str = "atlas_versions",
     ) -> pl.DataFrame:
         """Return a DataFrame of all recorded snapshots, sorted by version.
@@ -788,10 +797,13 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI.
+        store_kwargs:
+            Extra keyword arguments forwarded to ``lancedb.connect`` as
+            ``storage_options`` (e.g. ``region``, ``skip_signature``).
         version_table_name:
             Name of the version tracking table.
         """
-        db = lancedb.connect(db_uri)
+        db = lancedb.connect(db_uri, storage_options=store_kwargs)
         version_table = db.open_table(version_table_name)
         return version_table.search().to_polars().sort("version")
 
@@ -828,7 +840,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
-        db = lancedb.connect(db_uri)
+        db = lancedb.connect(db_uri, storage_options=store_kwargs)
         version_table = db.open_table(version_table_name)
 
         records = version_table.search().where(f"version = {version}", prefilter=True).to_polars()
@@ -916,7 +928,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
-        db = lancedb.connect(db_uri)
+        db = lancedb.connect(db_uri, storage_options=store_kwargs)
         version_table = db.open_table(version_table_name)
 
         records = version_table.search().where(f"version = {version}", prefilter=True).to_polars()
@@ -999,7 +1011,9 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
-        versions = cls.list_versions(db_uri, version_table_name=version_table_name)
+        versions = cls.list_versions(
+            db_uri, store_kwargs=store_kwargs, version_table_name=version_table_name
+        )
         if versions.is_empty():
             raise ValueError(
                 f"No snapshots found in atlas at '{db_uri}'. "
@@ -1076,7 +1090,7 @@ def create_or_open_atlas(
     else:
         store = _store_from_uri(zarr_uri, **(store_kwargs or {}))
 
-    db = lancedb.connect(db_uri)
+    db = lancedb.connect(db_uri, storage_options=store_kwargs)
     existing_tables = set(db.list_tables().tables)
 
     if cell_table_name in existing_tables:
@@ -1093,6 +1107,7 @@ def create_or_open_atlas(
             store=store,
             registry_tables=registry_tables,
             version_table_name=version_table_name,
+            store_kwargs=store_kwargs,
         )
     else:
         return RaggedAtlas.create(
@@ -1104,4 +1119,5 @@ def create_or_open_atlas(
             store=store,
             registry_schemas=registry_schemas,
             version_table_name=version_table_name,
+            store_kwargs=store_kwargs,
         )
