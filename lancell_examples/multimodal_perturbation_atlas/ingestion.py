@@ -27,7 +27,6 @@ from lancell.fragments.ingestion import (
 from lancell.group_specs import PointerKind, get_spec
 from lancell.ingestion import (
     _CHUNK_ELEMS,
-    _SHARD_ELEMS,
     _write_dense_batched,
     _write_sparse_batched,
     write_feature_layout,
@@ -188,92 +187,6 @@ def add_multimodal_batch(
 
 
 # ---------------------------------------------------------------------------
-# Metadata-only ingestion (no zarr data)
-# ---------------------------------------------------------------------------
-
-
-def add_metadata_only_batch(
-    atlas: RaggedAtlas,
-    obs_df: pd.DataFrame,
-    *,
-    dataset_record: DatasetRecord,
-) -> int:
-    """Ingest cell records without any matrix data.
-
-    Use this for datasets where the actual feature matrices are not available
-    (e.g., scATAC-seq QC-only datasets where fragment files haven't been
-    processed into count matrices). All zarr pointers are zero-filled.
-
-    Parameters
-    ----------
-    atlas
-        Open RaggedAtlas.
-    obs_df
-        Validated obs DataFrame with schema-aligned columns.
-    dataset_record
-        Dataset record to register. ``zarr_group`` is still required
-        but no zarr group is created on disk.
-
-    Returns
-    -------
-    int
-        Number of cells ingested.
-    """
-    n_cells = len(obs_df)
-
-    # Add dataset record
-    ds_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=type(dataset_record).to_arrow_schema(),
-    )
-    atlas._dataset_table.add(ds_arrow)
-
-    # Build cell records — all pointers zero-filled
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
-
-    columns = {
-        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
-    }
-
-    # Zero-fill all pointer fields
-    for pf_name, pf in atlas._pointer_fields.items():
-        if pf.pointer_kind is PointerKind.SPARSE:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
-            )
-        else:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "position"],
-            )
-
-    # Add obs columns
-    for col in schema_fields:
-        if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
-    for col in schema_fields:
-        if col not in columns:
-            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
-    atlas.cell_table.add(arrow_table)
-    return n_cells
-
-
-# ---------------------------------------------------------------------------
 # Fragment-based ingestion (chromatin accessibility)
 # ---------------------------------------------------------------------------
 
@@ -332,11 +245,9 @@ def add_fragment_batch(
         raise ValueError("Exactly one of bed_path or fragments must be provided.")
 
     if atlas._cell_schema is None:
-        raise ValueError(
-            "Cannot ingest data into an atlas opened without a cell schema."
-        )
+        raise ValueError("Cannot ingest data into an atlas opened without a cell schema.")
 
-    spec = get_spec(feature_space)
+    get_spec(feature_space)
     zarr_group = dataset_record.zarr_group
 
     # --- Parse and filter fragments ---
@@ -385,15 +296,15 @@ def add_fragment_batch(
         fragments, chrom_order, cell_ids, barcode_col=barcode_col
     )
     end_max = build_end_max(gs_starts, gs_lengths)
-    write_genome_sorted_arrays(
-        group, gs_cell_ids, gs_starts, gs_lengths, chrom_offsets, end_max
-    )
-    print(f"  Wrote cell-sorted and genome-sorted fragment arrays")
+    write_genome_sorted_arrays(group, gs_cell_ids, gs_starts, gs_lengths, chrom_offsets, end_max)
+    print("  Wrote cell-sorted and genome-sorted fragment arrays")
 
     # --- Write feature layout ---
-    var_df = pl.DataFrame({
-        "global_feature_uid": [chrom_uids[c] for c in chrom_order],
-    })
+    var_df = pl.DataFrame(
+        {
+            "global_feature_uid": [chrom_uids[c] for c in chrom_order],
+        }
+    )
     atlas.add_or_reuse_layout(var_df, dataset_record.uid, feature_space)
 
     # --- Build and insert cell records ---

@@ -28,7 +28,7 @@ _TABLE_DATASETS = "datasets"
 _TABLE_DATASET_PERTURBATION_INDEX = "dataset_perturbation_index"
 
 
-def _open_table(atlas: RaggedAtlas, name: str) -> "lancedb.table.Table":
+def _open_table(atlas: RaggedAtlas, name: str) -> lancedb.table.Table:
     return atlas.db.open_table(name)
 
 
@@ -49,10 +49,7 @@ def _perturbation_where(uids: list[str], prefix: str) -> str:
     if not uids:
         # Impossible condition — no rows match
         return "1 = 0"
-    parts = [
-        f"perturbation_search_string LIKE '%{prefix}:{sql_escape(uid)}%'"
-        for uid in uids
-    ]
+    parts = [f"perturbation_search_string LIKE '%{prefix}:{sql_escape(uid)}%'" for uid in uids]
     return "(" + " OR ".join(parts) + ")"
 
 
@@ -63,7 +60,7 @@ def _perturbation_where(uids: list[str], prefix: str) -> str:
 
 def resolve_perturbation_metadata(
     cells_df: pl.DataFrame,
-    db: "lancedb.DBConnection",
+    db: lancedb.DBConnection,
     *,
     genetic_columns: list[str] | None = None,
     small_molecule_columns: list[str] | None = None,
@@ -114,7 +111,7 @@ def resolve_perturbation_metadata(
         uids_val, types_val = row
         if uids_val is None or types_val is None:
             continue
-        for uid, ptype in zip(uids_val, types_val):
+        for uid, ptype in zip(uids_val, types_val, strict=True):
             type_uids.setdefault(ptype, set()).add(uid)
 
     # Batch-fetch each FK table
@@ -173,7 +170,7 @@ def resolve_perturbation_metadata(
         row_meta: dict[str, list] = {k: [] for k in all_meta_cols}
 
         if uids_val is not None and types_val is not None:
-            for uid, ptype in zip(uids_val, types_val):
+            for uid, ptype in zip(uids_val, types_val, strict=True):
                 uid_map = lookup.get(ptype, {})
                 record = uid_map.get(uid, {})
                 for field in sorted(meta_fields):
@@ -202,7 +199,7 @@ class PerturbationQuery(AtlasQuery):
     foreign-key UIDs and filter cells accordingly.
     """
 
-    def __init__(self, atlas: "RaggedAtlas") -> None:
+    def __init__(self, atlas: RaggedAtlas) -> None:
         super().__init__(atlas)
         self._enrich_perturbations: bool = False
         self._genetic_columns: list[str] | None = None
@@ -226,7 +223,7 @@ class PerturbationQuery(AtlasQuery):
         *,
         ensembl_id: str | None = None,
         perturbation_type: str | None = None,
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Filter to cells with a genetic perturbation targeting a gene.
 
         Parameters
@@ -261,7 +258,7 @@ class PerturbationQuery(AtlasQuery):
         name: str | None = None,
         smiles: str | None = None,
         pubchem_cid: int | None = None,
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Filter to cells treated with a small molecule.
 
         At least one identifier must be provided.
@@ -296,7 +293,7 @@ class PerturbationQuery(AtlasQuery):
         name: str,
         *,
         biologic_type: str | None = None,
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Filter to cells treated with a biologic agent.
 
         Parameters
@@ -321,7 +318,7 @@ class PerturbationQuery(AtlasQuery):
         doi: str | None = None,
         pmid: int | None = None,
         title: str | None = None,
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Filter to cells from datasets linked to a publication.
 
         At least one identifier must be provided.
@@ -361,7 +358,7 @@ class PerturbationQuery(AtlasQuery):
         self,
         accession_id: str,
         database: str = "GEO",
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Filter to cells from datasets with a specific accession.
 
         Parameters
@@ -389,7 +386,7 @@ class PerturbationQuery(AtlasQuery):
     def controls_only(
         self,
         control_type: str | None = None,
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Filter to negative control cells.
 
         Parameters
@@ -408,7 +405,7 @@ class PerturbationQuery(AtlasQuery):
         genetic_columns: list[str] | None = None,
         small_molecule_columns: list[str] | None = None,
         biologic_columns: list[str] | None = None,
-    ) -> "PerturbationQuery":
+    ) -> PerturbationQuery:
         """Enrich results with resolved perturbation records.
 
         When set, execution methods like ``to_polars()`` will join metadata

@@ -57,23 +57,23 @@ class PerturbationAtlas(RaggedAtlas):
     # -- Convenience table accessors ----------------------------------------
 
     @cached_property
-    def genetic_perturbations_table(self) -> "lancedb.table.Table":
+    def genetic_perturbations_table(self) -> lancedb.table.Table:
         return self.db.open_table("genetic_perturbations")
 
     @cached_property
-    def small_molecules_table(self) -> "lancedb.table.Table":
+    def small_molecules_table(self) -> lancedb.table.Table:
         return self.db.open_table("small_molecules")
 
     @cached_property
-    def biologic_perturbations_table(self) -> "lancedb.table.Table":
+    def biologic_perturbations_table(self) -> lancedb.table.Table:
         return self.db.open_table("biologic_perturbations")
 
     @cached_property
-    def publications_table(self) -> "lancedb.table.Table":
+    def publications_table(self) -> lancedb.table.Table:
         return self.db.open_table("publications")
 
     @cached_property
-    def dataset_perturbation_index_table(self) -> "lancedb.table.Table":
+    def dataset_perturbation_index_table(self) -> lancedb.table.Table:
         return self.db.open_table("dataset_perturbation_index")
 
     # -- Genomic coordinate search ------------------------------------------
@@ -119,16 +119,9 @@ class PerturbationAtlas(RaggedAtlas):
         genbank = seq.genbank_accession
         # Overlap condition: target_start <= end AND target_end >= start
         where = (
-            f"target_chromosome = '{genbank}' "
-            f"AND target_start <= {end} "
-            f"AND target_end >= {start}"
+            f"target_chromosome = '{genbank}' AND target_start <= {end} AND target_end >= {start}"
         )
-        return (
-            self.genetic_perturbations_table
-            .search()
-            .where(where, prefilter=True)
-            .to_polars()
-        )
+        return self.genetic_perturbations_table.search().where(where, prefilter=True).to_polars()
 
     # -- FK table maintenance -----------------------------------------------
 
@@ -160,8 +153,8 @@ class PerturbationAtlas(RaggedAtlas):
 
 
 def _deduplicate_fk_table(
-    table: "lancedb.table.Table",
-    schema_cls: type["LanceModel"],
+    table: lancedb.table.Table,
+    schema_cls: type[LanceModel],
     subset: list[str],
 ) -> None:
     """Load *table* into memory, deduplicate on *subset*, and rewrite.
