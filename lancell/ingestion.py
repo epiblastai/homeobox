@@ -335,8 +335,8 @@ class SparseZarrWriter:
         written = 0
         while written < nnz:
             end = min(written + batch_size, nnz)
-            self._zarr_indices[offset + written : offset + end] = (
-                csr.indices[written:end].astype(np.uint32, copy=False)
+            self._zarr_indices[offset + written : offset + end] = csr.indices[written:end].astype(
+                np.uint32, copy=False
             )
             self._zarr_values[offset + written : offset + end] = csr.data[written:end]
             written = end
@@ -502,11 +502,10 @@ def insert_cell_records(
             break
     assert pointer_field is not None, f"No pointer field for {feature_space}"
 
-    pointer_struct = _make_sparse_pointer(
-        feature_space, zarr_group, starts, ends, zarr_row_offset
-    )
+    pointer_struct = _make_sparse_pointer(feature_space, zarr_group, starts, ends, zarr_row_offset)
     arrow_table = _build_cell_arrow_table(
-        atlas, obs_df,
+        atlas,
+        obs_df,
         dataset_uid=dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
     )
@@ -820,9 +819,7 @@ def add_anndata_batch(
 
     # Build pointer struct for the active feature space
     if spec.pointer_kind is PointerKind.SPARSE:
-        pointer_struct = _make_sparse_pointer(
-            feature_space, zarr_group, starts, ends
-        )
+        pointer_struct = _make_sparse_pointer(feature_space, zarr_group, starts, ends)
     else:
         pointer_struct = pa.StructArray.from_arrays(
             [
@@ -834,7 +831,8 @@ def add_anndata_batch(
         )
 
     arrow_table = _build_cell_arrow_table(
-        atlas, adata.obs,
+        atlas,
+        adata.obs,
         dataset_uid=dataset_record.uid,
         pointer_data={pointer_field.field_name: pointer_struct},
     )

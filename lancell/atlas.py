@@ -475,20 +475,14 @@ class RaggedAtlas:
         self._feature_layouts_table.optimize()
 
     @staticmethod
-    def _deduplicate_new_rows(
-        table: lancedb.table.Table, subset: list[str]
-    ) -> None:
+    def _deduplicate_new_rows(table: lancedb.table.Table, subset: list[str]) -> None:
         """Remove duplicate rows introduced since the last optimize/snapshot.
 
         Only reads rows where ``global_index IS NULL`` (i.e. newly added),
         deduplicates on *subset*, then deletes all new rows and re-adds the
         unique set.  This avoids rewriting the entire table.
         """
-        new_rows = (
-            table.search()
-            .where("global_index IS NULL", prefilter=True)
-            .to_polars()
-        )
+        new_rows = table.search().where("global_index IS NULL", prefilter=True).to_polars()
         if new_rows.is_empty():
             return
         deduped = new_rows.unique(subset=subset, keep="first")
@@ -1089,9 +1083,7 @@ def create_or_open_atlas(
         # Explicitly pass registry table names so open() doesn't rely on
         # the datasets table (which may be empty for a freshly-initialised atlas).
         registry_tables = {
-            fs: f"{fs}_registry"
-            for fs in registry_schemas
-            if f"{fs}_registry" in existing_tables
+            fs: f"{fs}_registry" for fs in registry_schemas if f"{fs}_registry" in existing_tables
         }
         return RaggedAtlas.open(
             db_uri=db_uri,
