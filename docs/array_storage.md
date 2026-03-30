@@ -1,6 +1,6 @@
 # Array Storage (CSR and CSC)
 
-Array data in lancell is stored in zarr, organized by dataset and feature space. For sparse assays (gene expression, chromatin accessibility), two complementary layouts exist:
+Array data in homeobox is stored in zarr, organized by dataset and feature space. For sparse assays (gene expression, chromatin accessibility), two complementary layouts exist:
 
 - **CSR (row-sorted)** — the primary storage format. Every ingest call writes CSR. Appending a new dataset is a pure array append with no read-modify-write on existing data.
 - **CSC (column-sorted)** — an optional transpose index. Enables efficient feature-oriented reads (e.g., "give me all cells' values for gene X") by providing direct byte ranges per feature column. Built on-demand via `add_csc()`.
@@ -14,7 +14,7 @@ The key design principle: **CSC is not required**. Reconstructors always fall ba
 `add_from_anndata` is the primary entry point for writing a dataset into the atlas. It accepts either an in-memory `AnnData` object or a path to an `.h5ad` file.
 
 ```python
-from lancell.ingestion import add_from_anndata
+from homeobox.ingestion import add_from_anndata
 
 n = add_from_anndata(
     atlas,
@@ -138,7 +138,7 @@ CSC is a transposed view of the CSR data, sorted by local feature index. Where C
 After CSC is built, the zarr group contains a `csc/indptr` array with byte-range pointers for each feature. A feature-filtered query can then read exactly `csc/indices[indptr[i]:indptr[i+1]]` to get the cell row IDs that expressed that feature, without touching any other data.
 
 ```python
-from lancell.ingestion import add_csc
+from homeobox.ingestion import add_csc
 
 add_csc(
     atlas,
@@ -225,7 +225,7 @@ add_csc(atlas, zarr_group="large_dataset_2", feature_space="gene_expression", la
 ## Typical workflow
 
 ```python
-from lancell.ingestion import add_from_anndata, add_csc
+from homeobox.ingestion import add_from_anndata, add_csc
 
 # 1. Register features
 atlas.register_features("gene_expression", features)
@@ -259,5 +259,5 @@ v = atlas.snapshot()
 ## Imports
 
 ```python
-from lancell.ingestion import add_from_anndata, add_csc
+from homeobox.ingestion import add_from_anndata, add_csc
 ```

@@ -1,4 +1,4 @@
-"""Validate a standardized obs CSV against the obs (LancellBaseSchema) schema.
+"""Validate a standardized obs CSV against the obs (HoxBaseSchema) schema.
 
 Strips non-schema columns, adds missing nullable columns as None, applies
 ``--column`` defaults, and coerces types (JSON lists, bools, numerics).
@@ -13,7 +13,7 @@ Example:
     python validate_obs.py \
         /tmp/geo_agent/GSE123/HepG2/gene_expression_standardized_obs.csv \
         /tmp/geo_agent/GSE123/HepG2/gene_expression_validated_obs.parquet \
-        lancell_examples.multimodal_perturbation_atlas.schema \
+        homeobox_examples.multimodal_perturbation_atlas.schema \
         CellIndex \
         --column cell_type=None --column days_in_vitro=3.0
 """
@@ -28,7 +28,7 @@ from typing import Union, get_args, get_origin
 import pandas as pd
 from pydantic_core import PydanticUndefined
 
-from lancell.schema import AUTO_FIELDS, DenseZarrPointer, SparseZarrPointer
+from homeobox.schema import AUTO_FIELDS, DenseZarrPointer, SparseZarrPointer
 
 
 def _is_zarr_pointer_field(annotation: type) -> bool:
@@ -199,7 +199,7 @@ if __name__ == "__main__":
     parser.add_argument("standardized_obs_csv", help="Input standardized obs CSV")
     parser.add_argument("output_parquet", help="Output validated obs parquet")
     parser.add_argument(
-        "schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)"
+        "schema_module", help="Dotted module path (e.g. homeobox_examples.foo.schema)"
     )
     parser.add_argument("schema_class", help="Schema class name (e.g. CellIndex)")
     parser.add_argument(

@@ -1,13 +1,13 @@
 # Zarr Group Specs
 
-A `ZarrGroupSpec` is a declaration: it tells lancell what zarr arrays to expect inside a group, which pointer kind to use, and how to reconstruct data at query time. Every feature space in the atlas must have a registered spec. Specs are validated at class-definition time — a `LancellBaseSchema` subclass that references a feature space without a registered spec will raise immediately.
+A `ZarrGroupSpec` is a declaration: it tells homeobox what zarr arrays to expect inside a group, which pointer kind to use, and how to reconstruct data at query time. Every feature space in the atlas must have a registered spec. Specs are validated at class-definition time — a `HoxBaseSchema` subclass that references a feature space without a registered spec will raise immediately.
 
 ```python
-from lancell.group_specs import (
+from homeobox.group_specs import (
     ZarrGroupSpec, PointerKind, LayersSpec, ArraySpec,
     DTypeKind, register_spec, get_spec, registered_feature_spaces,
 )
-from lancell.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
+from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
 ```
 
 ---
@@ -23,7 +23,7 @@ from lancell.reconstruction import SparseCSRReconstructor, DenseReconstructor, F
 | `SPARSE` | `SparseZarrPointer` | High-dimensional sparse assays: gene expression, chromatin accessibility |
 | `DENSE` | `DenseZarrPointer` | Low-dimensional dense assays: protein panels, image embeddings |
 
-The `PointerKind` declared in the spec must match the pointer field types used in your `LancellBaseSchema` subclass. Constructing a `SparseZarrPointer` against a `DENSE` spec (or vice versa) raises a `ValueError` immediately.
+The `PointerKind` declared in the spec must match the pointer field types used in your `HoxBaseSchema` subclass. Constructing a `SparseZarrPointer` against a `DENSE` spec (or vice versa) raises a `ValueError` immediately.
 
 ### ArraySpec
 
@@ -53,11 +53,11 @@ The `path` property returns the resolved layers path: `f"{prefix}/layers"` if `p
 
 ## `ZarrGroupSpec` fields
 
-`ZarrGroupSpec` is the top-level registration object. Each field controls a different aspect of how lancell interacts with a feature space.
+`ZarrGroupSpec` is the top-level registration object. Each field controls a different aspect of how homeobox interacts with a feature space.
 
 ### `feature_space`
 
-A string that must be unique across the spec registry. This value is used as the pointer field name in `LancellBaseSchema` subclasses and as the key for the feature registry table (when `has_var_df=True`). Choosing a stable, descriptive name matters: renaming a registered space after cells have been ingested requires migrating pointer field values in the cell table.
+A string that must be unique across the spec registry. This value is used as the pointer field name in `HoxBaseSchema` subclasses and as the key for the feature registry table (when `has_var_df=True`). Choosing a stable, descriptive name matters: renaming a registered space after cells have been ingested requires migrating pointer field values in the cell table.
 
 ### `pointer_kind`
 
@@ -89,7 +89,7 @@ See the Reconstructors page for guidance on choosing between these.
 
 ## Built-in specs
 
-Two specs are pre-registered in `lancell.builtins`. They are imported automatically when `lancell.builtins` is imported, which happens at package init.
+Two specs are pre-registered in `homeobox.builtins`. They are imported automatically when `homeobox.builtins` is imported, which happens at package init.
 
 ### `GENE_EXPRESSION_SPEC`
 
@@ -134,19 +134,19 @@ No `required_arrays` at the root because dense groups place everything under `la
 
 ## Defining a custom spec
 
-Custom specs are the primary extension point. The pattern is: construct a `ZarrGroupSpec`, call `register_spec()`, then define any `LancellBaseSchema` subclass that uses it.
+Custom specs are the primary extension point. The pattern is: construct a `ZarrGroupSpec`, call `register_spec()`, then define any `HoxBaseSchema` subclass that uses it.
 
-**`register_spec()` must be called before any `LancellBaseSchema` subclass that references the feature space is defined.** The pointer field validation happens at class-definition time, not at instantiation time.
+**`register_spec()` must be called before any `HoxBaseSchema` subclass that references the feature space is defined.** The pointer field validation happens at class-definition time, not at instantiation time.
 
 ### Dense custom spec
 
 This example registers a `lognorm_rna` space for dense log-normalized RNA-seq data — the same spec used in the atlas walkthrough.
 
 ```python
-from lancell.group_specs import (
+from homeobox.group_specs import (
     ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
 )
-from lancell.reconstruction import DenseReconstructor
+from homeobox.reconstruction import DenseReconstructor
 
 LOGNORM_RNA_SPEC = ZarrGroupSpec(
     feature_space="lognorm_rna",
@@ -162,15 +162,15 @@ LOGNORM_RNA_SPEC = ZarrGroupSpec(
 register_spec(LOGNORM_RNA_SPEC)
 ```
 
-After this call, `"lognorm_rna"` is a valid pointer field name for any `LancellBaseSchema` subclass defined in the same process.
+After this call, `"lognorm_rna"` is a valid pointer field name for any `HoxBaseSchema` subclass defined in the same process.
 
 ### Sparse custom spec
 
 For sparse data such as chromatin accessibility, mirror the structure of `GENE_EXPRESSION_SPEC`:
 
 ```python
-from lancell.group_specs import ArraySpec, DTypeKind, LayersSpec
-from lancell.reconstruction import SparseCSRReconstructor
+from homeobox.group_specs import ArraySpec, DTypeKind, LayersSpec
+from homeobox.reconstruction import SparseCSRReconstructor
 
 ATAC_SPEC = ZarrGroupSpec(
     feature_space="chromatin_accessibility",
@@ -199,9 +199,9 @@ sequenceDiagram
 
     App->>Registry: register_spec(ATAC_SPEC)
     Note right of Registry: "chromatin_accessibility" is now valid
-    App->>Schema: class MyCell(LancellBaseSchema)
+    App->>Schema: class MyCell(HoxBaseSchema)
     Note right of Schema: __init_subclass__ checks pointer fields<br/>against registry — passes
-    App->>Schema: class BadCell(LancellBaseSchema)
+    App->>Schema: class BadCell(HoxBaseSchema)
     Note right of Schema: pointer field "chromatin_accessibility"<br/>not yet registered — raises TypeError
 ```
 
@@ -214,7 +214,7 @@ If `register_spec()` is called after the schema class is defined, the `TypeError
 Two utility functions inspect the live registry:
 
 ```python
-from lancell.group_specs import get_spec, registered_feature_spaces
+from homeobox.group_specs import get_spec, registered_feature_spaces
 
 registered_feature_spaces()
 # {'gene_expression', 'image_features', 'lognorm_rna', 'chromatin_accessibility', ...}

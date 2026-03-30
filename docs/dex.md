@@ -2,7 +2,7 @@
 
 ## Introduction
 
-`lancell.dex` runs differential expression analysis directly on a lancell atlas. It follows the scanpy `rank_genes_groups` pattern: specify a grouping column, which groups to test against a reference, and which statistical test to use. Results are returned as a Polars DataFrame.
+`homeobox.dex` runs differential expression analysis directly on a homeobox atlas. It follows the scanpy `rank_genes_groups` pattern: specify a grouping column, which groups to test against a reference, and which statistical test to use. Results are returned as a Polars DataFrame.
 
 The module works with both sparse (e.g. `gene_expression`) and dense (e.g. `image_features`) feature spaces. For sparse data it applies library-size normalization and log1p before testing; dense data is used as-is.
 
@@ -11,7 +11,7 @@ The module works with both sparse (e.g. `gene_expression`) and dense (e.g. `imag
 ## Basic usage
 
 ```python
-from lancell.dex import dex
+from homeobox.dex import dex
 
 result = dex(
     atlas,
@@ -158,5 +158,5 @@ result = dex(
 ## Import reference
 
 ```python
-from lancell.dex import dex
+from homeobox.dex import dex
 ```

@@ -1,6 +1,6 @@
 ---
 name: molecule-resolver
-description: Resolve chemical compound names, SMILES, or CIDs to canonical structures for SmallMoleculeSchema using lancell.standardization.resolve_molecules(). Handles name cleanup, control label detection, PubChem/ChEMBL resolution, and SMILES canonicalization. Use when a dataset has small molecule perturbation columns.
+description: Resolve chemical compound names, SMILES, or CIDs to canonical structures for SmallMoleculeSchema using homeobox.standardization.resolve_molecules(). Handles name cleanup, control label detection, PubChem/ChEMBL resolution, and SMILES canonicalization. Use when a dataset has small molecule perturbation columns.
 ---
 
 # Molecule Resolver
@@ -63,15 +63,15 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
 ## Imports
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     resolve_molecules,
     is_control_compound,
     is_control_label,
     detect_control_labels,
     detect_negative_control_type,
 )
-from lancell.standardization.types import MoleculeResolution, ResolutionReport
-from lancell.schema import make_uid
+from homeobox.standardization.types import MoleculeResolution, ResolutionReport
+from homeobox.schema import make_uid
 ```
 
 ## Scripts
@@ -120,7 +120,7 @@ Example:
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/SmallMolecule_resolved.csv \
     /tmp/GSE123/SmallMoleculeSchema.parquet \
-    lancell_examples.multimodal_perturbation_atlas.schema \
+    homeobox_examples.multimodal_perturbation_atlas.schema \
     SmallMoleculeSchema
 ```
 

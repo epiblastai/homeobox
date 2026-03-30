@@ -13,18 +13,18 @@ import obstore
 import polars as pl
 import scipy.sparse as sp
 
-from lancell.atlas import (
+from homeobox.atlas import (
     RaggedAtlas,
     align_obs_to_schema,
     validate_obs_columns,
 )
-from lancell.feature_layouts import reindex_registry
-from lancell.ingestion import add_from_anndata
-from lancell.schema import (
+from homeobox.feature_layouts import reindex_registry
+from homeobox.ingestion import add_from_anndata
+from homeobox.schema import (
     DatasetRecord,
     DenseZarrPointer,
     FeatureBaseSchema,
-    LancellBaseSchema,
+    HoxBaseSchema,
     SparseZarrPointer,
 )
 
@@ -37,7 +37,7 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
-class TestCellSchema(LancellBaseSchema):
+class TestCellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
     protein_abundance: DenseZarrPointer | None = None
     tissue: str | None = None
@@ -295,7 +295,7 @@ def test_obs_validation_before_write():
     print("--- test_obs_validation_before_write ---")
 
     # Create a schema with a required field
-    class StrictCellSchema(LancellBaseSchema):
+    class StrictCellSchema(HoxBaseSchema):
         gene_expression: SparseZarrPointer | None = None
         required_field: str  # Required, not optional
 

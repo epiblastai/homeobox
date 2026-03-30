@@ -16,7 +16,7 @@ Example:
     python finalize_features.py \
         /tmp/GSE123/GenomicFeatureSchema_resolved.csv \
         /tmp/GSE123/GenomicFeatureSchema.parquet \
-        lancell_examples.multimodal_perturbation_atlas.schema \
+        homeobox_examples.multimodal_perturbation_atlas.schema \
         GenomicFeatureSchema \
         --column feature_type=gene \
         --column feature_id=ensembl_gene_id
@@ -210,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument("resolved_csv", help="Input resolved CSV")
     parser.add_argument("output_parquet", help="Output finalized parquet")
     parser.add_argument(
-        "schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)"
+        "schema_module", help="Dotted module path (e.g. homeobox_examples.foo.schema)"
     )
     parser.add_argument("schema_class", help="Schema class name (e.g. GenomicFeatureSchema)")
     parser.add_argument(

@@ -12,8 +12,8 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "lancell",
-    "lancell-examples",
+    "homeobox",
+    "homeobox-examples",
 ]
 
 [[package]]
@@ -1421,6 +1421,154 @@ wheels = [
 ]
 
 [[package]]
+name = "homeobox"
+version = "0.1.1"
+source = { editable = "." }
+dependencies = [
+    { name = "anndata" },
+    { name = "h5py" },
+    { name = "lancedb" },
+    { name = "mudata" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "obstore" },
+    { name = "polars" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pylance" },
+    { name = "requests" },
+    { name = "scipy" },
+    { name = "zarr" },
+]
+
+[package.optional-dependencies]
+ai = [
+    { name = "anthropic" },
+    { name = "pydantic-ai-slim" },
+]
+all = [
+    { name = "anthropic" },
+    { name = "biopython" },
+    { name = "boto3" },
+    { name = "datasets" },
+    { name = "duckdb" },
+    { name = "gcsfs" },
+    { name = "geoparse" },
+    { name = "gget" },
+    { name = "imagecodecs" },
+    { name = "marimo" },
+    { name = "matplotlib" },
+    { name = "opencv-python" },
+    { name = "openpyxl" },
+    { name = "pandas" },
+    { name = "pronto" },
+    { name = "pubmed-parser" },
+    { name = "pydantic-ai-slim" },
+    { name = "s3fs" },
+    { name = "scanpy" },
+    { name = "scikit-learn" },
+    { name = "tifffile" },
+    { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+bio = [
+    { name = "biopython" },
+    { name = "geoparse" },
+    { name = "gget" },
+    { name = "pronto" },
+    { name = "pubmed-parser" },
+    { name = "scanpy" },
+]
+dev = [
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+docs = [
+    { name = "mkdocs-material" },
+    { name = "mkdocstrings", extra = ["python"] },
+]
+examples = [
+    { name = "homeobox-examples" },
+]
+io = [
+    { name = "boto3" },
+    { name = "gcsfs" },
+    { name = "imagecodecs" },
+    { name = "opencv-python" },
+    { name = "s3fs" },
+    { name = "tifffile" },
+]
+ml = [
+    { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
+    { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
+viz = [
+    { name = "marimo" },
+    { name = "matplotlib" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anndata" },
+    { name = "anthropic", marker = "extra == 'ai'" },
+    { name = "biopython", marker = "extra == 'bio'" },
+    { name = "boto3", marker = "extra == 'io'" },
+    { name = "datasets", marker = "extra == 'all'" },
+    { name = "duckdb", marker = "extra == 'all'" },
+    { name = "gcsfs", marker = "extra == 'io'" },
+    { name = "geoparse", marker = "extra == 'bio'" },
+    { name = "gget", marker = "extra == 'bio'" },
+    { name = "h5py" },
+    { name = "homeobox", extras = ["ml", "bio", "viz", "io", "ai"], marker = "extra == 'all'" },
+    { name = "homeobox-examples", marker = "extra == 'examples'", editable = "homeobox_examples" },
+    { name = "imagecodecs", marker = "extra == 'io'", specifier = ">=2026.1.14" },
+    { name = "lancedb" },
+    { name = "marimo", marker = "extra == 'viz'" },
+    { name = "matplotlib", marker = "extra == 'viz'" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
+    { name = "mudata" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "obstore" },
+    { name = "opencv-python", marker = "extra == 'io'" },
+    { name = "openpyxl", marker = "extra == 'all'" },
+    { name = "pandas", marker = "extra == 'all'" },
+    { name = "polars" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pronto", marker = "extra == 'bio'" },
+    { name = "pubmed-parser", marker = "extra == 'bio'" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pydantic-ai-slim", marker = "extra == 'ai'" },
+    { name = "pylance", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "requests" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "s3fs", marker = "extra == 'io'" },
+    { name = "scanpy", marker = "extra == 'bio'" },
+    { name = "scikit-learn", marker = "extra == 'all'" },
+    { name = "scipy" },
+    { name = "tifffile", marker = "extra == 'io'", specifier = ">=2026.3.3" },
+    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'ml') or (sys_platform == 'win32' and extra == 'ml')", index = "https://download.pytorch.org/whl/cu128" },
+    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'ml'" },
+    { name = "zarr" },
+]
+provides-extras = ["ml", "bio", "viz", "io", "ai", "all", "examples", "dev", "docs"]
+
+[[package]]
+name = "homeobox-examples"
+version = "0.1.0"
+source = { editable = "homeobox_examples" }
+dependencies = [
+    { name = "homeobox", extra = ["all"] },
+]
+
+[package.metadata]
+requires-dist = [{ name = "homeobox", extras = ["all"], editable = "." }]
+
+[[package]]
 name = "httpcore"
 version = "1.0.9"
 source = { registry = "https://pypi.org/simple" }
@@ -1843,154 +1991,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/72/6f/c152497c18cea0f36b523fc03b8e0a48be2b120276cc15a86d79b8b83cde/lancedb-0.29.2-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:991043a28c1f49f14df2479b554a95c759a85666dc58573cc86c1b9df05db794", size = 47228009, upload-time = "2026-02-09T06:34:40.872Z" },
     { url = "https://files.pythonhosted.org/packages/66/50/bd47bca59a87a88a4ca291a0718291422440750d84b34318048c70a537c2/lancedb-0.29.2-cp39-abi3-win_amd64.whl", hash = "sha256:101eb0ac018bb0b643dd9ea22065f6f2102e9d44c9ac58a197477ccbfbc0b9fa", size = 52028768, upload-time = "2026-02-09T07:00:02.272Z" },
 ]
-
-[[package]]
-name = "lancell"
-version = "0.1.1"
-source = { editable = "." }
-dependencies = [
-    { name = "anndata" },
-    { name = "h5py" },
-    { name = "lancedb" },
-    { name = "mudata" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "obstore" },
-    { name = "polars" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pylance" },
-    { name = "requests" },
-    { name = "scipy" },
-    { name = "zarr" },
-]
-
-[package.optional-dependencies]
-ai = [
-    { name = "anthropic" },
-    { name = "pydantic-ai-slim" },
-]
-all = [
-    { name = "anthropic" },
-    { name = "biopython" },
-    { name = "boto3" },
-    { name = "datasets" },
-    { name = "duckdb" },
-    { name = "gcsfs" },
-    { name = "geoparse" },
-    { name = "gget" },
-    { name = "imagecodecs" },
-    { name = "marimo" },
-    { name = "matplotlib" },
-    { name = "opencv-python" },
-    { name = "openpyxl" },
-    { name = "pandas" },
-    { name = "pronto" },
-    { name = "pubmed-parser" },
-    { name = "pydantic-ai-slim" },
-    { name = "s3fs" },
-    { name = "scanpy" },
-    { name = "scikit-learn" },
-    { name = "tifffile" },
-    { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-bio = [
-    { name = "biopython" },
-    { name = "geoparse" },
-    { name = "gget" },
-    { name = "pronto" },
-    { name = "pubmed-parser" },
-    { name = "scanpy" },
-]
-dev = [
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-docs = [
-    { name = "mkdocs-material" },
-    { name = "mkdocstrings", extra = ["python"] },
-]
-examples = [
-    { name = "lancell-examples" },
-]
-io = [
-    { name = "boto3" },
-    { name = "gcsfs" },
-    { name = "imagecodecs" },
-    { name = "opencv-python" },
-    { name = "s3fs" },
-    { name = "tifffile" },
-]
-ml = [
-    { name = "torch", version = "2.10.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux' and sys_platform != 'win32'" },
-    { name = "torch", version = "2.10.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
-]
-viz = [
-    { name = "marimo" },
-    { name = "matplotlib" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anndata" },
-    { name = "anthropic", marker = "extra == 'ai'" },
-    { name = "biopython", marker = "extra == 'bio'" },
-    { name = "boto3", marker = "extra == 'io'" },
-    { name = "datasets", marker = "extra == 'all'" },
-    { name = "duckdb", marker = "extra == 'all'" },
-    { name = "gcsfs", marker = "extra == 'io'" },
-    { name = "geoparse", marker = "extra == 'bio'" },
-    { name = "gget", marker = "extra == 'bio'" },
-    { name = "h5py" },
-    { name = "imagecodecs", marker = "extra == 'io'", specifier = ">=2026.1.14" },
-    { name = "lancedb" },
-    { name = "lancell", extras = ["ml", "bio", "viz", "io", "ai"], marker = "extra == 'all'" },
-    { name = "lancell-examples", marker = "extra == 'examples'", editable = "lancell_examples" },
-    { name = "marimo", marker = "extra == 'viz'" },
-    { name = "matplotlib", marker = "extra == 'viz'" },
-    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
-    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
-    { name = "mudata" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "obstore" },
-    { name = "opencv-python", marker = "extra == 'io'" },
-    { name = "openpyxl", marker = "extra == 'all'" },
-    { name = "pandas", marker = "extra == 'all'" },
-    { name = "polars" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pronto", marker = "extra == 'bio'" },
-    { name = "pubmed-parser", marker = "extra == 'bio'" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pydantic-ai-slim", marker = "extra == 'ai'" },
-    { name = "pylance", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "requests" },
-    { name = "ruff", marker = "extra == 'dev'" },
-    { name = "s3fs", marker = "extra == 'io'" },
-    { name = "scanpy", marker = "extra == 'bio'" },
-    { name = "scikit-learn", marker = "extra == 'all'" },
-    { name = "scipy" },
-    { name = "tifffile", marker = "extra == 'io'", specifier = ">=2026.3.3" },
-    { name = "torch", marker = "(sys_platform == 'linux' and extra == 'ml') or (sys_platform == 'win32' and extra == 'ml')", index = "https://download.pytorch.org/whl/cu128" },
-    { name = "torch", marker = "sys_platform != 'linux' and sys_platform != 'win32' and extra == 'ml'" },
-    { name = "zarr" },
-]
-provides-extras = ["ml", "bio", "viz", "io", "ai", "all", "examples", "dev", "docs"]
-
-[[package]]
-name = "lancell-examples"
-version = "0.1.0"
-source = { editable = "lancell_examples" }
-dependencies = [
-    { name = "lancell", extra = ["all"] },
-]
-
-[package.metadata]
-requires-dist = [{ name = "lancell", extras = ["all"], editable = "." }]
 
 [[package]]
 name = "legacy-api-wrap"

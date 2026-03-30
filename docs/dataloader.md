@@ -2,11 +2,11 @@
 
 ## Introduction
 
-Lancell provides `CellDataset` and `MultimodalCellDataset` as map-style PyTorch datasets. This distinction matters: a map-style dataset exposes a `__getitem__` interface, so PyTorch's `DataLoader` can dispatch any index to any worker without coordination. There is no shared producer thread, no queue to saturate, and no global lock — each worker fetches its assigned cells independently from zarr.
+Homeobox provides `CellDataset` and `MultimodalCellDataset` as map-style PyTorch datasets. This distinction matters: a map-style dataset exposes a `__getitem__` interface, so PyTorch's `DataLoader` can dispatch any index to any worker without coordination. There is no shared producer thread, no queue to saturate, and no global lock — each worker fetches its assigned cells independently from zarr.
 
-The alternative, iterable datasets, require a single producer to generate batches and push them into a queue. No matter how many workers are configured, throughput is bounded by that one producer. Lancell avoids this pattern entirely.
+The alternative, iterable datasets, require a single producer to generate batches and push them into a queue. No matter how many workers are configured, throughput is bounded by that one producer. Homeobox avoids this pattern entirely.
 
-Combined with `multiprocessing_context="spawn"`, all zarr I/O runs in parallel across worker processes. Spawn starts clean processes that re-open zarr handles from scratch, which sidesteps the deadlocks that zarr's async I/O and obstore's background threads can cause under the default `fork` context. Lancell's dataset classes are fully picklable so that workers can deserialise them after spawning.
+Combined with `multiprocessing_context="spawn"`, all zarr I/O runs in parallel across worker processes. Spawn starts clean processes that re-open zarr handles from scratch, which sidesteps the deadlocks that zarr's async I/O and obstore's background threads can cause under the default `fork` context. Homeobox's dataset classes are fully picklable so that workers can deserialise them after spawning.
 
 ---
 
@@ -15,7 +15,7 @@ Combined with `multiprocessing_context="spawn"`, all zarr I/O runs in parallel a
 The recommended entry point is through `AtlasQuery.to_cell_dataset()` or `to_multimodal_dataset()`. These methods load the cell table and wire up zarr readers; the resulting dataset object is ready to hand to a `DataLoader`.
 
 ```python
-from lancell.atlas import RaggedAtlas
+from homeobox.atlas import RaggedAtlas
 
 atlas_r = RaggedAtlas.checkout_latest("/path/to/db", CellSchema, store)
 
@@ -89,10 +89,10 @@ Samplers control the order in which cells are batched. Both samplers implement P
 
 ### `CellSampler`
 
-The default sampler. Cells in a lancell atlas are stored in zarr arrays grouped by dataset of origin. Fetching cells that span many groups in a single batch forces the zarr reader to open many array handles and load many chunks, most of which will not be reused. `CellSampler` addresses this by bin-packing groups across workers using a greedy largest-first strategy, then interleaving batches so that consecutive batches assigned to the same worker draw from the same group. This maximises zarr chunk cache locality and reduces redundant reads.
+The default sampler. Cells in a homeobox atlas are stored in zarr arrays grouped by dataset of origin. Fetching cells that span many groups in a single batch forces the zarr reader to open many array handles and load many chunks, most of which will not be reused. `CellSampler` addresses this by bin-packing groups across workers using a greedy largest-first strategy, then interleaving batches so that consecutive batches assigned to the same worker draw from the same group. This maximises zarr chunk cache locality and reduces redundant reads.
 
 ```python
-from lancell.sampler import CellSampler
+from homeobox.sampler import CellSampler
 
 sampler = CellSampler(
     groups_np=dataset.groups_np,   # integer group ID per cell, from the dataset
@@ -118,10 +118,10 @@ for epoch in range(num_epochs):
 
 ## Building the DataLoader
 
-`make_loader` wraps `torch.utils.data.DataLoader` with sensible defaults for lancell datasets:
+`make_loader` wraps `torch.utils.data.DataLoader` with sensible defaults for homeobox datasets:
 
 ```python
-from lancell.dataloader import make_loader, sparse_to_dense_collate
+from homeobox.dataloader import make_loader, sparse_to_dense_collate
 
 loader = make_loader(
     dataset,
@@ -136,14 +136,14 @@ loader = make_loader(
 
 ## Collate functions
 
-PyTorch's `DataLoader` calls the collate function on the output of `__getitems__` before yielding a batch to training code. Lancell's `__getitems__` returns a pre-assembled `SparseBatch` or `MultimodalBatch` — the collate function's job is to convert that into tensors.
+PyTorch's `DataLoader` calls the collate function on the output of `__getitems__` before yielding a batch to training code. Homeobox's `__getitems__` returns a pre-assembled `SparseBatch` or `MultimodalBatch` — the collate function's job is to convert that into tensors.
 
 ### `sparse_to_dense_collate`
 
 Scatters CSR sparse data into a dense `float32` tensor. This is the right default for models that expect a dense input matrix.
 
 ```python
-from lancell.dataloader import sparse_to_dense_collate
+from homeobox.dataloader import sparse_to_dense_collate
 
 loader = make_loader(dataset, sampler, collate_fn=sparse_to_dense_collate)
 
@@ -157,7 +157,7 @@ for batch in loader:
 Returns a sparse CSR tensor rather than a dense one. Use this for models that natively accept sparse input and where the data is sparse enough that materialising a dense matrix would be wasteful.
 
 ```python
-from lancell.dataloader import sparse_to_csr_collate
+from homeobox.dataloader import sparse_to_csr_collate
 
 loader = make_loader(dataset, sampler, collate_fn=sparse_to_csr_collate)
 
@@ -170,7 +170,7 @@ for batch in loader:
 Converts a `MultimodalBatch` to a nested dictionary of dense tensors plus presence masks. Each modality becomes a dense `float32` tensor; presence masks become boolean tensors.
 
 ```python
-from lancell.dataloader import multimodal_to_dense_collate
+from homeobox.dataloader import multimodal_to_dense_collate
 
 loader = make_loader(multimodal_dataset, sampler, collate_fn=multimodal_to_dense_collate)
 
@@ -187,9 +187,9 @@ for batch in loader:
 
 ```python
 import torch
-from lancell.atlas import RaggedAtlas
-from lancell.sampler import CellSampler
-from lancell.dataloader import make_loader, sparse_to_dense_collate
+from homeobox.atlas import RaggedAtlas
+from homeobox.sampler import CellSampler
+from homeobox.dataloader import make_loader, sparse_to_dense_collate
 
 # Open a checked-out atlas
 atlas_r = RaggedAtlas.checkout_latest("/path/to/db", CellSchema, store)
@@ -235,7 +235,7 @@ for epoch in range(10):
 ## Import reference
 
 ```python
-from lancell.dataloader import (
+from homeobox.dataloader import (
     CellDataset,
     MultimodalCellDataset,
     SparseBatch,
@@ -246,5 +246,5 @@ from lancell.dataloader import (
     multimodal_to_dense_collate,
     make_loader,
 )
-from lancell.sampler import CellSampler
+from homeobox.sampler import CellSampler
 ```

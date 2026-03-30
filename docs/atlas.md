@@ -65,10 +65,10 @@ Both datasets contain log-normalized dense expression values (highly variable ge
 A `ZarrGroupSpec` declares the expected zarr layout for a feature space. Registering it before defining any schema is required — the schema's pointer field names are validated against the spec registry at class definition time.
 
 ```python
-from lancell.group_specs import (
+from homeobox.group_specs import (
     ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
 )
-from lancell.reconstruction import DenseReconstructor
+from homeobox.reconstruction import DenseReconstructor
 
 LOGNORM_RNA_SPEC = ZarrGroupSpec(
     feature_space="lognorm_rna",
@@ -89,16 +89,16 @@ register_spec(LOGNORM_RNA_SPEC)
 A feature schema extends `FeatureBaseSchema` with any modality-specific fields. Here we store the gene symbol alongside the inherited `uid` and `global_index`.
 
 ```python
-from lancell.schema import FeatureBaseSchema, LancellBaseSchema, DenseZarrPointer
+from homeobox.schema import FeatureBaseSchema, HoxBaseSchema, DenseZarrPointer
 
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str  # any extra fields you want queryable in the registry
 ```
 
-A cell schema extends `LancellBaseSchema` and declares one pointer field per feature space the atlas will hold. The field name must exactly match the registered feature space name. In a multimodal schema, pointer fields are typed `| None` so that cells profiled in only one modality can leave the other pointers null.
+A cell schema extends `HoxBaseSchema` and declares one pointer field per feature space the atlas will hold. The field name must exactly match the registered feature space name. In a multimodal schema, pointer fields are typed `| None` so that cells profiled in only one modality can leave the other pointers null.
 
 ```python
-class CellSchema(LancellBaseSchema):
+class CellSchema(HoxBaseSchema):
     cell_type: str | None = None     # user-defined obs metadata
     lognorm_rna: DenseZarrPointer | None = None  # must match registered feature space name
 ```
@@ -110,8 +110,8 @@ class CellSchema(LancellBaseSchema):
 ```python
 import os
 import obstore.store
-from lancell.atlas import RaggedAtlas
-from lancell.schema import DatasetRecord
+from homeobox.atlas import RaggedAtlas
+from homeobox.schema import DatasetRecord
 
 os.makedirs("/tmp/pbmc_atlas/arrays", exist_ok=True)
 store = obstore.store.LocalStore("/tmp/pbmc_atlas/arrays")
@@ -158,7 +158,7 @@ pbmc3k.var["global_feature_uid"] = pbmc3k.var.index
 **Align obs to the cell schema.** `align_obs_to_schema` renames columns according to `obs_to_schema`, adds `None` for optional fields not present in obs, and drops any columns that have no corresponding schema field.
 
 ```python
-from lancell.obs_alignment import align_obs_to_schema
+from homeobox.obs_alignment import align_obs_to_schema
 
 # pbmc3k uses "louvain" for cluster/cell-type labels; our schema expects "cell_type"
 pbmc3k_aligned = align_obs_to_schema(
@@ -169,7 +169,7 @@ pbmc3k_aligned = align_obs_to_schema(
 ### 5. Ingest
 
 ```python
-from lancell.ingestion import add_from_anndata
+from homeobox.ingestion import add_from_anndata
 
 dataset_3k = DatasetRecord(
     zarr_group="pbmc3k",          # path within the object store

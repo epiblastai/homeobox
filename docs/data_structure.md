@@ -12,7 +12,7 @@ No manifest files or external sidecars need to be maintained outside the atlas.
 ```mermaid
 graph TD
     subgraph LanceDB
-        cells["cell table\n(LancellBaseSchema subclass)"]
+        cells["cell table\n(HoxBaseSchema subclass)"]
         datasets["datasets table\n(DatasetRecord)"]
         layouts["_feature_layouts table\n(FeatureLayout)"]
         reg["registry tables\n(FeatureBaseSchema subclasses)"]
@@ -32,9 +32,9 @@ graph TD
 
 ---
 
-## Cell table: `LancellBaseSchema`
+## Cell table: `HoxBaseSchema`
 
-Each row in the cell table is one observation — a cell, nucleus, spatial tile, etc. The exact schema is user-defined by subclassing `LancellBaseSchema`.
+Each row in the cell table is one observation — a cell, nucleus, spatial tile, etc. The exact schema is user-defined by subclassing `HoxBaseSchema`.
 
 Every cell row carries:
 
@@ -66,14 +66,14 @@ Pointer field names must match a registered feature space name (enforced at clas
 A typical multimodal schema looks like:
 
 ```python
-class MySchema(LancellBaseSchema):
+class MySchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
     protein_abundance: DenseZarrPointer | None = None
 ```
 
 ```mermaid
 classDiagram
-    class LancellBaseSchema {
+    class HoxBaseSchema {
         +str uid
         +str dataset_uid
     }
@@ -91,7 +91,7 @@ classDiagram
         +str zarr_group
         +int position
     }
-    LancellBaseSchema <|-- MySchema
+    HoxBaseSchema <|-- MySchema
     MySchema --> SparseZarrPointer : gene_expression
     MySchema --> DenseZarrPointer : protein_abundance
 ```

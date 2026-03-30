@@ -1,7 +1,7 @@
 """Resolve protein identifiers in a CSV to canonical UniProt IDs and metadata.
 
 Generic script: takes any CSV with protein identifiers (aliases, gene names,
-UniProt accessions), resolves them against the lancell reference DB, and writes
+UniProt accessions), resolves them against the homeobox reference DB, and writes
 a resolved CSV with standardized feature_name, uniprot_id, protein_name,
 gene_name, organism, sequence, sequence_length, resolved, and uid columns.
 
@@ -23,13 +23,13 @@ import sys
 
 import pandas as pd
 
-from lancell.schema import make_stable_uid
-from lancell.standardization import (
+from homeobox.schema import make_stable_uid
+from homeobox.standardization import (
     is_control_label,
     resolve_organisms,
     resolve_proteins,
 )
-from lancell.standardization.types import ProteinResolution
+from homeobox.standardization.types import ProteinResolution
 
 # Isotype control patterns — is_control_label() does NOT detect these.
 _ISOTYPE_PATTERNS = {"igg1", "igg2a", "igg2b", "igg2c", "igm", "iga", "igd", "ige"}

@@ -1,17 +1,17 @@
 # Schemas
 
-Every table in a lancell atlas is backed by a Pydantic schema class that subclasses LanceDB's `LanceModel`. These schemas are the ground-level contracts between your application code and the database: they define what columns each table has, what types those columns hold, and which fields are optional or auto-populated.
+Every table in a homeobox atlas is backed by a Pydantic schema class that subclasses LanceDB's `LanceModel`. These schemas are the ground-level contracts between your application code and the database: they define what columns each table has, what types those columns hold, and which fields are optional or auto-populated.
 
 There are two distinct families:
 
-- **Cell schemas** — subclasses of `LancellBaseSchema`. One table per atlas; rows represent individual cells (or nuclei, spatial tiles, etc.).
+- **Cell schemas** — subclasses of `HoxBaseSchema`. One table per atlas; rows represent individual cells (or nuclei, spatial tiles, etc.).
 - **Feature schemas** — subclasses of `FeatureBaseSchema`. One table per feature space; rows represent features (genes, proteins, peaks, etc.) that have a stable identity across datasets.
 
-Beyond those two user-extensible families, lancell maintains several internal tables — `DatasetRecord`, `FeatureLayout`, and `AtlasVersionRecord` — that you interact with indirectly during ingestion and versioning. All are described below.
+Beyond those two user-extensible families, homeobox maintains several internal tables — `DatasetRecord`, `FeatureLayout`, and `AtlasVersionRecord` — that you interact with indirectly during ingestion and versioning. All are described below.
 
 ```python
-from lancell.schema import (
-    LancellBaseSchema, FeatureBaseSchema,
+from homeobox.schema import (
+    HoxBaseSchema, FeatureBaseSchema,
     SparseZarrPointer, DenseZarrPointer,
     DatasetRecord, FeatureLayout, AtlasVersionRecord,
 )
@@ -23,7 +23,7 @@ from lancell.schema import (
 
 ```mermaid
 classDiagram
-    class LancellBaseSchema {
+    class HoxBaseSchema {
         +str uid
         +str dataset_uid
     }
@@ -53,7 +53,7 @@ classDiagram
         +int position
     }
 
-    LancellBaseSchema <|-- UserCellSchema
+    HoxBaseSchema <|-- UserCellSchema
     FeatureBaseSchema <|-- UserFeatureSchema
     UserCellSchema --> SparseZarrPointer : gene_expression
     UserCellSchema --> DenseZarrPointer : protein_abundance
@@ -103,9 +103,9 @@ The choice is fixed at feature-space registration time via `PointerKind` in the 
 
 ---
 
-## `LancellBaseSchema`
+## `HoxBaseSchema`
 
-`LancellBaseSchema` is the base class for the cell table. Every cell in your atlas is one row of a table whose schema is a subclass of this class.
+`HoxBaseSchema` is the base class for the cell table. Every cell in your atlas is one row of a table whose schema is a subclass of this class.
 
 ### Auto-populated fields
 
@@ -139,9 +139,9 @@ Two invariants are enforced:
 ### Multimodal example
 
 ```python
-from lancell.schema import LancellBaseSchema, SparseZarrPointer, DenseZarrPointer
+from homeobox.schema import HoxBaseSchema, SparseZarrPointer, DenseZarrPointer
 
-class MultimodalCellSchema(LancellBaseSchema):
+class MultimodalCellSchema(HoxBaseSchema):
     # Pointer fields — names must match registered feature spaces
     gene_expression: SparseZarrPointer | None = None
     chromatin_accessibility: SparseZarrPointer | None = None
@@ -161,9 +161,9 @@ A cell from a CITE-seq experiment might populate `gene_expression` and `protein_
 ### Unimodal example
 
 ```python
-from lancell.schema import LancellBaseSchema, SparseZarrPointer
+from homeobox.schema import HoxBaseSchema, SparseZarrPointer
 
-class CensusCell(LancellBaseSchema):
+class CensusCell(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
 
     cell_type: str | None = None
@@ -205,7 +205,7 @@ Never use `global_index` as a persistent reference outside the atlas. It is stab
 Add any modality-specific fields as ordinary Pydantic fields:
 
 ```python
-from lancell.schema import FeatureBaseSchema
+from homeobox.schema import FeatureBaseSchema
 
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str
@@ -250,7 +250,7 @@ The `uid` field carries the canonical identifier for the modality. For genes, us
 You construct a `DatasetRecord` explicitly when calling `add_from_anndata()` or the lower-level ingestion functions. If you need to attach provenance fields (source database accession, DOI, release date, etc.), subclass `DatasetRecord` and pass your subclass to `RaggedAtlas.create()` as the `dataset_schema` argument:
 
 ```python
-from lancell.schema import DatasetRecord
+from homeobox.schema import DatasetRecord
 
 class CensusDatasetRecord(DatasetRecord):
     cellxgene_dataset_id: str

@@ -2,7 +2,7 @@
 # requires-python = ">=3.12"
 # dependencies = [
 #     "marimo",
-#     "lancell",
+#     "homeobox",
 #     "polars",
 #     "anndata",
 #     "numba",
@@ -25,9 +25,9 @@ def _():
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    # Exploring a lancell Atlas
+    # Exploring a homeobox Atlas
 
-    This notebook walks through the core features of **lancell** using a
+    This notebook walks through the core features of **homeobox** using a
     73 M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/)
     data spanning *Homo sapiens* and *C. elegans*.
 
@@ -49,7 +49,7 @@ def _(mo):
     mo.md("""
     ## 1. Open the atlas
 
-    A lancell atlas is a LanceDB database (cell metadata + feature registries)
+    A homeobox atlas is a LanceDB database (cell metadata + feature registries)
     paired with a zarr store (expression matrices). We open a read-only
     **snapshot** — a point-in-time view that guarantees reproducible queries
     even while new data is being ingested.
@@ -62,8 +62,8 @@ def _():
     import polars as pl
     from tqdm.auto import tqdm
 
-    from lancell.atlas import RaggedAtlas
-    from lancell.group_specs import (
+    from homeobox.atlas import RaggedAtlas
+    from homeobox.group_specs import (
         ArraySpec,
         DTypeKind,
         LayersSpec,
@@ -71,7 +71,7 @@ def _():
         ZarrGroupSpec,
         register_spec,
     )
-    from lancell.reconstruction import SparseCSRReconstructor
+    from homeobox.reconstruction import SparseCSRReconstructor
 
     GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
         feature_space="genefull_expression",
@@ -95,7 +95,7 @@ def _():
 
 @app.cell
 def _():
-    db_uri = "s3://epiblast-public/scbasecount_mini_lancell/lance_db"
+    db_uri = "s3://epiblast-public/scbasecount_mini_homeobox/lance_db"
     S3_KWARGS = {"config": {"skip_signature": True, "region": "us-east-2"}}
     return S3_KWARGS, db_uri
 
@@ -216,7 +216,7 @@ def _(mo):
     ## 3. Ragged feature spaces
 
     Different datasets in this atlas measure **different subsets of genes**.
-    lancell tracks a global feature registry and per-dataset *feature layouts*
+    homeobox tracks a global feature registry and per-dataset *feature layouts*
     that map local indices to global positions. When querying across datasets,
     you choose how to reconcile these ragged feature sets:
 
@@ -439,7 +439,7 @@ def _(mo):
     mo.md("""
     ## 6. ML training with `CellDataset` + `CellSampler`
 
-    lancell provides a purpose-built dataloader pipeline for training on
+    homeobox provides a purpose-built dataloader pipeline for training on
     sparse single-cell data:
 
     ```
@@ -464,8 +464,8 @@ def _(mo):
 def _():
     import torch
 
-    from lancell.dataloader import make_loader, sparse_to_dense_collate
-    from lancell.sampler import CellSampler
+    from homeobox.dataloader import make_loader, sparse_to_dense_collate
+    from homeobox.sampler import CellSampler
 
     return CellSampler, make_loader, sparse_to_dense_collate, torch
 
@@ -584,7 +584,7 @@ def _(mo):
     That's the core training loop. In a real training script you'd wrap
     this in an epoch loop and feed `X` into your model.
 
-    lancell also provides a `BalancedCellSampler` that draws equal cells
+    homeobox also provides a `BalancedCellSampler` that draws equal cells
     per category (e.g. cell type or dataset) each epoch — useful when
     dataset sizes span orders of magnitude and you want more equal
     representation during training.
@@ -597,7 +597,7 @@ def _(mo):
     mo.md("""
     ## 7. Differential expression with `dex`
 
-    lancell includes a built-in differential expression module that
+    homeobox includes a built-in differential expression module that
     compares two groups of cells directly from the atlas. It auto-dispatches
     **Mann-Whitney U** or **Welch's t-test** on any feature space.
 
@@ -611,7 +611,7 @@ def _(mo):
 
 @app.cell
 def _():
-    from lancell.dex import dex
+    from homeobox.dex import dex
 
     return (dex,)
 

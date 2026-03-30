@@ -1,4 +1,4 @@
-"""Tests for lancell.dex pure math/stats functions (no atlas needed)."""
+"""Tests for homeobox.dex pure math/stats functions (no atlas needed)."""
 
 import numpy as np
 import pytest
@@ -6,16 +6,16 @@ import scipy.sparse as sp
 from scipy.stats import mannwhitneyu as scipy_mwu
 from scipy.stats import ttest_ind
 
-from lancell.dex._dex import _benjamini_hochberg, _compare, _extract_matrix, _group_where
-from lancell.dex._math import fold_change, mwu, normalize_log1p_sparse, percent_change, pseudobulk
-from lancell.dex._numba_mwu import (
+from homeobox.dex._dex import _benjamini_hochberg, _compare, _extract_matrix, _group_where
+from homeobox.dex._math import fold_change, mwu, normalize_log1p_sparse, percent_change, pseudobulk
+from homeobox.dex._numba_mwu import (
     MannWhitneyUResult,
     mannwhitneyu_dense,
     mannwhitneyu_sparse,
     sparse_column_index,
 )
-from lancell.dex._ttest import welch_ttest
-from lancell.group_specs import PointerKind
+from homeobox.dex._ttest import welch_ttest
+from homeobox.group_specs import PointerKind
 
 # ---------------------------------------------------------------------------
 # TestBenjaminiHochberg

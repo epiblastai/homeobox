@@ -600,6 +600,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "homeobox"
+version = "0.1.0"
+dependencies = [
+ "bitpacking",
+ "numpy",
+ "pyo3",
+ "pyo3-object_store",
+ "rayon",
+ "serde",
+ "serde_json",
+ "tokio",
+ "zarrs",
+ "zarrs_object_store",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -917,22 +933,6 @@ checksum = "b49715b7073f385ba4bc528e5747d02e66cb39c6146efb66b781f131f0fb399c"
 dependencies = [
  "once_cell",
  "wasm-bindgen",
-]
-
-[[package]]
-name = "lancell"
-version = "0.1.0"
-dependencies = [
- "bitpacking",
- "numpy",
- "pyo3",
- "pyo3-object_store",
- "rayon",
- "serde",
- "serde_json",
- "tokio",
- "zarrs",
- "zarrs_object_store",
 ]
 
 [[package]]

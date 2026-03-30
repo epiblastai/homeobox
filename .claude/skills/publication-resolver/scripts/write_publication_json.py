@@ -16,7 +16,7 @@ import argparse
 import json
 from pathlib import Path
 
-from lancell.standardization import (
+from homeobox.standardization import (
     fetch_geo_series,
     fetch_publication,
     fetch_publication_metadata,

@@ -1,7 +1,7 @@
 """Tests for deterministic stable UIDs."""
 
-from lancell.schema import make_stable_uid
-from lancell.standardization.types import (
+from homeobox.schema import make_stable_uid
+from homeobox.standardization.types import (
     GeneResolution,
     GuideRnaResolution,
     MoleculeResolution,

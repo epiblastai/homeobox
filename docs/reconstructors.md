@@ -9,14 +9,14 @@ The reconstructor is responsible for:
 - Remapping per-group local feature indices to the global feature space
 - Assembling the final `AnnData` with obs, var, and X (and any additional layers)
 
-Lancell ships three built-in reconstructors. Most users will pick one of them when defining a custom `ZarrGroupSpec`; implementing a custom reconstructor from scratch is rarely needed.
+Homeobox ships three built-in reconstructors. Most users will pick one of them when defining a custom `ZarrGroupSpec`; implementing a custom reconstructor from scratch is rarely needed.
 
 ---
 
 ## The `Reconstructor` protocol
 
 ```python
-from lancell.protocols import Reconstructor
+from homeobox.protocols import Reconstructor
 ```
 
 `Reconstructor` is a `runtime_checkable` protocol. Any class that implements `as_anndata` with the following signature satisfies it — no explicit inheritance needed.
@@ -53,7 +53,7 @@ Key parameters:
 **Use for:** high-dimensional sparse data — gene expression, chromatin accessibility, any assay stored in CSR format.
 
 ```python
-from lancell.reconstruction import SparseCSRReconstructor
+from homeobox.reconstruction import SparseCSRReconstructor
 
 ZarrGroupSpec(
     feature_space="gene_expression",
@@ -74,7 +74,7 @@ When `wanted_globals` is provided and the number of queried cells exceeds the nu
 **Use for:** dense assays — protein abundance (CITE-seq ADT), image feature vectors, log-normalized expression where all values are non-zero (e.g., after HVG selection and normalization), any data stored as a 2D float array.
 
 ```python
-from lancell.reconstruction import DenseReconstructor
+from homeobox.reconstruction import DenseReconstructor
 
 ZarrGroupSpec(
     feature_space="protein_abundance",
@@ -95,7 +95,7 @@ Dense data does not support a CSC equivalent. Feature-filtered queries on dense 
 **Use for:** sparse data where feature-filtered queries are performance-critical — i.e., when users often request a small set of genes or peaks (such as a marker gene panel) across a large number of cells.
 
 ```python
-from lancell.reconstruction import FeatureCSCReconstructor
+from homeobox.reconstruction import FeatureCSCReconstructor
 
 ZarrGroupSpec(
     feature_space="gene_expression",
@@ -152,9 +152,9 @@ import anndata as ad
 import polars as pl
 import numpy as np
 from typing import Literal
-from lancell.atlas import RaggedAtlas
-from lancell.obs_alignment import PointerFieldInfo
-from lancell.group_specs import ZarrGroupSpec
+from homeobox.atlas import RaggedAtlas
+from homeobox.obs_alignment import PointerFieldInfo
+from homeobox.group_specs import ZarrGroupSpec
 
 class MyCustomReconstructor:
     def as_anndata(
@@ -173,7 +173,7 @@ class MyCustomReconstructor:
 
 Pass the instance as the `reconstructor` argument to `ZarrGroupSpec`.
 
-The following helpers from `lancell.reconstruction` handle the parts that are identical across all built-in reconstructors. Using them avoids reimplementing the feature space join logic.
+The following helpers from `homeobox.reconstruction` handle the parts that are identical across all built-in reconstructors. Using them avoids reimplementing the feature space join logic.
 
 ### `_load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)`
 
@@ -203,6 +203,6 @@ Lower-level helper used by `_load_remaps_and_features`. Computes the union or in
 ## Imports
 
 ```python
-from lancell.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
-from lancell.protocols import Reconstructor
+from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
+from homeobox.protocols import Reconstructor
 ```

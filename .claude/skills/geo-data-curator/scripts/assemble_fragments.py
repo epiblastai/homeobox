@@ -83,7 +83,7 @@ def load_fragments(experiment_dir: Path, glob_pattern: str) -> list[pd.DataFrame
 
 
 def load_schema_class(schema_path: str) -> type | None:
-    """Dynamically import the schema file and find the obs schema class (LancellBaseSchema subclass)."""
+    """Dynamically import the schema file and find the obs schema class (HoxBaseSchema subclass)."""
     path = Path(schema_path)
     if not path.exists():
         print(f"WARNING: Schema file not found: {schema_path}")
@@ -94,18 +94,14 @@ def load_schema_class(schema_path: str) -> type | None:
     sys.modules["_schema_module"] = module
     spec.loader.exec_module(module)
 
-    # Find the LancellBaseSchema subclass (the obs schema)
-    from lancell.schema import LancellBaseSchema
+    # Find the HoxBaseSchema subclass (the obs schema)
+    from homeobox.schema import HoxBaseSchema
 
     for attr_name in dir(module):
         attr = getattr(module, attr_name)
-        if (
-            isinstance(attr, type)
-            and issubclass(attr, LancellBaseSchema)
-            and attr is not LancellBaseSchema
-        ):
+        if isinstance(attr, type) and issubclass(attr, HoxBaseSchema) and attr is not HoxBaseSchema:
             return attr
-    print(f"WARNING: No LancellBaseSchema subclass found in {schema_path}")
+    print(f"WARNING: No HoxBaseSchema subclass found in {schema_path}")
     return None
 
 

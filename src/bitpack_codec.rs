@@ -24,7 +24,7 @@ use zarrs::plugin::{ExtensionName, ZarrVersion};
 use crate::bitpacking::{self, Transform};
 
 /// Codec name used in zarr v3 metadata.
-const CODEC_NAME: &str = "lancell.bitpacking";
+const CODEC_NAME: &str = "homeobox.bitpacking";
 
 // ---------------------------------------------------------------------------
 // Configuration (serialized into zarr array JSON)
