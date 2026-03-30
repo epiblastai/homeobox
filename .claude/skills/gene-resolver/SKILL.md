@@ -5,7 +5,7 @@ description: Use this skill when tasked with standardizing gene identifiers (sym
 
 # Gene Resolver
 
-Resolve gene identifiers in feature dataframes — typically the var index of a gene expression or chromatin accessibility matrix. Maps gene symbols and Ensembl IDs to canonical identifiers using the `lancell.standardization` suite.
+Resolve gene identifiers in feature dataframes — typically the var index of a gene expression or chromatin accessibility matrix. Maps gene symbols and Ensembl IDs to canonical identifiers using the `homeobox.standardization` suite.
 
 For genetic perturbation target resolution (obs-level: control detection, combinatorial splitting, guide RNA alignment, perturbation method classification), use the **genetic-perturbation-resolver** skill.
 
@@ -100,7 +100,7 @@ Example:
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/GenomicFeatureSchema_resolved.csv \
     /tmp/GSE123/GenomicFeatureSchema.parquet \
-    lancell_examples.multimodal_perturbation_atlas.schema \
+    homeobox_examples.multimodal_perturbation_atlas.schema \
     GenomicFeatureSchema \
     --column feature_type=gene \
     --column feature_id=ensembl_gene_id

@@ -1,6 +1,6 @@
 ---
 name: ontology-resolver
-description: Resolve free-text biological metadata (cell type, tissue, disease, organism, assay, development stage, ethnicity, sex, cell line) to canonical ontology terms and CURIEs using lancell.standardization.resolve_ontology_terms(). Handles control detection, OLS4 fallback for cell lines, organism-aware development stages, and hardcoded sex terms.
+description: Resolve free-text biological metadata (cell type, tissue, disease, organism, assay, development stage, ethnicity, sex, cell line) to canonical ontology terms and CURIEs using homeobox.standardization.resolve_ontology_terms(). Handles control detection, OLS4 fallback for cell lines, organism-aware development stages, and hardcoded sex terms.
 ---
 
 # Ontology Resolver
@@ -55,14 +55,14 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
 ## Imports
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     OntologyEntity,
     resolve_ontology_terms,
     is_control_label,
     detect_control_labels,
     detect_negative_control_type,
 )
-from lancell.standardization.types import OntologyResolution, ResolutionReport
+from homeobox.standardization.types import OntologyResolution, ResolutionReport
 ```
 
 ## Scripts
@@ -162,7 +162,7 @@ The script prints unresolved values to stdout. For each:
 - **Near-misses** — use hierarchy navigation to find the correct term:
 
 ```python
-from lancell.standardization import get_ontology_descendants
+from homeobox.standardization import get_ontology_descendants
 descendants = get_ontology_descendants("CL:0000084", OntologyEntity.CELL_TYPE, max_depth=2)
 ```
 

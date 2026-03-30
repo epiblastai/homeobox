@@ -3,8 +3,8 @@
 ## Protein Resolution
 
 ```python
-from lancell.standardization import resolve_proteins
-from lancell.standardization.types import ProteinResolution, ResolutionReport
+from homeobox.standardization import resolve_proteins
+from homeobox.standardization.types import ProteinResolution, ResolutionReport
 ```
 
 ### `resolve_proteins(values, organism="human") -> ResolutionReport`
@@ -60,7 +60,7 @@ Resolution is one-step: input values are lowercased and matched against the `pro
 ## Control Detection
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     is_control_label,
     detect_control_labels,
     detect_negative_control_type,

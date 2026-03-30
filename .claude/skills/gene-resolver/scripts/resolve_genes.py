@@ -1,7 +1,7 @@
 """Resolve gene identifiers in a CSV to canonical Ensembl IDs and symbols.
 
 Generic script: takes any CSV with gene identifiers (Ensembl IDs or symbols),
-resolves them against the lancell reference DB, and writes a resolved CSV with
+resolves them against the homeobox reference DB, and writes a resolved CSV with
 standardized gene_name, ensembl_gene_id, organism, resolved, and uid columns.
 
 Schema-specific columns (feature_id, feature_type, etc.) are NOT added here —
@@ -23,13 +23,13 @@ import sys
 
 import pandas as pd
 
-from lancell.standardization import (
+from homeobox.standardization import (
     detect_organism_from_ensembl_ids,
     is_placeholder_symbol,
     resolve_genes,
     resolve_organisms,
 )
-from lancell.standardization.types import GeneResolution
+from homeobox.standardization.types import GeneResolution
 
 
 def _detect_ensembl_column(df: pd.DataFrame) -> tuple[str | None, bool]:

@@ -6,15 +6,15 @@ import obstore
 import polars as pl
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas
-from lancell.batch_array import BatchArray
-from lancell.feature_layouts import reindex_registry
-from lancell.ingestion import add_csc, add_from_anndata
-from lancell.obs_alignment import align_obs_to_schema
-from lancell.schema import (
+from homeobox.atlas import RaggedAtlas
+from homeobox.batch_array import BatchArray
+from homeobox.feature_layouts import reindex_registry
+from homeobox.ingestion import add_csc, add_from_anndata
+from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
-    LancellBaseSchema,
+    HoxBaseSchema,
     SparseZarrPointer,
 )
 
@@ -23,7 +23,7 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
-class TestCellSchema(LancellBaseSchema):
+class TestCellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
 
 

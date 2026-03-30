@@ -3,8 +3,8 @@
 ## Molecule Resolution
 
 ```python
-from lancell.standardization import resolve_molecules
-from lancell.standardization.types import MoleculeResolution, ResolutionReport
+from homeobox.standardization import resolve_molecules
+from homeobox.standardization.types import MoleculeResolution, ResolutionReport
 ```
 
 ### `resolve_molecules(values, input_type="name") -> ResolutionReport`
@@ -69,7 +69,7 @@ Resolve small molecule identifiers to canonical structures using a 3-tier fallba
 ## Helper Functions
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     clean_compound_name,
     is_control_compound,
     canonicalize_smiles,
@@ -87,7 +87,7 @@ from lancell.standardization import (
 ## Control Detection
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     is_control_label,
     detect_control_labels,
     detect_negative_control_type,

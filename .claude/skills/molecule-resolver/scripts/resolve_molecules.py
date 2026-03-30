@@ -35,8 +35,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from lancell.schema import make_stable_uid
-from lancell.standardization import (
+from homeobox.schema import make_stable_uid
+from homeobox.standardization import (
     detect_control_labels,
     is_control_label,
     resolve_molecules,

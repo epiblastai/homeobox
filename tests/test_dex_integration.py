@@ -1,4 +1,4 @@
-"""End-to-end tests for lancell.dex.dex() with real atlas fixtures."""
+"""End-to-end tests for homeobox.dex.dex() with real atlas fixtures."""
 
 import anndata as ad
 import numpy as np
@@ -7,16 +7,16 @@ import polars as pl
 import pytest
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas
-from lancell.dex import dex
-from lancell.feature_layouts import reindex_registry
-from lancell.ingestion import add_from_anndata
-from lancell.obs_alignment import align_obs_to_schema
-from lancell.schema import (
+from homeobox.atlas import RaggedAtlas
+from homeobox.dex import dex
+from homeobox.feature_layouts import reindex_registry
+from homeobox.ingestion import add_from_anndata
+from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.schema import (
     DatasetRecord,
     DenseZarrPointer,
     FeatureBaseSchema,
-    LancellBaseSchema,
+    HoxBaseSchema,
     SparseZarrPointer,
 )
 
@@ -29,7 +29,7 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
-class DexCellSchema(LancellBaseSchema):
+class DexCellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
 
 
@@ -37,7 +37,7 @@ class ImageFeatureSchema(FeatureBaseSchema):
     feature_name: str
 
 
-class DenseCellSchema(LancellBaseSchema):
+class DenseCellSchema(HoxBaseSchema):
     image_features: DenseZarrPointer | None = None
 
 

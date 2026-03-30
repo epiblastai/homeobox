@@ -1,13 +1,13 @@
 ---
 name: geo-data-curator
-description: Use this skill to write scripts for ingesting GEO datasets into a lancell RaggedAtlas. Requires a user-provided schema file, a new or existing path to the atlas, and outputs from the geo-data-preparer skill. Covers atlas creation or appending, feature registration, foreign key tables, and validation.
+description: Use this skill to write scripts for ingesting GEO datasets into a homeobox RaggedAtlas. Requires a user-provided schema file, a new or existing path to the atlas, and outputs from the geo-data-preparer skill. Covers atlas creation or appending, feature registration, foreign key tables, and validation.
 ---
 
 # GEO Data Curator
 
 ## Scope
 
-This skill writes per-accession ingestion scripts that take the prepared and standardized outputs from `geo-data-preparer` and ingest them into a lancell `RaggedAtlas`. The workflow covers:
+This skill writes per-accession ingestion scripts that take the prepared and standardized outputs from `geo-data-preparer` and ingest them into a homeobox `RaggedAtlas`. The workflow covers:
 
 1. **Assembling** resolver fragment CSVs into standardized obs/var CSVs
 2. **Validating** obs DataFrames against the schema (stripping non-schema columns, parsing JSON lists, coercing types)
@@ -24,7 +24,7 @@ This skill consumes outputs from the `geo-data-preparer` skill. Before starting,
 
 - **Fragment CSVs** per experiment: `{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv` — produced by the preparer and its resolver subagents
 - **Finalized global tables**: `{SchemaClassName}.parquet` (e.g., `GenomicFeatureSchema.parquet`, `GeneticPerturbationSchema.parquet`, `PublicationSchema.parquet`) — these are the type-coerced parquet outputs from the resolvers, NOT the `_resolved.csv` files
-- **Schema file path** — the Python file with `LancellBaseSchema`, `FeatureBaseSchema`, `DatasetRecord`, and foreign key schema classes
+- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetRecord`, and foreign key schema classes
 - **Atlas path** — directory for the atlas (new or existing), containing `lance_db/` and `zarr_store/`
 - **Data files** — the h5ad, mtx bundles, COO triplet files, or other matrix files for each experiment
 - **metadata.json** — GEO series/sample metadata (written by `geo-data-preparer`)
@@ -100,7 +100,7 @@ The ingestion script reads the parquet directly — no further type coercion nee
 ### 4. Create or open the atlas
 
 Read the schema file to identify:
-- The **obs schema** (`LancellBaseSchema` subclass) — e.g., `CellIndex`
+- The **obs schema** (`HoxBaseSchema` subclass) — e.g., `CellIndex`
 - The **dataset schema** (`DatasetRecord` subclass) — e.g., `DatasetSchema`
 - **Feature registry schemas** (`FeatureBaseSchema` subclasses) — e.g., `GenomicFeatureSchema`, `ProteinSchema`
 - **Foreign key schemas** (`LanceModel` subclasses that are not feature registries) — e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `PublicationSchema`
@@ -369,9 +369,9 @@ import obstore.store
 import pandas as pd
 import polars as pl
 import pyarrow as pa
-from lancell.atlas import RaggedAtlas
-from lancell.ingestion import add_anndata_batch, add_coo_batch
-from lancell.schema import make_uid, DatasetRecord, FeatureBaseSchema, LancellBaseSchema
+from homeobox.atlas import RaggedAtlas
+from homeobox.ingestion import add_anndata_batch, add_coo_batch
+from homeobox.schema import make_uid, DatasetRecord, FeatureBaseSchema, HoxBaseSchema
 ```
 
 ## Directory Layout (Expected Input)

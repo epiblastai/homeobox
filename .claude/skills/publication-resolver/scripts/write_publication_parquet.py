@@ -31,8 +31,8 @@ from typing import Union, get_args, get_origin
 import pandas as pd
 from pydantic_core import PydanticUndefined
 
-from lancell.schema import make_stable_uid
-from lancell.standardization import (
+from homeobox.schema import make_stable_uid
+from homeobox.standardization import (
     fetch_geo_series,
     fetch_publication,
     fetch_publication_metadata,
@@ -346,7 +346,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("data_dir", help="Directory to write output files to")
     parser.add_argument(
-        "schema_module", help="Dotted module path (e.g. lancell_examples.foo.schema)"
+        "schema_module", help="Dotted module path (e.g. homeobox_examples.foo.schema)"
     )
     parser.add_argument(
         "publication_schema_class", help="Publication schema class name (e.g. PublicationSchema)"

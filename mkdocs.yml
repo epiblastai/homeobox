@@ -1,8 +1,8 @@
-site_name: lancell
-site_url: https://epiblastai.github.io/lancell/
+site_name: homeobox
+site_url: https://epiblastai.github.io/homeobox/
 site_description: Multimodal cell database built on LanceDB and Zarr
-repo_url: https://github.com/epiblastai/lancell
-repo_name: epiblastai/lancell
+repo_url: https://github.com/epiblastai/homeobox
+repo_name: epiblastai/homeobox
 
 theme:
   name: material

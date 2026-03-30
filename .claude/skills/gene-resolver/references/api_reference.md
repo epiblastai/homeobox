@@ -3,8 +3,8 @@
 ## Gene Resolution
 
 ```python
-from lancell.standardization import resolve_genes, detect_organism_from_ensembl_ids, is_placeholder_symbol
-from lancell.standardization.types import GeneResolution, ResolutionReport
+from homeobox.standardization import resolve_genes, detect_organism_from_ensembl_ids, is_placeholder_symbol
+from homeobox.standardization.types import GeneResolution, ResolutionReport
 ```
 
 ### `resolve_genes(values, organism="human", input_type="auto") -> ResolutionReport`

@@ -7,14 +7,14 @@ import polars as pl
 import pytest
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas
-from lancell.feature_layouts import read_feature_layout, reindex_registry
-from lancell.ingestion import add_from_anndata
-from lancell.obs_alignment import align_obs_to_schema
-from lancell.schema import (
+from homeobox.atlas import RaggedAtlas
+from homeobox.feature_layouts import read_feature_layout, reindex_registry
+from homeobox.ingestion import add_from_anndata
+from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
-    LancellBaseSchema,
+    HoxBaseSchema,
     SparseZarrPointer,
 )
 
@@ -27,7 +27,7 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
-class TestCellSchema(LancellBaseSchema):
+class TestCellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
 
 
@@ -464,7 +464,7 @@ class TestStorelessCheckout:
 
     def test_backward_compat_convention_fallback(self, tmp_path):
         """Old version records without zarr_store_uri fall back to convention."""
-        from lancell.atlas import _zarr_uri_from_db_uri
+        from homeobox.atlas import _zarr_uri_from_db_uri
 
         assert _zarr_uri_from_db_uri("/data/my_atlas/lance_db") == "/data/my_atlas/zarr_store"
         assert (

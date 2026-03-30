@@ -1,10 +1,10 @@
-# lancell
+# homeobox
 
 Multimodal single-cell database built on [LanceDB](https://lancedb.com) and [Zarr](https://zarr.dev). Designed for building heterogeneous cell atlases and training foundation models on them.
 
 Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr. A PyTorch-native data loading layer reads directly from those stores without intermediate copies or format conversions.
 
-- **[Documentation](https://epiblastai.github.io/lancell/)**
+- **[Documentation](https://epiblastai.github.io/homeobox/)**
 
 ---
 
@@ -13,12 +13,12 @@ Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, an
 Prebuilt wheels are available on PyPI. Requires Python 3.13.
 
 ```bash
-pip install lancell          # core: atlas, querying, ingestion
-pip install lancell[ml]      # + PyTorch dataloader
-pip install lancell[bio]     # + scanpy, GEOparse
-pip install lancell[io]      # + S3/GCS/Azure, image codecs
-pip install lancell[viz]     # + marimo, matplotlib
-pip install lancell[all]     # everything
+pip install homeobox          # core: atlas, querying, ingestion
+pip install homeobox[ml]      # + PyTorch dataloader
+pip install homeobox[bio]     # + scanpy, GEOparse
+pip install homeobox[io]      # + S3/GCS/Azure, image codecs
+pip install homeobox[viz]     # + marimo, matplotlib
+pip install homeobox[all]     # everything
 ```
 
 To build from source (requires a Rust toolchain):
@@ -36,7 +36,7 @@ maturin develop --release
 
 Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
-Lancell's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group. The reconstruction layer handles union/intersection/feature-filter logic at query time. No padding is stored, no information is discarded at ingest.
+Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group. The reconstruction layer handles union/intersection/feature-filter logic at query time. No padding is stored, no information is discarded at ingest.
 
 ```
 Cell table (shared)                Zarr (per-dataset)
@@ -54,17 +54,17 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 import os, tempfile
 import scanpy as sc
 import obstore.store
-from lancell.atlas import RaggedAtlas
-from lancell.schema import (
-    DatasetRecord, FeatureBaseSchema, LancellBaseSchema, SparseZarrPointer,
+from homeobox.atlas import RaggedAtlas
+from homeobox.schema import (
+    DatasetRecord, FeatureBaseSchema, HoxBaseSchema, SparseZarrPointer,
 )
-from lancell.ingestion import add_from_anndata
+from homeobox.ingestion import add_from_anndata
 
 # 1. Define schemas: one for gene features, one for cell metadata
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str
 
-class CellSchema(LancellBaseSchema):
+class CellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
 
 # 2. Create an atlas
@@ -110,10 +110,10 @@ The CellxGene Census mouse atlas (about 44M cells) is available on S3.
 No schema class or store construction needed, just `db_uri` and S3 config:
 
 ```python
-from lancell.atlas import RaggedAtlas
+from homeobox.atlas import RaggedAtlas
 
 atlas = RaggedAtlas.checkout_latest(
-    db_uri="s3://epiblast-public/cellxgene_mouse_lancell/lance_db",
+    db_uri="s3://epiblast-public/cellxgene_mouse_homeobox/lance_db",
     store_kwargs={"config": {"skip_signature": True, "region": "us-east-2"}},
 )
 
@@ -148,12 +148,12 @@ For large results, `.to_batches()` provides a streaming iterator that avoids mat
 
 ### Example Notebooks
 
-The `notebooks/` directory contains self-contained [marimo](https://marimo.io) notebooks that work after a plain `pip install lancell` (no repo clone needed).
+The `notebooks/` directory contains self-contained [marimo](https://marimo.io) notebooks that work after a plain `pip install homeobox` (no repo clone needed).
 
 | Notebook | Description |
 |----------|-------------|
 | [`scbasecount_ragged_atlas.py`](notebooks/scbasecount_ragged_atlas.py) | Explore a small 7.3M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/) data (human + *C. elegans*). Covers versioning, metadata queries, ragged union/intersection joins, feature selection, AnnData reconstruction, and the PyTorch dataloader. |
-| [`cellxgene_tiledb_vs_lancell_benchmark.py`](notebooks/cellxgene_tiledb_vs_lancell_benchmark.py) | Load the 44M-cell CellxGene Census mouse atlas stored in lancell format and benchmark it against TileDB-SOMA for ML dataloader throughput and AnnData query latency. |
+| [`cellxgene_tiledb_vs_homeobox_benchmark.py`](notebooks/cellxgene_tiledb_vs_homeobox_benchmark.py) | Load the 44M-cell CellxGene Census mouse atlas stored in homeobox format and benchmark it against TileDB-SOMA for ML dataloader throughput and AnnData query latency. |
 
 ---
 
@@ -163,11 +163,11 @@ Benchmarked against TileDB-SOMA on a ~44M cell mouse atlas (CellxGene Census), r
 
 ### ML dataloader throughput
 
-`CellDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Lancell's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
+`CellDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
 
-![Dataloader throughput: lancell vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
+![Dataloader throughput: homeobox vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
 
-| Workers | TileDB-SOMA | lancell | Speedup |
+| Workers | TileDB-SOMA | homeobox | Speedup |
 |---------|-------------|---------|---------|
 | 0 (in-process) | ~150 cells/s | ~1,600 cells/s | ~10x |
 | 4 workers | ~500 cells/s | ~3,150 cells/s | ~6x |
@@ -176,19 +176,19 @@ Benchmarked against TileDB-SOMA on a ~44M cell mouse atlas (CellxGene Census), r
 
 Three access patterns: cell-oriented (filter by cell type, full matrix), feature-oriented (subset genes across a population), and combined.
 
-![Query latency: lancell vs TileDB-SOMA](docs/assets/benchmark_query.png)
+![Query latency: homeobox vs TileDB-SOMA](docs/assets/benchmark_query.png)
 
-Lancell is 1.7–3x faster across patterns, with the largest margin on feature-oriented queries where the CSC index avoids scanning irrelevant cells entirely.
+Homeobox is 1.7–3x faster across patterns, with the largest margin on feature-oriented queries where the CSC index avoids scanning irrelevant cells entirely.
 
 ### Fast cloud reads: RustShardReader
 
 Zarr's sharded format packs many chunks into a single object-store file, with an index recording each chunk's byte offset. The Python zarr stack issues one HTTP request per chunk even when chunks could be coalesced.
 
-Lancell's `RustShardReader` handles shard reads in Rust: it batches all requested ranges, issues one `get_ranges` call per shard file, and decodes chunks in parallel via rayon. On S3 and GCS this typically cuts latency-dominated read time by an order of magnitude compared to sequential per-chunk fetches.
+Homeobox's `RustShardReader` handles shard reads in Rust: it batches all requested ranges, issues one `get_ranges` call per shard file, and decodes chunks in parallel via rayon. On S3 and GCS this typically cuts latency-dominated read time by an order of magnitude compared to sequential per-chunk fetches.
 
 ### BP-128 bitpacking (from BPCells)
 
-When ingesting integer count data, lancell automatically applies BP-128 bitpacking with delta encoding to the sparse `indices` array, and BP-128 (no delta) to the values array. BP-128 is a SIMD-accelerated codec that packs integers using the minimum number of bits required per 128-element block.
+When ingesting integer count data, homeobox automatically applies BP-128 bitpacking with delta encoding to the sparse `indices` array, and BP-128 (no delta) to the values array. BP-128 is a SIMD-accelerated codec that packs integers using the minimum number of bits required per 128-element block.
 
 This delivers compression ratios comparable to zstd on typical single-cell count matrices while decoding at memory bandwidth speeds, making it strictly better than general-purpose codecs for this data type. Chunk sizes that are multiples of 128 align perfectly with the codec's block boundaries.
 
@@ -196,7 +196,7 @@ This delivers compression ratios comparable to zstd on typical single-cell count
 
 ## Versioning
 
-Lancell separates the writable ingest path from the read/query path with an explicit snapshot model:
+Homeobox separates the writable ingest path from the read/query path with an explicit snapshot model:
 
 1. **Ingest**: write Zarr arrays and cell records freely, in parallel if needed.
 2. **`optimize()`**: compact Lance fragments, assign `global_index` to newly registered features, rebuild FTS indexes.
@@ -226,8 +226,8 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 - **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
 - **[PyTorch Data Loading](docs/dataloader.md)**: `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
 - **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
-- **[Schemas](docs/schemas.md)**: `LancellBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetRecord`.
-- **[Full docs site](https://epiblastai.github.io/lancell/)**
+- **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetRecord`.
+- **[Full docs site](https://epiblastai.github.io/homeobox/)**
 
 ---
 
@@ -235,7 +235,7 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 
 ### Methods
 
-- **BPCells**: Parks and Greenleaf, *Scalable high-performance single cell data analysis with BPCells*, bioRxiv 2025. BP-128 bitpacking in lancell is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
+- **BPCells**: Parks and Greenleaf, *Scalable high-performance single cell data analysis with BPCells*, bioRxiv 2025. BP-128 bitpacking in homeobox is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
 
 ### Datasets
 

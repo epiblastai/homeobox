@@ -39,12 +39,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from lancell.standardization import (
+from homeobox.standardization import (
     OntologyEntity,
     detect_control_labels,
     resolve_ontology_terms,
 )
-from lancell.standardization.types import CellLineResolution, OntologyResolution
+from homeobox.standardization.types import CellLineResolution, OntologyResolution
 
 
 def _get_term_id(res) -> str | None:

@@ -3,8 +3,8 @@
 ## Gene Target Resolution
 
 ```python
-from lancell.standardization import resolve_genes
-from lancell.standardization.types import GeneResolution, ResolutionReport
+from homeobox.standardization import resolve_genes
+from homeobox.standardization.types import GeneResolution, ResolutionReport
 ```
 
 ### `resolve_genes(values, organism="human", input_type="symbol") -> ResolutionReport`
@@ -18,8 +18,8 @@ Key fields on `GeneResolution`: `symbol`, `ensembl_gene_id`, `organism`, `ncbi_g
 ## Guide RNA Resolution
 
 ```python
-from lancell.standardization import resolve_guide_sequences
-from lancell.standardization.types import GuideRnaResolution, ResolutionReport
+from homeobox.standardization import resolve_guide_sequences
+from homeobox.standardization.types import GuideRnaResolution, ResolutionReport
 ```
 
 ### `resolve_guide_sequences(sequences, organism="human") -> ResolutionReport`
@@ -40,7 +40,7 @@ Resolve guide RNA sequences to genomic coordinates and gene annotations. Uses UC
 ## Coordinate Annotation
 
 ```python
-from lancell.standardization import annotate_genomic_coordinates
+from homeobox.standardization import annotate_genomic_coordinates
 ```
 
 ### `annotate_genomic_coordinates(coordinates, organism="human") -> ResolutionReport`
@@ -92,7 +92,7 @@ Returned by both `resolve_guide_sequences` and `annotate_genomic_coordinates`.
 ## Control Detection
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     is_control_label,
     detect_control_labels,
     detect_negative_control_type,
@@ -112,7 +112,7 @@ Recognized genetic controls: `nontargeting`, `scramble`, `intergenic`, `safe-tar
 ## Combinatorial Perturbation Parsing
 
 ```python
-from lancell.standardization import parse_combinatorial_perturbations
+from homeobox.standardization import parse_combinatorial_perturbations
 ```
 
 `parse_combinatorial_perturbations(value: str) -> list[str]`
@@ -124,7 +124,7 @@ Splits on `+`, `&`, `;`, `|`, and comma-space. Does **not** split on `_`.
 ## Perturbation Method Classification
 
 ```python
-from lancell.standardization import classify_perturbation_method, GeneticPerturbationType
+from homeobox.standardization import classify_perturbation_method, GeneticPerturbationType
 ```
 
 `classify_perturbation_method(value: str) -> GeneticPerturbationType | None`

@@ -3,8 +3,8 @@
 ## Ontology Resolution
 
 ```python
-from lancell.standardization import resolve_ontology_terms, OntologyEntity
-from lancell.standardization.types import OntologyResolution, ResolutionReport
+from homeobox.standardization import resolve_ontology_terms, OntologyEntity
+from homeobox.standardization.types import OntologyResolution, ResolutionReport
 ```
 
 ### `resolve_ontology_terms(values, entity, organism=None, min_similarity=0.8) -> ResolutionReport`
@@ -33,7 +33,7 @@ Resolve free-text values to ontology terms with CELLxGENE-compatible IDs.
 ## OntologyEntity Enum
 
 ```python
-from lancell.standardization import OntologyEntity
+from homeobox.standardization import OntologyEntity
 ```
 
 | Value | Ontology | Prefix(es) | Backend |
@@ -88,7 +88,7 @@ Inherits from `Resolution` base class.
 ## Convenience Wrappers
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     resolve_cell_types,
     resolve_tissues,
     resolve_diseases,
@@ -116,7 +116,7 @@ Note: No convenience wrapper for `SEX`, `ETHNICITY`, or `DEVELOPMENT_STAGE` — 
 ## Single-Value Helper
 
 ```python
-from lancell.standardization import get_ontology_term_id
+from homeobox.standardization import get_ontology_term_id
 ```
 
 | Function | Signature | Description |
@@ -128,7 +128,7 @@ from lancell.standardization import get_ontology_term_id
 ## Hierarchy Navigation
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     get_ontology_ancestors,
     get_ontology_descendants,
     get_ontology_siblings,
@@ -148,7 +148,7 @@ These operate on the local `ontology_terms` table (not available for `SEX` or `C
 ## Control Detection
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     is_control_label,
     detect_control_labels,
     detect_negative_control_type,

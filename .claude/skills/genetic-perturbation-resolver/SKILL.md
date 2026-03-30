@@ -64,7 +64,7 @@ Each run must write a markdown report to `resolver_reports/` in the working dire
 ## Imports
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     resolve_genes,
     resolve_guide_sequences,
     annotate_genomic_coordinates,
@@ -75,9 +75,9 @@ from lancell.standardization import (
     classify_perturbation_method,
     GeneticPerturbationType,
 )
-from lancell.standardization.assemblies import get_assembly_report
-from lancell.standardization.types import GeneResolution, GuideRnaResolution, ResolutionReport
-from lancell.schema import make_uid
+from homeobox.standardization.assemblies import get_assembly_report
+from homeobox.standardization.types import GeneResolution, GuideRnaResolution, ResolutionReport
+from homeobox.schema import make_uid
 ```
 
 ## Scripts
@@ -129,7 +129,7 @@ Example:
 python .claude/skills/gene-resolver/scripts/finalize_features.py \
     /tmp/GSE123/GeneticPerturbationSchema_resolved.csv \
     /tmp/GSE123/GeneticPerturbationSchema.parquet \
-    lancell_examples.multimodal_perturbation_atlas.schema \
+    homeobox_examples.multimodal_perturbation_atlas.schema \
     GeneticPerturbationSchema
 ```
 
@@ -184,9 +184,9 @@ After the base gene-resolution script runs, inspect the partially resolved CSV a
 - `library_name`:
   - Prefer the library metadata file itself, then raw columns, then publication text if needed.
 - `target_chromosome`:
-  - BLAT and `GuideRnaResolution` return UCSC chromosome names (e.g., `chr1`). The schema may expect a different representation such as a GenBank accession (e.g., `CM000663.2`). Use `get_assembly_report()` from `lancell.standardization.assemblies` to convert:
+  - BLAT and `GuideRnaResolution` return UCSC chromosome names (e.g., `chr1`). The schema may expect a different representation such as a GenBank accession (e.g., `CM000663.2`). Use `get_assembly_report()` from `homeobox.standardization.assemblies` to convert:
     ```python
-    from lancell.standardization.assemblies import get_assembly_report
+    from homeobox.standardization.assemblies import get_assembly_report
     report = get_assembly_report("human", "GRCh38")
     seq = report.lookup("chr1")  # accepts UCSC, bare, GenBank, or RefSeq names
     seq.genbank_accession  # "CM000663.2"

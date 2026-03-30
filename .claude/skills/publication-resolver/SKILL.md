@@ -56,7 +56,7 @@ The primary script. Prefer `--pmid` when you have one. Supports three identifier
 | Argument | Description |
 |---|---|
 | `data_dir` | Directory to write output files to |
-| `schema_module` | Dotted module path (e.g. `lancell_examples.multimodal_perturbation_atlas.schema`) |
+| `schema_module` | Dotted module path (e.g. `homeobox_examples.multimodal_perturbation_atlas.schema`) |
 | `pub_schema_class` | Publication schema class name (e.g. `PublicationSchema`) |
 | `--section-schema` | Section schema class name (e.g. `PublicationSectionSchema`). Omit if schema has no section table. |
 | `--pmid` | PubMed ID to fetch directly |
@@ -67,7 +67,7 @@ Example:
 ```bash
 python .claude/skills/publication-resolver/scripts/write_publication_parquet.py \
     /tmp/geo_agent/GSE123456 \
-    lancell_examples.multimodal_perturbation_atlas.schema \
+    homeobox_examples.multimodal_perturbation_atlas.schema \
     PublicationSchema \
     --section-schema PublicationSectionSchema \
     --pmid 31806696
@@ -81,7 +81,7 @@ Outputs:
 ## Imports
 
 ```python
-from lancell.standardization import (
+from homeobox.standardization import (
     fetch_publication,
     fetch_publication_text,
     fetch_publication_metadata,
@@ -90,7 +90,7 @@ from lancell.standardization import (
     PublicationFullText,
     PublicationSection,
 )
-from lancell.schema import make_uid
+from homeobox.schema import make_uid
 ```
 
 ## Workflow
@@ -141,7 +141,7 @@ PMC full text is attempted first. If the article is not in PMC Open Access, the 
 Generate a publication UID via `make_uid()` — this UID is used as the primary key in `PublicationSchema` and as the foreign key in `PublicationSectionSchema`.
 
 ```python
-from lancell.schema import make_uid
+from homeobox.schema import make_uid
 
 publication_uid = make_uid()
 
@@ -173,7 +173,7 @@ Build DataFrames, coerce types against the target schema, and write parquet. The
 ```bash
 python .claude/skills/publication-resolver/scripts/write_publication_parquet.py \
     /tmp/geo_agent/GSE123456 \
-    lancell_examples.multimodal_perturbation_atlas.schema \
+    homeobox_examples.multimodal_perturbation_atlas.schema \
     PublicationSchema \
     --section-schema PublicationSectionSchema \
     --pmid 31806696

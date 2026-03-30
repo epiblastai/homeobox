@@ -1,4 +1,4 @@
-"""Tests for lancell.dataloader and lancell.sampler."""
+"""Tests for homeobox.dataloader and homeobox.sampler."""
 
 import anndata as ad
 import numpy as np
@@ -7,20 +7,20 @@ import polars as pl
 import pytest
 import scipy.sparse as sp
 
-from lancell.atlas import RaggedAtlas
-from lancell.dataloader import (
+from homeobox.atlas import RaggedAtlas
+from homeobox.dataloader import (
     CellDataset,
     SparseBatch,
     sparse_to_dense_collate,
 )
-from lancell.feature_layouts import reindex_registry
-from lancell.ingestion import add_from_anndata
-from lancell.obs_alignment import align_obs_to_schema
-from lancell.sampler import CellSampler
-from lancell.schema import (
+from homeobox.feature_layouts import reindex_registry
+from homeobox.ingestion import add_from_anndata
+from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.sampler import CellSampler
+from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
-    LancellBaseSchema,
+    HoxBaseSchema,
     SparseZarrPointer,
 )
 
@@ -40,7 +40,7 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
-class TestCellSchema(LancellBaseSchema):
+class TestCellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
     tissue: str | None = None
 

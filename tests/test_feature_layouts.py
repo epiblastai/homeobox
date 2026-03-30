@@ -1,4 +1,4 @@
-"""Tests for lancell.feature_layouts — _feature_layouts Lance table helpers."""
+"""Tests for homeobox.feature_layouts — _feature_layouts Lance table helpers."""
 
 from pathlib import Path
 
@@ -8,7 +8,7 @@ import polars as pl
 import pytest
 import zarr
 
-from lancell.feature_layouts import (
+from homeobox.feature_layouts import (
     build_feature_layout_df,
     compute_layout_uid,
     layout_exists,
@@ -17,8 +17,8 @@ from lancell.feature_layouts import (
     sync_layouts_global_index,
     validate_feature_layout,
 )
-from lancell.group_specs import get_spec
-from lancell.schema import FeatureBaseSchema, FeatureLayout
+from homeobox.group_specs import get_spec
+from homeobox.schema import FeatureBaseSchema, FeatureLayout
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -358,7 +358,7 @@ class TestReindexRegistry:
 
 class TestGroupReaderRemap:
     def test_cold_cache(self, tmp_path):
-        from lancell.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader
 
         uids = ["uid_a", "uid_b", "uid_c"]
         registry = _make_registry(tmp_path, uids)
@@ -387,7 +387,7 @@ class TestGroupReaderRemap:
         assert remap.dtype == np.int32
 
     def test_warm_cache(self, tmp_path):
-        from lancell.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader
 
         uids = ["uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids)
@@ -417,7 +417,7 @@ class TestGroupReaderRemap:
 
     def test_remap_load_once_ignores_table_mutations(self, tmp_path):
         """get_remap() is load-once: mutations to the table after first load are not seen."""
-        from lancell.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader
 
         uids = ["uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids)
@@ -460,7 +460,7 @@ class TestGroupReaderRemap:
     def test_worker_path_returns_frozen_remap(self, tmp_path):
         import obstore
 
-        from lancell.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader
 
         store = obstore.store.MemoryStore()
         remap = np.array([3, 1, 2], dtype=np.int32)
@@ -474,7 +474,7 @@ class TestGroupReaderRemap:
         """has_csc checks for zarr indptr existence."""
         import obstore
 
-        from lancell.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader
 
         store = obstore.store.MemoryStore()
         zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
@@ -499,7 +499,7 @@ class TestGroupReaderRemap:
         """get_csc_indptr() loads from zarr and caches."""
         import obstore
 
-        from lancell.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader
 
         store = obstore.store.MemoryStore()
         zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")

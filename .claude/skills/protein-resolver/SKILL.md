@@ -5,7 +5,7 @@ description: Use this skill when tasked with standardizing protein identifiers (
 
 # Protein Resolver
 
-Resolve protein identifiers in feature dataframes — typically the var index of an ADT/CITE-seq protein abundance matrix. Maps protein aliases, gene names, and UniProt accessions to canonical identifiers using the `lancell.standardization` suite.
+Resolve protein identifiers in feature dataframes — typically the var index of an ADT/CITE-seq protein abundance matrix. Maps protein aliases, gene names, and UniProt accessions to canonical identifiers using the `homeobox.standardization` suite.
 
 For biologic perturbation resolution (cytokines, growth factors, antibodies applied to cells), use a dedicated **biologic-perturbation-resolver** skill. For genetic perturbation targets (CRISPR, siRNA, shRNA), use the **genetic-perturbation-resolver** skill.
 
@@ -104,7 +104,7 @@ Example:
 python .claude/skills/protein-resolver/scripts/finalize_features.py \
     /tmp/GSE123/Protein_resolved.csv \
     /tmp/GSE123/ProteinSchema.parquet \
-    lancell_examples.multimodal_perturbation_atlas.schema \
+    homeobox_examples.multimodal_perturbation_atlas.schema \
     ProteinSchema \
     --column feature_type=protein \
     --column feature_id=uniprot_id

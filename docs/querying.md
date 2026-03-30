@@ -5,7 +5,7 @@
 Once you have a checked-out atlas, `atlas.query()` returns an `AtlasQuery` — a lazy, fluent query builder that lets you express complex data retrieval in a single readable chain. Methods like `.where()`, `.feature_join()`, and `.layers()` accumulate parameters without touching the database; execution is deferred until a terminal method (`.to_anndata()`, `.count()`, etc.) is called.
 
 ```python
-from lancell.atlas import RaggedAtlas
+from homeobox.atlas import RaggedAtlas
 
 atlas_r = RaggedAtlas.checkout_latest("/path/to/db", CellSchema, store)
 q = atlas_r.query()  # returns AtlasQuery

@@ -41,10 +41,10 @@ RaggedAtlas.checkout(version=N)   ← readers pin to a snapshot
 
 ```python
 import obstore.store
-import lancell
-from lancell.atlas import RaggedAtlas
-from lancell.schema import LancellBaseSchema, SparseZarrPointer
-from lancell.schema import DatasetRecord
+import homeobox
+from homeobox.atlas import RaggedAtlas
+from homeobox.schema import HoxBaseSchema, SparseZarrPointer
+from homeobox.schema import DatasetRecord
 from my_project.schemas import GeneSchema  # a FeatureBaseSchema subclass
 
 store = obstore.store.S3Store("s3://my-bucket/my-atlas/zarr")
@@ -280,4 +280,4 @@ During reconstruction, indices that map to `-1` are masked out and their corresp
 
 ### Future: icechunk
 
-True array-level versioning — where you could snapshot the zarr arrays themselves and roll them back independently of the metadata tables — is not currently supported. We are exploring [icechunk](https://icechunk.io) as a potential solution. Icechunk provides transactional, versioned object storage for zarr arrays with a snapshot model that would align naturally with lancell's `snapshot()`/`checkout()` workflow. This would close the remaining gap where zarr data written after a snapshot is technically visible at the storage level, even though it is unreachable through a checked-out atlas.
+True array-level versioning — where you could snapshot the zarr arrays themselves and roll them back independently of the metadata tables — is not currently supported. We are exploring [icechunk](https://icechunk.io) as a potential solution. Icechunk provides transactional, versioned object storage for zarr arrays with a snapshot model that would align naturally with homeobox's `snapshot()`/`checkout()` workflow. This would close the remaining gap where zarr data written after a snapshot is technically visible at the storage level, even though it is unreachable through a checked-out atlas.

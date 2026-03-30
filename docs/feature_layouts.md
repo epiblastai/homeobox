@@ -1,6 +1,6 @@
 # Feature Layouts
 
-The `lancell.feature_layouts` module is the Python API for the `_feature_layouts` LanceDB table and the global feature index system. It provides functions to compute layout identifiers, build and insert layout rows, validate layouts against the registry, assign global indices, and resolve feature UIDs to the dense integer positions used by the reconstruction and training pipeline.
+The `homeobox.feature_layouts` module is the Python API for the `_feature_layouts` LanceDB table and the global feature index system. It provides functions to compute layout identifiers, build and insert layout rows, validate layouts against the registry, assign global indices, and resolve feature UIDs to the dense integer positions used by the reconstruction and training pipeline.
 
 For the conceptual overview of how layouts fit into the atlas data model — including the ER diagram and field-level schema — see [Data Structure](data_structure.md). For the `FeatureLayout` Pydantic model definition, see [Schemas](schemas.md#featurelayout). For how layouts are written during ingestion, see [Array Storage](array_storage.md#the-_feature_layouts-feature-mapping).
 
@@ -35,7 +35,7 @@ def compute_layout_uid(feature_uids: list[str]) -> str
 **Returns:** `str` — SHA-256 hash of the ordered feature list, truncated to 16 hex characters.
 
 ```python
-from lancell.feature_layouts import compute_layout_uid
+from homeobox.feature_layouts import compute_layout_uid
 
 uid = compute_layout_uid(["ENSG00000141510", "ENSG00000012048", "ENSG00000171862"])
 print(uid)  # e.g. "a3f8c1d09b2e4f67"
@@ -67,7 +67,7 @@ def build_feature_layout_df(
     `global_index` values in the returned DataFrame can be `None` for features that have not yet been indexed by `reindex_registry`. This is expected when building layouts before the first reindexing pass.
 
 ```python
-from lancell.feature_layouts import build_feature_layout_df
+from homeobox.feature_layouts import build_feature_layout_df
 
 layout_uid, layout_df = build_feature_layout_df(adata.var, registry_table)
 print(layout_uid)       # "a3f8c1d09b2e4f67"
@@ -92,7 +92,7 @@ def layout_exists(table: lancedb.table.Table, layout_uid: str) -> bool
 **Returns:** `bool` — `True` if at least one row with this `layout_uid` exists.
 
 ```python
-from lancell.feature_layouts import layout_exists
+from homeobox.feature_layouts import layout_exists
 
 if not layout_exists(layouts_table, layout_uid):
     layouts_table.add(layout_df)
@@ -119,7 +119,7 @@ def read_feature_layout(
 **Returns:** `pl.DataFrame` — columns `layout_uid`, `feature_uid`, `local_index`, `global_index`, sorted by `local_index`.
 
 ```python
-from lancell.feature_layouts import read_feature_layout
+from homeobox.feature_layouts import read_feature_layout
 
 layout_df = read_feature_layout(layouts_table, "a3f8c1d09b2e4f67")
 print(layout_df.columns)  # ['layout_uid', 'feature_uid', 'local_index', 'global_index']
@@ -162,7 +162,7 @@ def validate_feature_layout(
 4. **Registry membership** — if `registry_table` is provided, verifies every `feature_uid` exists in the registry
 
 ```python
-from lancell.feature_layouts import validate_feature_layout
+from homeobox.feature_layouts import validate_feature_layout
 
 errors = validate_feature_layout(
     layouts_table,
@@ -199,7 +199,7 @@ Only unindexed rows (`global_index IS NULL`) are modified. Each is assigned a un
 
 ```python
 # Typically called via atlas.optimize(), but can be used standalone:
-from lancell.feature_layouts import reindex_registry
+from homeobox.feature_layouts import reindex_registry
 
 n_new = reindex_registry(registry_table)
 print(f"Assigned global_index to {n_new} features")
@@ -231,7 +231,7 @@ After `reindex_registry()` assigns new `global_index` values, the `_feature_layo
     `atlas.optimize()` calls both `reindex_registry` and `sync_layouts_global_index` internally, so you typically do not need to call this function directly. See [Building an Atlas](atlas.md) for the recommended workflow.
 
 ```python
-from lancell.feature_layouts import sync_layouts_global_index
+from homeobox.feature_layouts import sync_layouts_global_index
 
 n_updated = sync_layouts_global_index(layouts_table, registry_table)
 print(f"Updated {n_updated} layout rows")
@@ -290,7 +290,7 @@ During ingestion, `add_from_anndata` handles layout creation internally. The und
 
 ```python
 # You don't call these directly — add_from_anndata does it for you:
-from lancell.ingestion import add_from_anndata
+from homeobox.ingestion import add_from_anndata
 
 atlas.optimize()  # assigns global_index to new features
 add_from_anndata(atlas, adata, feature_space="gene_expression",
@@ -319,7 +319,7 @@ To query a specific set of features by UID:
 2. `.features()` — pass the indices to the query builder
 
 ```python
-from lancell.feature_layouts import resolve_feature_uids_to_global_indices
+from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
 wanted = resolve_feature_uids_to_global_indices(
     atlas_r._registry_tables["gene_expression"],
@@ -340,7 +340,7 @@ For querying details, see [Querying](querying.md). For training with feature fil
 ## Imports
 
 ```python
-from lancell.feature_layouts import (
+from homeobox.feature_layouts import (
     compute_layout_uid,
     build_feature_layout_df,
     layout_exists,

@@ -72,7 +72,7 @@ The user must provide the schema file path as part of their task prompt. Example
 
 If no schema was provided, ask the user for the path before going any further. Read the Python file and identify:
 
-1. **The obs schema class** — This inherits from `LancellBaseSchema`, verify that there is only one table in the schema file matching this.
+1. **The obs schema class** — This inherits from `HoxBaseSchema`, verify that there is only one table in the schema file matching this.
 2. **Feature registry classes** — These inherit from `FeatureBaseSchema` and correspond to var-level fields per feature space supported by an atlas.
 3. **Foreign key classes** — These inherit directly from `LanceModel`. These tables are referenced by either the obs table or a feature registry table through a foreign key.
 
