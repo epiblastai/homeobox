@@ -40,7 +40,7 @@ from homeobox.util import sql_escape
 def _store_to_uri(store: obstore.store.ObjectStore) -> str:
     """Extract a URI string from an obstore ObjectStore instance."""
     if isinstance(store, obstore.store.LocalStore):
-        return f"file://{store.prefix}"
+        return f"file://{os.path.abspath(store.prefix)}"
     if isinstance(store, obstore.store.S3Store):
         bucket = store.config["bucket"]
         prefix = store.prefix or ""
@@ -73,6 +73,23 @@ def _store_kwargs_to_storage_options(store_kwargs: dict | None) -> dict[str, str
         return store_kwargs
     options = store_kwargs.get("config", store_kwargs)
     return {k: str(v).lower() if isinstance(v, bool) else str(v) for k, v in options.items()}
+
+
+def _resolve_db_uri(uri: str) -> str:
+    """Normalize an atlas path or db_uri to a LanceDB connection URI.
+
+    If *uri* already ends with ``lance_db`` it is returned as-is.
+    Otherwise ``/lance_db`` is appended (mirrors the convention used by
+    :func:`create_or_open_atlas`).  Local relative paths are resolved to
+    absolute paths so that ``obstore.store.from_url`` can handle them.
+    """
+    stripped = uri.rstrip("/")
+    is_remote = stripped.startswith(("s3://", "gs://", "az://"))
+    if not is_remote:
+        stripped = os.path.abspath(stripped)
+    if not stripped.endswith("/lance_db") and not stripped.endswith("\\lance_db"):
+        stripped += "/lance_db"
+    return stripped
 
 
 def _zarr_uri_from_db_uri(db_uri: str) -> str:
@@ -816,6 +833,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
+        db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
         return version_table.search().to_polars().sort("version")
@@ -853,6 +871,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
+        db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
 
@@ -941,6 +960,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
+        db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         version_table = db.open_table(version_table_name)
 
@@ -1024,6 +1044,7 @@ class RaggedAtlas:
         version_table_name:
             Name of the version tracking table.
         """
+        db_uri = _resolve_db_uri(db_uri)
         versions = cls.list_versions(
             db_uri, store_kwargs=store_kwargs, version_table_name=version_table_name
         )

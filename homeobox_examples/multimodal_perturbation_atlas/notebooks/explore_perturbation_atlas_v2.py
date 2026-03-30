@@ -69,56 +69,10 @@ def _():
     from homeobox.atlas import RaggedAtlas
     from homeobox_examples.multimodal_perturbation_atlas.atlas import PerturbationAtlas
 
-    # ATLAS_DIR = Path.home() / "multimodal_perturbation_atlas"
     ATLAS_DIR = "s3://epiblast-public/multimodal_perturbation_atlas"
-    # ATLAS_DIR = Path("/tmp/atlas/cpg0021_test")
     DB_URI = str(ATLAS_DIR + "/lance_db")
     ZARR_PATH = str(ATLAS_DIR + "/zarr_store")
     return DB_URI, PerturbationAtlas, RaggedAtlas, pl, plt
-
-
-@app.cell
-def _():
-    # _atlas_restore = RaggedAtlas.restore(
-    #     # db_uri="/home/ubuntu/multimodal_perturbation_atlas/lance_db",
-    #     db_uri=DB_URI,
-    #     version=3,  # or whatever your snapshot version is
-    # )
-    return
-
-
-@app.cell
-def _():
-    # import zarr
-    # _store = obstore.store.from_url("s3://epiblast-public/multimodal_perturbation_atlas/zarr_store/")
-    # zarray = zarr.open(zarr.storage.ObjectStore(store=_store), mode="r")
-    # plt.imshow(zarray["e519e04f0c8d4b3c"]["data"][6_000_000].max(0))
-    return
-
-
-@app.cell
-def _():
-    # import lancedb
-    # lancedb.connect(DB_URI).open_table("datasets").search().to_pandas()
-    return
-
-
-@app.cell
-def _():
-    # --- Run once after ingestion, then comment out ---
-    # _store = obstore.store.LocalStore(ZARR_PATH)
-    # _store = obstore.store.from_url(ZARR_PATH)
-    # _atlas_rw = RaggedAtlas.open(
-    #     db_uri=DB_URI,
-    #     cell_table_name="cells",
-    #     cell_schema=CellIndex,
-    #     store=_store,
-    # )
-    # print(_atlas_rw.cell_table.count_rows())
-    # _atlas_rw.optimize()
-    # version = _atlas_rw.snapshot()
-    # print(f"Optimized and snapshotted: version {version}")
-    return
 
 
 @app.cell
@@ -130,9 +84,6 @@ def _(DB_URI, RaggedAtlas):
 
 @app.cell
 def _(DB_URI, PerturbationAtlas):
-    # --- Use this for read-only access after snapshotting ---
-    # PerturbationAtlas inherits from RaggedAtlas and adds perturbation-aware
-    # query methods. checkout/checkout_latest/restore all work unchanged.
     atlas_rw = PerturbationAtlas.checkout_latest(db_uri=DB_URI)
     atlas_rw
     return (atlas_rw,)

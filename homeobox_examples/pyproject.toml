@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Example ingestion scripts for homeobox"
 requires-python = ">=3.12"
 dependencies = [
-    "homeobox[all]",
+    "homeobox",
 ]
 
 [tool.uv.sources]

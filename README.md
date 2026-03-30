@@ -51,7 +51,7 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 ### Quickstart
 
 ```python
-import os, tempfile
+import os
 import scanpy as sc
 import obstore.store
 import homeobox as hox
@@ -72,7 +72,7 @@ atlas = hox.create_or_open_atlas(
     cell_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
-    dataset_schema=DatasetRecord,
+    dataset_schema=hox.DatasetRecord,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
@@ -83,7 +83,7 @@ atlas.register_features("gene_expression", features)
 
 # 4. Prepare var and ingest
 adata.var["global_feature_uid"] = adata.var_names
-record = DatasetRecord(
+record = hox.DatasetRecord(
     zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
 )
 hox.add_from_anndata(
