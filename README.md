@@ -54,30 +54,25 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 import os, tempfile
 import scanpy as sc
 import obstore.store
-from homeobox.atlas import RaggedAtlas
-from homeobox.schema import (
-    DatasetRecord, FeatureBaseSchema, HoxBaseSchema, SparseZarrPointer,
-)
-from homeobox.ingestion import add_from_anndata
+import homeobox as hox
+from homeobox.schema import SparseZarrPointer
 
 # 1. Define schemas: one for gene features, one for cell metadata
-class GeneFeature(FeatureBaseSchema):
+class GeneFeature(hox.FeatureBaseSchema):
     gene_symbol: str
 
-class CellSchema(HoxBaseSchema):
+class CellSchema(hox.HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = None
 
 # 2. Create an atlas
-atlas_dir = tempfile.mkdtemp()
-os.makedirs(f"{atlas_dir}/arrays")
-store = obstore.store.LocalStore(f"{atlas_dir}/arrays")
-atlas = RaggedAtlas.create(
-    db_uri=f"{atlas_dir}/db",
+atlas_dir = "./hox_example_atlas/"
+os.makedirs(atlas_dir, exist_ok=True)
+atlas = hox.create_or_open_atlas(
+    atlas_path=atlas_dir,
     cell_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
     dataset_schema=DatasetRecord,
-    store=store,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
@@ -91,15 +86,17 @@ adata.var["global_feature_uid"] = adata.var_names
 record = DatasetRecord(
     zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
 )
-add_from_anndata(
+hox.add_from_anndata(
     atlas, adata, feature_space="gene_expression",
     zarr_layer="counts", dataset_record=record,
 )
 
-# 5. Snapshot and query
+# 5. Optimize tables and create a snapshot
 atlas.optimize()
 atlas.snapshot()
-atlas_r = RaggedAtlas.checkout_latest(f"{atlas_dir}/db")
+
+# 6. Open the atlas and query
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
@@ -110,9 +107,9 @@ The CellxGene Census mouse atlas (about 44M cells) is available on S3.
 No schema class or store construction needed, just `db_uri` and S3 config:
 
 ```python
-from homeobox.atlas import RaggedAtlas
+import homeobox as hox
 
-atlas = RaggedAtlas.checkout_latest(
+atlas = hox.RaggedAtlas.checkout_latest(
     db_uri="s3://epiblast-public/cellxgene_mouse_homeobox/lance_db",
     store_kwargs={"config": {"skip_signature": True, "region": "us-east-2"}},
 )
