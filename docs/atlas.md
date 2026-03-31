@@ -200,10 +200,10 @@ print(f"snapshot v{v0}")  # snapshot v0
 `checkout_latest()` opens a read-only atlas pinned to the snapshot just created. All tables are at their Lance versions as of `v0` — any subsequent writes to the atlas will not be visible through this handle.
 
 ```python
-atlas_r = RaggedAtlas.checkout_latest(
-    "/tmp/pbmc_atlas/db", CellSchema, store
-)
+atlas_r = RaggedAtlas.checkout_latest("/tmp/pbmc_atlas/db")
 ```
+
+Both `cell_schema` and `store` are optional — pointer fields are inferred from the cell table's Arrow schema and the store is reconstructed from the URI recorded at snapshot time. Pass them explicitly only when you need to override the defaults.
 
 Queries use a fluent builder. The `where` clause accepts any LanceDB SQL predicate against the cell table columns.
 
@@ -218,7 +218,7 @@ print(cd4)
 ```
 
 ```python
-# Count cells grouped by cell type — only fetches the grouping column, cheap on large atlases
+# Count cells grouped by cell type — only fetches the grouping column
 atlas_r.query().count(group_by="cell_type")
 ```
 
@@ -291,9 +291,7 @@ atlas.optimize()
 v1 = atlas.snapshot()
 
 # checkout_latest() always picks up the highest recorded version
-atlas_r2 = RaggedAtlas.checkout_latest(
-    "/tmp/pbmc_atlas/db", CellSchema, store
-)
+atlas_r2 = RaggedAtlas.checkout_latest("/tmp/pbmc_atlas/db")
 
 full = atlas_r2.query().to_anndata()
 print(full)

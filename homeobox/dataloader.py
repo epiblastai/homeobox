@@ -177,10 +177,11 @@ def _build_dense_modality_data(
     fs: str,
     layer: str,
     n_cells: int,
-) -> "tuple[np.ndarray, _ModalityData]":
+) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
     """Build ``_ModalityData`` for a dense feature space modality.
 
-    Returns ``(groups_np, modality_data)``.
+    Returns ``(filtered_cells, groups_np, modality_data)`` where
+    *filtered_cells* is the DataFrame after empty-cell removal.
     """
     filtered, groups = _prepare_dense_cells(cells_indexed, pf)
     groups = sorted(groups)
@@ -203,13 +204,30 @@ def _build_dense_modality_data(
         for zg in groups
     }
 
-    layers_path = spec.find_layers_path()
-    n_features = atlas._registry_tables[fs].count_rows()
-    layer_dtype = (
-        group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
-        if groups
-        else np.dtype(np.float32)
-    )
+    # Determine read path and shape based on spec capabilities
+    has_layers = bool(spec.layers.required) or bool(spec.layers.allowed)
+    per_cell_shape: tuple[int, ...] | None = None
+    array_name = ""
+
+    if has_layers:
+        layers_path = spec.find_layers_path()
+        array_path = f"{layers_path}/{layer}"
+    else:
+        layers_path = ""
+        array_name = spec.required_arrays[0].array_name if spec.required_arrays else "data"
+        array_path = array_name
+
+    if groups:
+        reader = group_readers[groups[0]].get_array_reader(array_path)
+        layer_dtype = reader._native_dtype
+        if spec.has_var_df:
+            n_features = atlas._registry_tables[fs].count_rows()
+        else:
+            per_cell_shape = tuple(reader.shape[1:])
+            n_features = int(np.prod(per_cell_shape)) if per_cell_shape else 0
+    else:
+        layer_dtype = np.dtype(np.float32)
+        n_features = atlas._registry_tables[fs].count_rows() if spec.has_var_df else 0
 
     mod_data = _ModalityData(
         kind=PointerKind.DENSE,
@@ -222,8 +240,10 @@ def _build_dense_modality_data(
         layers_path=layers_path,
         present_mask=present_mask,
         cell_positions=cell_positions,
+        per_cell_shape=per_cell_shape,
+        array_name=array_name,
     )
-    return groups_np, mod_data
+    return filtered, groups_np, mod_data
 
 
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
@@ -333,6 +353,7 @@ class DenseBatch:
     data: np.ndarray
     n_features: int
     metadata: dict[str, np.ndarray] | None = None
+    per_cell_shape: tuple[int, ...] | None = None
 
 
 @dataclass
@@ -381,6 +402,8 @@ class _ModalityData:
     layers_path: str = ""  # e.g. "csr/layers" or "layers"
     present_mask: np.ndarray | None = None  # bool, (n_total_cells,); None for CellDataset
     cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for CellDataset
+    per_cell_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
+    array_name: str = ""  # direct zarr array for layer-less specs (e.g., "data")
 
 
 # ---------------------------------------------------------------------------
@@ -521,11 +544,23 @@ async def _take_group_dense(
     reader: BatchAsyncArray,
     starts: np.ndarray,
     ends: np.ndarray,
-    n_features: int,
+    cell_shape: tuple[int, ...],
+    dtype: np.dtype | None = None,
 ) -> np.ndarray:
-    """Read dense data for one zarr group; returns float32 array (n_cells, n_features)."""
+    """Read dense data for one zarr group.
+
+    Parameters
+    ----------
+    cell_shape:
+        Per-cell shape, e.g. ``(n_features,)`` for 2D or ``(C, H, W)`` for tiles.
+    dtype:
+        Output dtype.  ``None`` means cast to float32 (legacy 2D behaviour).
+    """
     flat_data, _ = await reader.read_ranges(starts, ends)
-    return flat_data.reshape(len(starts), n_features).astype(np.float32)
+    out = flat_data.reshape(len(starts), *cell_shape)
+    if dtype is None:
+        return out.astype(np.float32)
+    return out if out.dtype == dtype else out.astype(dtype)
 
 
 async def _take_dense_from_pointers(
@@ -536,6 +571,19 @@ async def _take_dense_from_pointers(
 ) -> DenseBatch:
     """Fetch a dense batch from per-cell pointer arrays."""
     n_present = len(groups_np)
+
+    # Determine per-cell shape and output dtype
+    if mod_data.per_cell_shape is not None:
+        cell_shape = mod_data.per_cell_shape
+        out_dtype = mod_data.layer_dtype
+    else:
+        cell_shape = (mod_data.n_features,)
+        out_dtype = np.dtype(np.float32)
+
+    # Determine which zarr array to read
+    array_path = (
+        mod_data.array_name if mod_data.array_name else f"{mod_data.layers_path}/{mod_data.layer}"
+    )
 
     sort_order = np.argsort(groups_np, kind="stable")
     sorted_groups = groups_np[sort_order]
@@ -552,10 +600,11 @@ async def _take_dense_from_pointers(
         gr = mod_data.group_readers[zg]
         tasks.append(
             _take_group_dense(
-                gr.get_array_reader(f"{mod_data.layers_path}/{mod_data.layer}"),
+                gr.get_array_reader(array_path),
                 sorted_starts[mask],
                 sorted_ends[mask],
-                mod_data.n_features,
+                cell_shape,
+                mod_data.layer_dtype if mod_data.per_cell_shape is not None else None,
             )
         )
         group_slices.append((pos, pos + count))
@@ -563,12 +612,16 @@ async def _take_dense_from_pointers(
 
     results = await asyncio.gather(*tasks)
 
-    sorted_data = np.empty((n_present, mod_data.n_features), dtype=np.float32)
+    sorted_data = np.empty((n_present, *cell_shape), dtype=out_dtype)
     for (s, e), group_data in zip(group_slices, results, strict=True):
         sorted_data[s:e] = group_data
 
     inv_sort = np.argsort(sort_order, kind="stable")
-    return DenseBatch(data=sorted_data[inv_sort], n_features=mod_data.n_features)
+    return DenseBatch(
+        data=sorted_data[inv_sort],
+        n_features=mod_data.n_features,
+        per_cell_shape=mod_data.per_cell_shape,
+    )
 
 
 async def _fetch_modality_from_pointers(
@@ -649,9 +702,14 @@ async def _take_multimodal(
                     n_features=mod_data.n_features,
                 )
             else:
+                if mod_data.per_cell_shape is not None:
+                    empty_shape = (0, *mod_data.per_cell_shape)
+                else:
+                    empty_shape = (0, mod_data.n_features)
                 empty_modalities[fs] = DenseBatch(
-                    data=np.zeros((0, mod_data.n_features), dtype=mod_data.layer_dtype),
+                    data=np.zeros(empty_shape, dtype=mod_data.layer_dtype),
                     n_features=mod_data.n_features,
+                    per_cell_shape=mod_data.per_cell_shape,
                 )
             continue
 
@@ -717,13 +775,15 @@ class CellDataset(_AsyncDataset):
     feature_space:
         Which feature space to read.
     layer:
-        Which layer to read within the feature space.
+        Which layer to read within the feature space.  May be ``None``
+        for layer-less specs such as ``image_tiles``.
     metadata_columns:
-        Obs column names to include as metadata on each SparseBatch.
+        Obs column names to include as metadata on each batch.
     wanted_globals:
         Optional sorted int64 array of global feature indices to keep.
         When set, :attr:`n_features` reflects the filtered count and
-        batch ``indices`` are bounded by that value.
+        batch ``indices`` are bounded by that value.  Only valid for
+        sparse feature spaces with a feature registry.
     """
 
     def __init__(
@@ -738,28 +798,35 @@ class CellDataset(_AsyncDataset):
         pf = atlas._pointer_fields[feature_space]
         spec = get_spec(feature_space)
 
-        if spec.pointer_kind is not PointerKind.SPARSE:
-            raise NotImplementedError(
-                f"CellDataset only supports sparse feature spaces, "
-                f"got {spec.pointer_kind.value} for '{feature_space}'"
-            )
-
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
         # Workers reconstruct the zarr root lazily from this store.
         self._store = atlas._store
+        self._pointer_kind = spec.pointer_kind
 
         # Build modality data (filters empty cells, builds remaps & readers)
         cells_indexed = cells_pl.with_row_index("_orig_idx")
-        filtered, groups_np, self._mod_data = _build_sparse_modality_data(
-            atlas,
-            cells_indexed,
-            pf,
-            spec,
-            feature_space,
-            layer,
-            wanted_globals,
-            cells_pl.height,
-        )
+
+        if spec.pointer_kind is PointerKind.SPARSE:
+            filtered, groups_np, self._mod_data = _build_sparse_modality_data(
+                atlas,
+                cells_indexed,
+                pf,
+                spec,
+                feature_space,
+                layer,
+                wanted_globals,
+                cells_pl.height,
+            )
+        else:
+            filtered, groups_np, self._mod_data = _build_dense_modality_data(
+                atlas,
+                cells_indexed,
+                pf,
+                spec,
+                feature_space,
+                layer,
+                cells_pl.height,
+            )
 
         # Store only the lightweight arrays needed for sampling + lazy loading
         self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
@@ -783,15 +850,23 @@ class CellDataset(_AsyncDataset):
         return self._mod_data.n_features
 
     @property
+    def per_cell_shape(self) -> tuple[int, ...] | None:
+        """Per-cell array shape, or ``None`` for flat/sparse feature spaces."""
+        return self._mod_data.per_cell_shape
+
+    @property
     def groups_np(self) -> np.ndarray:
         """Integer group id for each cell (length = n_cells)."""
         return self._groups_np
 
-    def __getitems__(self, cell_indices: list[int]) -> SparseBatch:
-        """Fetch a batch of cells by index as a :class:`SparseBatch`.
+    def __getitems__(self, cell_indices: list[int]) -> "SparseBatch | DenseBatch":
+        """Fetch a batch of cells by index.
 
         Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
         indices (PyTorch >= 2.0 ``__getitems__`` protocol).
+
+        Returns :class:`SparseBatch` for sparse feature spaces or
+        :class:`DenseBatch` for dense feature spaces (including image tiles).
 
         Parameters
         ----------
@@ -817,19 +892,27 @@ class CellDataset(_AsyncDataset):
         # 2. Reorder to match input order (take_row_ids sorts by _rowid)
         take_result = _reorder_take_result(take_result, batch_row_ids)
 
-        # 3. Extract pointer data
-        groups_np, starts, ends = _extract_pointers_sparse(
-            take_result, self._pointer_field, self._mod_data.unique_groups
-        )
+        # 3. Extract pointer data and dispatch async read
+        if self._pointer_kind is PointerKind.SPARSE:
+            groups_np, starts, ends = _extract_pointers_sparse(
+                take_result, self._pointer_field, self._mod_data.unique_groups
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
+                self._loop,
+            )
+        else:
+            groups_np, starts, ends = _extract_pointers_dense(
+                take_result, self._pointer_field, self._mod_data.unique_groups
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                _take_dense_from_pointers(groups_np, starts, ends, self._mod_data),
+                self._loop,
+            )
 
-        # 4. Async zarr reads using pointer data
-        future = asyncio.run_coroutine_threadsafe(
-            _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
-            self._loop,
-        )
         batch = future.result()
 
-        # 5. Extract metadata from same take result
+        # 4. Extract metadata from same take result
         if self._metadata_columns:
             batch.metadata = {
                 col: take_result[col].to_numpy()
@@ -838,8 +921,8 @@ class CellDataset(_AsyncDataset):
             }
         return batch
 
-    def __getitem__(self, idx: int) -> SparseBatch:
-        """Fetch a single cell as a :class:`SparseBatch`."""
+    def __getitem__(self, idx: int) -> "SparseBatch | DenseBatch":
+        """Fetch a single cell as a batch."""
         return self.__getitems__([idx])
 
     def _ensure_initialized(self) -> None:
@@ -945,7 +1028,7 @@ class MultimodalCellDataset(_AsyncDataset):
                     atlas, cells_indexed, pf, spec, fs, layer, wg, self._n_cells
                 )
             else:
-                groups_np, modality_data[fs] = _build_dense_modality_data(
+                _, groups_np, modality_data[fs] = _build_dense_modality_data(
                     atlas, cells_indexed, pf, spec, fs, layer, self._n_cells
                 )
             modality_groups_np[fs] = groups_np
@@ -1119,6 +1202,24 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
             else:
                 result["metadata"][col] = arr
 
+    return result
+
+
+def dense_to_tensor_collate(batch: DenseBatch) -> dict:
+    """Convert a DenseBatch to a tensor dict.
+
+    Returns ``{"X": tensor, **metadata_tensors}``.  The tensor preserves the
+    batch's native dtype (e.g. ``uint16`` for image tiles).
+    """
+    import torch
+
+    result: dict = {"X": torch.from_numpy(np.ascontiguousarray(batch.data))}
+    if batch.metadata:
+        for col, arr in batch.metadata.items():
+            if arr.dtype.kind in ("i", "u", "f"):
+                result[col] = torch.from_numpy(arr)
+            else:
+                result[col] = arr
     return result
 
 

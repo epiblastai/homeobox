@@ -1,5 +1,7 @@
 """Tests for homeobox.dataloader and homeobox.sampler."""
 
+import os
+
 import anndata as ad
 import numpy as np
 import obstore
@@ -67,10 +69,11 @@ def _make_sparse_adata(
 @pytest.fixture
 def two_group_atlas(tmp_path):
     """Atlas with 2 zarr groups, 10 genes, 35 total cells (20 + 15)."""
-    db_uri = str(tmp_path / "atlas.lancedb")
-    store = obstore.store.LocalStore(prefix=str(tmp_path))
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
-        db_uri=db_uri,
+        db_uri=atlas_dir,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -119,16 +122,17 @@ def two_group_atlas(tmp_path):
     )
 
     atlas.snapshot()
-    return RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
+    return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
 
 
 @pytest.fixture
 def single_group_atlas(tmp_path):
     """Atlas with 1 zarr group for exact round-trip comparison."""
-    db_uri = str(tmp_path / "atlas.lancedb")
-    store = obstore.store.LocalStore(prefix=str(tmp_path))
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
-        db_uri=db_uri,
+        db_uri=atlas_dir,
         cell_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
@@ -160,7 +164,7 @@ def single_group_atlas(tmp_path):
     )
 
     atlas.snapshot()
-    return RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
+    return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
 
 
 # ---------------------------------------------------------------------------

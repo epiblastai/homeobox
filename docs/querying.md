@@ -23,7 +23,7 @@ atlas_r = RaggedAtlas.checkout_latest("/path/to/db", CellSchema, store)
 q = atlas_r.query()
 
 # Wrong: writable atlas raises RuntimeError
-atlas_w = RaggedAtlas.open("/path/to/db", CellSchema, store)
+atlas_w = RaggedAtlas.open("/path/to/db", "cells", CellSchema, store=store)
 q = atlas_w.query()  # RuntimeError
 ```
 
@@ -57,6 +57,14 @@ atlas_r.query().limit(100).to_anndata()
 ```
 
 `limit` applies after filtering, so `.where(...).limit(100)` returns the first 100 cells matching the predicate rather than 100 random cells from the full atlas.
+
+### `.offset(n: int)`
+
+Skip the first *n* cells before returning results. Useful for pagination or resuming from a known position.
+
+```python
+atlas_r.query().offset(1000).limit(500).to_anndata()
+```
 
 ### `.balanced_limit(n: int, column: str)`
 
@@ -142,7 +150,7 @@ Terminal methods execute the query and return data. Calling a terminal method is
 
 ### Counting
 
-**`.count(group_by=None)`** performs a cheap cell count without loading any array data. Because it only touches the cell table, it is fast even for very large atlases.
+**`.count(group_by=None)`** counts cells without performing any array reconstruction. Note that the ungrouped form materialises a column from the cell table to compute the count, so it is not free on very large atlases.
 
 ```python
 atlas_r.query().count()  # → int: total cells
@@ -170,18 +178,39 @@ atlas_r.query().select(["cell_type", "n_genes"]).to_polars()
 
 ### AnnData and MuData
 
-**`.to_anndata()`** reconstructs a single `AnnData` object. It uses the first sparse feature space in the schema, falling back to the first dense space if no sparse space is present. For unimodal atlases this is the natural terminal; for multimodal atlases, consider `.to_mudata()` instead.
+**`.to_anndata()`** reconstructs a single `AnnData` object from the first active feature space that has data for the queried cells. For unimodal atlases this is the natural terminal; for multimodal atlases, consider `.to_mudata()` or `.to_multimodal()` instead.
 
 ```python
 adata = atlas_r.query().where("cell_type = 'NK cells'").to_anndata()
 ```
 
-**`.to_mudata()`** reconstructs one `AnnData` per feature space and wraps them in a `MuData` object. Each modality is keyed by its feature space name.
+**`.to_mudata()`** reconstructs one `AnnData` per feature space and wraps them in a `MuData` object. Each modality is keyed by its feature space name. Non-AnnData modalities (fragments, raw arrays) are silently dropped — use `.to_multimodal()` for full heterogeneous access.
 
 ```python
 mdata = atlas_r.query().to_mudata()
 mdata["gene_expression"]    # AnnData for RNA
 mdata["protein_abundance"]  # AnnData for protein
+```
+
+**`.to_multimodal()`** reconstructs all active modalities in their native format and returns a `MultimodalResult`. Each modality is reconstructed as its natural type: `AnnData` for matrix-based spaces, `FragmentResult` for chromatin accessibility, or `numpy.ndarray` for raw dense arrays (e.g. image tiles). The result includes shared `obs`, per-modality data in `mod`, and boolean presence masks in `present`.
+
+```python
+result = atlas_r.query().to_multimodal()
+result.mod["gene_expression"]          # AnnData
+result.mod["chromatin_accessibility"]  # FragmentResult
+result.present["gene_expression"]      # boolean mask of which cells have this modality
+```
+
+**`.to_fragments(feature_space: str)`** reconstructs a single fragment-based feature space (e.g. chromatin accessibility) as a `FragmentResult`. The feature space must use an `IntervalReconstructor`.
+
+```python
+frags = atlas_r.query().where("tissue = 'brain'").to_fragments("chromatin_accessibility")
+```
+
+**`.to_array(feature_space: str)`** reconstructs a single dense feature space as a raw NumPy array alongside the obs DataFrame for present cells. Useful for modalities like image tiles that don't have feature annotations.
+
+```python
+array, obs = atlas_r.query().to_array("image_tiles")
 ```
 
 **`.to_batches(batch_size: int = 1024)`** returns a streaming iterator of `AnnData` objects. Each batch contains at most `batch_size` cells. Use this for large queries that would exhaust memory if materialised all at once.

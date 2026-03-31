@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import polars as pl
+from lancedb.query import FullTextQuery, MatchQuery
 
 from homeobox.query import AtlasQuery
 from homeobox.util import sql_escape
@@ -44,13 +45,24 @@ def _query_uids(atlas: RaggedAtlas, table_name: str, where: str) -> list[str]:
     return rows["uid"].to_list()
 
 
-def _perturbation_where(uids: list[str], prefix: str) -> str:
-    """Build a WHERE clause matching perturbation_search_string for the given UIDs."""
+_PERTURBATION_SEARCH_COLUMN = "perturbation_search_string"
+
+
+def _perturbation_fts_query(uids: list[str]) -> FullTextQuery | None:
+    """Build a MatchQuery for perturbation_search_string using the FTS index.
+
+    Returns ``None`` when *uids* is empty (no matching perturbations found).
+
+    Only the raw UIDs are searched (no ``GP:``/``SM:``/``BIO:`` prefix)
+    because the lance FTS tokenizer splits on ``:``, so including the
+    prefix would match every cell that contains *any* token of that type.
+    UIDs are globally unique across perturbation types, so the prefix is
+    redundant for matching.
+    """
     if not uids:
-        # Impossible condition — no rows match
-        return "1 = 0"
-    parts = [f"perturbation_search_string LIKE '%{prefix}:{sql_escape(uid)}%'" for uid in uids]
-    return "(" + " OR ".join(parts) + ")"
+        return None
+    terms = " ".join(uids)
+    return MatchQuery(terms, _PERTURBATION_SEARCH_COLUMN)
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +217,7 @@ class PerturbationQuery(AtlasQuery):
         self._genetic_columns: list[str] | None = None
         self._small_molecule_columns: list[str] | None = None
         self._biologic_columns: list[str] | None = None
+        self._perturbation_fts: FullTextQuery | None = None
 
     # -- Internal helpers ---------------------------------------------------
 
@@ -215,49 +228,92 @@ class PerturbationQuery(AtlasQuery):
         else:
             self._where_clause = f"({self._where_clause}) AND ({condition})"
 
+    def _and_perturbation_fts(self, fts: FullTextQuery | None) -> None:
+        """AND an FTS query onto the accumulated perturbation filter.
+
+        Sets ``_search_query`` / ``_search_kwargs`` directly so that both
+        ``_build_base_query`` and the balanced-limit methods (which read
+        these fields) pick up the FTS filter automatically.
+        """
+        if fts is None:
+            # No matching UIDs — force an impossible WHERE so no rows match.
+            self._and_where("1 = 0")
+            return
+        if self._perturbation_fts is None:
+            if self._search_query is not None:
+                raise ValueError(
+                    "Cannot combine perturbation filters (by_gene, by_compound, "
+                    "by_biologic) with an explicit search() call. Use .where() "
+                    "for additional filtering instead."
+                )
+            self._perturbation_fts = fts
+        else:
+            self._perturbation_fts = self._perturbation_fts & fts
+        self._search_query = self._perturbation_fts
+        self._search_kwargs = {"query_type": "fts"}
+
     # -- Perturbation lookup methods ----------------------------------------
 
     def by_gene(
         self,
-        name: str | None = None,
+        name: str | list[str] | None = None,
         *,
         ensembl_id: str | None = None,
         perturbation_type: str | None = None,
+        operator: Literal["AND", "OR"] = "OR",
     ) -> PerturbationQuery:
         """Filter to cells with a genetic perturbation targeting a gene.
 
         Parameters
         ----------
         name:
-            Gene name to match against ``intended_gene_name``.
+            Gene name(s) to match against ``intended_gene_name``.
+            A list is combined according to *operator*.
         ensembl_id:
             Ensembl gene ID to match against ``intended_ensembl_gene_id``.
         perturbation_type:
             Optional filter on ``perturbation_type`` (e.g. ``"knockout"``,
             ``"knockdown"``, ``"activation"``).
+        operator:
+            ``"OR"`` (default) matches cells with *any* of the listed genes.
+            ``"AND"`` matches cells with perturbations to *all* listed genes.
         """
         if name is None and ensembl_id is None:
             raise ValueError("At least one of name or ensembl_id must be provided")
 
-        clauses: list[str] = []
-        if name is not None:
-            clauses.append(f"intended_gene_name = '{sql_escape(name)}'")
+        extra: list[str] = []
         if ensembl_id is not None:
-            clauses.append(f"intended_ensembl_gene_id = '{sql_escape(ensembl_id)}'")
+            extra.append(f"intended_ensembl_gene_id = '{sql_escape(ensembl_id)}'")
         if perturbation_type is not None:
-            clauses.append(f"perturbation_type = '{sql_escape(perturbation_type)}'")
+            extra.append(f"perturbation_type = '{sql_escape(perturbation_type)}'")
 
-        where = " AND ".join(clauses)
-        uids = _query_uids(self._atlas, _TABLE_GENETIC, where)
-        self._and_where(_perturbation_where(uids, _PREFIX_GENETIC))
+        if name is None:
+            uids = _query_uids(self._atlas, _TABLE_GENETIC, " AND ".join(extra))
+            self._and_perturbation_fts(_perturbation_fts_query(uids))
+            return self
+
+        names = [name] if isinstance(name, str) else list(name)
+
+        if operator == "AND" and len(names) > 1:
+            for n in names:
+                clauses = [f"intended_gene_name = '{sql_escape(n)}'"] + extra
+                uids = _query_uids(self._atlas, _TABLE_GENETIC, " AND ".join(clauses))
+                self._and_perturbation_fts(_perturbation_fts_query(uids))
+        else:
+            in_clause = ", ".join(f"'{sql_escape(n)}'" for n in names)
+            clauses = [f"intended_gene_name IN ({in_clause})"] + extra
+            uids = _query_uids(self._atlas, _TABLE_GENETIC, " AND ".join(clauses))
+            self._and_perturbation_fts(_perturbation_fts_query(uids))
+
         return self
 
     def by_compound(
         self,
         *,
-        name: str | None = None,
+        name: str | list[str] | None = None,
         smiles: str | None = None,
         pubchem_cid: int | None = None,
+        operator: Literal["AND", "OR"] = "OR",
     ) -> PerturbationQuery:
         """Filter to cells treated with a small molecule.
 
@@ -266,50 +322,82 @@ class PerturbationQuery(AtlasQuery):
         Parameters
         ----------
         name:
-            Common compound name to match against ``name``.
+            Common compound name(s) to match against ``name``.
+            A list is combined according to *operator*.
         smiles:
             SMILES string to match against ``smiles``.
         pubchem_cid:
             PubChem CID to match against ``pubchem_cid``.
+        operator:
+            ``"OR"`` (default) matches cells treated with *any* listed compound.
+            ``"AND"`` matches cells treated with *all* listed compounds.
         """
         if name is None and smiles is None and pubchem_cid is None:
             raise ValueError("At least one of name, smiles, or pubchem_cid must be provided")
 
-        clauses: list[str] = []
-        if name is not None:
-            clauses.append(f"name = '{sql_escape(name)}'")
+        extra: list[str] = []
         if smiles is not None:
-            clauses.append(f"smiles = '{sql_escape(smiles)}'")
+            extra.append(f"smiles = '{sql_escape(smiles)}'")
         if pubchem_cid is not None:
-            clauses.append(f"pubchem_cid = {pubchem_cid}")
+            extra.append(f"pubchem_cid = {pubchem_cid}")
 
-        where = " AND ".join(clauses)
-        uids = _query_uids(self._atlas, _TABLE_SMALL_MOLECULE, where)
-        self._and_where(_perturbation_where(uids, _PREFIX_SMALL_MOLECULE))
+        if name is None:
+            uids = _query_uids(self._atlas, _TABLE_SMALL_MOLECULE, " AND ".join(extra))
+            self._and_perturbation_fts(_perturbation_fts_query(uids))
+            return self
+
+        names = [name] if isinstance(name, str) else list(name)
+
+        if operator == "AND" and len(names) > 1:
+            for n in names:
+                clauses = [f"name = '{sql_escape(n)}'"] + extra
+                uids = _query_uids(self._atlas, _TABLE_SMALL_MOLECULE, " AND ".join(clauses))
+                self._and_perturbation_fts(_perturbation_fts_query(uids))
+        else:
+            in_clause = ", ".join(f"'{sql_escape(n)}'" for n in names)
+            clauses = [f"name IN ({in_clause})"] + extra
+            uids = _query_uids(self._atlas, _TABLE_SMALL_MOLECULE, " AND ".join(clauses))
+            self._and_perturbation_fts(_perturbation_fts_query(uids))
+
         return self
 
     def by_biologic(
         self,
-        name: str,
+        name: str | list[str],
         *,
         biologic_type: str | None = None,
+        operator: Literal["AND", "OR"] = "OR",
     ) -> PerturbationQuery:
         """Filter to cells treated with a biologic agent.
 
         Parameters
         ----------
         name:
-            Biologic agent name to match against ``biologic_name``.
+            Biologic agent name(s) to match against ``biologic_name``.
+            A list is combined according to *operator*.
         biologic_type:
             Optional filter on ``biologic_type`` (e.g. ``"cytokine"``).
+        operator:
+            ``"OR"`` (default) matches cells treated with *any* listed biologic.
+            ``"AND"`` matches cells treated with *all* listed biologics.
         """
-        clauses = [f"biologic_name = '{sql_escape(name)}'"]
-        if biologic_type is not None:
-            clauses.append(f"biologic_type = '{sql_escape(biologic_type)}'")
+        names = [name] if isinstance(name, str) else list(name)
 
-        where = " AND ".join(clauses)
-        uids = _query_uids(self._atlas, _TABLE_BIOLOGIC, where)
-        self._and_where(_perturbation_where(uids, _PREFIX_BIOLOGIC))
+        extra: list[str] = []
+        if biologic_type is not None:
+            extra.append(f"biologic_type = '{sql_escape(biologic_type)}'")
+
+        if operator == "AND" and len(names) > 1:
+            for n in names:
+                clauses = [f"biologic_name = '{sql_escape(n)}'"] + extra
+                uids = _query_uids(self._atlas, _TABLE_BIOLOGIC, " AND ".join(clauses))
+                self._and_perturbation_fts(_perturbation_fts_query(uids))
+        else:
+            in_clause = ", ".join(f"'{sql_escape(n)}'" for n in names)
+            clauses = [f"biologic_name IN ({in_clause})"] + extra
+            uids = _query_uids(self._atlas, _TABLE_BIOLOGIC, " AND ".join(clauses))
+            self._and_perturbation_fts(_perturbation_fts_query(uids))
+
         return self
 
     def by_publication(

@@ -1,8 +1,7 @@
 # homeobox
+Designed for building heterogeneous biomedical data atlases for interactive analysis and ML training.
 
-Multimodal single-cell database built on [LanceDB](https://lancedb.com) and [Zarr](https://zarr.dev). Designed for building heterogeneous cell atlases and training foundation models on them.
-
-Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr. A PyTorch-native data loading layer reads directly from those stores without intermediate copies or format conversions.
+Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
 
 - **[Documentation](https://epiblastai.github.io/homeobox/)**
 
@@ -36,7 +35,7 @@ maturin develop --release
 
 Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
-Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group. The reconstruction layer handles union/intersection/feature-filter logic at query time. No padding is stored, no information is discarded at ingest.
+Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group.
 
 ```
 Cell table (shared)                Zarr (per-dataset)
@@ -113,8 +112,6 @@ atlas = hox.RaggedAtlas.checkout_latest(
     db_uri="s3://epiblast-public/cellxgene_mouse_homeobox/lance_db",
     store_kwargs={"config": {"skip_signature": True, "region": "us-east-2"}},
 )
-
-atlas.query().count()                                           # 43,969,325
 adata = atlas.query().where("cell_type = 'neural cell'").limit(5000).to_anndata()
 ```
 

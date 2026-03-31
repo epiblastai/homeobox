@@ -1,5 +1,7 @@
 """End-to-end tests for homeobox.dex.dex() with real atlas fixtures."""
 
+import os
+
 import anndata as ad
 import numpy as np
 import obstore
@@ -79,10 +81,11 @@ def dex_atlas(tmp_path):
     - liver: 25 cells, counts in [50, 150) (target, clearly different)
     - blood: 20 cells, counts in [1, 50) (target, similar to brain)
     """
-    db_uri = str(tmp_path / "atlas.lancedb")
-    store = obstore.store.LocalStore(prefix=str(tmp_path))
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
-        db_uri=db_uri,
+        db_uri=atlas_dir,
         cell_table_name="cells",
         cell_schema=DexCellSchema,
         store=store,
@@ -128,7 +131,7 @@ def dex_atlas(tmp_path):
         )
 
     atlas.snapshot()
-    return RaggedAtlas.checkout_latest(db_uri, DexCellSchema, store=store)
+    return RaggedAtlas.checkout_latest(atlas_dir, DexCellSchema, store=store)
 
 
 # ---------------------------------------------------------------------------
@@ -323,10 +326,11 @@ class TestDexEdgeCases:
 class TestDexMWUOnDensePath:
     def test_dense_mwu(self, tmp_path):
         """MWU test works end-to-end on dense (image_features) data."""
-        db_uri = str(tmp_path / "dense_atlas.lancedb")
-        store = obstore.store.LocalStore(prefix=str(tmp_path))
+        atlas_dir = str(tmp_path / "dense_atlas")
+        os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+        store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
         atlas = RaggedAtlas.create(
-            db_uri=db_uri,
+            db_uri=atlas_dir,
             cell_table_name="cells",
             cell_schema=DenseCellSchema,
             store=store,
@@ -363,7 +367,7 @@ class TestDexMWUOnDensePath:
             )
 
         atlas.snapshot()
-        atlas = RaggedAtlas.checkout_latest(db_uri, DenseCellSchema, store=store)
+        atlas = RaggedAtlas.checkout_latest(atlas_dir, DenseCellSchema, store=store)
 
         result = dex(
             atlas,
