@@ -15,6 +15,7 @@ __all__ = [
     "MultimodalBatch",
     "make_loader",
     "sparse_to_dense_collate",
+    "dense_to_tensor_collate",
     # Samplers
     "CellSampler",
     # Ingestion
@@ -50,6 +51,7 @@ def __getattr__(name: str):
         "MultimodalBatch": "homeobox.dataloader",
         "make_loader": "homeobox.dataloader",
         "sparse_to_dense_collate": "homeobox.dataloader",
+        "dense_to_tensor_collate": "homeobox.dataloader",
         "CellSampler": "homeobox.sampler",
         "add_from_anndata": "homeobox.ingestion",
         "add_anndata_batch": "homeobox.ingestion",
