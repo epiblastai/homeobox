@@ -834,7 +834,12 @@ class CellDataset(_AsyncDataset):
         self._n_cells = len(self._row_ids)
         self._pointer_field = feature_space
         self._metadata_columns = metadata_columns
-        self._lance_info = (atlas._db_uri, atlas.cell_table.name, atlas.cell_table.version)
+        self._lance_info = (
+            atlas._db_uri,
+            atlas.cell_table.name,
+            atlas.cell_table.version,
+            getattr(atlas.db, "storage_options", None),
+        )
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -935,8 +940,8 @@ class CellDataset(_AsyncDataset):
         if self._loop is not None:
             return
         self._start_event_loop()
-        db_uri, table_name, table_version = self._lance_info
-        db = lancedb.connect(db_uri)
+        db_uri, table_name, table_version, storage_options = self._lance_info
+        db = lancedb.connect(db_uri, storage_options=storage_options)
         self._cell_table = db.open_table(table_name)
         self._cell_table.checkout(table_version)
 
@@ -1002,7 +1007,12 @@ class MultimodalCellDataset(_AsyncDataset):
         self._metadata_columns = metadata_columns
 
         # Store lance info for lazy table reconstruction in workers
-        self._lance_info = (atlas._db_uri, atlas.cell_table.name, atlas.cell_table.version)
+        self._lance_info = (
+            atlas._db_uri,
+            atlas.cell_table.name,
+            atlas.cell_table.version,
+            getattr(atlas.db, "storage_options", None),
+        )
 
         # Store row IDs for lazy loading
         self._row_ids = cells_pl["_rowid"].to_numpy().astype(np.uint64)
@@ -1106,8 +1116,8 @@ class MultimodalCellDataset(_AsyncDataset):
         if self._loop is not None:
             return
         self._start_event_loop()
-        db_uri, table_name, table_version = self._lance_info
-        db = lancedb.connect(db_uri)
+        db_uri, table_name, table_version, storage_options = self._lance_info
+        db = lancedb.connect(db_uri, storage_options=storage_options)
         self._cell_table = db.open_table(table_name)
         self._cell_table.checkout(table_version)
 
