@@ -85,7 +85,7 @@ hox.RaggedAtlas.list_versions(ATLAS_DIR)
 atlas = PerturbationAtlas.checkout_latest(ATLAS_DIR)
 atlas
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %% [markdown]
 # ## 2. Browsing metadata tables
 #
 # A homeobox `RaggedAtlas` stores all metadata in LanceDB. Every atlas has
@@ -148,7 +148,7 @@ atlas.genetic_perturbations_table.search().limit(5).to_pandas()
 # %%
 atlas.search_perturbations_by_region("chr1", start=750_000, end=1_000_000).to_pandas().sort_values("target_start").head(10)
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %% [markdown]
 # ### Feature Registries
 #
 # Feature registries store information about measured quantities like gene transcripts or image features.
@@ -165,7 +165,7 @@ atlas.feature_registry("image_features").head(10).to_pandas()
 #
 # Metadata queries hit LanceDB only. We can use LanceDB's [indexing](https://docs.lancedb.com/indexing/index) to make queries fast even in large atlases. The `atlas.query()` API returns a lazy `PerturbationQuery` builder; nothing executes until a **terminal method** (`.to_polars()` or `.to_anndata()`, etc.) is called.
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %% [markdown]
 # ### Dataset and publication metadata
 #
 # The atlas stores dataset-level metadata (accessions, feature spaces,
@@ -346,17 +346,12 @@ adata_im
 #   consistent feature space (e.g. PCA across heterogeneous datasets).
 
 # %%
-# Pick two datasets to compare union vs intersection feature counts
-datasets.head(20)
-
-# %%
 # Union: all genes from all contributing datasets
 adata_union = (
     atlas.query()
-    .where("dataset_uid IN ('d726f4be7f534f0d', '5d01f9ed2d324517')")
+    .where("dataset_uid IN ('ef136950a0314d24', '428c1eb8af0a4771')")
     .feature_spaces("gene_expression")
-    # .balanced_limit(5_000, "dataset_uid")
-    .limit(5_000)
+    .limit(6_000)
     .to_anndata()
 )
 print(f"Union:        {adata_union.n_obs:,} cells x {adata_union.n_vars:,} features")
@@ -364,11 +359,10 @@ print(f"Union:        {adata_union.n_obs:,} cells x {adata_union.n_vars:,} featu
 # Intersection: only genes shared by all contributing datasets
 adata_inter = (
     atlas.query()
-    .where("dataset_uid IN ('d726f4be7f534f0d', '5d01f9ed2d324517')")
+    .where("dataset_uid IN ('ef136950a0314d24', '428c1eb8af0a4771')")
     .feature_spaces("gene_expression")
-    # .balanced_limit(5_000, "dataset_uid")
     .feature_join("intersection")
-    .limit(5_000)
+    .limit(6_000)
     .to_anndata()
 )
 print(f"Intersection: {adata_inter.n_obs:,} cells x {adata_inter.n_vars:,} features")
@@ -400,7 +394,7 @@ marker_uids = marker_genes["uid"].tolist()
 adata_markers = (
     atlas.query()
     .features(marker_uids, "gene_expression")
-    .limit(10_000)
+    .limit(200_000)
     .to_anndata()
 )
 print(f"Marker panel: {adata_markers.n_obs:,} cells x {adata_markers.n_vars:,} features")
@@ -450,11 +444,6 @@ adata_sample = (
     .to_anndata()
 )
 adata_sample
-
-# %%
-adata_sample.obs[
-    ["organism", "cell_line", "assay", "is_negative_control", "perturbation_uids"]
-].head(10)
 
 # %%
 # MuData — gene expression + protein abundance from CITE-seq (THP-1 cells)
@@ -758,9 +747,8 @@ tile_sampler = hox.CellSampler(
 tile_sampler.set_epoch(0)
 tile_loader = hox.make_loader(tile_dataset, tile_sampler)
 
-for batch in tile_loader:
+for batch in tqdm(tile_loader):
     print(f"DenseBatch: data.shape={batch.data.shape}, dtype={batch.data.dtype}")
-    break
 
 # %%
 # Convert to torch tensors via dense_to_tensor_collate
@@ -775,7 +763,7 @@ print(f"Torch tensor: shape={result['X'].shape}, dtype={result['X'].dtype}")
 # This notebook demonstrated the core homeobox workflow:
 # **open -> query -> reconstruct -> train**. The atlas is fully composable —
 # perturbation filters, feature space selection, union/intersection joins,
-# feature panel filtering, balanced sampling, and all output formats
+# feature panel filtering, and all output formats
 # (AnnData, MuData, fragments, tiles, PyTorch batches) work together
 # through the same fluent query API.
 #
@@ -789,7 +777,6 @@ print(f"Torch tensor: shape={result['X'].shape}, dtype={result['X'].dtype}")
 # | Select feature spaces | `.feature_spaces("gene_expression")` |
 # | Select specific genes | `.features(uids, "gene_expression")` |
 # | Union vs intersection | `.feature_join("intersection")` |
-# | Balanced sampling | `.balanced_limit(1000, "dataset_uid")` |
 # | Metadata only | `.to_polars()` |
 # | Single modality | `.to_anndata()` |
 # | Multiple modalities | `.to_mudata()` or `.to_multimodal()` |
