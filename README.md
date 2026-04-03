@@ -146,6 +146,7 @@ The `notebooks/` directory contains self-contained [marimo](https://marimo.io) n
 
 | Notebook | Description |
 |----------|-------------|
+| [`multimodal_perturbation_atlas.py`](https://colab.research.google.com/drive/1-5lQXRLpKrpeYAQ14UIVK7CMq_75tp6Y#scrollTo=87b338c7) | Explore a 120M+ cell atlas with over 130,000 genetic, chemical, and biologic perturbations and 5 modalities. |
 | [`scbasecount_ragged_atlas.py`](notebooks/scbasecount_ragged_atlas.py) | Explore a small 7.3M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/) data (human + *C. elegans*). Covers versioning, metadata queries, ragged union/intersection joins, feature selection, AnnData reconstruction, and the PyTorch dataloader. |
 | [`cellxgene_tiledb_vs_homeobox_benchmark.py`](notebooks/cellxgene_tiledb_vs_homeobox_benchmark.py) | Load the 44M-cell CellxGene Census mouse atlas stored in homeobox format and benchmark it against TileDB-SOMA for ML dataloader throughput and AnnData query latency. |
 
