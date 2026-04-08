@@ -19,6 +19,9 @@ zarrs_object_store = "0.6"
 # Accept any object_store backend from Python via obstore
 pyo3-object_store = "0.8"
 
+# LRU cache for shard index entries
+lru = "0.12"
+
 # Bitpacking codec
 bitpacking = "0.9"
 serde = { version = "1", features = ["derive"] }
