@@ -94,7 +94,7 @@ CELL_LINE = "U2OS"
 ASSAY = "Cell Painting"
 ACCESSION_DB = "cellpainting-gallery"
 
-N_TREATMENT_SAMPLES = 1
+N_TREATMENT_SAMPLES = 5
 N_DMSO_SAMPLES = 300
 N_CONTROL_SAMPLES = 5
 
@@ -247,60 +247,27 @@ def load_load_data_csv(source: str, batch: str, plate: str) -> pd.DataFrame:
     return download_csv_from_s3(S3_BUCKET, key)
 
 
-def preload_illum_functions(
-    source: str,
-    batch: str,
-    plate: str,
-) -> dict[str, np.ndarray]:
-    """Download all illumination correction functions for a plate in parallel."""
-    illum_keys = {}
-    for channel in CHANNEL_NAMES:
-        suffix = CHANNEL_TO_ILLUM_SUFFIX[channel]
-        illum_fn = f"{plate}_{suffix}.npy"
-        illum_keys[channel] = f"cpg0016-jump/{source}/images/{batch}/illum/{plate}/{illum_fn}"
-
-    illum_images: dict[str, np.ndarray] = {}
-
-    def _load(channel: str) -> tuple[str, np.ndarray]:
-        arr = load_npy_from_s3(S3_BUCKET, illum_keys[channel]).astype(np.float32)
-        return channel, arr
-
-    with ThreadPoolExecutor(max_workers=N_CHANNELS) as pool:
-        for channel, arr in pool.map(lambda ch: _load(ch), CHANNEL_NAMES):
-            illum_images[channel] = arr
-
-    return illum_images
-
-
-def process_site(
-    load_data_row: pd.Series,
-    illum_images: dict[str, np.ndarray],
-    tile_size: int,
-) -> np.ndarray | None:
-    """Download channel TIFFs, apply illum correction, center crop. Thread-safe.
-
-    Returns a (C, tile_size, tile_size) uint16 tile, or None on failure.
-    Channels missing from load_data (e.g., RNA in source_15) are zero-filled.
-    """
-    # Identify which channels are available
-    available = {}
+def _collect_site_s3_keys(load_data_row: pd.Series) -> dict[str, str]:
+    """Extract S3 keys for each available channel from a load_data row."""
+    keys = {}
     for channel in CHANNEL_NAMES:
         url_col = f"URL_{CHANNEL_TO_ORIG_SUFFIX[channel]}"
         if url_col in load_data_row.index and pd.notna(load_data_row[url_col]):
             url = load_data_row[url_col]
-            available[channel] = url.replace(f"s3://{S3_BUCKET}/", "")
+            keys[channel] = url.replace(f"s3://{S3_BUCKET}/", "")
+    return keys
 
-    # Download available channel TIFFs in parallel
-    raw_images: dict[str, np.ndarray] = {}
 
-    def _download(item: tuple[str, str]) -> tuple[str, np.ndarray]:
-        ch, key = item
-        return ch, load_tiff_from_s3(S3_BUCKET, key).astype(np.float32)
+def assemble_tile(
+    raw_images: dict[str, np.ndarray],
+    illum_images: dict[str, np.ndarray],
+    tile_size: int,
+) -> np.ndarray | None:
+    """Apply illumination correction, center-crop, and rescale pre-downloaded images.
 
-    with ThreadPoolExecutor(max_workers=len(available)) as pool:
-        for ch, arr in pool.map(_download, available.items()):
-            raw_images[ch] = arr
-
+    Returns a (C, tile_size, tile_size) uint16 tile, or None on failure.
+    Channels missing from raw_images (e.g., RNA in source_15) are zero-filled.
+    """
     if not raw_images:
         return None
 
@@ -334,13 +301,11 @@ def process_site(
 
     # Rescale per-channel to full uint16 range
     tile = np.clip(tile, 0, None)
-    for ch in range(tile.shape[0]):
-        ch_min = tile[ch].min()
-        ch_max = tile[ch].max()
-        if ch_max > ch_min:
-            tile[ch] = (tile[ch] - ch_min) / (ch_max - ch_min) * 65535
-        else:
-            tile[ch] = 0
+    ch_min = tile.min(axis=(1, 2), keepdims=True)
+    ch_max = tile.max(axis=(1, 2), keepdims=True)
+    ch_rng = ch_max - ch_min
+    ch_rng[ch_rng == 0] = 1.0
+    tile = (tile - ch_min) / ch_rng * 65535
     return tile.astype(np.uint16)
 
 
@@ -750,6 +715,7 @@ def ingest_tiles(
     # 6. Stream tiles grouped by plate
     print(f"Step 5: Processing {n_total:,} tiles across {manifest['plate'].nunique():,} plates...")
     plate_groups = manifest.groupby(["source", "batch", "plate"])
+    plate_list = list(plate_groups)
 
     tile_offset = 0
     total_processed = 0
@@ -757,56 +723,105 @@ def ingest_tiles(
     batch_rows: list[dict] = []
     batch_tiles: list[np.ndarray] = []
 
-    for (source, batch, plate), plate_manifest in tqdm(
-        plate_groups, desc="Processing plates", total=len(plate_groups)
-    ):
-        # Download load_data.csv for this plate
-        try:
-            load_data_df = load_load_data_csv(source, batch, plate)
-        except Exception as e:
-            print(f"  Warning: Failed to load load_data.csv for {source}/{batch}/{plate}: {e}")
-            total_skipped += len(plate_manifest)
-            continue
+    with ThreadPoolExecutor(max_workers=download_workers) as pool:
 
-        # Index load_data by (well, site)
-        load_data_indexed = {}
-        for _, row in load_data_df.iterrows():
-            key = (row["Metadata_Well"], str(row["Metadata_Site"]))
-            load_data_indexed[key] = row
+        def _submit_plate_prefetch(src, btch, plt):
+            """Submit load_data + illum downloads for a plate, return futures."""
+            ld_fut = pool.submit(load_load_data_csv, src, btch, plt)
+            illum_futs = {}
+            for channel in CHANNEL_NAMES:
+                suffix = CHANNEL_TO_ILLUM_SUFFIX[channel]
+                # HACK: The channel seems to be confused in this source s.t.
+                # ER got mapped to RNA. This is what `load_data_with_illum`
+                # points to though.
+                if src == "source_15" and channel == "ER":
+                    suffix = "IllumRNA"
+                illum_fn = f"{plt}_{suffix}.npy"
+                key = f"cpg0016-jump/{src}/images/{btch}/illum/{plt}/{illum_fn}"
+                illum_futs[channel] = pool.submit(load_npy_from_s3, S3_BUCKET, key)
+            return ld_fut, illum_futs
 
-        # Pre-download illumination functions for this plate
-        try:
-            illum_images = preload_illum_functions(source, batch, plate)
-        except Exception as e:
-            print(f"  Warning: Failed to load illum functions for {source}/{batch}/{plate}: {e}")
-            total_skipped += len(plate_manifest)
-            continue
+        # Prefetch first plate
+        ld_future, illum_futures = _submit_plate_prefetch(*plate_list[0][0])
 
-        # Build work items: (manifest_row_dict, load_data_row) pairs
-        work_items = []
-        for _, manifest_row in plate_manifest.iterrows():
-            well = manifest_row["well"]
-            site = manifest_row["site"]
-            ld_row = load_data_indexed.get((well, site))
-            if ld_row is None:
-                total_skipped += 1
+        pbar = tqdm(total=n_total, desc="Processing tiles")
+
+        for i, ((source, batch, plate), plate_manifest) in enumerate(plate_list):
+            # Collect prefetched load_data for current plate
+            try:
+                load_data_df = ld_future.result()
+            except Exception as e:
+                print(
+                    f"  Warning: Failed to load load_data.csv for"
+                    f" {source}/{batch}/{plate}: {e}"
+                )
+                pbar.update(len(plate_manifest))
+                total_skipped += len(plate_manifest)
+                if i + 1 < len(plate_list):
+                    ld_future, illum_futures = _submit_plate_prefetch(*plate_list[i + 1][0])
                 continue
-            work_items.append((manifest_row.to_dict(), ld_row))
 
-        # Process sites in parallel
-        def _process(item, _illum=illum_images, _ts=tile_size):
-            row_dict, ld_row = item
-            tile = process_site(ld_row, _illum, _ts)
-            return row_dict, tile
+            # Collect prefetched illum functions for current plate
+            try:
+                illum_images = {
+                    ch: fut.result().astype(np.float32) for ch, fut in illum_futures.items()
+                }
+            except Exception as e:
+                print(
+                    f"  Warning: Failed to load illum functions for"
+                    f" {source}/{batch}/{plate}: {e}"
+                )
+                pbar.update(len(plate_manifest))
+                total_skipped += len(plate_manifest)
+                if i + 1 < len(plate_list):
+                    ld_future, illum_futures = _submit_plate_prefetch(*plate_list[i + 1][0])
+                continue
 
-        with ThreadPoolExecutor(max_workers=download_workers) as pool:
-            for row_dict, tile in pool.map(_process, work_items):
-                if tile is None:
+            # Prefetch next plate while we process this one
+            if i + 1 < len(plate_list):
+                ld_future, illum_futures = _submit_plate_prefetch(*plate_list[i + 1][0])
+
+            # Index load_data by (well, site)
+            load_data_df["_site_str"] = load_data_df["Metadata_Site"].astype(str)
+            load_data_df = load_data_df.set_index(["Metadata_Well", "_site_str"])
+            load_data_indexed = load_data_df
+
+            # Submit all channel downloads for all sites in this plate
+            site_download_tasks = []
+            for manifest_row in plate_manifest.itertuples():
+                well = manifest_row.well
+                site = manifest_row.site
+                try:
+                    ld_row = load_data_indexed.loc[(well, site)]
+                except KeyError:
+                    print("  Warning: ld_row is None")
                     total_skipped += 1
+                    pbar.update(1)
+                    continue
+                row_dict = manifest_row._asdict()
+                row_dict.pop("Index", None)
+                s3_keys = _collect_site_s3_keys(ld_row)
+                ch_futures = {
+                    ch: pool.submit(load_tiff_from_s3, S3_BUCKET, s3_key)
+                    for ch, s3_key in s3_keys.items()
+                }
+                site_download_tasks.append((row_dict, ch_futures))
+
+            # Collect downloads and assemble tiles
+            for row_dict, ch_futures in site_download_tasks:
+                raw_images = {
+                    ch: fut.result().astype(np.float32) for ch, fut in ch_futures.items()
+                }
+                tile = assemble_tile(raw_images, illum_images, tile_size)
+                if tile is None:
+                    print("  Warning: tile is None")
+                    total_skipped += 1
+                    pbar.update(1)
                     continue
 
                 batch_rows.append(row_dict)
                 batch_tiles.append(tile)
+                pbar.update(1)
 
                 if len(batch_rows) >= flush_every:
                     tile_arr = np.stack(batch_tiles)
@@ -820,8 +835,9 @@ def ingest_tiles(
                         pert_lookup,
                     )
                     total_processed += len(batch_rows)
-                    print(f"  Flushed {total_processed:,} / {n_total:,} tiles")
                     batch_rows, batch_tiles = [], []
+
+        pbar.close()
 
     # Final flush
     if batch_rows:
