@@ -3,9 +3,16 @@ mod bitpacking;
 
 use std::borrow::Cow;
 use std::collections::HashMap;
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
+
+use lru::LruCache;
+
+/// Maximum number of shard indexes cached per RustBatchReader.
+/// Each entry is `chunks_per_shard × 2 × 8` bytes (~16 KB at the default
+/// of 1024 chunks/shard), so 256 entries ≈ 4 MB per array reader.
+const SHARD_INDEX_CACHE_CAP: usize = 256;
 
 use numpy::{PyArray1, PyArrayMethods};
 use pyo3::exceptions::PyRuntimeError;
@@ -179,7 +186,8 @@ struct RustBatchReader {
     /// Encoded size of shard index in bytes
     index_encoded_size: usize,
     /// Shard index cache: shard_idx -> flat Vec<u64> of [offset, size, offset, size, ...]
-    shard_index_cache: Arc<tokio::sync::Mutex<HashMap<usize, Vec<u64>>>>,
+    /// Capped at SHARD_INDEX_CACHE_CAP entries; LRU eviction prevents unbounded growth.
+    shard_index_cache: Arc<tokio::sync::Mutex<LruCache<usize, Vec<u64>>>>,
     runtime: Arc<Runtime>,
     codec_options: CodecOptions,
 }
@@ -278,7 +286,7 @@ impl RustBatchReader {
 
                     // Fetch or cache shard index
                     let shard_index = {
-                        let cache_guard = cache.lock().await;
+                        let mut cache_guard = cache.lock().await;
                         if let Some(idx) = cache_guard.get(&shard_idx) {
                             idx.clone()
                         } else {
@@ -321,7 +329,7 @@ impl RustBatchReader {
                                 .collect();
 
                             let mut cache_guard = cache.lock().await;
-                            cache_guard.insert(shard_idx, index_vec.clone());
+                            cache_guard.put(shard_idx, index_vec.clone());
                             index_vec
                         }
                     };
@@ -513,7 +521,9 @@ impl RustBatchReader {
             element_stride: meta.element_stride,
             ndim: meta.ndim,
             index_encoded_size: meta.index_encoded_size,
-            shard_index_cache: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            shard_index_cache: Arc::new(tokio::sync::Mutex::new(
+                LruCache::new(NonZeroUsize::new(SHARD_INDEX_CACHE_CAP).unwrap()),
+            )),
             runtime,
             codec_options,
         })

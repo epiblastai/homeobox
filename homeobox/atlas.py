@@ -2,7 +2,7 @@
 
 import json
 import os
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -31,6 +31,11 @@ from homeobox.schema import (
     HoxBaseSchema,
 )
 from homeobox.util import sql_escape
+
+# Maximum number of GroupReader objects kept alive in the RaggedAtlas cache.
+# Each reader holds BatchAsyncArray handles and a Rust shard-index cache, so
+# this bounds how much memory stays pinned across a long batch-read loop.
+_MAX_GROUP_READERS: int = 128
 
 # ---------------------------------------------------------------------------
 # Store URI helpers
@@ -165,8 +170,10 @@ class RaggedAtlas:
 
         self._checked_out_version: int | None = None
 
-        # Instance-level cache: one GroupReader per (zarr_group, feature_space)
-        self._group_readers: dict[tuple[str, str], GroupReader] = {}
+        # Instance-level LRU cache: one GroupReader per (zarr_group, feature_space).
+        # Capped at _MAX_GROUP_READERS to prevent unbounded memory growth during
+        # long batch-read loops that touch many distinct zarr groups.
+        self._group_readers: OrderedDict[tuple[str, str], GroupReader] = OrderedDict()
 
     # -- Construction -------------------------------------------------------
 
@@ -318,34 +325,45 @@ class RaggedAtlas:
     # -- Store helpers ------------------------------------------------------
 
     def _get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
-        """Return (cached) GroupReader for the given zarr_group + feature_space."""
+        """Return (cached) GroupReader for the given zarr_group + feature_space.
+
+        Uses an LRU policy capped at _MAX_GROUP_READERS entries. The least recently
+        used GroupReader is evicted when the cap is exceeded, releasing its zarr
+        handles and Rust shard-index cache.
+        """
         from homeobox.group_reader import GroupReader
 
         key = (zarr_group, feature_space)
-        if key not in self._group_readers:
-            datasets_df = (
-                self._dataset_table.search()
-                .where(
-                    f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
-                    prefilter=True,
-                )
-                .select(["uid", "layout_uid"])
-                .to_polars()
-            )
-            layout_uid: str | None = None
-            if not datasets_df.is_empty():
-                layout_uid = datasets_df["layout_uid"][0]
-                if layout_uid == "":
-                    layout_uid = None
+        if key in self._group_readers:
+            self._group_readers.move_to_end(key)
+            return self._group_readers[key]
 
-            self._group_readers[key] = GroupReader.from_atlas_root(
-                zarr_group=zarr_group,
-                feature_space=feature_space,
-                store=self._store,
-                feature_layouts_table=self._feature_layouts_table,
-                layout_uid=layout_uid,
+        datasets_df = (
+            self._dataset_table.search()
+            .where(
+                f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
+                prefilter=True,
             )
-        return self._group_readers[key]
+            .select(["uid", "layout_uid"])
+            .to_polars()
+        )
+        layout_uid: str | None = None
+        if not datasets_df.is_empty():
+            layout_uid = datasets_df["layout_uid"][0]
+            if layout_uid == "":
+                layout_uid = None
+
+        reader = GroupReader.from_atlas_root(
+            zarr_group=zarr_group,
+            feature_space=feature_space,
+            store=self._store,
+            feature_layouts_table=self._feature_layouts_table,
+            layout_uid=layout_uid,
+        )
+        self._group_readers[key] = reader
+        if len(self._group_readers) > _MAX_GROUP_READERS:
+            self._group_readers.popitem(last=False)
+        return reader
 
     @property
     def schemas(self) -> str:
