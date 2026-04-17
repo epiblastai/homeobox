@@ -148,9 +148,15 @@ class FeatureBaseSchema(LanceModel):
 
 
 class DatasetRecord(LanceModel):
-    """Metadata for a single ingested dataset."""
+    """Metadata for a single ingested dataset.
 
-    uid: str = Field(default_factory=make_uid)
+    ``zarr_group`` is the per-row primary key (unique per modality write).
+    ``dataset_uid`` is the logical dataset identifier referenced by ``CellIndex.dataset_uid``;
+    it is shared across rows that belong to the same multimodal batch (one row per
+    feature space).
+    """
+
+    dataset_uid: str = Field(default_factory=make_uid)
     zarr_group: str
     feature_space: str  # FeatureSpace value
     n_cells: int
