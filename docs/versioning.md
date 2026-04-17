@@ -105,7 +105,7 @@ write_dataset_to_zarr(atlas.root, dataset_uid, adata)
 atlas.cell_table.add(cell_rows)
 
 # 4. Record the feature ordering for this dataset
-atlas.add_or_reuse_layout(var_df, dataset_uid, "gene_expression")
+atlas.add_or_reuse_layout(var_df, zarr_group, "gene_expression")
 ```
 
 **Newly added data is not yet queryable.** The atlas is in a partially consistent state after ingestion: features have been registered but have not yet been assigned a `global_index`, and no snapshot has captured this state. Attempting to call `atlas.query()` on an `open()`-ed atlas will raise:

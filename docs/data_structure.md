@@ -155,12 +155,12 @@ A cell is located at row index `position` from the cell's `DenseZarrPointer`.
 
 ## Datasets table
 
-Every ingested zarr group is registered as a `DatasetRecord`:
+Every ingested zarr group is registered as a `DatasetRecord`. `zarr_group` is the per-row primary key; `dataset_uid` is the logical dataset identifier and may be shared across rows that represent different modalities of a single multimodal batch.
 
 | Field | Description |
 |---|---|
-| `uid` | Stable dataset identifier |
-| `zarr_group` | Path to the zarr group (matches pointer fields in cell table) |
+| `dataset_uid` | Logical dataset identifier (written to `CellIndex.dataset_uid`; may be shared across modality rows) |
+| `zarr_group` | Path to the zarr group (matches pointer fields in cell table); the per-row primary key |
 | `feature_space` | Which feature space this group belongs to |
 | `n_cells` | Number of cells in this dataset |
 | `created_at` | UTC ISO timestamp |
@@ -188,8 +188,8 @@ An FTS index on `feature_uid` and a scalar index on `layout_uid` make two querie
 ```mermaid
 erDiagram
     DatasetRecord {
-        str uid PK
-        str zarr_group
+        str zarr_group PK
+        str dataset_uid
         str feature_space
         int n_cells
         str layout_uid FK
