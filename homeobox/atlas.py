@@ -344,7 +344,7 @@ class RaggedAtlas:
                 f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
                 prefilter=True,
             )
-            .select(["uid", "layout_uid"])
+            .select(["dataset_uid", "layout_uid"])
             .to_polars()
         )
         layout_uid: str | None = None
@@ -462,7 +462,7 @@ class RaggedAtlas:
     def add_or_reuse_layout(
         self,
         var_df: pl.DataFrame,
-        dataset_uid: str,
+        zarr_group: str,
         feature_space: str,
     ) -> str:
         """Compute or reuse a feature layout for a dataset.
@@ -476,8 +476,8 @@ class RaggedAtlas:
         var_df:
             One row per local feature in local feature order.
             Must have a ``global_feature_uid`` column.
-        dataset_uid:
-            The DatasetRecord uid for this dataset.
+        zarr_group:
+            The DatasetRecord zarr_group (per-row primary key) for this dataset.
         feature_space:
             Which feature space this dataset belongs to (used to look up registry).
 
@@ -505,11 +505,11 @@ class RaggedAtlas:
 
         # Update DatasetRecord with layout_uid
         (
-            self._dataset_table.merge_insert(on="uid")
+            self._dataset_table.merge_insert(on="zarr_group")
             .when_matched_update_all()
             .execute(
                 self._dataset_table.search()
-                .where(f"uid = '{sql_escape(dataset_uid)}'", prefilter=True)
+                .where(f"zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
                 .to_polars()
                 .with_columns(pl.lit(layout_uid).alias("layout_uid"))
             )
@@ -774,7 +774,7 @@ class RaggedAtlas:
         errors: list[str] = []
         datasets_df = (
             self._dataset_table.search()
-            .select(["uid", "zarr_group", "feature_space", "layout_uid"])
+            .select(["dataset_uid", "zarr_group", "feature_space", "layout_uid"])
             .to_polars()
         )
         # Validate per unique layout_uid (not per dataset)
