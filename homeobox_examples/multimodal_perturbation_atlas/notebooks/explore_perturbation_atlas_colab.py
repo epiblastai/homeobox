@@ -229,7 +229,7 @@ pparg_cells["cell_line"].value_counts()
 # %%
 # Which datasets contain PPARG perturbations?
 pparg_dataset_uids = pparg_cells["dataset_uid"].unique()  
-datasets.filter(pl.col("uid").is_in(pparg_dataset_uids))
+datasets.filter(pl.col("dataset_uid").is_in(pparg_dataset_uids))
 
 # %% [markdown]
 # #### Multi-gene queries

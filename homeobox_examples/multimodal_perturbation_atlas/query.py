@@ -464,10 +464,10 @@ class PerturbationQuery(AtlasQuery):
             _open_table(self._atlas, _TABLE_DATASETS)
             .search()
             .where(where, prefilter=True)
-            .select(["uid"])
+            .select(["dataset_uid"])
             .to_polars()
         )
-        dataset_uids = rows["uid"].unique().to_list()
+        dataset_uids = rows["dataset_uid"].unique().to_list()
         self._add_dataset_filter(dataset_uids)
         return self
 
@@ -522,10 +522,10 @@ class PerturbationQuery(AtlasQuery):
             _open_table(self._atlas, _TABLE_DATASETS)
             .search()
             .where(f"publication_uid IN ({in_clause})", prefilter=True)
-            .select(["uid"])
+            .select(["dataset_uid"])
             .to_polars()
         )
-        return rows["uid"].unique().to_list()
+        return rows["dataset_uid"].unique().to_list()
 
     def _add_dataset_filter(self, dataset_uids: list[str]) -> None:
         if not dataset_uids:

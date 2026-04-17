@@ -123,7 +123,7 @@ def dex_atlas(tmp_path):
             feature_space="gene_expression",
             zarr_layer="counts",
             dataset_record=DatasetRecord(
-                uid=label,
+                dataset_uid=label,
                 zarr_group=f"{label}/gene_expression",
                 feature_space="gene_expression",
                 n_cells=n_cells,
@@ -359,7 +359,7 @@ class TestDexMWUOnDensePath:
                 feature_space="image_features",
                 zarr_layer="ctrl_standardized",
                 dataset_record=DatasetRecord(
-                    uid=label,
+                    dataset_uid=label,
                     zarr_group=f"{label}/image_features",
                     feature_space="image_features",
                     n_cells=n_cells,

@@ -294,7 +294,7 @@ def ingest_dataset(
 
     # --- Write dataset record ---
     dataset_record = CensusDatasetRecord(
-        uid=zarr_group,
+        dataset_uid=zarr_group,
         zarr_group=zarr_group,
         feature_space=FEATURE_SPACE,
         n_cells=n_cells,

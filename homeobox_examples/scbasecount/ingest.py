@@ -316,7 +316,7 @@ def ingest_genefull(
 
     # Build dataset record from sample metadata (must exist before add_or_reuse_layout)
     dataset_kwargs = {
-        "uid": zarr_group,
+        "dataset_uid": zarr_group,
         "zarr_group": zarr_group,
         "feature_space": FEATURE_SPACE,
         "n_cells": n_cells,
@@ -379,7 +379,7 @@ def ingest_genefull(
 
     columns = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
+        "dataset_uid": pa.array([dataset_record.dataset_uid] * n_cells, type=pa.string()),
         pointer_field.field_name: pointer_struct,
     }
 

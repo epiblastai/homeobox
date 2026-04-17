@@ -815,7 +815,7 @@ def add_anndata_batch(
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
 
     if spec.has_var_df:
-        write_feature_layout(atlas, adata, feature_space, zarr_group, dataset_record.uid)
+        write_feature_layout(atlas, adata, feature_space, zarr_group)
 
     # Build pointer struct for the active feature space
     if spec.pointer_kind is PointerKind.SPARSE:
@@ -833,7 +833,7 @@ def add_anndata_batch(
     arrow_table = _build_cell_arrow_table(
         atlas,
         adata.obs,
-        dataset_uid=dataset_record.uid,
+        dataset_uid=dataset_record.dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
     )
     atlas.cell_table.add(arrow_table)
@@ -1128,7 +1128,7 @@ def add_coo_batch(
     # Write feature layout
     # -----------------------------------------------------------------------
     if spec.has_var_df:
-        atlas.add_or_reuse_layout(var_df, dataset_record.uid, feature_space)
+        atlas.add_or_reuse_layout(var_df, dataset_record.zarr_group, feature_space)
 
     # -----------------------------------------------------------------------
     # Insert cell records
@@ -1149,7 +1149,7 @@ def add_coo_batch(
 
     columns = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
+        "dataset_uid": pa.array([dataset_record.dataset_uid] * n_cells, type=pa.string()),
         pointer_field.field_name: pointer_struct,
     }
 
@@ -1196,7 +1196,6 @@ def write_feature_layout(
     adata: ad.AnnData,
     feature_space: str,
     zarr_group: str,
-    dataset_uid: str,
 ) -> None:
     """Write feature layout for a dataset into the _feature_layouts Lance table.
 
@@ -1210,7 +1209,7 @@ def write_feature_layout(
             "Set it before calling add_anndata_batch()."
         )
 
-    atlas.add_or_reuse_layout(var_df, dataset_uid, feature_space)
+    atlas.add_or_reuse_layout(var_df, zarr_group, feature_space)
 
 
 def add_csc(
@@ -1252,14 +1251,14 @@ def add_csc(
         If no cells or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    # Look up dataset_uid and layout_uid for this zarr_group + feature_space
+    # Look up layout_uid for this zarr_group + feature_space
     datasets_df = (
         atlas._dataset_table.search()
         .where(
             f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
             prefilter=True,
         )
-        .select(["uid", "layout_uid"])
+        .select(["layout_uid"])
         .to_polars()
     )
     if datasets_df.is_empty():

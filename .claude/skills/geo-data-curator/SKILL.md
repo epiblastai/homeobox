@@ -253,7 +253,7 @@ adata.var["global_feature_uid"] = var_df["global_feature_uid"].values
 # DatasetRecord fields — that is what the datasets table is for.
 dataset_uid = make_uid()
 dataset_record = DatasetSchema(
-    uid=dataset_uid,
+    dataset_uid=dataset_uid,
     zarr_group=dataset_uid,
     feature_space=feature_space,
     n_cells=adata.n_obs,
@@ -291,7 +291,7 @@ n_features = len(var_df)
 
 dataset_uid = make_uid()
 dataset_record = DatasetSchema(
-    uid=dataset_uid,
+    dataset_uid=dataset_uid,
     zarr_group=dataset_uid,
     feature_space=feature_space,
     n_cells=n_cells,

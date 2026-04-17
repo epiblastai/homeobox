@@ -186,7 +186,7 @@ def _(mo):
 
 @app.cell
 def _(atlas_rw, datasets):
-    sample_uid = datasets["uid"][0]
+    sample_uid = datasets["dataset_uid"][0]
 
     filtered_cells = (
         atlas_rw.query()

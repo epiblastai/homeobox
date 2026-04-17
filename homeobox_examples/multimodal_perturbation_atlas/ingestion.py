@@ -77,6 +77,15 @@ def add_multimodal_batch(
     for fs, adata in modalities.items():
         assert adata.n_obs == n_cells, f"Modality {fs} has {adata.n_obs} cells, expected {n_cells}"
 
+    shared_dataset_uid = next(iter(dataset_records.values())).dataset_uid
+    for fs, ds in dataset_records.items():
+        if ds.dataset_uid != shared_dataset_uid:
+            raise ValueError(
+                f"All modalities in a multimodal batch must share dataset_uid; "
+                f"modality '{fs}' has dataset_uid={ds.dataset_uid!r}, "
+                f"expected {shared_dataset_uid!r}"
+            )
+
     arrow_schema = atlas._cell_schema.to_arrow_schema()
     schema_fields = _schema_obs_fields(atlas._cell_schema)
 
@@ -138,14 +147,12 @@ def add_multimodal_batch(
 
         # Write feature layout
         if spec.has_var_df:
-            write_feature_layout(atlas, adata, fs, zarr_group, ds.uid)
+            write_feature_layout(atlas, adata, fs, zarr_group)
 
     # Build cell records with all pointers
     columns = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array(
-            [dataset_records[next(iter(modalities))].uid] * n_cells, type=pa.string()
-        ),
+        "dataset_uid": pa.array([shared_dataset_uid] * n_cells, type=pa.string()),
     }
 
     # Fill pointer fields — real data for modalities we have, zero-fill for others
@@ -305,7 +312,7 @@ def add_fragment_batch(
             "global_feature_uid": [chrom_uids[c] for c in chrom_order],
         }
     )
-    atlas.add_or_reuse_layout(var_df, dataset_record.uid, feature_space)
+    atlas.add_or_reuse_layout(var_df, dataset_record.zarr_group, feature_space)
 
     # --- Build and insert cell records ---
     arrow_schema = atlas._cell_schema.to_arrow_schema()
@@ -334,7 +341,7 @@ def add_fragment_batch(
 
     columns = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.uid] * n_cells, type=pa.string()),
+        "dataset_uid": pa.array([dataset_record.dataset_uid] * n_cells, type=pa.string()),
         pointer_field.field_name: pointer_struct,
     }
 
