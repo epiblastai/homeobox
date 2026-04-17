@@ -42,23 +42,6 @@ _MAX_GROUP_READERS: int = 128
 # ---------------------------------------------------------------------------
 
 
-def _store_to_uri(store: obstore.store.ObjectStore) -> str:
-    """Extract a URI string from an obstore ObjectStore instance."""
-    if isinstance(store, obstore.store.LocalStore):
-        return f"file://{os.path.abspath(store.prefix)}"
-    if isinstance(store, obstore.store.S3Store):
-        bucket = store.config["bucket"]
-        prefix = store.prefix or ""
-        return f"s3://{bucket}/{prefix}".rstrip("/")
-    if isinstance(store, obstore.store.GCSStore):
-        bucket = store.config["bucket"]
-        prefix = store.prefix or ""
-        return f"gs://{bucket}/{prefix}".rstrip("/")
-    if isinstance(store, obstore.store.MemoryStore):
-        return "memory://"
-    raise TypeError(f"Cannot extract URI from store type {type(store).__name__}")
-
-
 def _store_from_uri(
     uri: str,
     **store_kwargs,
@@ -125,6 +108,14 @@ def _zarr_uri_from_db_uri(db_uri: str) -> str:
     if last_sep == -1:
         return "zarr_store"
     return uri[: last_sep + 1] + "zarr_store"
+
+
+def _derive_store_from_db_uri(db_uri: str, **store_kwargs) -> obstore.store.ObjectStore:
+    """Build a zarr ObjectStore from the ``{atlas_root}/zarr_store`` convention."""
+    zarr_uri = _zarr_uri_from_db_uri(db_uri)
+    if zarr_uri.startswith(("s3://", "gs://", "az://")):
+        return _store_from_uri(zarr_uri, **store_kwargs)
+    return obstore.store.LocalStore(zarr_uri)
 
 
 # ---------------------------------------------------------------------------
@@ -843,7 +834,6 @@ class RaggedAtlas:
             registry_table_versions=json.dumps(registry_versions),
             feature_layouts_table_version=self._feature_layouts_table.version,
             total_cells=self.cell_table.count_rows(),
-            zarr_store_uri=_store_to_uri(self._store),
         )
         self._version_table.add([record])
         return next_version
@@ -897,9 +887,8 @@ class RaggedAtlas:
             The schema class used when the atlas was created.  If ``None``,
             pointer fields are inferred from the cell table's Arrow schema.
         store:
-            An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
-            from the ``zarr_store_uri`` stored in the version record (or
-            inferred from ``db_uri`` for older records that lack it).
+            An obstore ObjectStore for zarr I/O.  If ``None``, constructed
+            from ``db_uri`` using the ``{atlas_root}/zarr_store`` convention.
         store_kwargs:
             Extra keyword arguments forwarded to ``obstore.store.from_url``
             when constructing the store from a URI (e.g. ``region``,
@@ -921,10 +910,7 @@ class RaggedAtlas:
         row = records.row(0, named=True)
 
         if store is None:
-            zarr_store_uri = row.get("zarr_store_uri", "")
-            if not zarr_store_uri:
-                zarr_store_uri = _zarr_uri_from_db_uri(db_uri)
-            store = _store_from_uri(zarr_store_uri, **(store_kwargs or {}))
+            store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
         cell_table = db.open_table(row["cell_table_name"])
         cell_table.checkout(row["cell_table_version"])
@@ -989,8 +975,8 @@ class RaggedAtlas:
             The schema class used when the atlas was created.  If ``None``,
             pointer fields are inferred from the cell table's Arrow schema.
         store:
-            An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
-            from the version record or inferred from ``db_uri``.
+            An obstore ObjectStore for zarr I/O.  If ``None``, constructed
+            from ``db_uri`` using the ``{atlas_root}/zarr_store`` convention.
         store_kwargs:
             Extra keyword arguments forwarded to ``obstore.store.from_url``
             when constructing the store from a URI.
@@ -1011,10 +997,7 @@ class RaggedAtlas:
         row = records.row(0, named=True)
 
         if store is None:
-            zarr_store_uri = row.get("zarr_store_uri", "")
-            if not zarr_store_uri:
-                zarr_store_uri = _zarr_uri_from_db_uri(db_uri)
-            store = _store_from_uri(zarr_store_uri, **(store_kwargs or {}))
+            store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
         # Restore each table to its snapshot version
         cell_table = db.open_table(row["cell_table_name"])

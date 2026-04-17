@@ -449,24 +449,7 @@ class TestStorelessCheckout:
         )
         assert checked.cell_table.count_rows() == 20
 
-    def test_version_record_has_uris(self, tmp_path):
-        atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
-        adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
-        add_from_anndata(
-            atlas,
-            adata,
-            feature_space="gene_expression",
-            zarr_layer="counts",
-            dataset_record=_ds(adata, "ds1/gene_expression"),
-        )
-        atlas.snapshot()
-
-        versions = RaggedAtlas.list_versions(atlas_dir)
-        row = versions.row(0, named=True)
-        assert row["zarr_store_uri"] != ""
-
-    def test_backward_compat_convention_fallback(self, tmp_path):
-        """Old version records without zarr_store_uri fall back to convention."""
+    def test_zarr_uri_derived_from_db_uri(self, tmp_path):
         from homeobox.atlas import _zarr_uri_from_db_uri
 
         assert _zarr_uri_from_db_uri("/data/my_atlas/lance_db") == "/data/my_atlas/zarr_store"
