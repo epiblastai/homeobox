@@ -242,12 +242,14 @@ ov_adata = ad.AnnData(
     var=var_df.copy(),
 )
 
-# Dataset records
+# Dataset records — both modalities share one logical dataset_uid;
+# zarr_group is the per-row PK and differs between them.
+shared_dataset_uid = make_uid()
 feat_uid = make_uid()
 tile_uid = make_uid()
 
 feat_dataset = DatasetSchema(
-    uid=feat_uid,
+    dataset_uid=shared_dataset_uid,
     zarr_group=feat_uid,
     feature_space="image_features",
     n_cells=n_overlap,
@@ -262,7 +264,7 @@ feat_dataset = DatasetSchema(
 )
 
 tile_dataset = DatasetSchema(
-    uid=tile_uid,
+    dataset_uid=shared_dataset_uid,
     zarr_group=tile_uid,
     feature_space="image_tiles",
     n_cells=n_overlap,
@@ -286,7 +288,7 @@ feat_spec = get_spec("image_features")
 feat_chunk, feat_shard = aligned_chunk_shard(ov_adata.n_vars)
 feat_group = atlas._root.create_group(feat_uid)
 _write_dense_batched(feat_group, ov_adata, "raw", feat_chunk, feat_shard, feat_spec)
-write_feature_layout(atlas, ov_adata, "image_features", feat_uid, feat_dataset.uid)
+write_feature_layout(atlas, ov_adata, "image_features", feat_uid)
 
 # Write image_tiles zarr (custom 4D)
 tile_group = atlas._root.create_group(tile_uid)
@@ -316,7 +318,7 @@ tile_pointer = pa.StructArray.from_arrays(
 
 columns = {
     "uid": pa.array([make_uid() for _ in range(n_overlap)], type=pa.string()),
-    "dataset_uid": pa.array([feat_dataset.uid] * n_overlap, type=pa.string()),
+    "dataset_uid": pa.array([shared_dataset_uid] * n_overlap, type=pa.string()),
     "image_features": feat_pointer,
     "image_tiles": tile_pointer,
 }
