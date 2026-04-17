@@ -537,7 +537,7 @@ def _(atlas, mo):
 
     **{_n_cells:,}** cells across **{_datasets.height}** datasets:
 
-    {mo.as_html(_datasets.select("uid", "zarr_group", "n_cells", "layout_uid"))}
+    {mo.as_html(_datasets.select("dataset_uid", "zarr_group", "n_cells", "layout_uid"))}
     """)
     return
 
