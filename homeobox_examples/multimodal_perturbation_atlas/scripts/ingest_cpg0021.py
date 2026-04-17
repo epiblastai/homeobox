@@ -195,7 +195,7 @@ fo_adata = ad.AnnData(
 
 fo_uid = make_uid()
 fo_dataset = DatasetSchema(
-    uid=fo_uid,
+    dataset_uid=fo_uid,
     zarr_group=fo_uid,
     feature_space="image_features",
     n_cells=len(fo_adata),

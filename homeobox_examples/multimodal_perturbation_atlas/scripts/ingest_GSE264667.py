@@ -150,7 +150,7 @@ for exp_name, exp_info in EXPERIMENTS.items():
     # Create dataset record
     dataset_uid = make_uid()
     dataset_record = DatasetSchema(
-        uid=dataset_uid,
+        dataset_uid=dataset_uid,
         zarr_group=dataset_uid,
         feature_space="gene_expression",
         n_cells=adata.n_obs,
