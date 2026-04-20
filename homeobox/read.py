@@ -7,12 +7,12 @@ import polars as pl
 from zarr.core.sync import sync
 
 from homeobox.batch_array import BatchAsyncArray
-from homeobox.obs_alignment import PointerFieldInfo
+from homeobox.schema import PointerField
 
 
 def _prepare_sparse_cells(
     cells_pl: pl.DataFrame,
-    pf: PointerFieldInfo,
+    pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Unnest sparse pointer struct, filter empty, return (filtered_df, unique_groups).
 
@@ -33,7 +33,7 @@ def _prepare_sparse_cells(
 
 def _prepare_dense_cells(
     cells_pl: pl.DataFrame,
-    pf: PointerFieldInfo,
+    pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Unnest dense pointer struct, filter empty, return (filtered_df, unique_groups).
 

@@ -18,6 +18,7 @@ from homeobox.schema import (
     DatasetRecord,
     DenseZarrPointer,
     HoxBaseSchema,
+    PointerField,
     make_uid,
 )
 
@@ -27,7 +28,7 @@ from homeobox.schema import (
 
 
 class TileCellSchema(HoxBaseSchema):
-    image_tiles: DenseZarrPointer | None = None
+    image_tiles: DenseZarrPointer | None = PointerField.declare(feature_space="image_tiles")
     cell_type: str | None = None
 
 
@@ -197,7 +198,7 @@ def test_tile_dataset_round_trip(single_group_tile_atlas):
     batch = ds.__getitems__(list(range(10)))
 
     # Get tiles via query.to_array for comparison
-    tiles_ref, obs_ref = atlas.query().to_array(feature_space="image_tiles")
+    tiles_ref, obs_ref = atlas.query().to_array(field_name="image_tiles")
 
     # Both should match the original zarr data
     assert tiles_ref.shape == original_tiles.shape

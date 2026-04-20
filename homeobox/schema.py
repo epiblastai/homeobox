@@ -1,18 +1,21 @@
+import dataclasses
 import datetime
 import uuid
 from types import UnionType
-from typing import TYPE_CHECKING, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
 
 if TYPE_CHECKING:
     import pandas as pd
 
+import pyarrow as pa
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from homeobox.group_specs import PointerKind, get_spec, registered_feature_spaces
+from homeobox.group_specs import PointerKind, get_spec
 
 
 class SparseZarrPointer(LanceModel):
+    # TODO: Can feature space be removed?
     feature_space: str  # FeatureSpace value; stored as str for Arrow compat
     zarr_group: str
     start: int
@@ -31,6 +34,7 @@ class SparseZarrPointer(LanceModel):
 
 
 class DenseZarrPointer(LanceModel):
+    # TODO: Can feature space be removed?
     feature_space: str  # FeatureSpace value; stored as str for Arrow compat
     zarr_group: str
     position: int
@@ -47,6 +51,12 @@ class DenseZarrPointer(LanceModel):
 
 
 ZarrPointer = SparseZarrPointer | DenseZarrPointer
+
+
+# Arrow field metadata key used to persist the feature_space for each pointer column.
+# Written by HoxBaseSchema.to_arrow_schema() and read back by
+# _infer_pointer_fields_from_arrow() when a schema class is not available.
+POINTER_FEATURE_SPACE_METADATA_KEY: bytes = b"homeobox.feature_space"
 
 
 def make_uid() -> str:
@@ -66,11 +76,85 @@ def make_stable_uid(*identity_values: str) -> str:
     return uuid.uuid5(_HOX_NS, "|".join(identity_values)).hex[:16]
 
 
+@dataclasses.dataclass(frozen=True)
+class PointerField:
+    """Runtime metadata for a single pointer field on a HoxBaseSchema subclass.
+
+    Decouples the cell-table column name from the feature_space it references,
+    so a schema can declare multiple columns in the same feature space (e.g.
+    ``cycle1_image_tiles`` and ``cycle2_image_tiles``, both with
+    ``feature_space="image_tiles"``).
+
+    The concrete pointer type (``SparseZarrPointer`` / ``DenseZarrPointer``)
+    is derivable from ``pointer_kind`` and intentionally not stored here.
+    """
+
+    field_name: str
+    feature_space: str
+    pointer_kind: PointerKind
+
+    @staticmethod
+    def declare(*, feature_space: str, default: Any = None, **kwargs: Any) -> Any:
+        """Factory used in schema class bodies to mark a pointer field.
+
+        Returns a pydantic ``Field`` whose ``json_schema_extra`` carries
+        ``{"is_pointer": True, "feature_space": feature_space}``. The feature
+        space is resolved against the registered spec at schema definition
+        time by :meth:`HoxBaseSchema.__init_subclass__`.
+        """
+        return Field(
+            default=default,
+            json_schema_extra={"is_pointer": True, "feature_space": feature_space},
+            **kwargs,
+        )
+
+
+def _read_pointer_json_schema_extra(cls: type, name: str) -> dict | None:
+    """Read the ``json_schema_extra`` dict for a pointer field on *cls*.
+
+    Works both at ``__init_subclass__`` time (when pydantic has not yet
+    populated ``model_fields``) by inspecting the ``FieldInfo`` object
+    directly on the class, and after class definition via ``model_fields``.
+    Returns ``None`` when the field has no ``json_schema_extra``.
+    """
+    model_fields = getattr(cls, "model_fields", None)
+    if model_fields and name in model_fields:
+        extra = model_fields[name].json_schema_extra
+    else:
+        raw = cls.__dict__.get(name)
+        extra = getattr(raw, "json_schema_extra", None)
+    if not isinstance(extra, dict):
+        return None
+    return extra
+
+
+def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
+    """Yield ``(field_name, pointer_type)`` for each pointer-typed annotation on *cls*.
+
+    Unwraps ``X | None`` and ``Optional[X]`` unions to find the underlying
+    ``SparseZarrPointer`` or ``DenseZarrPointer`` type.
+    """
+    result: list[tuple[str, type]] = []
+    for name, annotation in cls.__annotations__.items():
+        if name in ("uid", "dataset_uid"):
+            continue
+        origin = get_origin(annotation)
+        if origin is Union or isinstance(annotation, UnionType):
+            inner_types = get_args(annotation)
+        else:
+            inner_types = (annotation,)
+        for t in inner_types:
+            if t is SparseZarrPointer or t is DenseZarrPointer:
+                result.append((name, t))
+                break
+    return result
+
+
 class HoxBaseSchema(LanceModel):
     """
     Base schema for all homeobox datasets. The only requirements are a uid string
     that allows for safe parallel-write scenarios, and at least one ZarrPointer
-    into a feature space.
+    into a feature space declared via :meth:`PointerField.declare`.
     """
 
     uid: str = Field(default_factory=make_uid)
@@ -86,33 +170,44 @@ class HoxBaseSchema(LanceModel):
         return obs_df
 
     def __init_subclass__(cls, **kwargs):
-        """Class-definition-time: subclass must declare at least one pointer field."""
+        """Class-definition-time: subclass must declare at least one pointer field.
+
+        Each pointer-typed field must be declared with
+        :meth:`PointerField.declare`, which attaches ``is_pointer=True`` and the
+        feature_space to the pydantic ``Field``. The declared feature_space must
+        be registered, and its ``pointer_kind`` must match the annotation
+        (``SparseZarrPointer`` ↔ sparse spec, ``DenseZarrPointer`` ↔ dense spec).
+        """
         super().__init_subclass__(**kwargs)
-        for name, annotation in cls.__annotations__.items():
-            if name in ("uid", "dataset_uid"):
-                continue
-            origin = get_origin(annotation)
-            if origin is Union or isinstance(annotation, UnionType):
-                inner_types = get_args(annotation)
-            else:
-                inner_types = (annotation,)
-            if any(
-                t is SparseZarrPointer or t is DenseZarrPointer
-                for t in inner_types
-                if t is not type(None)
-            ):
-                # Validate that the field name is a valid FeatureSpace value,
-                # because we use the field name to look up the registry.
-                valid_values = registered_feature_spaces()
-                if name not in valid_values:
-                    raise TypeError(
-                        f"{cls.__name__}.{name}: pointer field name must match "
-                        f"a registered feature space. Valid values: {sorted(valid_values)}"
-                    )
-                return  # found one, we're good
-        raise TypeError(
-            f"{cls.__name__} must declare at least one SparseZarrPointer or DenseZarrPointer field"
-        )
+        pointer_annotations = _iter_pointer_annotations(cls)
+        if not pointer_annotations:
+            raise TypeError(
+                f"{cls.__name__} must declare at least one SparseZarrPointer or "
+                f"DenseZarrPointer field via PointerField.declare(...)"
+            )
+        for name, pointer_type in pointer_annotations:
+            extra = _read_pointer_json_schema_extra(cls, name)
+            if extra is None or not extra.get("is_pointer"):
+                raise TypeError(
+                    f"{cls.__name__}.{name}: pointer-typed fields must be declared via "
+                    f"PointerField.declare(feature_space=...)"
+                )
+            feature_space = extra.get("feature_space")
+            if not isinstance(feature_space, str) or not feature_space:
+                raise TypeError(
+                    f"{cls.__name__}.{name}: PointerField.declare must be called with "
+                    f"a non-empty feature_space string"
+                )
+            spec = get_spec(feature_space)
+            annotation_kind = (
+                PointerKind.SPARSE if pointer_type is SparseZarrPointer else PointerKind.DENSE
+            )
+            if annotation_kind is not spec.pointer_kind:
+                raise TypeError(
+                    f"{cls.__name__}.{name}: {annotation_kind.value} pointer annotation "
+                    f"does not match feature_space '{feature_space}' which expects "
+                    f"{spec.pointer_kind.value}"
+                )
 
     @model_validator(mode="after")
     def _require_at_least_one_pointer(self):
@@ -123,6 +218,26 @@ class HoxBaseSchema(LanceModel):
         raise ValueError(
             f"{type(self).__name__} requires at least one populated zarr pointer field"
         )
+
+    @classmethod
+    def to_arrow_schema(cls) -> pa.Schema:
+        """Return the Arrow schema with ``homeobox.feature_space`` metadata stamped.
+
+        Overrides :meth:`LanceModel.to_arrow_schema` to persist each pointer
+        field's declared feature_space as Arrow field-level metadata. The
+        schema-less read path (:func:`_infer_pointer_fields_from_arrow`)
+        uses this metadata to reconstruct pointer-field info without the
+        Python schema class.
+        """
+        schema: pa.Schema = super().to_arrow_schema()
+        for name, _ in _iter_pointer_annotations(cls):
+            feature_space = _read_pointer_json_schema_extra(cls, name)["feature_space"]
+            idx = schema.get_field_index(name)
+            field = schema.field(idx)
+            new_metadata = dict(field.metadata or {})
+            new_metadata[POINTER_FEATURE_SPACE_METADATA_KEY] = feature_space.encode("utf-8")
+            schema = schema.set(idx, field.with_metadata(new_metadata))
+        return schema
 
 
 # Fields set automatically by the atlas — never expected in user-provided obs.

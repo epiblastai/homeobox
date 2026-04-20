@@ -15,6 +15,7 @@ from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
 )
 
@@ -24,7 +25,9 @@ class GeneFeatureSchema(FeatureBaseSchema):
 
 
 class TestCellSchema(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
 
 
 def _make_sparse_adata(
@@ -68,7 +71,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
     add_from_anndata(
         atlas,
         adata,
-        feature_space="gene_expression",
+        field_name="gene_expression",
         zarr_layer="counts",
         dataset_record=DatasetRecord(
             zarr_group=zarr_group,
@@ -89,7 +92,7 @@ class TestAddCsc:
         """CSC data matches scipy's CSR->CSC conversion."""
         atlas, zarr_group, expected_csc = _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50)
 
-        add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
+        add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
 
         # Read back CSC indices and values
         csc_indices_arr = BatchArray.from_array(atlas._root[f"{zarr_group}/csc/indices"])
@@ -150,7 +153,7 @@ class TestAddCsc:
     def test_single_cell(self, tmp_path):
         """Edge case: single cell."""
         atlas, zarr_group, expected_csc = _create_atlas_with_data(tmp_path, n_obs=1, n_vars=10)
-        add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
+        add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
 
         # Verify nnz matches via zarr indptr
         indptr = np.asarray(atlas._root[f"{zarr_group}/csc/indptr"][:])
@@ -160,7 +163,7 @@ class TestAddCsc:
     def test_single_feature(self, tmp_path):
         """Edge case: single feature."""
         atlas, zarr_group, expected_csc = _create_atlas_with_data(tmp_path, n_obs=20, n_vars=1)
-        add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
+        add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
 
         indptr = np.asarray(atlas._root[f"{zarr_group}/csc/indptr"][:])
         csc_start = indptr[:-1]
@@ -177,7 +180,7 @@ class TestAddCsc:
         # Before: no csc group
         assert "csc" not in atlas._root[zarr_group]
 
-        add_csc(atlas, zarr_group, feature_space="gene_expression", layer_name="counts")
+        add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
 
         # After: indptr exists
         assert "csc" in atlas._root[zarr_group]

@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
     from homeobox.atlas import RaggedAtlas
     from homeobox.group_specs import ZarrGroupSpec
-    from homeobox.obs_alignment import PointerFieldInfo
+    from homeobox.obs_alignment import PointerField
 
 
 @runtime_checkable
@@ -27,7 +27,7 @@ class Reconstructor(Protocol):
         self,
         atlas: "RaggedAtlas",
         cells_pl: "pl.DataFrame",
-        pf: "PointerFieldInfo",
+        pf: "PointerField",
         spec: "ZarrGroupSpec",
         layer_overrides: "list[str] | None" = None,
         feature_join: "Literal['union', 'intersection']" = "union",

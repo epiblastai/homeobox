@@ -19,9 +19,10 @@ import zarr
 from homeobox.atlas import RaggedAtlas
 from homeobox.feature_layouts import read_feature_layout
 from homeobox.group_specs import PointerKind, ZarrGroupSpec, get_spec
-from homeobox.obs_alignment import PointerFieldInfo, _schema_obs_fields, validate_obs_columns
+from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import (
     DatasetRecord,
+    PointerField,
     make_uid,
 )
 from homeobox.util import sql_escape
@@ -460,7 +461,7 @@ def insert_cell_records(
     atlas: RaggedAtlas,
     obs_df: pd.DataFrame,
     *,
-    feature_space: str,
+    field_name: str,
     zarr_group: str,
     dataset_uid: str,
     starts: np.ndarray,
@@ -478,8 +479,9 @@ def insert_cell_records(
         Open RaggedAtlas.
     obs_df
         Validated obs DataFrame with schema-aligned columns.
-    feature_space
-        Feature space name (e.g., ``"gene_expression"``).
+    field_name
+        Cell-schema attribute name for the pointer column being populated.
+        The feature_space is derived from its registered ``PointerField``.
     zarr_group
         Zarr group path for the pointer structs.
     dataset_uid
@@ -494,15 +496,16 @@ def insert_cell_records(
     int
         Number of cells inserted.
     """
-    # Find the pointer field for this feature space
-    pointer_field: PointerFieldInfo | None = None
-    for pf in atlas._pointer_fields.values():
-        if pf.feature_space == feature_space:
-            pointer_field = pf
-            break
-    assert pointer_field is not None, f"No pointer field for {feature_space}"
+    if field_name not in atlas._pointer_fields:
+        raise ValueError(
+            f"No pointer field named '{field_name}'. "
+            f"Available: {sorted(atlas._pointer_fields.keys())}"
+        )
+    pointer_field = atlas._pointer_fields[field_name]
 
-    pointer_struct = _make_sparse_pointer(feature_space, zarr_group, starts, ends, zarr_row_offset)
+    pointer_struct = _make_sparse_pointer(
+        pointer_field.feature_space, zarr_group, starts, ends, zarr_row_offset
+    )
     arrow_table = _build_cell_arrow_table(
         atlas,
         obs_df,
@@ -676,7 +679,7 @@ def add_anndata_batch(
     atlas: RaggedAtlas,
     adata: ad.AnnData,
     *,
-    feature_space: str,
+    field_name: str,
     zarr_layer: str,
     dataset_record: DatasetRecord,
     chunk_shape: tuple[int, ...] | None = None,
@@ -700,8 +703,9 @@ def add_anndata_batch(
         The AnnData to ingest. Use ``backed="r"`` for large files to avoid
         materialising the full matrix; see :func:`add_from_anndata` for a
         convenience wrapper that opens h5ad paths automatically.
-    feature_space:
-        Which feature space this data belongs to.
+    field_name:
+        Cell-schema attribute name for the pointer column to populate.
+        The feature_space is derived from its registered ``PointerField``.
     zarr_layer:
         Destination layer name within the zarr ``layers/`` group
         (e.g. ``"counts"``). Must be one of the allowed values for the
@@ -732,6 +736,13 @@ def add_anndata_batch(
             "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
+    if field_name not in atlas._pointer_fields:
+        raise ValueError(
+            f"Schema {atlas._cell_schema.__name__} has no pointer field "
+            f"named '{field_name}'. Available: {sorted(atlas._pointer_fields.keys())}"
+        )
+    pointer_field: PointerField = atlas._pointer_fields[field_name]
+    feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
     if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
@@ -746,17 +757,6 @@ def add_anndata_batch(
 
     if spec.has_var_df:
         _check_var_no_duplicate_uids(adata.var)
-
-    pointer_field: PointerFieldInfo | None = None
-    for pf in atlas._pointer_fields.values():
-        if pf.feature_space == feature_space:
-            pointer_field = pf
-            break
-    if pointer_field is None:
-        raise ValueError(
-            f"Schema {atlas._cell_schema.__name__} has no pointer field "
-            f"for feature space '{feature_space}'"
-        )
 
     n_cells = adata.n_obs
     zarr_group = dataset_record.zarr_group
@@ -852,7 +852,7 @@ def add_from_anndata(
     atlas: RaggedAtlas,
     adata: ad.AnnData | str | Path,
     *,
-    feature_space: str,
+    field_name: str,
     zarr_layer: str,
     dataset_record: DatasetRecord,
     chunk_shape: tuple[int, ...] | None = None,
@@ -872,7 +872,7 @@ def add_from_anndata(
     return add_anndata_batch(
         atlas,
         adata,
-        feature_space=feature_space,
+        field_name=field_name,
         zarr_layer=zarr_layer,
         dataset_record=dataset_record,
         chunk_shape=chunk_shape,
@@ -886,7 +886,7 @@ def add_coo_batch(
     *,
     obs_df: pd.DataFrame,
     var_df: pl.DataFrame,
-    feature_space: str,
+    field_name: str,
     zarr_layer: str,
     dataset_record: DatasetRecord,
     n_cells: int,
@@ -926,8 +926,9 @@ def add_coo_batch(
     var_df:
         Polars DataFrame with a ``global_feature_uid`` column (one row per
         feature in the matrix's var space, in positional order).
-    feature_space:
-        Which feature space this data belongs to.
+    field_name:
+        Cell-schema attribute name for the pointer column to populate.
+        The feature_space is derived from its registered ``PointerField``.
     zarr_layer:
         Destination layer name (e.g. ``"counts"``).
     dataset_record:
@@ -964,6 +965,13 @@ def add_coo_batch(
             "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
+    if field_name not in atlas._pointer_fields:
+        raise ValueError(
+            f"Schema {atlas._cell_schema.__name__} has no pointer field "
+            f"named '{field_name}'. Available: {sorted(atlas._pointer_fields.keys())}"
+        )
+    pointer_field: PointerField = atlas._pointer_fields[field_name]
+    feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
     if spec.pointer_kind is not PointerKind.SPARSE:
         raise ValueError(
@@ -985,17 +993,6 @@ def add_coo_batch(
         raise ValueError("var_df must have a 'global_feature_uid' column")
 
     _check_var_no_duplicate_uids_pl(var_df)
-
-    pointer_field: PointerFieldInfo | None = None
-    for pf in atlas._pointer_fields.values():
-        if pf.feature_space == feature_space:
-            pointer_field = pf
-            break
-    if pointer_field is None:
-        raise ValueError(
-            f"Schema {atlas._cell_schema.__name__} has no pointer field "
-            f"for feature space '{feature_space}'"
-        )
 
     chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
     shard_shape = shard_shape or (_SHARD_ELEMS,)
@@ -1223,7 +1220,7 @@ def write_feature_layout(
 def add_csc(
     atlas: RaggedAtlas,
     zarr_group: str,
-    feature_space: str,
+    field_name: str,
     layer_name: str = "counts",
     chunk_size: int = _CHUNK_ELEMS,
     shard_size: int = _SHARD_ELEMS,
@@ -1244,8 +1241,9 @@ def add_csc(
         The atlas whose zarr store and cell table to use.
     zarr_group:
         Path of the zarr group to process (relative to atlas store root).
-    feature_space:
-        The feature space this zarr group belongs to.
+    field_name:
+        Cell-schema attribute name for the pointer column that references
+        *zarr_group*. The feature_space is derived from its ``PointerField``.
     layer_name:
         Which layer to transpose (e.g. ``"counts"``).
     chunk_size:
@@ -1259,6 +1257,14 @@ def add_csc(
         If no cells or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
+    if field_name not in atlas._pointer_fields:
+        raise ValueError(
+            f"No pointer field named '{field_name}'. "
+            f"Available: {sorted(atlas._pointer_fields.keys())}"
+        )
+    pointer_field = atlas._pointer_fields[field_name]
+    feature_space = pointer_field.feature_space
+
     # Look up layout_uid for this zarr_group + feature_space
     datasets_df = (
         atlas._dataset_table.search()
@@ -1276,14 +1282,14 @@ def add_csc(
         )
     layout_uid = datasets_df["layout_uid"][0]
 
-    # Query all cells in this zarr group
+    # Query all cells in this zarr group via the specified pointer column
     cells_df = (
         atlas.cell_table.search()
-        .where(f"{feature_space}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
-        .select([feature_space])
+        .where(f"{field_name}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
+        .select([field_name])
         .to_polars()
     )
-    ptr_struct = cells_df[feature_space].struct.unnest()
+    ptr_struct = cells_df[field_name].struct.unnest()
     cells_df = pl.DataFrame(
         {
             "_zg": ptr_struct["zarr_group"],
@@ -1294,9 +1300,7 @@ def add_csc(
     )
 
     if cells_df.is_empty():
-        raise ValueError(
-            f"No cells found for zarr_group='{zarr_group}', feature_space='{feature_space}'"
-        )
+        raise ValueError(f"No cells found for zarr_group='{zarr_group}', field_name='{field_name}'")
 
     cells_df = cells_df.sort("_zarr_row")
     zarr_rows = cells_df["_zarr_row"].to_numpy()

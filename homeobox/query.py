@@ -18,11 +18,11 @@ import polars as pl
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import get_spec
-from homeobox.obs_alignment import PointerFieldInfo
 from homeobox.reconstruction import (
     _build_obs_only_anndata,
     _get_pointer_columns,
 )
+from homeobox.schema import PointerField
 from homeobox.util import sql_escape
 
 
@@ -38,6 +38,7 @@ class AtlasQuery:
         self._limit_n: int | None = None
         self._select_columns: list[str] | None = None
         self._feature_spaces: list[str] | None = None
+        self._field_names: list[str] | None = None
         self._layer_overrides: dict[str, list[str]] = {}
         self._feature_join: Literal["union", "intersection"] = "union"
         self._feature_filter: dict[str, list[str]] = {}
@@ -124,7 +125,12 @@ class AtlasQuery:
         return self
 
     def feature_spaces(self, *spaces: str) -> "AtlasQuery":
-        """Restrict reconstruction to specific feature spaces."""
+        """Restrict reconstruction to pointer fields in the listed feature spaces.
+
+        Acts as a modality-level filter: every pointer field whose
+        ``feature_space`` matches is included. Use :meth:`select_fields` for
+        exact-field selection when multiple fields share a feature space.
+        """
         known = {pf.feature_space for pf in self._atlas._pointer_fields.values()}
         unknown = set(spaces) - known
         if unknown:
@@ -132,6 +138,23 @@ class AtlasQuery:
                 f"Unknown feature space(s): {sorted(unknown)}. Available: {sorted(known)}"
             )
         self._feature_spaces = list(spaces)
+        return self
+
+    def select_fields(self, *field_names: str) -> "AtlasQuery":
+        """Restrict reconstruction to specific pointer-field attribute names.
+
+        Unlike :meth:`feature_spaces` (which selects by modality), this
+        selects exact pointer columns — useful when a schema declares
+        multiple columns in the same feature space (e.g. ``cycle1_image_tiles``
+        and ``cycle2_image_tiles``).
+        """
+        known = set(self._atlas._pointer_fields.keys())
+        unknown = set(field_names) - known
+        if unknown:
+            raise ValueError(
+                f"Unknown pointer field(s): {sorted(unknown)}. Available: {sorted(known)}"
+            )
+        self._field_names = list(field_names)
         return self
 
     def layers(self, feature_space: str, names: list[str]) -> "AtlasQuery":
@@ -288,12 +311,14 @@ class AtlasQuery:
 
         return pl.concat(frames)
 
-    def _active_pointer_fields(self) -> dict[str, PointerFieldInfo]:
-        """Return pointer fields filtered by requested feature spaces."""
+    def _active_pointer_fields(self) -> dict[str, PointerField]:
+        """Return pointer fields filtered by ``feature_spaces`` / ``select_fields``."""
         pfs = self._atlas._pointer_fields
-        if self._feature_spaces is None:
-            return pfs
-        return {k: v for k, v in pfs.items() if v.feature_space in self._feature_spaces}
+        if self._field_names is not None:
+            return {k: pfs[k] for k in self._field_names}
+        if self._feature_spaces is not None:
+            return {k: v for k, v in pfs.items() if v.feature_space in self._feature_spaces}
+        return pfs
 
     def count(self, group_by: str | list[str] | None = None) -> "pl.DataFrame | int":
         """Count cells, optionally grouped by metadata columns.
@@ -393,8 +418,7 @@ class AtlasQuery:
         present: dict[str, np.ndarray] = {}
 
         for pf in active_pfs.values():
-            fs = pf.feature_space
-            spec = get_spec(fs)
+            spec = get_spec(pf.feature_space)
             reconstructor = spec.reconstructor
 
             # Compute presence mask from pointer column
@@ -413,43 +437,43 @@ class AtlasQuery:
             else:
                 result = self._reconstruct_single_space_anndata(cells_pl, pf)
 
-            mod[fs] = result
-            present[fs] = mask
+            mod[pf.field_name] = result
+            present[pf.field_name] = mask
 
         return MultimodalResult(obs=obs, mod=mod, present=present)
 
-    def to_fragments(self, feature_space: str = "chromatin_accessibility") -> "FragmentResult":
-        """Reconstruct a single fragment-based feature space.
+    def to_fragments(self, field_name: str = "chromatin_accessibility") -> "FragmentResult":
+        """Reconstruct a single fragment-based pointer field.
 
         Parameters
         ----------
-        feature_space
-            Feature space to reconstruct. Must use an
+        field_name
+            Pointer-field attribute name whose feature_space uses an
             :class:`~homeobox.fragments.reconstruction.IntervalReconstructor`.
         """
         from homeobox.fragments.reconstruction import IntervalReconstructor
 
-        pf = self._atlas._pointer_fields[feature_space]
-        spec = get_spec(feature_space)
+        pf = self._atlas._pointer_fields[field_name]
+        spec = get_spec(pf.feature_space)
         if not isinstance(spec.reconstructor, IntervalReconstructor):
             raise TypeError(
-                f"Feature space '{feature_space}' does not use IntervalReconstructor "
-                f"(got {type(spec.reconstructor).__name__})"
+                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
+                f"IntervalReconstructor (got {type(spec.reconstructor).__name__})"
             )
 
         cells_pl = self._materialize_cells()
         return spec.reconstructor.as_fragments(self._atlas, cells_pl, pf, spec)
 
-    def to_array(self, feature_space: str) -> "tuple[np.ndarray, pandas.DataFrame]":
-        """Reconstruct a single dense feature space as a raw array.
+    def to_array(self, field_name: str) -> "tuple[np.ndarray, pandas.DataFrame]":
+        """Reconstruct a single dense pointer field as a raw array.
 
         Returns the full-dimensionality array (e.g. 4D for image tiles)
         alongside the obs DataFrame for present cells.
 
         Parameters
         ----------
-        feature_space
-            Feature space to reconstruct. Must use a
+        field_name
+            Pointer-field attribute name whose feature_space uses a
             :class:`~homeobox.reconstruction.DenseReconstructor`.
 
         Returns
@@ -460,12 +484,12 @@ class AtlasQuery:
         """
         from homeobox.reconstruction import DenseReconstructor, _build_obs_df
 
-        pf = self._atlas._pointer_fields[feature_space]
-        spec = get_spec(feature_space)
+        pf = self._atlas._pointer_fields[field_name]
+        spec = get_spec(pf.feature_space)
         if not isinstance(spec.reconstructor, DenseReconstructor):
             raise TypeError(
-                f"Feature space '{feature_space}' does not use DenseReconstructor "
-                f"(got {type(spec.reconstructor).__name__})"
+                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
+                f"DenseReconstructor (got {type(spec.reconstructor).__name__})"
             )
 
         cells_pl = self._materialize_cells()
@@ -514,7 +538,7 @@ class AtlasQuery:
 
     def to_cell_dataset(
         self,
-        feature_space: str,
+        field_name: str,
         layer: str | None = None,
         metadata_columns: list[str] | None = None,
     ) -> "CellDataset":
@@ -532,26 +556,28 @@ class AtlasQuery:
 
         Parameters
         ----------
-        feature_space:
-            Which feature space to read.
+        field_name:
+            Pointer-field attribute name on the cell schema.
         layer:
-            Which layer to read within the feature space.  When ``None``,
-            auto-resolved to the first required layer for layered specs
-            or ignored for layer-less specs (e.g. ``image_tiles``).
+            Which layer to read within the pointer field's feature space.
+            When ``None``, auto-resolved to the first required layer for
+            layered specs or ignored for layer-less specs (e.g. ``image_tiles``).
         metadata_columns:
             Obs column names to include as metadata on each batch.
 
         Notes
         -----
         If a feature filter was set on this query (via
-        :meth:`~homeobox.query.AtlasQuery.feature_spaces`), the returned
-        dataset's feature space is automatically restricted to those features
-        (``wanted_globals`` is derived from the filter; ``n_features`` reflects
-        the filtered count).
+        :meth:`~homeobox.query.AtlasQuery.features`), the returned dataset's
+        feature space is automatically restricted to those features
+        (``wanted_globals`` is derived from the filter; ``n_features``
+        reflects the filtered count).
         """
         from homeobox.dataloader import CellDataset
         from homeobox.group_specs import get_spec
 
+        pf = self._atlas._pointer_fields[field_name]
+        feature_space = pf.feature_space
         spec = get_spec(feature_space)
         if layer is None:
             layer = spec.layers.required[0] if spec.layers.required else ""
@@ -570,7 +596,7 @@ class AtlasQuery:
         return CellDataset(
             atlas=self._atlas,
             cells_pl=cells_pl,
-            feature_space=feature_space,
+            field_name=field_name,
             layer=layer,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
@@ -578,7 +604,7 @@ class AtlasQuery:
 
     def to_multimodal_dataset(
         self,
-        feature_spaces: list[str],
+        field_names: list[str],
         layers: dict[str, str] | None = None,
         metadata_columns: list[str] | None = None,
     ) -> "MultimodalCellDataset":
@@ -595,13 +621,13 @@ class AtlasQuery:
 
         Parameters
         ----------
-        feature_spaces:
-            Ordered list of feature spaces to include.  The first is
-            the "primary" space used to derive ``groups_np``.
+        field_names:
+            Ordered list of pointer-field attribute names to include. The
+            first is the "primary" field used to derive ``groups_np``.
         layers:
-            ``{feature_space: layer_name}`` mapping.  Defaults to
-            ``"counts"`` for layered spaces and ``""`` for layer-less
-            spaces (e.g. ``image_tiles``) when omitted.
+            ``{field_name: layer_name}`` mapping.  Defaults to the first
+            required layer of each pointer field's feature space (or ``""``
+            for layer-less specs) when omitted.
         metadata_columns:
             Obs column names to include as metadata on each batch.
         """
@@ -610,30 +636,32 @@ class AtlasQuery:
 
         cells_pl = self._materialize_cells_for_dataset()
 
+        resolved_pfs = {fn: self._atlas._pointer_fields[fn] for fn in field_names}
+
         if layers is None:
             layers = {}
-            for fs in feature_spaces:
-                fs_spec = get_spec(fs)
-                layers[fs] = fs_spec.layers.required[0] if fs_spec.layers.required else ""
+            for fn, pf in resolved_pfs.items():
+                fs_spec = get_spec(pf.feature_space)
+                layers[fn] = fs_spec.layers.required[0] if fs_spec.layers.required else ""
 
         wanted_globals: dict[str, np.ndarray] | None = None
-        for fs in feature_spaces:
-            fs_spec = get_spec(fs)
-            if fs in self._feature_filter and fs_spec.has_var_df:
+        for fn, pf in resolved_pfs.items():
+            fs_spec = get_spec(pf.feature_space)
+            if pf.feature_space in self._feature_filter and fs_spec.has_var_df:
                 from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
                 wg = resolve_feature_uids_to_global_indices(
-                    self._atlas._registry_tables[fs],
-                    self._feature_filter[fs],
+                    self._atlas._registry_tables[pf.feature_space],
+                    self._feature_filter[pf.feature_space],
                 )
                 if wanted_globals is None:
                     wanted_globals = {}
-                wanted_globals[fs] = wg
+                wanted_globals[fn] = wg
 
         return MultimodalCellDataset(
             atlas=self._atlas,
             cells_pl=cells_pl,
-            feature_spaces=feature_spaces,
+            field_names=field_names,
             layers=layers,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
@@ -644,7 +672,7 @@ class AtlasQuery:
     def _reconstruct_single_space_anndata(
         self,
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
     ) -> ad.AnnData:
         """Reconstruct an AnnData for a single feature space."""
         spec = get_spec(pf.feature_space)

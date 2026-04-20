@@ -8,7 +8,7 @@ import pandas as pd
 import polars as pl
 
 from homeobox.group_specs import ZarrGroupSpec
-from homeobox.obs_alignment import PointerFieldInfo
+from homeobox.obs_alignment import PointerField
 from homeobox.read import (
     _prepare_sparse_cells,
     _read_parallel_arrays,
@@ -76,7 +76,7 @@ class IntervalReconstructor:
         self,
         atlas: "RaggedAtlas",
         cells_pl: "pl.DataFrame",
-        pf: "PointerFieldInfo",
+        pf: "PointerField",
         spec: "ZarrGroupSpec",
         layer_overrides: "list[str] | None" = None,
         feature_join: "Literal['union', 'intersection']" = "union",
@@ -95,7 +95,7 @@ class IntervalReconstructor:
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
     ) -> FragmentResult:
         """Read cell-sorted fragment arrays and return raw intervals.

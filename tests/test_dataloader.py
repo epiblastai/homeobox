@@ -23,6 +23,7 @@ from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
 )
 
@@ -43,7 +44,9 @@ class GeneFeatureSchema(FeatureBaseSchema):
 
 
 class TestCellSchema(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
     tissue: str | None = None
 
 
@@ -97,7 +100,7 @@ def two_group_atlas(tmp_path):
     add_from_anndata(
         atlas,
         adata1,
-        feature_space="gene_expression",
+        field_name="gene_expression",
         zarr_layer="counts",
         dataset_record=DatasetRecord(
             zarr_group="ds1/gene_expression",
@@ -112,7 +115,7 @@ def two_group_atlas(tmp_path):
     add_from_anndata(
         atlas,
         adata2,
-        feature_space="gene_expression",
+        field_name="gene_expression",
         zarr_layer="counts",
         dataset_record=DatasetRecord(
             zarr_group="ds2/gene_expression",
@@ -154,7 +157,7 @@ def single_group_atlas(tmp_path):
     add_from_anndata(
         atlas,
         adata,
-        feature_space="gene_expression",
+        field_name="gene_expression",
         zarr_layer="counts",
         dataset_record=DatasetRecord(
             zarr_group="ds/gene_expression",

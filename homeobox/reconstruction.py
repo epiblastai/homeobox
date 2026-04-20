@@ -10,7 +10,6 @@ import polars as pl
 import scipy.sparse as sp
 
 from homeobox.group_specs import ZarrGroupSpec
-from homeobox.obs_alignment import PointerFieldInfo
 from homeobox.protocols import Reconstructor
 from homeobox.read import (
     _apply_wanted_globals_remap,
@@ -20,6 +19,7 @@ from homeobox.read import (
     _read_sparse_group,
     _sync_gather,
 )
+from homeobox.schema import PointerField
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -239,7 +239,7 @@ class SparseCSRReconstructor:
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
@@ -401,7 +401,7 @@ class DenseReconstructor:
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
@@ -495,7 +495,7 @@ class DenseReconstructor:
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
         array_name: str | None = None,
     ) -> np.ndarray:
@@ -745,7 +745,7 @@ class FeatureCSCReconstructor:
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
