@@ -119,7 +119,7 @@ maturin develop --release
 
 ### Reference
 
-- **[Schemas](schemas.md)** — all LanceDB schema classes: `HoxBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `FeatureBaseSchema`, `DatasetRecord`, `FeatureLayout`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are validated.
+- **[Schemas](schemas.md)** — all LanceDB schema classes: `HoxBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `PointerField`, `FeatureBaseSchema`, `DatasetRecord`, `FeatureLayout`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are declared and validated.
 - **[Feature Layouts](feature_layouts.md)** — Python API for the `_feature_layouts` table: computing layout UIDs, building layout DataFrames, reindexing the registry, syncing global indices, and resolving feature UIDs to global positions.
 - **[Group Specs](group_specs.md)** — `ZarrGroupSpec`, `PointerKind`, `ArraySpec`, `LayersSpec`, built-in specs, and how to define custom specs for new assay types.
 - **[Querying](querying.md)** — the `AtlasQuery` fluent builder: filtering cells, controlling feature reconstruction, union/intersection joins, feature-filtered queries, and all terminal methods (`.to_anndata()`, `.to_mudata()`, `.to_batches()`, `.count()`).
@@ -135,7 +135,9 @@ maturin develop --release
 ```python
 import obstore.store
 from homeobox.atlas import RaggedAtlas
-from homeobox.schema import HoxBaseSchema, FeatureBaseSchema, SparseZarrPointer
+from homeobox.schema import (
+    HoxBaseSchema, FeatureBaseSchema, SparseZarrPointer, PointerField,
+)
 from homeobox.ingestion import add_from_anndata
 
 # homeobox registers built-in specs (gene_expression, image_features) at import time —
@@ -147,7 +149,9 @@ class GeneFeature(FeatureBaseSchema):
 
 class CellSchema(HoxBaseSchema):
     cell_type: str | None = None
-    gene_expression: SparseZarrPointer | None = None  # matches built-in feature space name
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
 
 # 2. Create atlas
 store = obstore.store.LocalStore("/data/atlas/arrays")
@@ -161,7 +165,7 @@ atlas = RaggedAtlas.create(
 
 # 3. Register features and ingest
 atlas.register_features("gene_expression", features)
-add_from_anndata(atlas, adata, feature_space="gene_expression",
+add_from_anndata(atlas, adata, field_name="gene_expression",
                  zarr_layer="counts", dataset_record=record)
 
 # 4. Snapshot and query

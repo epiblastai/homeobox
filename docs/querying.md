@@ -96,11 +96,19 @@ By default, every feature space with a pointer in the cell schema is reconstruct
 
 ### `.feature_spaces(*spaces: str)`
 
-Restrict reconstruction to a named subset of feature spaces. Any space not listed is skipped entirely — no array I/O is performed for it.
+Restrict reconstruction to a named subset of feature spaces. Any space not listed is skipped entirely — no array I/O is performed for it. This is a modality-level filter: every pointer field whose declared `feature_space` matches is included.
 
 ```python
 # Only reconstruct gene expression; skip protein in a multimodal atlas
 atlas_r.query().feature_spaces("gene_expression").to_anndata()
+```
+
+### `.select_fields(*field_names: str)`
+
+Restrict reconstruction to specific pointer-field attribute names. Use this when a schema declares multiple columns in the same feature space (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`) and you want only a specific column.
+
+```python
+atlas_r.query().select_fields("cycle1_image_tiles").to_anndata()
 ```
 
 ### `.layers(feature_space: str, names: list[str])`
@@ -184,7 +192,7 @@ atlas_r.query().select(["cell_type", "n_genes"]).to_polars()
 adata = atlas_r.query().where("cell_type = 'NK cells'").to_anndata()
 ```
 
-**`.to_mudata()`** reconstructs one `AnnData` per feature space and wraps them in a `MuData` object. Each modality is keyed by its feature space name. Non-AnnData modalities (fragments, raw arrays) are silently dropped — use `.to_multimodal()` for full heterogeneous access.
+**`.to_mudata()`** reconstructs one `AnnData` per pointer field and wraps them in a `MuData` object. Each modality is keyed by its pointer-field name (the column name on the cell schema). Non-AnnData modalities (fragments, raw arrays) are silently dropped — use `.to_multimodal()` for full heterogeneous access.
 
 ```python
 mdata = atlas_r.query().to_mudata()
@@ -192,7 +200,7 @@ mdata["gene_expression"]    # AnnData for RNA
 mdata["protein_abundance"]  # AnnData for protein
 ```
 
-**`.to_multimodal()`** reconstructs all active modalities in their native format and returns a `MultimodalResult`. Each modality is reconstructed as its natural type: `AnnData` for matrix-based spaces, `FragmentResult` for chromatin accessibility, or `numpy.ndarray` for raw dense arrays (e.g. image tiles). The result includes shared `obs`, per-modality data in `mod`, and boolean presence masks in `present`.
+**`.to_multimodal()`** reconstructs all active modalities in their native format and returns a `MultimodalResult`. Each modality is reconstructed as its natural type: `AnnData` for matrix-based spaces, `FragmentResult` for chromatin accessibility, or `numpy.ndarray` for raw dense arrays (e.g. image tiles). The result includes shared `obs`, per-modality data in `mod`, and boolean presence masks in `present`. Both dicts are keyed by pointer-field name.
 
 ```python
 result = atlas_r.query().to_multimodal()
@@ -201,13 +209,13 @@ result.mod["chromatin_accessibility"]  # FragmentResult
 result.present["gene_expression"]      # boolean mask of which cells have this modality
 ```
 
-**`.to_fragments(feature_space: str)`** reconstructs a single fragment-based feature space (e.g. chromatin accessibility) as a `FragmentResult`. The feature space must use an `IntervalReconstructor`.
+**`.to_fragments(field_name: str)`** reconstructs a single fragment-based pointer field (e.g. chromatin accessibility) as a `FragmentResult`. The field's feature space must use an `IntervalReconstructor`.
 
 ```python
 frags = atlas_r.query().where("tissue = 'brain'").to_fragments("chromatin_accessibility")
 ```
 
-**`.to_array(feature_space: str)`** reconstructs a single dense feature space as a raw NumPy array alongside the obs DataFrame for present cells. Useful for modalities like image tiles that don't have feature annotations.
+**`.to_array(field_name: str)`** reconstructs a single dense pointer field as a raw NumPy array alongside the obs DataFrame for present cells. Useful for modalities like image tiles that don't have feature annotations.
 
 ```python
 array, obs = atlas_r.query().to_array("image_tiles")

@@ -44,7 +44,7 @@ Every cell row carries:
 | `dataset_uid` | `str` | Links back to the originating `DatasetRecord`. |
 | _pointer fields_ | `SparseZarrPointer \| DenseZarrPointer \| None` | One column per feature space the cell may have been profiled in. |
 
-Pointer field names must match a registered feature space name (enforced at class definition time). At least one pointer field must be declared.
+Pointer fields are declared via `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. Column names are free-form — a schema may declare multiple columns in the same feature space (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`). At least one pointer field must be declared.
 
 ### Pointer types
 
@@ -67,8 +67,12 @@ A typical multimodal schema looks like:
 
 ```python
 class MySchema(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
-    protein_abundance: DenseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
+    protein_abundance: DenseZarrPointer | None = PointerField.declare(
+        feature_space="protein_abundance"
+    )
 ```
 
 ```mermaid

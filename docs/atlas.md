@@ -89,18 +89,22 @@ register_spec(LOGNORM_RNA_SPEC)
 A feature schema extends `FeatureBaseSchema` with any modality-specific fields. Here we store the gene symbol alongside the inherited `uid` and `global_index`.
 
 ```python
-from homeobox.schema import FeatureBaseSchema, HoxBaseSchema, DenseZarrPointer
+from homeobox.schema import (
+    FeatureBaseSchema, HoxBaseSchema, DenseZarrPointer, PointerField,
+)
 
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str  # any extra fields you want queryable in the registry
 ```
 
-A cell schema extends `HoxBaseSchema` and declares one pointer field per feature space the atlas will hold. The field name must exactly match the registered feature space name. In a multimodal schema, pointer fields are typed `| None` so that cells profiled in only one modality can leave the other pointers null.
+A cell schema extends `HoxBaseSchema` and declares one pointer field per column the atlas will hold. Each pointer is declared with `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. Column names are free-form — a schema may declare multiple columns in the same feature space. In a multimodal schema, pointer fields are typed `| None` so that cells profiled in only one modality can leave the other pointers null.
 
 ```python
 class CellSchema(HoxBaseSchema):
     cell_type: str | None = None     # user-defined obs metadata
-    lognorm_rna: DenseZarrPointer | None = None  # must match registered feature space name
+    lognorm_rna: DenseZarrPointer | None = PointerField.declare(
+        feature_space="lognorm_rna"
+    )
 ```
 
 ### 3. Create the atlas
@@ -180,7 +184,7 @@ dataset_3k = DatasetRecord(
 n = add_from_anndata(
     atlas,
     pbmc3k_aligned,
-    feature_space="lognorm_rna",
+    field_name="lognorm_rna",
     zarr_layer="log_normalized",  # destination layer name within the zarr group
     dataset_record=dataset_3k,
 )
@@ -259,7 +263,7 @@ dataset_68k = DatasetRecord(
 add_from_anndata(
     atlas,
     pbmc68k_aligned,
-    feature_space="lognorm_rna",
+    field_name="lognorm_rna",
     zarr_layer="log_normalized",
     dataset_record=dataset_68k,
 )

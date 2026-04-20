@@ -43,7 +43,7 @@ RaggedAtlas.checkout(version=N)   ← readers pin to a snapshot
 import obstore.store
 import homeobox
 from homeobox.atlas import RaggedAtlas
-from homeobox.schema import HoxBaseSchema, SparseZarrPointer
+from homeobox.schema import HoxBaseSchema, SparseZarrPointer, PointerField
 from homeobox.schema import DatasetRecord
 from my_project.schemas import GeneSchema  # a FeatureBaseSchema subclass
 
@@ -121,6 +121,7 @@ validated snapshot. For convenience, use RaggedAtlas.checkout_latest(...).
 
 ## Preparing for a snapshot: `optimize()`
 
+<!-- It also does deduplication of features before assigning a global index. The deduplication is done on `uid`. It's the user's responsibility to assign uids in such a way that deduplication work, for example using `make_stable_uid` on a canonical reference like `ensembl_gene_id` -->
 Before calling `snapshot()`, you must call `optimize()`. This does three things:
 
 1. **Compacts Lance fragments** — multiple small write batches get merged into larger fragments for efficient reads.

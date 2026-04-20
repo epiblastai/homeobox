@@ -19,7 +19,7 @@ from homeobox.ingestion import add_from_anndata
 n = add_from_anndata(
     atlas,
     adata,                          # AnnData object or path to .h5ad file
-    feature_space="gene_expression",
+    field_name="gene_expression",   # pointer-field column on the cell schema
     zarr_layer="counts",            # destination layer name within the zarr group
     dataset_record=dataset_record,
 )
@@ -29,7 +29,7 @@ print(f"ingested {n} cells")
 ### What happens
 
 1. Validates `zarr_layer` against the spec's `layers.allowed` and validates obs columns against the cell schema.
-2. Locates the pointer field for this feature space in the cell schema.
+2. Resolves `field_name` to its declared `PointerField` on the cell schema (this is where the feature_space binding comes from).
 3. Pre-allocates zarr arrays with the configured chunk and shard shapes, then streams data in shard-sized batches.
 4. For backed `.h5ad` files, reads directly from HDF5 `indptr`, `indices`, and `data` datasets without materializing the full matrix into memory.
 5. Writes the `_feature_layouts` feature mapping (one row per feature, recording `local_index` and `global_index`).
@@ -65,7 +65,7 @@ These can be overridden at ingest time:
 ```python
 n = add_from_anndata(
     atlas, adata,
-    feature_space="gene_expression",
+    field_name="gene_expression",
     zarr_layer="counts",
     dataset_record=dataset_record,
     chunk_shape=(4096,),       # zarr chunk shape for 1D CSR arrays
@@ -87,7 +87,7 @@ If you pass an `.h5ad` path (or an `AnnData` opened with `backed="r"`), `add_fro
 n = add_from_anndata(
     atlas,
     "/path/to/large_dataset.h5ad",  # opened backed="r" automatically
-    feature_space="gene_expression",
+    field_name="gene_expression",
     zarr_layer="counts",
     dataset_record=dataset_record,
 )
@@ -143,14 +143,14 @@ from homeobox.ingestion import add_csc
 add_csc(
     atlas,
     zarr_group="pbmc3k",
-    feature_space="gene_expression",
+    field_name="gene_expression",
     layer_name="counts",
 )
 ```
 
 ### What happens
 
-1. Looks up the `dataset_uid` for this `(zarr_group, feature_space)` pair.
+1. Looks up the `dataset_uid` for this `(zarr_group, feature_space)` pair (feature_space is resolved from the pointer field).
 2. Queries all cell records for this group; sorts them by `zarr_row` and validates that `zarr_row` is a contiguous 0..N-1 sequence (a prerequisite for the CSC index to be internally consistent).
 3. Reads the full `csr/indices` and `csr/layers/<layer>` flat arrays via `BatchArray.read_ranges`.
 4. Reconstructs `(cell_row, feature_idx)` pairs for every non-zero entry, then sorts by `feature_idx` (stable sort, so cell order is preserved within each feature column).
@@ -213,8 +213,8 @@ Both paths produce identical output. The fallback is not a degraded mode — it 
 
 ```python
 # Only add CSC to the two largest groups
-add_csc(atlas, zarr_group="large_dataset_1", feature_space="gene_expression", layer_name="counts")
-add_csc(atlas, zarr_group="large_dataset_2", feature_space="gene_expression", layer_name="counts")
+add_csc(atlas, zarr_group="large_dataset_1", field_name="gene_expression", layer_name="counts")
+add_csc(atlas, zarr_group="large_dataset_2", field_name="gene_expression", layer_name="counts")
 # small_dataset_3 stays CSR-only — reconstructors fall back automatically
 ```
 
@@ -236,7 +236,7 @@ atlas.optimize()
 # 3. Ingest
 n = add_from_anndata(
     atlas, adata,
-    feature_space="gene_expression",
+    field_name="gene_expression",
     zarr_layer="counts",
     dataset_record=record,
 )
@@ -245,7 +245,7 @@ n = add_from_anndata(
 add_csc(
     atlas,
     zarr_group=record.zarr_group,
-    feature_space="gene_expression",
+    field_name="gene_expression",
     layer_name="counts",
 )
 

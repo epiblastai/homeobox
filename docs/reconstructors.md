@@ -27,7 +27,7 @@ class Reconstructor(Protocol):
         self,
         atlas: RaggedAtlas,
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
@@ -38,7 +38,7 @@ class Reconstructor(Protocol):
 Key parameters:
 
 - `cells_pl` — Polars DataFrame of the queried cells. Includes the zarr pointer struct columns used to locate each cell's row within its zarr group.
-- `pf` — `PointerFieldInfo` identifying which pointer field this reconstructor handles (field name, feature space, and pointer kind).
+- `pf` — `PointerField` identifying which pointer field this reconstructor handles (field name, feature space, and pointer kind).
 - `spec` — the `ZarrGroupSpec` for this feature space, carrying the declared array layout and layer names.
 - `layer_overrides` — if set, read these layers instead of `spec.layers.required`.
 - `feature_join` — `"union"` includes all features from any group; `"intersection"` includes only features present in every group. Ignored when `wanted_globals` is set.
@@ -153,7 +153,7 @@ import polars as pl
 import numpy as np
 from typing import Literal
 from homeobox.atlas import RaggedAtlas
-from homeobox.obs_alignment import PointerFieldInfo
+from homeobox.schema import PointerField
 from homeobox.group_specs import ZarrGroupSpec
 
 class MyCustomReconstructor:
@@ -161,7 +161,7 @@ class MyCustomReconstructor:
         self,
         atlas: RaggedAtlas,
         cells_pl: pl.DataFrame,
-        pf: PointerFieldInfo,
+        pf: PointerField,
         spec: ZarrGroupSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",

@@ -23,7 +23,7 @@ dataset = (
     atlas_r.query()
     .where("split = 'train'")
     .to_cell_dataset(
-        feature_space="gene_expression",
+        field_name="gene_expression",
         layer="counts",
         metadata_columns=["cell_type", "batch"],
     )
@@ -46,7 +46,7 @@ dataset = (
         ["ENSG00000010610", "ENSG00000156738", "ENSG00000105369"],
         feature_space="gene_expression",
     )
-    .to_cell_dataset(feature_space="gene_expression", layer="counts")
+    .to_cell_dataset(field_name="gene_expression", layer="counts")
 )
 
 print(dataset.n_features)  # 3
@@ -58,7 +58,7 @@ print(dataset.n_features)  # 3
 
 ## Multimodal datasets
 
-`to_multimodal_dataset()` covers atlases that store more than one assay per cell. It returns a `MultimodalCellDataset` whose batches contain one entry per feature space.
+`to_multimodal_dataset()` covers atlases that store more than one assay per cell. It returns a `MultimodalCellDataset` whose batches contain one entry per pointer field.
 
 Not every cell in a multimodal atlas will have been measured by every assay — a cell from a CITE-seq experiment has both RNA and protein, but a cell from a 10x 3' experiment has RNA only. `MultimodalCellDataset` tracks this with per-modality `present` masks.
 
@@ -66,7 +66,7 @@ Not every cell in a multimodal atlas will have been measured by every assay — 
 dataset = (
     atlas_r.query()
     .to_multimodal_dataset(
-        feature_spaces=["gene_expression", "protein_abundance"],
+        field_names=["gene_expression", "protein_abundance"],
         layers={"gene_expression": "counts", "protein_abundance": "raw"},
         metadata_columns=["cell_type"],
     )
@@ -75,7 +75,7 @@ dataset = (
 
 Batches are `MultimodalBatch` objects with the following fields:
 
-- `modalities: dict[str, SparseBatch | DenseBatch]` — one entry per feature space, keyed by name
+- `modalities: dict[str, SparseBatch | DenseBatch]` — one entry per pointer field, keyed by field_name
 - `present: dict[str, np.ndarray]` — boolean array of shape `(n_cells,)` indicating which cells have data for each modality
 - `metadata: dict[str, np.ndarray] | None` — requested metadata columns, one array per column
 
@@ -199,7 +199,7 @@ dataset = (
     atlas_r.query()
     .where("split = 'train'")
     .to_cell_dataset(
-        feature_space="gene_expression",
+        field_name="gene_expression",
         layer="counts",
         metadata_columns=["cell_type"],
     )
