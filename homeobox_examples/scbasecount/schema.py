@@ -20,6 +20,7 @@ from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
 )
 
@@ -93,7 +94,9 @@ class ScBasecountDatasetRecord(DatasetRecord):
 class CellObs(HoxBaseSchema):
     """Cell-level observation schema for scBaseCount data."""
 
-    genefull_expression: SparseZarrPointer | None = None
+    genefull_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="genefull_expression"
+    )
 
     cell_barcode: str | None = None
     srx_accession: str | None = None

@@ -9,6 +9,7 @@ from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
 )
 
@@ -37,7 +38,9 @@ class CellObs(HoxBaseSchema):
     """
 
     # Pointer to sparse gene expression data
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
 
     # Human-readable metadata
     assay: str | None = None

@@ -14,6 +14,7 @@ from homeobox.schema import (
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
     make_uid,
 )
@@ -430,11 +431,6 @@ FK_TABLE_SCHEMAS: dict[str, type[LanceModel]] = {
 
 
 class CellIndex(HoxBaseSchema):
-    # NOTE: The uid for CellIndex should be the cell barcode and not a randomly
-    # generated value? This is especially important for keeping alignment between
-    # cells in multiple datasets. Should be using merge_insert patterns when adding
-    # records.
-
     # Assay used like Perturb-seq, Cell Painting, snATAC-seq, Drop-seq, etc.
     # TODO: Validate this against a controlled vocabulary, EFO
     assay: str
@@ -489,16 +485,26 @@ class CellIndex(HoxBaseSchema):
 
     # Pointers for each of the feature spaces. These all have a corresponding
     # feature registry table
-    gene_expression: SparseZarrPointer | None = None  # GenomicFeatureSchema
-    chromatin_accessibility: SparseZarrPointer | None = None  # ReferenceSequenceSchema
-    protein_abundance: DenseZarrPointer | None = None  # ProteinSchema
-    image_features: DenseZarrPointer | None = None  # ImageFeatureSchema
+    gene_expression: SparseZarrPointer | None = PointerField.declare(  # GenomicFeatureSchema
+        feature_space="gene_expression"
+    )
+    chromatin_accessibility: SparseZarrPointer | None = (
+        PointerField.declare(  # ReferenceSequenceSchema
+            feature_space="chromatin_accessibility"
+        )
+    )
+    protein_abundance: DenseZarrPointer | None = PointerField.declare(  # ProteinSchema
+        feature_space="protein_abundance"
+    )
+    image_features: DenseZarrPointer | None = PointerField.declare(  # ImageFeatureSchema
+        feature_space="image_features"
+    )
 
     # Image tiles don't have a schema because they aren't features!
     # TODO: For image data we might want to define a concept like "axis annotations"
     # that are alternatives to the feature registry. Here for example, the axis annotations
     # would be channel names probably.
-    image_tiles: DenseZarrPointer | None = None
+    image_tiles: DenseZarrPointer | None = PointerField.declare(feature_space="image_tiles")
 
     # Auto-filled field
     perturbation_search_string: str = ""
