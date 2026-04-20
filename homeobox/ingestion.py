@@ -405,21 +405,19 @@ def _build_cell_arrow_table(
             columns[pf_name] = pa.StructArray.from_arrays(
                 [
                     pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
                     pa.array([0] * n_cells, type=pa.int64()),
                     pa.array([0] * n_cells, type=pa.int64()),
                     pa.array([0] * n_cells, type=pa.int64()),
                 ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+                names=["zarr_group", "start", "end", "zarr_row"],
             )
         else:
             columns[pf_name] = pa.StructArray.from_arrays(
                 [
                     pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
                     pa.array([0] * n_cells, type=pa.int64()),
                 ],
-                names=["feature_space", "zarr_group", "position"],
+                names=["zarr_group", "position"],
             )
 
     # Add obs columns
@@ -434,7 +432,6 @@ def _build_cell_arrow_table(
 
 
 def _make_sparse_pointer(
-    feature_space: str,
     zarr_group: str,
     starts: np.ndarray,
     ends: np.ndarray,
@@ -444,7 +441,6 @@ def _make_sparse_pointer(
     n_cells = len(starts)
     return pa.StructArray.from_arrays(
         [
-            pa.array([feature_space] * n_cells, type=pa.string()),
             pa.array([zarr_group] * n_cells, type=pa.string()),
             pa.array(starts.astype(np.int64), type=pa.int64()),
             pa.array(ends.astype(np.int64), type=pa.int64()),
@@ -453,7 +449,7 @@ def _make_sparse_pointer(
                 type=pa.int64(),
             ),
         ],
-        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+        names=["zarr_group", "start", "end", "zarr_row"],
     )
 
 
@@ -503,9 +499,7 @@ def insert_cell_records(
         )
     pointer_field = atlas._pointer_fields[field_name]
 
-    pointer_struct = _make_sparse_pointer(
-        pointer_field.feature_space, zarr_group, starts, ends, zarr_row_offset
-    )
+    pointer_struct = _make_sparse_pointer(zarr_group, starts, ends, zarr_row_offset)
     arrow_table = _build_cell_arrow_table(
         atlas,
         obs_df,
@@ -827,15 +821,14 @@ def add_anndata_batch(
 
     # Build pointer struct for the active feature space
     if spec.pointer_kind is PointerKind.SPARSE:
-        pointer_struct = _make_sparse_pointer(feature_space, zarr_group, starts, ends)
+        pointer_struct = _make_sparse_pointer(zarr_group, starts, ends)
     else:
         pointer_struct = pa.StructArray.from_arrays(
             [
-                pa.array([feature_space] * n_cells, type=pa.string()),
                 pa.array([zarr_group] * n_cells, type=pa.string()),
                 pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
             ],
-            names=["feature_space", "zarr_group", "position"],
+            names=["zarr_group", "position"],
         )
 
     arrow_table = _build_cell_arrow_table(
@@ -1143,13 +1136,12 @@ def add_coo_batch(
 
     pointer_struct = pa.StructArray.from_arrays(
         [
-            pa.array([feature_space] * n_cells, type=pa.string()),
             pa.array([zarr_group] * n_cells, type=pa.string()),
             pa.array(starts.astype(np.int64), type=pa.int64()),
             pa.array(ends.astype(np.int64), type=pa.int64()),
             pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
         ],
-        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+        names=["zarr_group", "start", "end", "zarr_row"],
     )
 
     columns = {
@@ -1166,21 +1158,19 @@ def add_coo_batch(
             columns[other_pf_name] = pa.StructArray.from_arrays(
                 [
                     pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
                     pa.array([0] * n_cells, type=pa.int64()),
                     pa.array([0] * n_cells, type=pa.int64()),
                     pa.array([0] * n_cells, type=pa.int64()),
                 ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+                names=["zarr_group", "start", "end", "zarr_row"],
             )
         else:
             columns[other_pf_name] = pa.StructArray.from_arrays(
                 [
                     pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
                     pa.array([0] * n_cells, type=pa.int64()),
                 ],
-                names=["feature_space", "zarr_group", "position"],
+                names=["zarr_group", "position"],
             )
 
     for col in schema_fields:

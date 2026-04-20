@@ -63,8 +63,8 @@ def _extract_pointer_fields(
 # Arrow-schema-based pointer inference (schema-less read path)
 # ---------------------------------------------------------------------------
 
-_SPARSE_SUBFIELDS = {"feature_space", "zarr_group", "start", "end", "zarr_row"}
-_DENSE_SUBFIELDS = {"feature_space", "zarr_group", "position"}
+_SPARSE_SUBFIELDS = {"zarr_group", "start", "end", "zarr_row"}
+_DENSE_SUBFIELDS = {"zarr_group", "position"}
 
 
 # TODO: Move this to `schema.py`?
@@ -85,9 +85,11 @@ def _infer_pointer_fields_from_arrow(
         if not pa.types.is_struct(field.type):
             continue
         sub_names = {field.type.field(j).name for j in range(field.type.num_fields)}
-        if sub_names == _SPARSE_SUBFIELDS:
+        # Subset match so legacy atlases (which carry an extra ``feature_space``
+        # subfield per row) are still recognised as pointer structs.
+        if _SPARSE_SUBFIELDS <= sub_names:
             pointer_kind = PointerKind.SPARSE
-        elif sub_names == _DENSE_SUBFIELDS:
+        elif _DENSE_SUBFIELDS <= sub_names:
             pointer_kind = PointerKind.DENSE
         else:
             continue

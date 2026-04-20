@@ -15,39 +15,15 @@ from homeobox.group_specs import PointerKind, get_spec
 
 
 class SparseZarrPointer(LanceModel):
-    # TODO: Can feature space be removed?
-    feature_space: str  # FeatureSpace value; stored as str for Arrow compat
     zarr_group: str
     start: int
     end: int
     zarr_row: int  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
-    @model_validator(mode="after")
-    def _require_sparse_feature_space(self):
-        spec = get_spec(self.feature_space)
-        if spec.pointer_kind is not PointerKind.SPARSE:
-            raise ValueError(
-                f"feature_space '{self.feature_space}' requires a "
-                f"{spec.pointer_kind.value} pointer, not a sparse pointer"
-            )
-        return self
-
 
 class DenseZarrPointer(LanceModel):
-    # TODO: Can feature space be removed?
-    feature_space: str  # FeatureSpace value; stored as str for Arrow compat
     zarr_group: str
     position: int
-
-    @model_validator(mode="after")
-    def _require_dense_feature_space(self):
-        spec = get_spec(self.feature_space)
-        if spec.pointer_kind is not PointerKind.DENSE:
-            raise ValueError(
-                f"feature_space '{self.feature_space}' requires a "
-                f"{spec.pointer_kind.value} pointer, not a dense pointer"
-            )
-        return self
 
 
 ZarrPointer = SparseZarrPointer | DenseZarrPointer
