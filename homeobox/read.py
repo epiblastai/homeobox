@@ -78,6 +78,8 @@ async def _read_sparse_group(
     ends: np.ndarray,
 ) -> tuple[tuple[np.ndarray, np.ndarray], list[tuple[np.ndarray, np.ndarray]]]:
     """Read index array and layer arrays concurrently for one zarr group."""
+    # TODO: Assumes sparse implies the existence of layers; true for gene expression
+    # but not generally
     coros = [index_reader.read_ranges(starts, ends)]
     coros.extend(r.read_ranges(starts, ends) for r in layer_readers)
 
@@ -95,6 +97,7 @@ async def _read_dense_group(
     return list(await asyncio.gather(*coros))
 
 
+# TODO: Why is this private API
 async def _read_parallel_arrays(
     readers: list[BatchAsyncArray],
     starts: np.ndarray,
@@ -106,9 +109,12 @@ async def _read_parallel_arrays(
     Unlike :func:`_read_sparse_group`, does not assume a 1-index + N-layers
     structure — all arrays are treated symmetrically.
     """
+    # TODO: This is the more generic version of _read_sparse_group. Eventually
+    # we should remove _read_sparse_group and _read_dense_group in favor of this
     return list(await asyncio.gather(*(r.read_ranges(starts, ends) for r in readers)))
 
 
+# TODO: Why is this private API
 def _sync_gather(coroutines: list) -> list:
     """Run coroutines concurrently on a zarr-managed event loop and return results."""
 

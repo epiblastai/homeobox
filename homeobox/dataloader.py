@@ -437,6 +437,9 @@ async def _take_group_sparse(
     return remapped, flat_values, lengths
 
 
+# TODO: This is assuming that just because a pointer is sparse, that it also
+# has layers. This is true for gene_expression but not necessarily a fundamental
+# feature of sparse data.
 async def _take_sparse_from_pointers(
     groups_np: np.ndarray,
     starts: np.ndarray,

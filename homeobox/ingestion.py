@@ -761,6 +761,11 @@ def add_anndata_batch(
     n_cells = adata.n_obs
     zarr_group = dataset_record.zarr_group
 
+    # TODO: spec.required_arrays is a list with expected dtype and ndim
+    # we should be validating or casting the data from the data to match.
+    # I would suggest a `coerce_dtype` argument that is default False. We raise
+    # a hard error when it fails. If `coerce_dtype` is True then we validate that
+    # the conversion works without loss (convert then np.isclose?)
     if spec.pointer_kind is PointerKind.SPARSE:
         chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
         shard_shape = shard_shape or (_SHARD_ELEMS,)
@@ -774,6 +779,9 @@ def add_anndata_batch(
         else:
             # Works for both backed dense (h5py.Dataset) and in-memory.
             data_dtype = np.dtype(adata.X.dtype)
+
+        # TODO: It's much better to define the compression directly in the
+        # ArraySpec than to try inferring it here.
         use_bitpacking = data_dtype in _INTEGER_DTYPES
     else:
         n_vars = adata.n_vars

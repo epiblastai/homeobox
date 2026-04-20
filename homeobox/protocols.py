@@ -20,6 +20,9 @@ class Reconstructor(Protocol):
     for a single feature space and assembles an AnnData object.
     """
 
+    # TODO: Not all modalities produce an AnnData naturally (e.g., images)
+    # Currently we are bypassing this and leaving is as NotImplemented in some
+    # reconstructors, in favor of another method like `as_array` or `as_fragments`.
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
