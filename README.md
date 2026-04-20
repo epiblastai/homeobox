@@ -54,14 +54,17 @@ import os
 import scanpy as sc
 import obstore.store
 import homeobox as hox
-from homeobox.schema import SparseZarrPointer
 
-# 1. Define schemas: one for gene features, one for cell metadata
+# 1. Define schemas: one for gene features, one for cell metadata.
+#    Each pointer column is declared with PointerField.declare, which
+#    binds the column name to a registered feature_space.
 class GeneFeature(hox.FeatureBaseSchema):
     gene_symbol: str
 
 class CellSchema(hox.HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: hox.SparseZarrPointer | None = hox.PointerField.declare(
+        feature_space="gene_expression"
+    )
 
 # 2. Create an atlas
 atlas_dir = "./hox_example_atlas/"
@@ -80,13 +83,14 @@ adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
 features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
 
-# 4. Prepare var and ingest
+# 4. Prepare var and ingest. `field_name` selects the cell-schema column
+#    to populate; its feature_space is resolved from PointerField.declare.
 adata.var["global_feature_uid"] = adata.var_names
 record = hox.DatasetRecord(
     zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
 )
 hox.add_from_anndata(
-    atlas, adata, feature_space="gene_expression",
+    atlas, adata, field_name="gene_expression",
     zarr_layer="counts", dataset_record=record,
 )
 
@@ -95,7 +99,7 @@ atlas.optimize()
 atlas.snapshot()
 
 # 6. Open the atlas and query
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=CellSchema)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```

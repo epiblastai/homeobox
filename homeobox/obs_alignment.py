@@ -8,7 +8,7 @@ import anndata as ad
 import pandas as pd
 import pyarrow as pa
 
-from homeobox.group_specs import PointerKind, get_spec
+from homeobox.group_specs import PointerKind, get_spec, registered_feature_spaces
 from homeobox.schema import (
     AUTO_FIELDS,
     POINTER_FEATURE_SPACE_METADATA_KEY,
@@ -94,14 +94,22 @@ def _infer_pointer_fields_from_arrow(
 
         metadata = field.metadata or {}
         fs_bytes = metadata.get(POINTER_FEATURE_SPACE_METADATA_KEY)
-        if fs_bytes is None:
+        if fs_bytes is not None:
+            feature_space = fs_bytes.decode("utf-8")
+        elif field.name in registered_feature_spaces():
+            # Legacy-atlas fallback: tables written before PointerField.declare
+            # existed carry no per-field metadata, but the old convention required
+            # field_name == feature_space. Fall back to that only if it resolves
+            # to a registered spec.
+            feature_space = field.name
+        else:
             raise TypeError(
                 f"Arrow field '{field.name}' looks like a {pointer_kind.value} pointer "
                 f"but is missing the '{POINTER_FEATURE_SPACE_METADATA_KEY.decode()}' "
-                f"metadata key. The atlas must be re-created with a HoxBaseSchema whose "
-                f"pointer fields are declared via PointerField.declare(feature_space=...)."
+                f"metadata key, and its name does not match any registered feature "
+                f"space. Open with an explicit cell_schema or re-create the atlas with "
+                f"a schema that uses PointerField.declare(feature_space=...)."
             )
-        feature_space = fs_bytes.decode("utf-8")
         spec = get_spec(feature_space)
         if pointer_kind is not spec.pointer_kind:
             raise TypeError(
