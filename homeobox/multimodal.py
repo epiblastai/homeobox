@@ -29,11 +29,11 @@ class MultimodalResult:
     obs
         Shared cell metadata aligned to ALL queried cells, indexed by uid.
     mod
-        Per-modality data keyed by feature space name. Each value contains
-        only the cells where ``present[fs]`` is True.
+        Per-modality data keyed by pointer-field attribute name (``field_name``).
+        Each value contains only the cells where ``present[field_name]`` is True.
     present
         Boolean masks of shape ``(n_cells,)`` indicating which cells have
-        each modality.
+        each modality, keyed by ``field_name``.
     """
 
     obs: pd.DataFrame
@@ -45,11 +45,11 @@ class MultimodalResult:
         """Total number of cells across all modalities."""
         return len(self.obs)
 
-    def __getitem__(self, feature_space: str) -> "ad.AnnData | FragmentResult | np.ndarray":
-        return self.mod[feature_space]
+    def __getitem__(self, field_name: str) -> "ad.AnnData | FragmentResult | np.ndarray":
+        return self.mod[field_name]
 
-    def __contains__(self, feature_space: str) -> bool:
-        return feature_space in self.mod
+    def __contains__(self, field_name: str) -> bool:
+        return field_name in self.mod
 
     def __repr__(self) -> str:
         import anndata as ad

@@ -293,7 +293,7 @@ During ingestion, `add_from_anndata` handles layout creation internally. The und
 from homeobox.ingestion import add_from_anndata
 
 atlas.optimize()  # assigns global_index to new features
-add_from_anndata(atlas, adata, feature_space="gene_expression",
+add_from_anndata(atlas, adata, field_name="gene_expression",
                  zarr_layer="counts", dataset_record=record)
 ```
 

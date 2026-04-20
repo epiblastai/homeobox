@@ -12,7 +12,7 @@ Beyond those two user-extensible families, homeobox maintains several internal t
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema,
-    SparseZarrPointer, DenseZarrPointer,
+    SparseZarrPointer, DenseZarrPointer, PointerField,
     DatasetRecord, FeatureLayout, AtlasVersionRecord,
 )
 ```
@@ -41,14 +41,12 @@ classDiagram
         +str ensembl_id
     }
     class SparseZarrPointer {
-        +str feature_space
         +str zarr_group
         +int start
         +int end
         +int zarr_row
     }
     class DenseZarrPointer {
-        +str feature_space
         +str zarr_group
         +int position
     }
@@ -71,7 +69,6 @@ Used for high-dimensional sparse assays — gene expression, chromatin peak coun
 
 | Field | Type | Description |
 |---|---|---|
-| `feature_space` | `str` | Name of the registered feature space this pointer belongs to. |
 | `zarr_group` | `str` | Path to the zarr group within the object store. Matches the `zarr_group` field on the corresponding `DatasetRecord`. |
 | `start` | `int` | Start position into `csr/indices` (inclusive). Derived from the CSR `indptr` at ingest time. |
 | `end` | `int` | End position into `csr/indices` (exclusive). The slice `[start:end]` spans all non-zero entries for this cell. |
@@ -79,7 +76,7 @@ Used for high-dimensional sparse assays — gene expression, chromatin peak coun
 
 `start` and `end` are element positions into the flat `csr/indices` and `csr/layers/*` arrays — not byte offsets. The values come from the zarr group's `indptr` array during ingestion: `start = indptr[row]`, `end = indptr[row + 1]`.
 
-`SparseZarrPointer` validates at construction time that the named `feature_space` is registered with `PointerKind.SPARSE`. Assigning a sparse pointer to a dense feature space raises a `ValueError` immediately.
+The pointer itself does not carry its feature_space — that binding lives on the cell schema via `PointerField.declare(feature_space=...)` and is stamped as Arrow field-level metadata on the column. Kind/spec consistency is validated at class-definition time, not at pointer construction.
 
 ### `DenseZarrPointer`
 
@@ -87,11 +84,10 @@ Used for dense assays — protein abundance vectors, image feature embeddings, i
 
 | Field | Type | Description |
 |---|---|---|
-| `feature_space` | `str` | Name of the registered feature space. |
 | `zarr_group` | `str` | Path to the zarr group within the object store. |
 | `position` | `int` | Row index of this cell in the dense 2-D array (`N_cells × N_features`). |
 
-Like `SparseZarrPointer`, this validates that `feature_space` is registered with `PointerKind.DENSE`.
+Like `SparseZarrPointer`, the feature_space binding lives on the declaring `PointerField`, not on the pointer value.
 
 ### Choosing between sparse and dense
 
@@ -120,33 +116,44 @@ Both `uid` and `dataset_uid` are defined on the base class and should not be red
 
 Pointer fields are the only required additions when subclassing. Each pointer field declares that cells in this atlas may have been measured in the corresponding feature space.
 
-The field name must exactly match a feature space name registered via `register_spec()`. This is checked at class-definition time inside `__init_subclass__`: if a pointer field is declared before its feature space has been registered, a `TypeError` is raised immediately, not at runtime.
-
-Type annotations for pointer fields follow a fixed pattern:
+Each pointer field is declared with `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. The column name is free — it does not have to match the feature_space — so a schema can declare multiple columns in the same feature space (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`).
 
 ```python
-field_name: SparseZarrPointer | None = None   # for sparse feature spaces
-field_name: DenseZarrPointer | None = None    # for dense feature spaces
+field_name: SparseZarrPointer | None = PointerField.declare(feature_space="gene_expression")
+field_name: DenseZarrPointer | None = PointerField.declare(feature_space="image_features")
 ```
 
-The `| None` and `= None` are both required. A cell that was not profiled in a given modality leaves that pointer null; the reconstruction layer treats null pointers as absent data and zero-fills accordingly.
+The `| None` annotation is required so cells that were not profiled in a given modality can leave that pointer null; the reconstruction layer treats null pointers as absent data and zero-fills accordingly.
 
-Two invariants are enforced:
+Three invariants are enforced at class-definition time inside `__init_subclass__`:
 
-1. **At class definition time**: at least one pointer field must be declared. A subclass with no pointer fields raises a `TypeError` immediately.
-2. **At instance creation time**: at least one pointer field must be non-null. A cell row with all null pointers raises a `ValueError` from the model validator.
+1. Every pointer-typed field must be declared via `PointerField.declare(...)`. A raw `= None` default raises `TypeError`.
+2. The declared `feature_space` must already be registered via `register_spec()`.
+3. The annotation kind (sparse vs dense) must match `spec.pointer_kind`.
+
+At least one pointer field must be declared on the subclass, and at least one must be non-null per row (enforced by a model validator at instance creation time).
 
 ### Multimodal example
 
 ```python
-from homeobox.schema import HoxBaseSchema, SparseZarrPointer, DenseZarrPointer
+from homeobox.schema import (
+    HoxBaseSchema, SparseZarrPointer, DenseZarrPointer, PointerField,
+)
 
 class MultimodalCellSchema(HoxBaseSchema):
-    # Pointer fields — names must match registered feature spaces
-    gene_expression: SparseZarrPointer | None = None
-    chromatin_accessibility: SparseZarrPointer | None = None
-    protein_abundance: DenseZarrPointer | None = None
-    image_features: DenseZarrPointer | None = None
+    # Pointer fields — each binds a column name to a registered feature space
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
+    chromatin_accessibility: SparseZarrPointer | None = PointerField.declare(
+        feature_space="chromatin_accessibility"
+    )
+    protein_abundance: DenseZarrPointer | None = PointerField.declare(
+        feature_space="protein_abundance"
+    )
+    image_features: DenseZarrPointer | None = PointerField.declare(
+        feature_space="image_features"
+    )
 
     # Arbitrary obs metadata — any LanceDB-compatible types
     cell_type: str | None = None
@@ -161,10 +168,12 @@ A cell from a CITE-seq experiment might populate `gene_expression` and `protein_
 ### Unimodal example
 
 ```python
-from homeobox.schema import HoxBaseSchema, SparseZarrPointer
+from homeobox.schema import HoxBaseSchema, SparseZarrPointer, PointerField
 
 class CensusCell(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
 
     cell_type: str | None = None
     tissue: str | None = None

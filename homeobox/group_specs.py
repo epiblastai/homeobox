@@ -26,6 +26,8 @@ class PointerKind(str, Enum):
 class ArraySpec(BaseModel):
     """Expected properties of a single zarr array."""
 
+    # TODO: This should have an option for a compression
+    # codec, the default is to use zarr default of zstd
     array_name: str
     dtype_kind: DTypeKind | None = None
     ndim: int | None = None
@@ -34,6 +36,10 @@ class ArraySpec(BaseModel):
 class LayersSpec(BaseModel):
     """Spec for the layers zarr subgroup."""
 
+    # TODO: Write a more detailed docstring
+
+    # TODO: This should have an option for a compression
+    # codec, the default is to use zarr default of zstd
     prefix: str = ""
     uniform_shape: bool = False
     match_shape_of: str | None = None

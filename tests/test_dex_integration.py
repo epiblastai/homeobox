@@ -19,6 +19,7 @@ from homeobox.schema import (
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
 )
 
@@ -32,7 +33,9 @@ class GeneFeatureSchema(FeatureBaseSchema):
 
 
 class DexCellSchema(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
 
 
 class ImageFeatureSchema(FeatureBaseSchema):
@@ -40,7 +43,7 @@ class ImageFeatureSchema(FeatureBaseSchema):
 
 
 class DenseCellSchema(HoxBaseSchema):
-    image_features: DenseZarrPointer | None = None
+    image_features: DenseZarrPointer | None = PointerField.declare(feature_space="image_features")
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +123,7 @@ def dex_atlas(tmp_path):
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=DatasetRecord(
                 dataset_uid=label,
@@ -356,7 +359,7 @@ class TestDexMWUOnDensePath:
             add_from_anndata(
                 atlas,
                 adata,
-                feature_space="image_features",
+                field_name="image_features",
                 zarr_layer="ctrl_standardized",
                 dataset_record=DatasetRecord(
                     dataset_uid=label,

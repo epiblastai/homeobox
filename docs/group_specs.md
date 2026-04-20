@@ -23,7 +23,7 @@ from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, 
 | `SPARSE` | `SparseZarrPointer` | High-dimensional sparse assays: gene expression, chromatin accessibility |
 | `DENSE` | `DenseZarrPointer` | Low-dimensional dense assays: protein panels, image embeddings |
 
-The `PointerKind` declared in the spec must match the pointer field types used in your `HoxBaseSchema` subclass. Constructing a `SparseZarrPointer` against a `DENSE` spec (or vice versa) raises a `ValueError` immediately.
+The `PointerKind` declared in the spec must match the pointer field types used in your `HoxBaseSchema` subclass. If a pointer field's annotation does not match `spec.pointer_kind` (e.g. a `SparseZarrPointer` column declared with `PointerField.declare(feature_space=...)` pointing at a `DENSE` spec), `HoxBaseSchema.__init_subclass__` raises `TypeError` at class-definition time.
 
 ### ArraySpec
 

@@ -29,6 +29,7 @@ from homeobox.schema import (
     FeatureBaseSchema,
     FeatureLayout,
     HoxBaseSchema,
+    PointerField,
 )
 from homeobox.util import sql_escape
 
@@ -150,6 +151,11 @@ class RaggedAtlas:
         self._cell_schema = cell_schema
         self._root = root
         self._store = root.store.store
+        # Pointer fields are keyed by the Python attribute name on the schema
+        # class (``field_name``), which is unique per class. Multiple keys may
+        # share the same ``feature_space`` when a schema declares several
+        # columns in the same modality.
+        self._pointer_fields: dict[str, PointerField]
         if cell_schema is not None:
             self._pointer_fields = _extract_pointer_fields(cell_schema)
         else:
@@ -314,6 +320,14 @@ class RaggedAtlas:
         )
 
     # -- Store helpers ------------------------------------------------------
+
+    def _pointer_fields_for(self, feature_space: str) -> list[PointerField]:
+        """Return all pointer fields that reference *feature_space*.
+
+        A schema may declare multiple pointer columns in the same feature
+        space (e.g. ``cycle1_image_tiles``, ``cycle2_image_tiles``).
+        """
+        return [pf for pf in self._pointer_fields.values() if pf.feature_space == feature_space]
 
     def _get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
         """Return (cached) GroupReader for the given zarr_group + feature_space.

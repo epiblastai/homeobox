@@ -17,6 +17,7 @@ from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
     HoxBaseSchema,
+    PointerField,
     SparseZarrPointer,
 )
 
@@ -30,7 +31,9 @@ class GeneFeatureSchema(FeatureBaseSchema):
 
 
 class TestCellSchema(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = None
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +89,7 @@ class TestSnapshot:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -101,7 +104,7 @@ class TestSnapshot:
         add_from_anndata(
             atlas,
             adata1,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
@@ -111,7 +114,7 @@ class TestSnapshot:
         add_from_anndata(
             atlas,
             adata2,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
@@ -125,7 +128,7 @@ class TestSnapshot:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -135,7 +138,7 @@ class TestSnapshot:
         add_from_anndata(
             atlas,
             adata2,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
@@ -201,7 +204,7 @@ class TestListVersions:
         add_from_anndata(
             atlas,
             adata1,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
@@ -211,7 +214,7 @@ class TestListVersions:
         add_from_anndata(
             atlas,
             adata2,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
@@ -228,7 +231,7 @@ class TestListVersions:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -246,7 +249,7 @@ class TestCheckout:
         add_from_anndata(
             atlas,
             adata1,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
@@ -256,7 +259,7 @@ class TestCheckout:
         add_from_anndata(
             atlas,
             adata2,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
@@ -277,7 +280,7 @@ class TestCheckout:
         add_from_anndata(
             atlas,
             adata1,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
@@ -287,7 +290,7 @@ class TestCheckout:
         add_from_anndata(
             atlas,
             adata2,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
@@ -308,7 +311,7 @@ class TestCheckout:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -329,7 +332,7 @@ class TestCheckout:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -373,7 +376,7 @@ class TestSchemalessCheckout:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -420,7 +423,7 @@ class TestStorelessCheckout:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -438,7 +441,7 @@ class TestStorelessCheckout:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -467,7 +470,7 @@ class TestIngestionGuard:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -483,7 +486,7 @@ class TestIngestionGuard:
             add_from_anndata(
                 checked,
                 adata2,
-                feature_space="gene_expression",
+                field_name="gene_expression",
                 zarr_layer="counts",
                 dataset_record=_ds(adata2, "ds2/gene_expression"),
             )
@@ -498,7 +501,7 @@ class TestOpenDefaults:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
@@ -522,7 +525,7 @@ class TestBackwardCompat:
         add_from_anndata(
             atlas,
             adata,
-            feature_space="gene_expression",
+            field_name="gene_expression",
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )

@@ -9,7 +9,7 @@ if TYPE_CHECKING:
 
     from homeobox.atlas import RaggedAtlas
     from homeobox.group_specs import ZarrGroupSpec
-    from homeobox.obs_alignment import PointerFieldInfo
+    from homeobox.obs_alignment import PointerField
 
 
 @runtime_checkable
@@ -20,11 +20,14 @@ class Reconstructor(Protocol):
     for a single feature space and assembles an AnnData object.
     """
 
+    # TODO: Not all modalities produce an AnnData naturally (e.g., images)
+    # Currently we are bypassing this and leaving is as NotImplemented in some
+    # reconstructors, in favor of another method like `as_array` or `as_fragments`.
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
         cells_pl: "pl.DataFrame",
-        pf: "PointerFieldInfo",
+        pf: "PointerField",
         spec: "ZarrGroupSpec",
         layer_overrides: "list[str] | None" = None,
         feature_join: "Literal['union', 'intersection']" = "union",

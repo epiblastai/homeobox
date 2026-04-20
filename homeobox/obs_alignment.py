@@ -4,98 +4,58 @@ Used at both ingestion time and atlas query time to validate and align
 AnnData obs DataFrames against a HoxBaseSchema.
 """
 
-import dataclasses
-from types import UnionType
-from typing import Union, get_args, get_origin
-
 import anndata as ad
 import pandas as pd
 import pyarrow as pa
 
-from homeobox.group_specs import PointerKind, get_spec
-from homeobox.schema import AUTO_FIELDS, DenseZarrPointer, HoxBaseSchema, SparseZarrPointer
-
-# ---------------------------------------------------------------------------
-# PointerFieldInfo — metadata about a schema's pointer fields
-# ---------------------------------------------------------------------------
-
-
-@dataclasses.dataclass(frozen=True)
-class PointerFieldInfo:
-    """Metadata extracted from a single pointer field on a cell schema.
-
-    Attributes
-    ----------
-    field_name:
-        The attribute name on the schema class (e.g. ``"gene_expression"``).
-        By convention this doubles as the feature space name.
-    feature_space:
-        The feature space this pointer references (e.g. ``"gene_expression"``).
-        Used to look up the matching ``GroupSpec`` via ``get_spec()``.
-    pointer_kind:
-        Whether the feature data is stored as a sparse or dense zarr array.
-        Must agree with what the registered ``GroupSpec`` expects.
-    pointer_type:
-        The concrete pointer class — either ``SparseZarrPointer`` or
-        ``DenseZarrPointer``.
-    """
-
-    field_name: str
-    feature_space: str
-    pointer_kind: PointerKind
-    pointer_type: type  # SparseZarrPointer or DenseZarrPointer
+from homeobox.group_specs import PointerKind, get_spec, registered_feature_spaces
+from homeobox.schema import (
+    AUTO_FIELDS,
+    POINTER_FEATURE_SPACE_METADATA_KEY,
+    HoxBaseSchema,
+    PointerField,
+    SparseZarrPointer,
+    _iter_pointer_annotations,
+    _read_pointer_json_schema_extra,
+)
 
 
+# TODO: _infer_pointer_fields_from_arrow and _extract_pointer_fields have quite a bit in common.
+# They are distinct, but might we consolidate them a bit. There's also substantial overlap
+# with `HoxBaseSchema.__init_subclass__`
 def _extract_pointer_fields(
     schema_cls: type[HoxBaseSchema],
-) -> dict[str, PointerFieldInfo]:
-    """Introspect a schema class and return info for each pointer field.
+) -> dict[str, PointerField]:
+    """Introspect a schema class and return :class:`PointerField` for each pointer field.
 
-    Pointer fields (``SparseZarrPointer`` / ``DenseZarrPointer``) are not
-    obs metadata — they are references to external zarr arrays that hold the
-    actual feature matrices.  They must be excluded from obs alignment logic
-    and tracked separately so the atlas knows which feature spaces a schema
-    supports.
-
-    We can't rely on the raw annotation alone because:
-
-    * Fields may be optional (``SparseZarrPointer | None``), requiring union
-      unpacking to find the concrete pointer type.
-    * We need to verify that the pointer kind (sparse vs. dense) matches what
-      the registered ``GroupSpec`` for that feature space expects, and this
-      cross-check lives here rather than on the pointer class itself.
+    Reads the ``json_schema_extra`` that :meth:`PointerField.declare` attaches
+    to each pydantic field. Keys are the Python attribute names — which may
+    differ from the feature_space value carried by each pointer — so schemas
+    can declare multiple columns in the same feature space.
     """
-    result: dict[str, PointerFieldInfo] = {}
-    for name, annotation in schema_cls.__annotations__.items():
-        if name == "uid":
-            continue
-        origin = get_origin(annotation)
-        if origin is Union or isinstance(annotation, UnionType):
-            inner_types = get_args(annotation)
-        else:
-            inner_types = (annotation,)
-
-        for t in inner_types:
-            if t is type(None):
-                continue
-            if t is SparseZarrPointer or t is DenseZarrPointer:
-                # Convention: field name == feature space name.
-                # Enforced at class-definition time in HoxBaseSchema.__init_subclass__.
-                feature_space = name
-                spec = get_spec(feature_space)
-                pointer_kind = PointerKind.SPARSE if t is SparseZarrPointer else PointerKind.DENSE
-                if pointer_kind is not spec.pointer_kind:
-                    raise TypeError(
-                        f"Field '{name}' uses {pointer_kind.value} pointer but "
-                        f"feature space '{feature_space}' requires {spec.pointer_kind.value}"
-                    )
-                result[name] = PointerFieldInfo(
-                    field_name=name,
-                    feature_space=feature_space,
-                    pointer_kind=pointer_kind,
-                    pointer_type=t,
-                )
-                break
+    result: dict[str, PointerField] = {}
+    for name, pointer_type in _iter_pointer_annotations(schema_cls):
+        extra = _read_pointer_json_schema_extra(schema_cls, name) or {}
+        feature_space = extra.get("feature_space")
+        if not feature_space:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: pointer field missing feature_space "
+                f"metadata; declare with PointerField.declare(feature_space=...)"
+            )
+        pointer_kind = (
+            PointerKind.SPARSE if pointer_type is SparseZarrPointer else PointerKind.DENSE
+        )
+        spec = get_spec(feature_space)
+        if pointer_kind is not spec.pointer_kind:
+            raise TypeError(
+                f"Field '{name}' uses {pointer_kind.value} pointer but "
+                f"feature space '{feature_space}' requires {spec.pointer_kind.value}"
+            )
+        result[name] = PointerField(
+            field_name=name,
+            feature_space=feature_space,
+            pointer_kind=pointer_kind,
+        )
     return result
 
 
@@ -103,46 +63,66 @@ def _extract_pointer_fields(
 # Arrow-schema-based pointer inference (schema-less read path)
 # ---------------------------------------------------------------------------
 
-_SPARSE_SUBFIELDS = {"feature_space", "zarr_group", "start", "end", "zarr_row"}
-_DENSE_SUBFIELDS = {"feature_space", "zarr_group", "position"}
+_SPARSE_SUBFIELDS = {"zarr_group", "start", "end", "zarr_row"}
+_DENSE_SUBFIELDS = {"zarr_group", "position"}
 
 
+# TODO: Move this to `schema.py`?
 def _infer_pointer_fields_from_arrow(
     arrow_schema: pa.Schema,
-) -> dict[str, PointerFieldInfo]:
+) -> dict[str, PointerField]:
     """Infer pointer fields from a cell table's Arrow schema.
 
     Detects struct columns whose sub-field names match the signatures of
-    ``SparseZarrPointer`` or ``DenseZarrPointer``.  This allows read-path
-    code to work without the original Python schema class.
+    ``SparseZarrPointer`` or ``DenseZarrPointer``, then reads the declared
+    feature_space from Arrow field metadata (key
+    :data:`POINTER_FEATURE_SPACE_METADATA_KEY`) stamped by
+    :meth:`HoxBaseSchema.to_arrow_schema`.
     """
-    result: dict[str, PointerFieldInfo] = {}
+    result: dict[str, PointerField] = {}
     for i in range(len(arrow_schema)):
         field = arrow_schema.field(i)
         if not pa.types.is_struct(field.type):
             continue
         sub_names = {field.type.field(j).name for j in range(field.type.num_fields)}
-        if sub_names == _SPARSE_SUBFIELDS:
+        # Subset match so legacy atlases (which carry an extra ``feature_space``
+        # subfield per row) are still recognised as pointer structs.
+        if _SPARSE_SUBFIELDS <= sub_names:
             pointer_kind = PointerKind.SPARSE
-            pointer_type = SparseZarrPointer
-        elif sub_names == _DENSE_SUBFIELDS:
+        elif _DENSE_SUBFIELDS <= sub_names:
             pointer_kind = PointerKind.DENSE
-            pointer_type = DenseZarrPointer
         else:
             continue
 
-        feature_space = field.name
+        metadata = field.metadata or {}
+        fs_bytes = metadata.get(POINTER_FEATURE_SPACE_METADATA_KEY)
+        if fs_bytes is not None:
+            feature_space = fs_bytes.decode("utf-8")
+        elif field.name in registered_feature_spaces():
+            # Legacy-atlas fallback: tables written before PointerField.declare
+            # existed carry no per-field metadata, but the old convention required
+            # field_name == feature_space. Fall back to that only if it resolves
+            # to a registered spec.
+            feature_space = field.name
+        else:
+            raise TypeError(
+                f"Arrow field '{field.name}' looks like a {pointer_kind.value} pointer "
+                f"but is missing the '{POINTER_FEATURE_SPACE_METADATA_KEY.decode()}' "
+                f"metadata key, and its name does not match any registered feature "
+                f"space. Open with an explicit cell_schema or re-create the atlas with "
+                f"a schema that uses PointerField.declare(feature_space=...)."
+            )
         spec = get_spec(feature_space)
         if pointer_kind is not spec.pointer_kind:
             raise TypeError(
-                f"Arrow field '{feature_space}' looks like a {pointer_kind.value} pointer "
-                f"but the registered spec requires {spec.pointer_kind.value}"
+                f"Arrow field '{field.name}' (feature_space='{feature_space}') is a "
+                f"{pointer_kind.value} pointer but the registered spec requires "
+                f"{spec.pointer_kind.value}"
             )
-        result[feature_space] = PointerFieldInfo(
-            field_name=feature_space,
+        result[field.name] = PointerField(
+            field_name=field.name,
             feature_space=feature_space,
             pointer_kind=pointer_kind,
-            pointer_type=pointer_type,
         )
     return result
 

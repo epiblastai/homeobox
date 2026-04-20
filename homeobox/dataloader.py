@@ -108,20 +108,21 @@ def _build_sparse_group_readers(
 def _build_sparse_modality_data(
     atlas: "RaggedAtlas",
     cells_indexed: pl.DataFrame,
+    # TODO: type these
     pf,
     spec,
-    fs: str,
     layer: str,
     wanted_globals_for_fs: np.ndarray | None,
     n_cells: int,
 ) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
-    """Build ``_ModalityData`` for a sparse feature space modality.
+    """Build ``_ModalityData`` for a sparse pointer-field modality.
 
     Returns ``(filtered_cells, groups_np, modality_data)`` where
     *filtered_cells* is the DataFrame after empty-cell removal (with
     internal columns added), and *groups_np* is the per-present-cell
     integer group ID array.
     """
+    fs = pf.feature_space
     if len(spec.required_arrays) != 1:
         raise NotImplementedError(
             f"Sparse modality requires exactly 1 index array, "
@@ -172,17 +173,18 @@ def _build_sparse_modality_data(
 def _build_dense_modality_data(
     atlas: "RaggedAtlas",
     cells_indexed: pl.DataFrame,
+    # TODO: Should type these
     pf,
     spec,
-    fs: str,
     layer: str,
     n_cells: int,
 ) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
-    """Build ``_ModalityData`` for a dense feature space modality.
+    """Build ``_ModalityData`` for a dense pointer-field modality.
 
     Returns ``(filtered_cells, groups_np, modality_data)`` where
     *filtered_cells* is the DataFrame after empty-cell removal.
     """
+    fs = pf.feature_space
     filtered, groups = _prepare_dense_cells(cells_indexed, pf)
     groups = sorted(groups)
 
@@ -437,6 +439,9 @@ async def _take_group_sparse(
     return remapped, flat_values, lengths
 
 
+# TODO: This is assuming that just because a pointer is sparse, that it also
+# has layers. This is true for gene_expression but not necessarily a fundamental
+# feature of sparse data.
 async def _take_sparse_from_pointers(
     groups_np: np.ndarray,
     starts: np.ndarray,
@@ -772,11 +777,11 @@ class CellDataset(_AsyncDataset):
     cells_pl:
         Polars DataFrame of cell records (from a query). Must include
         ``_rowid`` column (via ``with_row_id(True)``).
-    feature_space:
-        Which feature space to read.
+    field_name:
+        Pointer-field attribute name on the cell schema.
     layer:
-        Which layer to read within the feature space.  May be ``None``
-        for layer-less specs such as ``image_tiles``.
+        Which layer to read within the pointer field's feature space.
+        May be ``""`` for layer-less specs such as ``image_tiles``.
     metadata_columns:
         Obs column names to include as metadata on each batch.
     wanted_globals:
@@ -790,13 +795,15 @@ class CellDataset(_AsyncDataset):
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        feature_space: str = "gene_expression",
+        # TODO: Shouldn't default this
+        field_name: str = "gene_expression",
+        # TODO: Should be `layer: str | None = None`
         layer: str = "counts",
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
     ) -> None:
-        pf = atlas._pointer_fields[feature_space]
-        spec = get_spec(feature_space)
+        pf = atlas._pointer_fields[field_name]
+        spec = get_spec(pf.feature_space)
 
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
         # Workers reconstruct the zarr root lazily from this store.
@@ -812,7 +819,6 @@ class CellDataset(_AsyncDataset):
                 cells_indexed,
                 pf,
                 spec,
-                feature_space,
                 layer,
                 wanted_globals,
                 cells_pl.height,
@@ -823,7 +829,6 @@ class CellDataset(_AsyncDataset):
                 cells_indexed,
                 pf,
                 spec,
-                feature_space,
                 layer,
                 cells_pl.height,
             )
@@ -832,7 +837,7 @@ class CellDataset(_AsyncDataset):
         self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
         self._groups_np = groups_np
         self._n_cells = len(self._row_ids)
-        self._pointer_field = feature_space
+        self._pointer_field = field_name
         self._metadata_columns = metadata_columns
         self._lance_info = (
             atlas._db_uri,
@@ -981,15 +986,15 @@ class MultimodalCellDataset(_AsyncDataset):
     cells_pl:
         Polars DataFrame of cell records (from a query). Must include
         ``_rowid`` column.
-    feature_spaces:
-        Ordered list of feature spaces.  The first is the "primary" space
-        used to derive :attr:`groups_np` for the sampler.
+    field_names:
+        Ordered list of pointer-field attribute names. The first is the
+        "primary" field used to derive :attr:`groups_np` for the sampler.
     layers:
-        ``{feature_space: layer_name}`` mapping.
+        ``{field_name: layer_name}`` mapping.
     metadata_columns:
         Obs column names to include as metadata on each batch.
     wanted_globals:
-        Optional ``{feature_space: sorted int64 array}`` of global feature
+        Optional ``{field_name: sorted int64 array}`` of global feature
         indices to keep per modality.
     """
 
@@ -997,12 +1002,13 @@ class MultimodalCellDataset(_AsyncDataset):
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
-        feature_spaces: list[str],
+        field_names: list[str],
+        # TODO: layers should be dict[str, str | None]
         layers: dict[str, str],
         metadata_columns: list[str] | None = None,
         wanted_globals: dict[str, np.ndarray] | None = None,
     ) -> None:
-        self._feature_spaces = feature_spaces
+        self._field_names = field_names
         self._n_cells = cells_pl.height
         self._metadata_columns = metadata_columns
 
@@ -1017,7 +1023,8 @@ class MultimodalCellDataset(_AsyncDataset):
         # Store row IDs for lazy loading
         self._row_ids = cells_pl["_rowid"].to_numpy().astype(np.uint64)
 
-        # Map feature_space -> pointer field name for lance take
+        # Map field_name -> pointer field name (identical here, kept for parity
+        # with lance take() call shape).
         self._pointer_fields: dict[str, str] = {}
 
         # Attach row indices so we can track original positions after per-modality filters
@@ -1026,38 +1033,39 @@ class MultimodalCellDataset(_AsyncDataset):
         modality_data: dict[str, _ModalityData] = {}
         modality_groups_np: dict[str, np.ndarray] = {}
 
-        for fs in feature_spaces:
-            pf = atlas._pointer_fields[fs]
-            self._pointer_fields[fs] = pf.field_name
-            spec = get_spec(fs)
-            layer = layers.get(fs, "counts")
+        for fn in field_names:
+            pf = atlas._pointer_fields[fn]
+            self._pointer_fields[fn] = pf.field_name
+            spec = get_spec(pf.feature_space)
+            layer = layers.get(fn, "counts")
 
             if spec.pointer_kind is PointerKind.SPARSE:
-                wg = wanted_globals.get(fs) if wanted_globals is not None else None
-                _, groups_np, modality_data[fs] = _build_sparse_modality_data(
-                    atlas, cells_indexed, pf, spec, fs, layer, wg, self._n_cells
+                wg = wanted_globals.get(fn) if wanted_globals is not None else None
+                _, groups_np, modality_data[fn] = _build_sparse_modality_data(
+                    atlas, cells_indexed, pf, spec, layer, wg, self._n_cells
                 )
             else:
-                _, groups_np, modality_data[fs] = _build_dense_modality_data(
-                    atlas, cells_indexed, pf, spec, fs, layer, self._n_cells
+                _, groups_np, modality_data[fn] = _build_dense_modality_data(
+                    atlas, cells_indexed, pf, spec, layer, self._n_cells
                 )
-            modality_groups_np[fs] = groups_np
+            modality_groups_np[fn] = groups_np
 
         self._modality_data = modality_data
 
-        # groups_np for sampler: derived from the primary (first) feature space.
+        # TODO: Clean this up when when we remove bucketing on the sampler
+        # groups_np for sampler: derived from the primary (first) field.
         # Cells absent from the primary modality get a sentinel group id
         # (= len(unique_groups)), which is a valid bucket for the sampler.
-        primary_fs = feature_spaces[0]
-        primary_mod = modality_data[primary_fs]
+        primary_fn = field_names[0]
+        primary_mod = modality_data[primary_fn]
         n_primary_groups = len(primary_mod.unique_groups)
         self._groups_np = np.full(self._n_cells, n_primary_groups, dtype=np.int32)
         if primary_mod.present_mask.any():
             primary_present = np.where(primary_mod.present_mask)[0]
             mod_positions = primary_mod.cell_positions[primary_present]
-            self._groups_np[primary_present] = modality_groups_np[primary_fs][mod_positions]
+            self._groups_np[primary_present] = modality_groups_np[primary_fn][mod_positions]
 
-        self._n_features = {fs: modality_data[fs].n_features for fs in feature_spaces}
+        self._n_features = {fn: modality_data[fn].n_features for fn in field_names}
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
