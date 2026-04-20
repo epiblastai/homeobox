@@ -48,10 +48,6 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     reconstructor=DenseReconstructor(),
 )
 
-# ---------------------------------------------------------------------------
-# Protein abundance (CITE-seq / ADT)
-# ---------------------------------------------------------------------------
-
 PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     feature_space="protein_abundance",
     pointer_kind=PointerKind.DENSE,
@@ -64,9 +60,6 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     reconstructor=DenseReconstructor(),
 )
 
-# ---------------------------------------------------------------------------
-# Chromatin accessibility (cell-sorted fragments)
-# ---------------------------------------------------------------------------
 
 CHROMATIN_ACCESSIBILITY_SPEC = ZarrGroupSpec(
     feature_space="chromatin_accessibility",
@@ -83,9 +76,6 @@ CHROMATIN_ACCESSIBILITY_SPEC = ZarrGroupSpec(
     reconstructor=IntervalReconstructor(),
 )
 
-# ---------------------------------------------------------------------------
-# Image tiles
-# ---------------------------------------------------------------------------
 
 IMAGE_TILES_SPEC = ZarrGroupSpec(
     feature_space="image_tiles",
@@ -98,11 +88,25 @@ IMAGE_TILES_SPEC = ZarrGroupSpec(
 )
 
 
+EMBEDDING_SPEC = ZarrGroupSpec(
+    feature_space="embedding",
+    pointer_kind=PointerKind.DENSE,
+    # The var_df for embeddings is trivial dimensionality
+    has_var_df=False,
+    layers=LayersSpec(
+        uniform_shape=True,
+        required=["raw"],
+        allowed=["ctrl_standardized", "pca_whitened"],
+    ),
+    reconstructor=DenseReconstructor(),
+)
+
 for _spec in [
     GENE_EXPRESSION_SPEC,
     IMAGE_FEATURES_SPEC,
     PROTEIN_ABUNDANCE_SPEC,
     CHROMATIN_ACCESSIBILITY_SPEC,
     IMAGE_TILES_SPEC,
+    EMBEDDING_SPEC,
 ]:
     register_spec(_spec)
