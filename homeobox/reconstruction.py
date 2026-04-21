@@ -517,16 +517,23 @@ class DenseReconstructor:
         spec:
             Zarr group spec for the feature space.
         array_name:
-            Zarr array to read within each group.  Defaults to the first
-            entry in ``spec.required_arrays``.
+            Zarr array to read within each group. Defaults to
+            ``"{layers_path}/{layers.required[0]}"`` for layer-backed specs
+            (e.g. ``embedding``, ``image_features``), else the first entry
+            in ``spec.required_arrays`` for plain dense specs (e.g.
+            ``image_tiles``).
         """
         if array_name is None:
-            if not spec.required_arrays:
+            if spec.layers is not None and spec.layers.required:
+                layers_path = spec.find_layers_path()
+                array_name = f"{layers_path}/{spec.layers.required[0]}"
+            elif spec.required_arrays:
+                array_name = spec.required_arrays[0].array_name
+            else:
                 raise ValueError(
-                    f"Spec for '{pf.feature_space}' has no required_arrays; "
-                    "pass array_name explicitly"
+                    f"Spec for '{pf.feature_space}' has no required_arrays "
+                    "and no required layers; pass array_name explicitly"
                 )
-            array_name = spec.required_arrays[0].array_name
 
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
 
