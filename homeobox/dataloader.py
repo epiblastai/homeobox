@@ -638,6 +638,11 @@ async def _fetch_modality_from_pointers(
     """Dispatch to sparse or dense fetch using pointer arrays."""
     if mod_data.kind is PointerKind.SPARSE:
         return await _take_sparse_from_pointers(groups_np, starts, ends, mod_data)
+    if mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+        raise NotImplementedError(
+            "DiscreteSpatialPointer is not supported by the homeobox dataloader; "
+            "implement a custom dataset/fetch path."
+        )
     return await _take_dense_from_pointers(groups_np, starts, ends, mod_data)
 
 
@@ -683,6 +688,11 @@ async def _take_multimodal(
     empty_modalities: dict[str, SparseBatch | DenseBatch] = {}
 
     for fs, mod_data in modality_data.items():
+        if mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+            raise NotImplementedError(
+                "DiscreteSpatialPointer is not supported by the homeobox dataloader; "
+                "implement a custom dataset/fetch path."
+            )
         pf_name = pointer_fields[fs]
 
         # Extract pointers for ALL batch cells for this modality
@@ -813,6 +823,11 @@ class CellDataset(_AsyncDataset):
         # Build modality data (filters empty cells, builds remaps & readers)
         cells_indexed = cells_pl.with_row_index("_orig_idx")
 
+        if spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            raise NotImplementedError(
+                "DiscreteSpatialPointer is not supported by the homeobox dataloader; "
+                "implement a custom dataset/fetch path."
+            )
         if spec.pointer_kind is PointerKind.SPARSE:
             filtered, groups_np, self._mod_data = _build_sparse_modality_data(
                 atlas,
@@ -903,6 +918,11 @@ class CellDataset(_AsyncDataset):
         take_result = _reorder_take_result(take_result, batch_row_ids)
 
         # 3. Extract pointer data and dispatch async read
+        if self._pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            raise NotImplementedError(
+                "DiscreteSpatialPointer is not supported by the homeobox dataloader; "
+                "implement a custom dataset/fetch path."
+            )
         if self._pointer_kind is PointerKind.SPARSE:
             groups_np, starts, ends = _extract_pointers_sparse(
                 take_result, self._pointer_field, self._mod_data.unique_groups
@@ -1039,6 +1059,11 @@ class MultimodalCellDataset(_AsyncDataset):
             spec = get_spec(pf.feature_space)
             layer = layers.get(fn, "counts")
 
+            if spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+                raise NotImplementedError(
+                    "DiscreteSpatialPointer is not supported by the homeobox "
+                    "dataloader; implement a custom dataset/fetch path."
+                )
             if spec.pointer_kind is PointerKind.SPARSE:
                 wg = wanted_globals.get(fn) if wanted_globals is not None else None
                 _, groups_np, modality_data[fn] = _build_sparse_modality_data(

@@ -21,6 +21,7 @@ class DTypeKind(str, Enum):
 class PointerKind(str, Enum):
     SPARSE = "sparse"
     DENSE = "dense"
+    DISCRETE_SPATIAL = "discrete_spatial"
 
 
 class ArraySpec(BaseModel):

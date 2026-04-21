@@ -411,6 +411,15 @@ def _build_cell_arrow_table(
                 ],
                 names=["zarr_group", "start", "end", "zarr_row"],
             )
+        elif pf.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            columns[pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([[]] * n_cells, type=pa.list_(pa.int64())),
+                    pa.array([[]] * n_cells, type=pa.list_(pa.int64())),
+                ],
+                names=["zarr_group", "min_corner", "max_corner"],
+            )
         else:
             columns[pf_name] = pa.StructArray.from_arrays(
                 [
@@ -760,6 +769,12 @@ def add_anndata_batch(
     # I would suggest a `coerce_dtype` argument that is default False. We raise
     # a hard error when it fails. If `coerce_dtype` is True then we validate that
     # the conversion works without loss (convert then np.isclose?)
+    if spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+        raise NotImplementedError(
+            "DiscreteSpatialPointer ingestion is not supported in homeobox core; "
+            "build the zarr group and pointer StructArray in client code and use "
+            "add_multimodal_batch to register the cells."
+        )
     if spec.pointer_kind is PointerKind.SPARSE:
         chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
         shard_shape = shard_shape or (_SHARD_ELEMS,)
@@ -1163,6 +1178,15 @@ def add_coo_batch(
                     pa.array([0] * n_cells, type=pa.int64()),
                 ],
                 names=["zarr_group", "start", "end", "zarr_row"],
+            )
+        elif other_pf.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_cells, type=pa.string()),
+                    pa.array([[]] * n_cells, type=pa.list_(pa.int64())),
+                    pa.array([[]] * n_cells, type=pa.list_(pa.int64())),
+                ],
+                names=["zarr_group", "min_corner", "max_corner"],
             )
         else:
             columns[other_pf_name] = pa.StructArray.from_arrays(

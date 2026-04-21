@@ -29,6 +29,7 @@ __all__ = [
     "PointerField",
     "SparseZarrPointer",
     "DenseZarrPointer",
+    "DiscreteSpatialPointer",
     # Fragments
     "FragmentResult",
     "IntervalReconstructor",
@@ -65,6 +66,7 @@ def __getattr__(name: str):
         "PointerField": "homeobox.schema",
         "SparseZarrPointer": "homeobox.schema",
         "DenseZarrPointer": "homeobox.schema",
+        "DiscreteSpatialPointer": "homeobox.schema",
         "FragmentResult": "homeobox.fragments.reconstruction",
         "IntervalReconstructor": "homeobox.fragments.reconstruction",
         "FragmentCounter": "homeobox.fragments.peak_matrix",
