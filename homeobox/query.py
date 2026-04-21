@@ -484,14 +484,14 @@ class AtlasQuery:
             The raw NumPy array and a DataFrame of cell metadata for the
             cells present in this modality.
         """
-        from homeobox.reconstruction import DenseReconstructor, _build_obs_df
+        from homeobox.reconstruction import _build_obs_df
 
         pf = self._atlas._pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
-        if not isinstance(spec.reconstructor, DenseReconstructor):
+        if not hasattr(spec.reconstructor, "as_array"):
             raise TypeError(
                 f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
-                f"DenseReconstructor (got {type(spec.reconstructor).__name__})"
+                f"a reconstructor with 'as_array', (got {type(spec.reconstructor).__name__})"
             )
 
         cells_pl = self._materialize_cells()
