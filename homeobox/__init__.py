@@ -4,6 +4,7 @@ from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
     CellDataset,
     DenseBatch,
+    DiscreteSpatialBatch,
     MultimodalBatch,
     MultimodalCellDataset,
     SparseBatch,
@@ -36,6 +37,7 @@ __all__ = [
     "MultimodalCellDataset",
     "SparseBatch",
     "DenseBatch",
+    "DiscreteSpatialBatch",
     "MultimodalBatch",
     "make_loader",
     "sparse_to_dense_collate",

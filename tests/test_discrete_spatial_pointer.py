@@ -1,8 +1,9 @@
 """Tests for the additive `DiscreteSpatialPointer` pointer type.
 
-Core learns the type at the schema level only: LanceModel + enum value +
-annotation/arrow inference + empty-fill + validation. The read/write paths
-in core explicitly raise NotImplementedError — external code owns those.
+Core learns the type at the schema level *and* supports the read path in
+:class:`MultimodalCellDataset` (via :class:`DiscreteSpatialBatch`). The
+single-modality :class:`CellDataset`, ingestion, and DEx still raise
+NotImplementedError — external code owns those.
 """
 
 import os
@@ -16,7 +17,7 @@ import scipy.sparse as sp
 from pydantic import ValidationError
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.dataloader import CellDataset, MultimodalCellDataset
+from homeobox.dataloader import CellDataset, DiscreteSpatialBatch, MultimodalCellDataset
 from homeobox.dex._dex import _compare, _extract_matrix, dex
 from homeobox.group_specs import (
     LayersSpec,
@@ -163,8 +164,22 @@ def populated_atlas(tmp_path):
     min_corners = [[0], [5], [10]]
     max_corners = [[2], [7], [15]]
     dataset_uid = make_uid()
-    # Validation on reopen expects the zarr group to exist on disk.
-    atlas._root.create_group("ds0/boxes")
+    # Create a real (total_rows, n_features) zarr array at layers/raw so the
+    # MultimodalCellDataset read path has something to slice into.
+    n_features = 4
+    total_rows = 15  # must cover max_corner[0] across all pointers
+    _grp = atlas._root.create_group("ds0/boxes")
+    _layers = _grp.create_group("layers")
+    _arr = _layers.create_array(
+        "raw",
+        shape=(total_rows, n_features),
+        chunks=(total_rows, n_features),
+        shards=(total_rows, n_features),
+        dtype=np.float32,
+    )
+    _arr[:] = np.arange(total_rows * n_features, dtype=np.float32).reshape(
+        total_rows, n_features
+    )
     atlas._dataset_table.add(
         pa.Table.from_pylist(
             [
@@ -199,6 +214,19 @@ def populated_atlas(tmp_path):
     return atlas, atlas_dir, store, (min_corners, max_corners)
 
 
+def _expected_slab(
+    min_corners: list[list[int]], max_corners: list[list[int]], n_features: int, i: int
+) -> np.ndarray:
+    """Reconstruct the flat ``[min_corner[0]:max_corner[0], :]`` slab for cell *i*."""
+    lo = min_corners[i][0]
+    hi = max_corners[i][0]
+    total_cols = n_features
+    # mirrors the fixture's writer: np.arange((total_rows, n_features)).
+    return np.arange(lo * total_cols, hi * total_cols, dtype=np.float32).reshape(
+        hi - lo, total_cols
+    )
+
+
 class TestAtlasRoundtrip:
     def test_write_and_read_rows_preserves_corners(self, populated_atlas):
         atlas, _, _, (min_corners, max_corners) = populated_atlas
@@ -219,6 +247,56 @@ class TestAtlasRoundtrip:
         pf = reopened._pointer_fields["boxes"]
         assert pf.pointer_kind is PointerKind.DISCRETE_SPATIAL
         assert pf.feature_space == _DS_FS
+
+
+class TestMultimodalDiscreteSpatialRoundtrip:
+    def test_batch_slabs_match_zarr(self, populated_atlas):
+        atlas, _, _, (min_corners, max_corners) = populated_atlas
+        # Pull cell_type with _rowid so we can sort the requested order back
+        # to the fixture's a/b/c insertion order.
+        cells_pl = (
+            atlas.cell_table.search()
+            .where("boxes.zarr_group != ''")
+            .with_row_id(True)
+            .select(["boxes", "cell_type"])
+            .to_polars()
+        )
+        assert cells_pl.height == len(min_corners)
+
+        ds = MultimodalCellDataset(
+            atlas,
+            cells_pl,
+            field_names=["boxes"],
+            layers={"boxes": "raw"},
+            metadata_columns=["cell_type"],
+        )
+        # Query order on the cell table isn't guaranteed to match our insert
+        # order; sort by cell_type (a/b/c) to align with the fixture's
+        # min_corners/max_corners lists.
+        order = np.argsort(cells_pl["cell_type"].to_numpy())
+        batch = ds.__getitems__(order.tolist())
+
+        assert batch.n_cells == 3
+        assert set(batch.modalities.keys()) == {"boxes"}
+        assert batch.present["boxes"].all()
+
+        sub = batch.modalities["boxes"]
+        assert isinstance(sub, DiscreteSpatialBatch)
+        n_features = sub.n_features
+        assert sub.n_features == 4
+        expected_lengths = [
+            max_corners[i][0] - min_corners[i][0] for i in range(len(min_corners))
+        ]
+        np.testing.assert_array_equal(
+            np.diff(sub.offsets), np.array(expected_lengths, dtype=np.int64)
+        )
+        for i in range(3):
+            lo, hi = int(sub.offsets[i]), int(sub.offsets[i + 1])
+            np.testing.assert_array_equal(
+                sub.data[lo:hi],
+                _expected_slab(min_corners, max_corners, n_features, i),
+            )
+        assert batch.metadata["cell_type"].tolist() == ["a", "b", "c"]
 
 
 # ---------------------------------------------------------------------------
@@ -248,17 +326,6 @@ class TestCoreRaisesNotImplemented:
         cells_pl = atlas.query()._materialize_cells_for_dataset()
         with pytest.raises(NotImplementedError, match="not supported by the homeobox dataloader"):
             CellDataset(atlas, cells_pl, field_name="boxes")
-
-    def test_multimodal_dataset_raises(self, populated_atlas):
-        atlas, _, _, _ = populated_atlas
-        cells_pl = atlas.query()._materialize_cells_for_dataset()
-        with pytest.raises(NotImplementedError, match="not supported by the homeobox dataloader"):
-            MultimodalCellDataset(
-                atlas,
-                cells_pl,
-                field_names=["boxes"],
-                layers={"boxes": "raw"},
-            )
 
     def test_dex_extract_matrix_raises(self):
         adata = ad.AnnData(X=np.zeros((2, 3), dtype=np.float32))
