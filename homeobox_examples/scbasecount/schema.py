@@ -37,7 +37,6 @@ GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
     ],
     layers=LayersSpec(
         prefix="csr",
-        uniform_shape=True,
         match_shape_of="csr/indices",
         required=["Unique"],
         allowed=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],

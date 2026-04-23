@@ -41,7 +41,6 @@ class LayersSpec(BaseModel):
     # TODO: This should have an option for a compression
     # codec, the default is to use zarr default of zstd
     prefix: str = ""
-    uniform_shape: bool = False
     match_shape_of: str | None = None
     required: list[str] = []
     allowed: list[str] = []
@@ -126,7 +125,7 @@ class ZarrGroupSpec(BaseModel):
         if layers_group is not None:
             sub_arrays = {k: v for k, v in layers_group.arrays()}
 
-            if self.layers.uniform_shape and sub_arrays:
+            if sub_arrays:
                 shapes = {name: arr.shape for name, arr in sub_arrays.items()}
                 if len(set(shapes.values())) > 1:
                     errors.append(f"'{layers_path}' arrays have inconsistent shapes: {shapes}")

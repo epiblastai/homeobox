@@ -28,7 +28,6 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     ],
     layers=LayersSpec(
         prefix="csr",
-        uniform_shape=True,
         match_shape_of="csr/indices",
         required=["counts"],
         allowed=["counts", "log_normalized", "tpm"],
@@ -41,7 +40,6 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     layers=LayersSpec(
-        uniform_shape=True,
         required=["ctrl_standardized"],
         allowed=["raw", "log_normalized", "ctrl_standardized"],
     ),
@@ -57,7 +55,6 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     layers=LayersSpec(
-        uniform_shape=True,
         required=["counts"],
         allowed=["counts", "clr_normalized", "dsb_normalized"],
     ),

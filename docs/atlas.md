@@ -75,7 +75,6 @@ LOGNORM_RNA_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,   # each cell stores a row index, not a byte range
     has_var_df=True,                  # this space has a feature registry + _feature_layouts rows
     layers=LayersSpec(
-        uniform_shape=True,
         required=["log_normalized"],
         allowed=["log_normalized"],
     ),
