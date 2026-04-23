@@ -1,4 +1,5 @@
 from enum import Enum
+from typing import Any
 
 import numpy as np
 import zarr
@@ -22,6 +23,10 @@ class ArraySpec(BaseModel):
     array_name: str
     allowed_dtypes: list[np.dtype]
     ndim: int | None = None
+    # Typed as Any because pydantic can't introspect zarr's CompressorsLike
+    # (contains a forward-referenced JSON alias). Pass a value that
+    # zarr.core.array accepts as CompressorsLike — e.g. a Numcodec or None.
+    compressors: Any = None
 
     @field_validator("allowed_dtypes", mode="before")
     @classmethod
@@ -39,8 +44,6 @@ class LayersSpec(BaseModel):
 
     # TODO: Write a more detailed docstring
 
-    # TODO: This should have an option for a compression
-    # codec, the default is to use zarr default of zstd
     prefix: str = ""
     match_shape_of: str | None = None
     required: list[ArraySpec] = []

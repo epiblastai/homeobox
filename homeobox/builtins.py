@@ -6,6 +6,7 @@ user code defines schema subclasses or runs queries.
 
 import numpy as np
 
+from homeobox.codecs.bitpacking import BitpackingCodec
 from homeobox.fragments.reconstruction import IntervalReconstructor
 from homeobox.group_specs import (
     ArraySpec,
@@ -25,14 +26,31 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
-        ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
+        ArraySpec(
+            array_name="csr/indices",
+            ndim=1,
+            allowed_dtypes=[np.uint32],
+            compressors=BitpackingCodec(transform="delta"),
+        ),
     ],
     layers=LayersSpec(
         prefix="csr",
         match_shape_of="csr/indices",
-        required=[ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32])],
+        required=[
+            ArraySpec(
+                array_name="counts",
+                ndim=1,
+                allowed_dtypes=[np.uint32],
+                compressors=BitpackingCodec(transform="none"),
+            ),
+        ],
         allowed=[
-            ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32]),
+            ArraySpec(
+                array_name="counts",
+                ndim=1,
+                allowed_dtypes=[np.uint32],
+                compressors=BitpackingCodec(transform="none"),
+            ),
             ArraySpec(array_name="log_normalized", ndim=1, allowed_dtypes=[np.float32]),
             ArraySpec(array_name="tpm", ndim=1, allowed_dtypes=[np.float32]),
         ],
@@ -86,8 +104,18 @@ CHROMATIN_ACCESSIBILITY_SPEC = ZarrGroupSpec(
     has_var_df=True,
     required_arrays=[
         ArraySpec(array_name="cell_sorted/chromosomes", ndim=1, allowed_dtypes=[np.uint8]),
-        ArraySpec(array_name="cell_sorted/starts", ndim=1, allowed_dtypes=[np.uint32]),
-        ArraySpec(array_name="cell_sorted/lengths", ndim=1, allowed_dtypes=[np.uint16, np.uint32]),
+        ArraySpec(
+            array_name="cell_sorted/starts",
+            ndim=1,
+            allowed_dtypes=[np.uint32],
+            compressors=BitpackingCodec(transform="delta"),
+        ),
+        ArraySpec(
+            array_name="cell_sorted/lengths",
+            ndim=1,
+            allowed_dtypes=[np.uint16, np.uint32],
+            compressors=BitpackingCodec(transform="none"),
+        ),
     ],
     layers=LayersSpec(),
     reconstructor=IntervalReconstructor(),
