@@ -1,21 +1,10 @@
 from enum import Enum
 
+import numpy as np
 import zarr
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from homeobox.protocols import Reconstructor
-
-
-# TODO: This seems totally unnecessary. We're just using the zarr dtype, I don't
-# believe this is required anywhere aside from validation, but then we're not validating
-# layer or assigning them a dtype, so it all seems a bit useless.
-class DTypeKind(str, Enum):
-    """Structured dtype.kind values used by NumPy and Zarr arrays."""
-
-    BOOL = "b"
-    SIGNED_INTEGER = "i"
-    UNSIGNED_INTEGER = "u"
-    FLOAT = "f"
 
 
 class PointerKind(str, Enum):
@@ -26,11 +15,23 @@ class PointerKind(str, Enum):
 class ArraySpec(BaseModel):
     """Expected properties of a single zarr array."""
 
+    model_config = {"arbitrary_types_allowed": True}
+
     # TODO: This should have an option for a compression
     # codec, the default is to use zarr default of zstd
     array_name: str
-    dtype_kind: DTypeKind | None = None
+    allowed_dtypes: list[np.dtype]
     ndim: int | None = None
+
+    @field_validator("allowed_dtypes", mode="before")
+    @classmethod
+    def _coerce_allowed_dtypes(cls, value: object) -> list[np.dtype]:
+        if not isinstance(value, list):
+            raise TypeError(
+                f"allowed_dtypes must be a list, got {type(value).__name__}. "
+                f"Pass e.g. [np.uint32] even for a single dtype."
+            )
+        return [np.dtype(entry) for entry in value]
 
 
 class LayersSpec(BaseModel):
@@ -79,10 +80,10 @@ class ZarrGroupSpec(BaseModel):
                 errors.append(
                     f"'{array_spec.array_name}' has ndim={arr.ndim}, expected {array_spec.ndim}"
                 )
-            if array_spec.dtype_kind is not None and arr.dtype.kind != array_spec.dtype_kind.value:
+            if arr.dtype not in array_spec.allowed_dtypes:
                 errors.append(
-                    f"'{array_spec.array_name}' has dtype.kind='{arr.dtype.kind}', "
-                    f"expected '{array_spec.dtype_kind.value}'"
+                    f"'{array_spec.array_name}' has dtype={arr.dtype}, "
+                    f"expected one of {[str(d) for d in array_spec.allowed_dtypes]}"
                 )
         return errors, reference_shapes
 

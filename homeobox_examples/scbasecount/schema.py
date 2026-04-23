@@ -7,9 +7,10 @@ Defines:
 - CellObs: cell-level observation schema with genefull_expression pointer
 """
 
+import numpy as np
+
 from homeobox.group_specs import (
     ArraySpec,
-    DTypeKind,
     LayersSpec,
     PointerKind,
     ZarrGroupSpec,
@@ -33,7 +34,7 @@ GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
     required_arrays=[
-        ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+        ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
     ],
     layers=LayersSpec(
         prefix="csr",
