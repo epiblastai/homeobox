@@ -43,12 +43,28 @@ class LayersSpec(BaseModel):
     # codec, the default is to use zarr default of zstd
     prefix: str = ""
     match_shape_of: str | None = None
-    required: list[str] = []
-    allowed: list[str] = []
+    required: list[ArraySpec] = []
+    allowed: list[ArraySpec] = []
 
     @property
     def path(self) -> str:
         return f"{self.prefix}/layers" if self.prefix else "layers"
+
+    @property
+    def required_names(self) -> list[str]:
+        return [a.array_name for a in self.required]
+
+    @property
+    def allowed_names(self) -> list[str]:
+        return [a.array_name for a in self.allowed]
+
+    @property
+    def array_specs_by_name(self) -> dict[str, ArraySpec]:
+        """Merged lookup of required + allowed layer specs (required wins on conflict)."""
+        merged: dict[str, ArraySpec] = {a.array_name: a for a in self.allowed}
+        for a in self.required:
+            merged[a.array_name] = a
+        return merged
 
 
 class ZarrGroupSpec(BaseModel):
@@ -103,28 +119,45 @@ class ZarrGroupSpec(BaseModel):
         except Exception:
             layers_group = None
 
-        if self.layers.required:
+        required_names = self.layers.required_names
+        allowed_names = self.layers.allowed_names
+        layer_specs = self.layers.array_specs_by_name
+
+        if required_names:
             if layers_group is None:
                 errors.append(
-                    f"Missing required '{layers_path}' subgroup "
-                    f"(required layers: {self.layers.required})"
+                    f"Missing required '{layers_path}' subgroup (required layers: {required_names})"
                 )
             else:
-                for layer_name in self.layers.required:
+                for layer_name in required_names:
                     if layer_name not in layers_group:
                         errors.append(f"Missing required layer '{layer_name}'")
 
-        if self.layers.allowed and layers_group is not None:
-            allowed_values = set(self.layers.allowed)
+        if allowed_names and layers_group is not None:
+            allowed_set = set(allowed_names)
             for name, _ in layers_group.arrays():
-                if name not in allowed_values:
+                if name not in allowed_set:
                     errors.append(
                         f"Unknown layer '{name}' in {layers_path}/ subgroup. "
-                        f"Allowed: {sorted(allowed_values)}"
+                        f"Allowed: {sorted(allowed_set)}"
                     )
 
         if layers_group is not None:
             sub_arrays = {k: v for k, v in layers_group.arrays()}
+
+            for name, arr in sub_arrays.items():
+                layer_spec = layer_specs.get(name)
+                if layer_spec is None:
+                    continue
+                if layer_spec.ndim is not None and arr.ndim != layer_spec.ndim:
+                    errors.append(
+                        f"'{layers_path}/{name}' has ndim={arr.ndim}, expected {layer_spec.ndim}"
+                    )
+                if arr.dtype not in layer_spec.allowed_dtypes:
+                    errors.append(
+                        f"'{layers_path}/{name}' has dtype={arr.dtype}, "
+                        f"expected one of {[str(d) for d in layer_spec.allowed_dtypes]}"
+                    )
 
             if sub_arrays:
                 shapes = {name: arr.shape for name, arr in sub_arrays.items()}

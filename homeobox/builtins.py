@@ -30,8 +30,12 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
     layers=LayersSpec(
         prefix="csr",
         match_shape_of="csr/indices",
-        required=["counts"],
-        allowed=["counts", "log_normalized", "tpm"],
+        required=[ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32])],
+        allowed=[
+            ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32]),
+            ArraySpec(array_name="log_normalized", ndim=1, allowed_dtypes=[np.float32]),
+            ArraySpec(array_name="tpm", ndim=1, allowed_dtypes=[np.float32]),
+        ],
     ),
     reconstructor=SparseCSRReconstructor(),
 )
@@ -41,8 +45,14 @@ IMAGE_FEATURES_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     layers=LayersSpec(
-        required=["ctrl_standardized"],
-        allowed=["raw", "log_normalized", "ctrl_standardized"],
+        required=[
+            ArraySpec(array_name="ctrl_standardized", ndim=2, allowed_dtypes=[np.float32]),
+        ],
+        allowed=[
+            ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32]),
+            ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32]),
+            ArraySpec(array_name="ctrl_standardized", ndim=2, allowed_dtypes=[np.float32]),
+        ],
     ),
     reconstructor=DenseReconstructor(),
 )
@@ -56,8 +66,12 @@ PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     layers=LayersSpec(
-        required=["counts"],
-        allowed=["counts", "clr_normalized", "dsb_normalized"],
+        required=[ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32])],
+        allowed=[
+            ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32]),
+            ArraySpec(array_name="clr_normalized", ndim=2, allowed_dtypes=[np.float32]),
+            ArraySpec(array_name="dsb_normalized", ndim=2, allowed_dtypes=[np.float32]),
+        ],
     ),
     reconstructor=DenseReconstructor(),
 )

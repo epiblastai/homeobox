@@ -39,8 +39,12 @@ GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
     layers=LayersSpec(
         prefix="csr",
         match_shape_of="csr/indices",
-        required=["Unique"],
-        allowed=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+        required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32])],
+        allowed=[
+            ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32]),
+            ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.uint32]),
+            ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.uint32]),
+        ],
     ),
     reconstructor=SparseCSRReconstructor(),
 )

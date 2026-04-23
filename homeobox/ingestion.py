@@ -739,10 +739,10 @@ def add_anndata_batch(
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.layers.allowed}"
+            f"'{feature_space}'. Allowed: {spec.layers.allowed_names}"
         )
 
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
@@ -972,10 +972,10 @@ def add_coo_batch(
             f"but '{feature_space}' is {spec.pointer_kind.value}"
         )
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
-            f"Allowed: {spec.layers.allowed}"
+            f"Allowed: {spec.layers.allowed_names}"
         )
 
     obs_errors = validate_obs_columns(obs_df, atlas._cell_schema)
