@@ -52,9 +52,18 @@ pub(crate) struct ShardingMeta {
     pub subchunk_shape: Vec<NonZeroU64>,
     pub data_type: DataType,
     pub fill_value: FillValue,
-    pub chunk_size: usize,
+    pub dtype_size: usize,
+    /// Full N-D array shape.
+    pub array_shape: Vec<u64>,
+    /// Per-axis subchunk grid within a shard: shard_shape[i] / subchunk_shape[i].
+    pub chunks_per_shard_shape: Vec<u64>,
+    /// C-order element strides over array_shape: array_strides[-1] = 1.
+    pub array_strides: Vec<u64>,
+    /// Total elements per subchunk: prod(subchunk_shape).
+    pub subchunk_total_elems: usize,
+    /// Total subchunks per shard: prod(chunks_per_shard_shape). Used for the shard
+    /// index footer shape.
     pub chunks_per_shard: usize,
-    pub element_stride: usize,
     pub ndim: usize,
     pub index_encoded_size: usize,
 }
@@ -71,26 +80,39 @@ pub(crate) fn extract_sharding_meta<T>(
     let data_type = array.data_type().clone();
     let fill_value = array.fill_value().clone();
 
-    let ndim = array.shape().len();
+    let array_shape: Vec<u64> = array.shape().to_vec();
+    let ndim = array_shape.len();
     let zero_indices: Vec<u64> = vec![0; ndim];
-    let shard_shape = array
+    let shard_shape_vec = array
         .chunk_shape(&zero_indices)
         .map_err(|e| format!("chunk_shape: {e}"))?;
 
-    let subchunk_shape = array
+    let subchunk_shape_slice = array
         .subchunk_shape()
         .ok_or("array is not sharded")?;
-    let chunk_size = subchunk_shape[0].get() as usize;
-    let chunks_per_shard: usize = shard_shape
+    let subchunk_shape: Vec<NonZeroU64> = subchunk_shape_slice.to_vec();
+
+    let chunks_per_shard_shape: Vec<u64> = shard_shape_vec
         .iter()
         .zip(subchunk_shape.iter())
-        .map(|(s, c)| s.get() as usize / c.get() as usize)
+        .map(|(s, c)| s.get() / c.get())
+        .collect();
+    let chunks_per_shard: usize = chunks_per_shard_shape
+        .iter()
+        .map(|&c| c as usize)
         .product();
-    let element_stride: usize = subchunk_shape[1..]
+    let subchunk_total_elems: usize = subchunk_shape
         .iter()
         .map(|d| d.get() as usize)
-        .product::<usize>()
-        * dtype_size;
+        .product();
+
+    let mut array_strides = vec![0u64; ndim];
+    if ndim > 0 {
+        array_strides[ndim - 1] = 1;
+        for i in (0..ndim - 1).rev() {
+            array_strides[i] = array_strides[i + 1] * array_shape[i + 1];
+        }
+    }
 
     let codec_chain = array.codecs();
     let a2b_codec = codec_chain.array_to_bytes_codec();
@@ -131,12 +153,15 @@ pub(crate) fn extract_sharding_meta<T>(
     Ok(ShardingMeta {
         inner_codecs,
         index_codecs,
-        subchunk_shape: subchunk_shape.to_vec(),
+        subchunk_shape,
         data_type,
         fill_value,
-        chunk_size,
+        dtype_size,
+        array_shape,
+        chunks_per_shard_shape,
+        array_strides,
+        subchunk_total_elems,
         chunks_per_shard,
-        element_stride,
         ndim,
         index_encoded_size,
     })
@@ -146,12 +171,17 @@ pub(crate) fn extract_sharding_meta<T>(
 // Types used across read_ranges phases
 // ---------------------------------------------------------------------------
 
-/// Reference from one input range to a slice within a decoded subchunk.
-struct SubchunkRef {
-    shard_idx: usize,
-    subchunk_in_shard: usize,
-    elem_start: usize, // start offset within decoded subchunk (elements)
-    elem_end: usize,   // end offset within decoded subchunk (elements)
+/// Reference from one input range to a single contiguous strip within one
+/// decoded subchunk. Each input range (being last-axis-contiguous) yields one
+/// StripRef per subchunk it overlaps along the last axis.
+struct StripRef {
+    shard_coord: Vec<u64>,
+    /// C-order ravel of subchunk-in-shard coord against chunks_per_shard_shape.
+    sc_flat_in_shard: usize,
+    /// Byte offset into the decoded subchunk buffer.
+    byte_start: usize,
+    /// Byte length of the strip.
+    byte_len: usize,
 }
 
 /// A fast shard reader for zarr sharded arrays.
@@ -175,19 +205,25 @@ struct RustBatchReader {
     subchunk_shape: Vec<NonZeroU64>,
     data_type: DataType,
     fill_value: FillValue,
-    /// Number of rows (axis-0 elements) per subchunk
-    chunk_size: usize,
+    /// Size in bytes of a single element of the array dtype.
+    dtype_size: usize,
+    /// Full N-D array shape.
+    array_shape: Vec<u64>,
+    /// Per-axis subchunk grid within a shard (shard_shape[i] / subchunk_shape[i]).
+    chunks_per_shard_shape: Vec<u64>,
+    /// C-order element strides over array_shape.
+    array_strides: Vec<u64>,
+    /// Total elements per subchunk.
+    subchunk_total_elems: usize,
+    /// Total subchunks per shard: prod(chunks_per_shard_shape).
     chunks_per_shard: usize,
-    /// Bytes per row along axis 0: product(subchunk_shape[1:]) * dtype_size.
-    /// For 1D arrays this equals dtype_size.
-    element_stride: usize,
-    /// Number of dimensions (for chunk_key calls)
+    /// Number of dimensions.
     ndim: usize,
-    /// Encoded size of shard index in bytes
+    /// Encoded size of shard index in bytes.
     index_encoded_size: usize,
-    /// Shard index cache: shard_idx -> flat Vec<u64> of [offset, size, offset, size, ...]
+    /// Shard index cache: shard_coord (N-D) -> flat Vec<u64> of [offset, size, ...].
     /// Capped at SHARD_INDEX_CACHE_CAP entries; LRU eviction prevents unbounded growth.
-    shard_index_cache: Arc<tokio::sync::Mutex<LruCache<usize, Vec<u64>>>>,
+    shard_index_cache: Arc<tokio::sync::Mutex<LruCache<Vec<u64>, Vec<u64>>>>,
     runtime: Arc<Runtime>,
     codec_options: CodecOptions,
 }
@@ -197,78 +233,182 @@ struct RustBatchReader {
 // ---------------------------------------------------------------------------
 
 impl RustBatchReader {
-    /// Phase 1: Map element ranges to subchunk references, grouped by shard.
+    /// Unravel a raveled element index into N-D coords via C-order array_strides.
+    fn unravel(&self, raveled: u64) -> Vec<u64> {
+        let mut coord = vec![0u64; self.ndim];
+        let mut r = raveled;
+        for i in 0..self.ndim {
+            let stride = self.array_strides[i];
+            if stride == 0 {
+                coord[i] = 0;
+            } else {
+                coord[i] = r / stride;
+                r %= stride;
+            }
+        }
+        coord
+    }
+
+    /// Phase 1: Map raveled element ranges to per-subchunk strips, grouped by shard.
     ///
-    /// Returns per-range subchunk refs and a deduplicated shard→subchunk-indices map.
+    /// Each input range must be last-axis-contiguous: `[s, e)` must lie entirely
+    /// within a single last-axis row of the array (equivalently, `s` and `e - 1`
+    /// unravel to the same coord on axes 0..N-2).
+    ///
+    /// Returns per-range strip refs and a deduplicated shard→sc_flat_in_shard map.
     fn map_ranges_to_subchunks(
         &self,
         starts: &[i64],
         ends: &[i64],
-    ) -> (Vec<Vec<SubchunkRef>>, HashMap<usize, Vec<usize>>) {
-        let chunk_size = self.chunk_size;
-        let chunks_per_shard = self.chunks_per_shard;
+    ) -> Result<(Vec<Vec<StripRef>>, HashMap<Vec<u64>, Vec<usize>>), String> {
+        let n = self.ndim;
+        let dtype_size = self.dtype_size;
+        let subchunk_shape: Vec<u64> = self.subchunk_shape.iter().map(|d| d.get()).collect();
+        let cps_shape = &self.chunks_per_shard_shape;
+        let array_shape = &self.array_shape;
 
-        let mut range_refs: Vec<Vec<SubchunkRef>> = Vec::with_capacity(starts.len());
-        let mut shard_subchunks: HashMap<usize, Vec<usize>> = HashMap::new();
+        // C-order strides over subchunk_shape (in elements).
+        let mut sc_strides = vec![0u64; n];
+        if n > 0 {
+            sc_strides[n - 1] = 1;
+            for i in (0..n - 1).rev() {
+                sc_strides[i] = sc_strides[i + 1] * subchunk_shape[i + 1];
+            }
+        }
+
+        let mut range_refs: Vec<Vec<StripRef>> = Vec::with_capacity(starts.len());
+        let mut shard_subchunks: HashMap<Vec<u64>, Vec<usize>> = HashMap::new();
+
+        let d_last = if n > 0 { array_shape[n - 1] } else { 1 };
+        let q_last = if n > 0 { subchunk_shape[n - 1] } else { 1 };
 
         for i in 0..starts.len() {
-            let s = starts[i] as usize;
-            let e = ends[i] as usize;
-            let mut refs = Vec::new();
-
-            if s < e {
-                let first_subchunk = s / chunk_size;
-                let last_subchunk = (e - 1) / chunk_size;
-
-                for sc in first_subchunk..=last_subchunk {
-                    let shard_idx = sc / chunks_per_shard;
-                    let subchunk_in_shard = sc % chunks_per_shard;
-
-                    let sc_start_elem = sc * chunk_size;
-                    let elem_start = if s > sc_start_elem { s - sc_start_elem } else { 0 };
-                    let elem_end = if e < sc_start_elem + chunk_size {
-                        e - sc_start_elem
-                    } else {
-                        chunk_size
-                    };
-
-                    refs.push(SubchunkRef {
-                        shard_idx,
-                        subchunk_in_shard,
-                        elem_start,
-                        elem_end,
-                    });
-
-                    shard_subchunks
-                        .entry(shard_idx)
-                        .or_default()
-                        .push(subchunk_in_shard);
-                }
+            if starts[i] < 0 || ends[i] < 0 {
+                return Err(format!(
+                    "range {i}: starts/ends must be non-negative, got ({}, {})",
+                    starts[i], ends[i]
+                ));
             }
+            let s = starts[i] as u64;
+            let e = ends[i] as u64;
+            let mut refs: Vec<StripRef> = Vec::new();
+
+            if s >= e {
+                range_refs.push(refs);
+                continue;
+            }
+
+            let coord = self.unravel(s);
+            let strip_len = e - s;
+
+            // Validate last-axis-contiguous: strip fits within a single last-axis row.
+            if n == 0 {
+                return Err("cannot read ranges from 0-dimensional array".into());
+            }
+            if coord[n - 1] + strip_len > d_last {
+                return Err(format!(
+                    "range {i} [{s}, {e}) crosses last-axis boundary (coord[-1]={}, strip_len={}, D_last={})",
+                    coord[n - 1], strip_len, d_last
+                ));
+            }
+
+            // Subchunk coords along leading axes (shared by every strip-subchunk).
+            let mut sc_leading = vec![0u64; n - 1];
+            for a in 0..n - 1 {
+                sc_leading[a] = coord[a] / subchunk_shape[a];
+            }
+            // Offset (in subchunk-local coords) along leading axes.
+            let mut in_sc_leading = vec![0u64; n - 1];
+            for a in 0..n - 1 {
+                in_sc_leading[a] = coord[a] % subchunk_shape[a];
+            }
+
+            let first_sc_last = coord[n - 1] / q_last;
+            let last_sc_last = (coord[n - 1] + strip_len - 1) / q_last;
+
+            for sc_last in first_sc_last..=last_sc_last {
+                // Full subchunk coord.
+                let mut sc = Vec::with_capacity(n);
+                sc.extend_from_slice(&sc_leading);
+                sc.push(sc_last);
+
+                // Shard coord and subchunk-in-shard coord.
+                let mut shard_coord = vec![0u64; n];
+                let mut sc_in_shard = vec![0u64; n];
+                for a in 0..n {
+                    shard_coord[a] = sc[a] / cps_shape[a];
+                    sc_in_shard[a] = sc[a] % cps_shape[a];
+                }
+
+                // Flat index into shard footer (C-order over cps_shape).
+                let mut sc_flat: u64 = 0;
+                let mut cps_stride: u64 = 1;
+                for a in (0..n).rev() {
+                    sc_flat += sc_in_shard[a] * cps_stride;
+                    cps_stride *= cps_shape[a];
+                }
+                let sc_flat_in_shard = sc_flat as usize;
+
+                // Strip bounds along last axis within this subchunk.
+                let sc_last_base = sc_last * q_last;
+                let strip_lo = coord[n - 1].max(sc_last_base) - sc_last_base;
+                let strip_hi =
+                    (coord[n - 1] + strip_len).min(sc_last_base + q_last) - sc_last_base;
+
+                // Raveled element offset within the decoded subchunk.
+                let mut in_sc_offset: u64 = 0;
+                for a in 0..n - 1 {
+                    in_sc_offset += in_sc_leading[a] * sc_strides[a];
+                }
+                in_sc_offset += strip_lo; // sc_strides[n-1] = 1
+
+                let byte_start = (in_sc_offset as usize) * dtype_size;
+                let byte_len = ((strip_hi - strip_lo) as usize) * dtype_size;
+
+                refs.push(StripRef {
+                    shard_coord: shard_coord.clone(),
+                    sc_flat_in_shard,
+                    byte_start,
+                    byte_len,
+                });
+
+                shard_subchunks
+                    .entry(shard_coord)
+                    .or_default()
+                    .push(sc_flat_in_shard);
+            }
+
             range_refs.push(refs);
         }
 
-        // Deduplicate subchunk lists per shard
+        // Deduplicate subchunk lists per shard.
         for subchunks in shard_subchunks.values_mut() {
             subchunks.sort_unstable();
             subchunks.dedup();
         }
 
-        (range_refs, shard_subchunks)
+        Ok((range_refs, shard_subchunks))
     }
 
     /// Phase 2: Fetch shard indexes and compressed subchunk data from the store.
     ///
-    /// For each shard, resolves the object key, fetches/caches the shard index,
-    /// then issues a single `get_ranges` call for all needed subchunks.
+    /// For each shard (keyed by N-D shard coord), resolves the object key via
+    /// `array.chunk_key`, fetches/caches the shard index, then issues a single
+    /// `get_ranges` call for all needed subchunks.
     /// Returns (compressed_data, fill_subchunks).
     async fn fetch_shard_data(
         &self,
-        shard_subchunks: HashMap<usize, Vec<usize>>,
-    ) -> Result<(Vec<(usize, usize, Vec<u8>)>, Vec<(usize, usize)>), String> {
+        shard_subchunks: HashMap<Vec<u64>, Vec<usize>>,
+    ) -> Result<
+        (
+            Vec<(Vec<u64>, usize, Vec<u8>)>,
+            Vec<(Vec<u64>, usize)>,
+        ),
+        String,
+    > {
         let shard_tasks: Vec<_> = shard_subchunks
             .into_iter()
-            .map(|(shard_idx, needed_subchunks)| {
+            .map(|(shard_coord, needed_subchunks)| {
                 let store = self.store.clone();
                 let array = self.array.clone();
                 let cache = self.shard_index_cache.clone();
@@ -276,31 +416,29 @@ impl RustBatchReader {
                 let codec_options = self.codec_options.clone();
                 let chunks_per_shard = self.chunks_per_shard;
                 let index_encoded_size = self.index_encoded_size;
-                let ndim = self.ndim;
 
                 tokio::spawn(async move {
-                    let mut shard_indices = vec![0u64; ndim];
-                    shard_indices[0] = shard_idx as u64;
-                    let store_key = array.chunk_key(&shard_indices);
+                    let store_key = array.chunk_key(&shard_coord);
                     let path = ObjectPath::from(store_key.to_string());
+                    let shard_label = format!("{shard_coord:?}");
 
                     // Fetch or cache shard index
                     let shard_index = {
                         let mut cache_guard = cache.lock().await;
-                        if let Some(idx) = cache_guard.get(&shard_idx) {
+                        if let Some(idx) = cache_guard.get(&shard_coord) {
                             idx.clone()
                         } else {
                             drop(cache_guard);
                             let meta = store
                                 .head(&path)
                                 .await
-                                .map_err(|e| format!("HEAD shard {shard_idx}: {e}"))?;
+                                .map_err(|e| format!("HEAD shard {shard_label}: {e}"))?;
                             let shard_len = meta.size as u64;
                             let index_start = shard_len - index_encoded_size as u64;
                             let index_bytes = store
                                 .get_range(&path, index_start..shard_len)
                                 .await
-                                .map_err(|e| format!("GET index shard {shard_idx}: {e}"))?;
+                                .map_err(|e| format!("GET index shard {shard_label}: {e}"))?;
 
                             let index_shape: Vec<NonZeroU64> = vec![
                                 NonZeroU64::new(chunks_per_shard as u64).unwrap(),
@@ -316,11 +454,11 @@ impl RustBatchReader {
                                     &uint64_fv,
                                     &codec_options,
                                 )
-                                .map_err(|e| format!("decode index shard {shard_idx}: {e}"))?;
+                                .map_err(|e| format!("decode index shard {shard_label}: {e}"))?;
                             let raw = decoded_index
                                 .into_fixed()
                                 .map_err(
-                                    |e| format!("index into_fixed shard {shard_idx}: {e}")
+                                    |e| format!("index into_fixed shard {shard_label}: {e}")
                                 )?;
                             let index_vec: Vec<u64> = raw
                                 .as_ref()
@@ -329,7 +467,7 @@ impl RustBatchReader {
                                 .collect();
 
                             let mut cache_guard = cache.lock().await;
-                            cache_guard.put(shard_idx, index_vec.clone());
+                            cache_guard.put(shard_coord.clone(), index_vec.clone());
                             index_vec
                         }
                     };
@@ -337,13 +475,13 @@ impl RustBatchReader {
                     // Build byte ranges for needed subchunks
                     let mut byte_ranges: Vec<Range<u64>> = Vec::new();
                     let mut subchunk_order: Vec<usize> = Vec::new();
-                    let mut fill_subchunks: Vec<(usize, usize)> = Vec::new();
+                    let mut fill_subchunks: Vec<(Vec<u64>, usize)> = Vec::new();
 
                     for &sc in &needed_subchunks {
                         let offset = shard_index[sc * 2];
                         let size = shard_index[sc * 2 + 1];
                         if offset == u64::MAX && size == u64::MAX {
-                            fill_subchunks.push((shard_idx, sc));
+                            fill_subchunks.push((shard_coord.clone(), sc));
                         } else {
                             byte_ranges.push(offset..offset + size);
                             subchunk_order.push(sc);
@@ -356,13 +494,13 @@ impl RustBatchReader {
                     } else {
                         store.get_ranges(&path, &byte_ranges)
                             .await
-                            .map_err(|e| format!("get_ranges shard {shard_idx}: {e}"))?
+                            .map_err(|e| format!("get_ranges shard {shard_label}: {e}"))?
                     };
 
                     let compressed: Vec<_> = subchunk_order
                         .into_iter()
                         .zip(fetched)
-                        .map(|(sc, data)| (shard_idx, sc, data.to_vec()))
+                        .map(|(sc, data)| (shard_coord.clone(), sc, data.to_vec()))
                         .collect();
 
                     Ok::<_, String>((compressed, fill_subchunks))
@@ -371,7 +509,7 @@ impl RustBatchReader {
             .collect();
 
         let mut all_compressed = Vec::new();
-        let mut all_fills: Vec<(usize, usize)> = Vec::new();
+        let mut all_fills: Vec<(Vec<u64>, usize)> = Vec::new();
         for task in shard_tasks {
             let (compressed, fills) = task
                 .await
@@ -387,12 +525,12 @@ impl RustBatchReader {
     /// Phase 3: Decode compressed subchunks in parallel using rayon.
     fn decode_subchunks(
         &self,
-        compressed: &[(usize, usize, Vec<u8>)],
-        fill_subchunks: Vec<(usize, usize)>,
-    ) -> Result<HashMap<(usize, usize), Vec<u8>>, String> {
+        compressed: &[(Vec<u64>, usize, Vec<u8>)],
+        fill_subchunks: Vec<(Vec<u64>, usize)>,
+    ) -> Result<HashMap<(Vec<u64>, usize), Vec<u8>>, String> {
         let decoded_results: Vec<_> = compressed
             .par_iter()
-            .map(|(shard_idx, sc, data)| {
+            .map(|(shard_coord, sc, data)| {
                 let decoded = self
                     .inner_codecs
                     .decode(
@@ -402,25 +540,30 @@ impl RustBatchReader {
                         &self.fill_value,
                         &self.codec_options,
                     )
-                    .map_err(|e| format!("decode subchunk {sc} shard {shard_idx}: {e}"))?;
+                    .map_err(|e| format!("decode subchunk {sc} shard {shard_coord:?}: {e}"))?;
                 let raw = decoded
                     .into_fixed()
-                    .map_err(|e| format!("into_fixed subchunk {sc} shard {shard_idx}: {e}"))?;
-                Ok::<_, String>(((*shard_idx, *sc), raw.into_owned()))
+                    .map_err(|e| {
+                        format!("into_fixed subchunk {sc} shard {shard_coord:?}: {e}")
+                    })?;
+                Ok::<_, String>(((shard_coord.clone(), *sc), raw.into_owned()))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let mut decoded_map: HashMap<(usize, usize), Vec<u8>> =
+        let mut decoded_map: HashMap<(Vec<u64>, usize), Vec<u8>> =
             decoded_results.into_iter().collect();
 
         // Handle fill-value subchunks
         let fill_bytes = self.fill_value.as_ne_bytes();
-        for (shard_idx, sc) in fill_subchunks {
-            let mut buf = vec![0u8; self.chunk_size * self.element_stride];
-            for elem_buf in buf.chunks_exact_mut(fill_bytes.len()) {
-                elem_buf.copy_from_slice(fill_bytes);
+        let buf_bytes = self.subchunk_total_elems * self.dtype_size;
+        for (shard_coord, sc) in fill_subchunks {
+            let mut buf = vec![0u8; buf_bytes];
+            if !fill_bytes.is_empty() {
+                for elem_buf in buf.chunks_exact_mut(fill_bytes.len()) {
+                    elem_buf.copy_from_slice(fill_bytes);
+                }
             }
-            decoded_map.insert((shard_idx, sc), buf);
+            decoded_map.insert((shard_coord, sc), buf);
         }
 
         Ok(decoded_map)
@@ -429,35 +572,39 @@ impl RustBatchReader {
     /// Phase 4: Assemble decoded subchunks into a flat output buffer.
     fn assemble_output(
         &self,
-        range_refs: &[Vec<SubchunkRef>],
-        decoded_map: &HashMap<(usize, usize), Vec<u8>>,
+        range_refs: &[Vec<StripRef>],
+        decoded_map: &HashMap<(Vec<u64>, usize), Vec<u8>>,
     ) -> Result<(Vec<u8>, Vec<i64>), String> {
-        let stride = self.element_stride;
+        let dtype_size = self.dtype_size;
 
         let total_bytes: usize = range_refs
             .iter()
             .flat_map(|refs| refs.iter())
-            .map(|r| (r.elem_end - r.elem_start) * stride)
+            .map(|r| r.byte_len)
             .sum();
         let mut flat = Vec::with_capacity(total_bytes);
         let mut lengths = Vec::with_capacity(range_refs.len());
 
         for refs in range_refs {
-            let num_elements: usize = refs.iter().map(|r| r.elem_end - r.elem_start).sum();
+            let total_range_bytes: usize = refs.iter().map(|r| r.byte_len).sum();
+            let num_elements = if dtype_size == 0 {
+                0
+            } else {
+                total_range_bytes / dtype_size
+            };
             lengths.push(num_elements as i64);
 
             for r in refs {
                 let decoded = decoded_map
-                    .get(&(r.shard_idx, r.subchunk_in_shard))
+                    .get(&(r.shard_coord.clone(), r.sc_flat_in_shard))
                     .ok_or_else(|| {
                         format!(
-                            "missing decoded subchunk ({}, {})",
-                            r.shard_idx, r.subchunk_in_shard
+                            "missing decoded subchunk ({:?}, {})",
+                            r.shard_coord, r.sc_flat_in_shard
                         )
                     })?;
-                let byte_start = r.elem_start * stride;
-                let byte_end = r.elem_end * stride;
-                flat.extend_from_slice(&decoded[byte_start..byte_end]);
+                let byte_end = r.byte_start + r.byte_len;
+                flat.extend_from_slice(&decoded[r.byte_start..byte_end]);
             }
         }
 
@@ -516,9 +663,12 @@ impl RustBatchReader {
             subchunk_shape: meta.subchunk_shape,
             data_type: meta.data_type,
             fill_value: meta.fill_value,
-            chunk_size: meta.chunk_size,
+            dtype_size: meta.dtype_size,
+            array_shape: meta.array_shape,
+            chunks_per_shard_shape: meta.chunks_per_shard_shape,
+            array_strides: meta.array_strides,
+            subchunk_total_elems: meta.subchunk_total_elems,
             chunks_per_shard: meta.chunks_per_shard,
-            element_stride: meta.element_stride,
             ndim: meta.ndim,
             index_encoded_size: meta.index_encoded_size,
             shard_index_cache: Arc::new(tokio::sync::Mutex::new(
@@ -529,16 +679,23 @@ impl RustBatchReader {
         })
     }
 
-    /// Read ranges along axis 0 from the sharded array.
+    /// Read raveled element ranges from the sharded array.
     ///
     /// Parameters
     /// ----------
-    /// starts, ends : 1-D int64 arrays of axis-0 start/end positions.
+    /// starts, ends : 1-D int64 arrays of raveled element indices in C-order
+    ///     over the full N-D array shape. For a 1-D array this is identical to
+    ///     axis-0 positions.
+    ///
+    /// Each range `[starts[i], ends[i])` must be last-axis-contiguous: it must
+    /// lie entirely within a single last-axis row of the array. Callers that
+    /// need to read an N-D region should decompose it into one range per
+    /// last-axis strip (typically `prod(box_shape[:-1])` strips per box).
     ///
     /// Returns
     /// -------
     /// (flat_data, lengths) where flat_data is the concatenated raw bytes
-    /// and lengths[i] = number of elements in range i.
+    /// and lengths[i] = number of elements in range i (= ends[i] - starts[i]).
     fn read_ranges<'py>(
         &self,
         py: Python<'py>,
@@ -554,8 +711,9 @@ impl RustBatchReader {
         }
 
         // Phase 1: Map ranges to subchunks (pure computation)
-        let (range_refs, shard_subchunks) =
-            self.map_ranges_to_subchunks(&starts_vec, &ends_vec);
+        let (range_refs, shard_subchunks) = self
+            .map_ranges_to_subchunks(&starts_vec, &ends_vec)
+            .map_err(PyRuntimeError::new_err)?;
 
         // Phases 2-4 run without the GIL
         let runtime = self.runtime.clone();

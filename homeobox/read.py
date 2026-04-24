@@ -131,8 +131,12 @@ async def _read_dense_group(
     starts: np.ndarray,
     ends: np.ndarray,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Read all dense arrays concurrently for one zarr group."""
-    coros = [r.read_ranges(starts, ends) for r in readers]
+    """Read all dense arrays concurrently for one zarr group.
+
+    ``starts``/``ends`` are axis-0 row positions; each reader's underlying
+    array may be 2-D or higher, and trailing axes are always fully included.
+    """
+    coros = [r.read_axis0_slabs(starts, ends) for r in readers]
     return list(await asyncio.gather(*coros))
 
 

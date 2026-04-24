@@ -183,3 +183,78 @@ def test_bad_box_shape(tmp_path):
 
 def test_hox_alias_exposure():
     assert hox.spatial.CropReconstructor is CropReconstructor
+
+
+def test_non_full_width_subchunks_2d(tmp_path):
+    # chunks=(4, 8) on (32, 32) → chunks_per_shard_shape = (shard/chunk) has
+    # non-trivial grid along axis 1, exercising the N-D subchunk addressing.
+    shape = (32, 32)
+    box_shape = (6, 7)
+    arr, values = _make_sharded_array(tmp_path, shape, chunks=(4, 8), shards=(16, 16))
+    recon = CropReconstructor(BatchArray.from_array(arr), box_shape)
+
+    rng = np.random.default_rng(11)
+    mins, maxes = _random_boxes(shape, box_shape, n=10, rng=rng)
+    out = recon.read(mins, maxes)
+
+    assert out.shape == (10, *box_shape)
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=False)):
+        np.testing.assert_array_equal(out[i], values[lo[0] : hi[0], lo[1] : hi[1]])
+
+
+def test_multi_shard_grid_axis1(tmp_path):
+    # Multiple shards along both axes: shards=(16, 16) on (32, 32) gives a
+    # 2×2 shard grid — exercises the full N-D shard coord path that was
+    # previously impossible (the old reader hardcoded shard coord on axes 1+).
+    shape = (32, 32)
+    box_shape = (5, 5)
+    arr, values = _make_sharded_array(tmp_path, shape, chunks=(4, 4), shards=(16, 16))
+    recon = CropReconstructor(BatchArray.from_array(arr), box_shape)
+
+    rng = np.random.default_rng(12)
+    # Include a box that straddles the axis-1 shard boundary at column 16.
+    mins = np.array([[0, 14], [10, 0], [20, 27], [3, 15]], dtype=np.int64)
+    maxes = mins + np.asarray(box_shape, dtype=np.int64)
+    # Plus some random ones.
+    rmins, rmaxes = _random_boxes(shape, box_shape, n=8, rng=rng)
+    mins = np.concatenate([mins, rmins])
+    maxes = np.concatenate([maxes, rmaxes])
+    out = recon.read(mins, maxes)
+
+    assert out.shape == (len(mins), *box_shape)
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=False)):
+        np.testing.assert_array_equal(out[i], values[lo[0] : hi[0], lo[1] : hi[1]])
+
+
+def test_3d_nd_shard_grid(tmp_path):
+    # 3-D sharding where subchunks and shards span multiple axes non-trivially.
+    shape = (16, 16, 16)
+    box_shape = (3, 4, 5)
+    arr, values = _make_sharded_array(tmp_path, shape, chunks=(4, 4, 4), shards=(8, 8, 8))
+    recon = CropReconstructor(BatchArray.from_array(arr), box_shape)
+
+    rng = np.random.default_rng(13)
+    mins, maxes = _random_boxes(shape, box_shape, n=10, rng=rng)
+    out = recon.read(mins, maxes)
+
+    assert out.shape == (10, *box_shape)
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=False)):
+        expected = values[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
+        np.testing.assert_array_equal(out[i], expected)
+
+
+def test_3d_partial_box_trailing_preserved(tmp_path):
+    # k < n with a non-trivial non-last trailing axis and subchunk grid along
+    # multiple axes.
+    shape = (16, 16, 8)
+    box_shape = (4, 5)  # k = 2 < n = 3; trailing axis of length 8 included fully
+    arr, values = _make_sharded_array(tmp_path, shape, chunks=(4, 4, 8), shards=(8, 8, 8))
+    recon = CropReconstructor(BatchArray.from_array(arr), box_shape)
+
+    rng = np.random.default_rng(14)
+    mins, maxes = _random_boxes(shape, box_shape, n=6, rng=rng)
+    out = recon.read(mins, maxes)
+
+    assert out.shape == (6, *box_shape, 8)
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=False)):
+        np.testing.assert_array_equal(out[i], values[lo[0] : hi[0], lo[1] : hi[1], :])

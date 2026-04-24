@@ -661,7 +661,7 @@ async def _take_group_dense(
     dtype:
         Output dtype.  ``None`` means cast to float32 (legacy 2D behaviour).
     """
-    flat_data, _ = await reader.read_ranges(starts, ends)
+    flat_data, _ = await reader.read_axis0_slabs(starts, ends)
     out = flat_data.reshape(len(starts), *cell_shape)
     if dtype is None:
         return out.astype(np.float32)
@@ -764,7 +764,7 @@ async def _take_discrete_spatial_from_pointers(
         zg = mod_data.unique_groups[gid]
         gr = mod_data.group_readers[zg]
         tasks.append(
-            gr.get_array_reader(array_path).read_ranges(sorted_starts[mask], sorted_ends[mask])
+            gr.get_array_reader(array_path).read_axis0_slabs(sorted_starts[mask], sorted_ends[mask])
         )
         group_slice_ranges.append((pos, pos + count))
         pos += count
