@@ -67,7 +67,7 @@ class GroupReader:
         """Create a GroupReader for an atlas.
 
         The zarr group handle is opened lazily on first array access.
-        Used by ``RaggedAtlas._get_group_reader``.
+        Used by ``RaggedAtlas.get_group_reader``.
         ``feature_layouts_table`` may be ``None`` for feature
         spaces with ``has_var_df=False``.
         """

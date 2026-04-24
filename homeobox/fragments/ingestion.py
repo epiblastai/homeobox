@@ -222,7 +222,7 @@ def write_fragment_arrays(
     Parameters
     ----------
     group
-        Zarr group to write into (e.g. ``atlas._root.create_group(uid)``).
+        Zarr group to write into (e.g. ``atlas.create_zarr_group(uid)``).
     chromosomes
         uint8 flat array of chromosome indices.
     starts

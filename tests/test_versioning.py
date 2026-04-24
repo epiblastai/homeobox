@@ -363,7 +363,7 @@ class TestCheckout:
             cell_schema=TestCellSchema,
             store=store,
         )
-        gr = pinned._get_group_reader("ds1/gene_expression", "gene_expression")
+        gr = pinned.get_group_reader("ds1/gene_expression", "gene_expression")
         np.testing.assert_array_equal(gr.get_remap(), remap_at_v0)
 
 
