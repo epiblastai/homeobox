@@ -131,7 +131,7 @@ class AtlasQuery:
         ``feature_space`` matches is included. Use :meth:`select_fields` for
         exact-field selection when multiple fields share a feature space.
         """
-        known = {pf.feature_space for pf in self._atlas._pointer_fields.values()}
+        known = {pf.feature_space for pf in self._atlas.pointer_fields.values()}
         unknown = set(spaces) - known
         if unknown:
             raise ValueError(
@@ -148,7 +148,7 @@ class AtlasQuery:
         multiple columns in the same feature space (e.g. ``cycle1_image_tiles``
         and ``cycle2_image_tiles``).
         """
-        known = set(self._atlas._pointer_fields.keys())
+        known = set(self._atlas.pointer_fields.keys())
         unknown = set(field_names) - known
         if unknown:
             raise ValueError(
@@ -205,7 +205,7 @@ class AtlasQuery:
         """Build a LanceDB query from the current state."""
         q = self._build_base_query()
         if self._select_columns is not None:
-            pointer_cols = list(self._atlas._pointer_fields.keys())
+            pointer_cols = list(self._atlas.pointer_fields.keys())
             columns = list(dict.fromkeys(self._select_columns + pointer_cols))
             q = q.select(columns)
         return q
@@ -233,7 +233,7 @@ class AtlasQuery:
             return self._drop_score(self._materialize_balanced_for_dataset())
 
         q = self._build_base_query().with_row_id(True)
-        pointer_cols = list(self._atlas._pointer_fields.keys())
+        pointer_cols = list(self._atlas.pointer_fields.keys())
         q = q.select(pointer_cols)
         return self._drop_score(q.to_polars())
 
@@ -256,12 +256,12 @@ class AtlasQuery:
         unique_values = self._discover_balanced_groups(column)
         n_groups = len(unique_values)
         if n_groups == 0:
-            pointer_cols = list(self._atlas._pointer_fields.keys())
+            pointer_cols = list(self._atlas.pointer_fields.keys())
             q = self._build_base_query().with_row_id(True).select(pointer_cols)
             return q.to_polars().head(0)
 
         per_group = self._balanced_limit_n // n_groups
-        pointer_cols = list(self._atlas._pointer_fields.keys())
+        pointer_cols = list(self._atlas.pointer_fields.keys())
 
         frames: list[pl.DataFrame] = []
         for val in unique_values:
@@ -304,7 +304,7 @@ class AtlasQuery:
             q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
             q = q.where(combined).limit(per_group)
             if self._select_columns is not None:
-                pointer_cols = list(self._atlas._pointer_fields.keys())
+                pointer_cols = list(self._atlas.pointer_fields.keys())
                 columns = list(dict.fromkeys(self._select_columns + pointer_cols))
                 q = q.select(columns)
             frames.append(q.to_polars())
@@ -313,7 +313,7 @@ class AtlasQuery:
 
     def _active_pointer_fields(self) -> dict[str, PointerField]:
         """Return pointer fields filtered by ``feature_spaces`` / ``select_fields``."""
-        pfs = self._atlas._pointer_fields
+        pfs = self._atlas.pointer_fields
         if self._field_names is not None:
             return {k: pfs[k] for k in self._field_names}
         if self._feature_spaces is not None:
@@ -455,7 +455,7 @@ class AtlasQuery:
         """
         from homeobox.fragments.reconstruction import IntervalReconstructor
 
-        pf = self._atlas._pointer_fields[field_name]
+        pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
         if not isinstance(spec.reconstructor, IntervalReconstructor):
             raise TypeError(
@@ -486,7 +486,7 @@ class AtlasQuery:
         """
         from homeobox.reconstruction import DenseReconstructor, _build_obs_df
 
-        pf = self._atlas._pointer_fields[field_name]
+        pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
         if not isinstance(spec.reconstructor, DenseReconstructor):
             raise TypeError(
@@ -578,7 +578,7 @@ class AtlasQuery:
         from homeobox.dataloader import CellDataset
         from homeobox.group_specs import get_spec
 
-        pf = self._atlas._pointer_fields[field_name]
+        pf = self._atlas.pointer_fields[field_name]
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
         if layer is None:
@@ -638,7 +638,7 @@ class AtlasQuery:
 
         cells_pl = self._materialize_cells_for_dataset()
 
-        resolved_pfs = {fn: self._atlas._pointer_fields[fn] for fn in field_names}
+        resolved_pfs = {fn: self._atlas.pointer_fields[fn] for fn in field_names}
 
         if layers is None:
             layers = {}

@@ -802,7 +802,7 @@ class CellDataset(_AsyncDataset):
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
     ) -> None:
-        pf = atlas._pointer_fields[field_name]
+        pf = atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
 
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
@@ -1034,7 +1034,7 @@ class MultimodalCellDataset(_AsyncDataset):
         modality_groups_np: dict[str, np.ndarray] = {}
 
         for fn in field_names:
-            pf = atlas._pointer_fields[fn]
+            pf = atlas.pointer_fields[fn]
             self._pointer_fields[fn] = pf.field_name
             spec = get_spec(pf.feature_space)
             layer = layers.get(fn, "counts")
