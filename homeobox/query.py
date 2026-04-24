@@ -375,6 +375,9 @@ class AtlasQuery:
         # Pick the first feature space that has data for the queried cells
         # TODO: Add a warning on this behavior. Should be clear to the user
         # that if they want a specific field they should use `select_fields`
+        # TODO: We also shouldn't assume that all reconstructors have an `as_anndata`
+        # method. This is something we should be able to figure out and warning or error.
+        # if the wrong kind of feature space is selected.
         for pf in active_pfs.values():
             zg = cells_pl[pf.field_name].struct.field("zarr_group")
             if (zg != "").any():
