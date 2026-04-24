@@ -51,8 +51,8 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 
 ```python
 import os
+import numpy as np
 import scanpy as sc
-import obstore.store
 import homeobox as hox
 
 # 1. Define schemas: one for gene features, one for cell metadata.
@@ -80,6 +80,7 @@ atlas = hox.create_or_open_atlas(
 
 # 3. Load a dataset and register its genes
 adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
+adata.X = adata.X.astype(np.uint32)  # the counts layer must be np.uint32
 features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
 
@@ -102,6 +103,76 @@ atlas.snapshot()
 atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=CellSchema)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
+```
+
+### Ingesting image tiles
+
+Not every modality fits in an AnnData. The built-in ``image_tiles`` feature
+space stores a single 4D ``(n_cells, n_channels, H, W)`` array per dataset
+with no feature registry. Ingestion is a few lines on top of
+``atlas.create_zarr_group`` and the spec's ``create_array`` helper.
+
+```python
+import os
+import numpy as np
+import homeobox as hox
+from homeobox.group_specs import get_spec
+
+# 1. Schema with a single dense pointer into image_tiles.
+class TileSchema(hox.HoxBaseSchema):
+    image_tiles: hox.DenseZarrPointer | None = hox.PointerField.declare(
+        feature_space="image_tiles"
+    )
+
+# 2. image_tiles has no feature registry, so registry_schemas is empty.
+atlas_dir = "./hox_tile_atlas/"
+os.makedirs(atlas_dir, exist_ok=True)
+atlas = hox.create_or_open_atlas(
+    atlas_path=atlas_dir,
+    cell_table_name="cells",
+    cell_schema=TileSchema,
+    dataset_table_name="datasets",
+    dataset_schema=hox.DatasetRecord,
+    registry_schemas={},
+)
+
+# 3. Fabricate 128 random 5-channel, 96×96 uint8 tiles.
+n_cells, n_channels, h, w = 128, 5, 96, 96
+tiles = np.random.randint(0, 256, (n_cells, n_channels, h, w), dtype=np.uint8)
+
+# 4. Register the dataset, create the zarr group, and write the 4D array.
+#    The spec's create_array enforces ndim=4 and the allowed dtype set.
+record = hox.DatasetRecord(
+    zarr_group="random_tiles", feature_space="image_tiles", n_cells=n_cells,
+)
+atlas.register_dataset(record)
+group = atlas.create_zarr_group(record.zarr_group)
+
+spec = get_spec("image_tiles")
+arr = spec.create_array(
+    group, "data", shape=tiles.shape, dtype=np.uint8,
+    chunks=(1, n_channels, h, w),
+    shards=(64, n_channels, h, w),
+)
+arr[:] = tiles
+
+# 5. Insert one cell row per tile with a DenseZarrPointer at that position.
+rows = [
+    TileSchema(
+        dataset_uid=record.dataset_uid,
+        image_tiles=hox.DenseZarrPointer(zarr_group=record.zarr_group, position=i),
+    )
+    for i in range(n_cells)
+]
+atlas.cell_table.add(rows)
+
+atlas.optimize()
+atlas.snapshot()
+
+# 6. Query tiles back as a raw 4D array + obs DataFrame.
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=TileSchema)
+tile_array, obs = atlas_r.query().to_array("image_tiles")
+print(tile_array.shape, tile_array.dtype)  # (128, 5, 96, 96) uint8
 ```
 
 ### Opening a public atlas
