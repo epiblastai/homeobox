@@ -261,18 +261,16 @@ class FeatureSpaceSpec(BaseModel):
             endpoints = [e for e in endpoints if e != "as_anndata"]
         return endpoints
 
-    # TODO: Revisit this. It might make sense to divide array spec into `group_path` and
-    # array_name. This mirrors how the actual zarr is accessed and created
-    def has_feature_oriented_copy(self, group: zarr.Group, subgroup_name: str = "csc") -> bool:
-        """Return True if ``group/{subgroup_name}`` exists and validates against ``feature_oriented``."""
+    def has_feature_oriented_copy(self, group: zarr.Group) -> bool:
+        """Return True if ``group`` validates against ``feature_oriented``.
+
+        The feature-oriented spec's array names carry their own subgroup
+        prefix (e.g. ``csc/indices``), so validation runs against the
+        top-level group directly.
+        """
         if self.feature_oriented is None:
             return False
-        if subgroup_name not in group:
-            return False
-        sub = group[subgroup_name]
-        if not isinstance(sub, zarr.Group):
-            return False
-        return self.feature_oriented.validate_group(sub) == []
+        return self.feature_oriented.validate_group(group) == []
 
 
 def _create_from_spec(

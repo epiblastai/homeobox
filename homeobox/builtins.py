@@ -57,23 +57,22 @@ GENE_EXPRESSION_CSR = ZarrGroupSpec(
     ),
 )
 
-# TODO: I don't like that `csc/` isn't specified anywhere
-# as the group name / path
 GENE_EXPRESSION_CSC = ZarrGroupSpec(
     required_arrays=[
         ArraySpec(
-            array_name="indices",
+            array_name="csc/indices",
             ndim=1,
             allowed_dtypes=[np.uint32],
         ),
         ArraySpec(
-            array_name="indptr",
+            array_name="csc/indptr",
             ndim=1,
             allowed_dtypes=[np.int64],
         ),
     ],
     layers=LayersSpec(
-        match_shape_of="indices",
+        prefix="csc",
+        match_shape_of="csc/indices",
         required=[
             ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32]),
         ],

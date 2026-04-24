@@ -1276,17 +1276,16 @@ def _add_csc_scipy(
     csc_spec = spec.feature_oriented
 
     nnz = csc.nnz
-    csc_group = atlas.require_zarr_group(f"{zarr_group}/csc")
 
     csc_indices_zarr = csc_spec.create_array(
-        csc_group,
-        "indices",
+        csr_group,
+        "csc/indices",
         (nnz,),
         chunks=(chunk_size,),
         shards=(shard_size,),
     )
     csc_values_zarr = csc_spec.create_array(
-        csc_group,
+        csr_group,
         layer_name,
         (nnz,),
         chunks=(chunk_size,),
@@ -1301,8 +1300,8 @@ def _add_csc_scipy(
         csc_values_zarr[written:end] = csc.data[written:end].astype(np.uint32)
         written = end
 
-    csc_spec.create_array(csc_group, "indptr", csc.indptr.shape)
-    csc_group["indptr"][:] = csc.indptr.astype(np.int64)
+    csc_indptr_zarr = csc_spec.create_array(csr_group, "csc/indptr", csc.indptr.shape)
+    csc_indptr_zarr[:] = csc.indptr.astype(np.int64)
 
     # Cache invalidation
     atlas.invalidate_group_reader(zarr_group, feature_space)
