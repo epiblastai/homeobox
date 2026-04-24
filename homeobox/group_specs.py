@@ -185,6 +185,84 @@ class ZarrGroupSpec(BaseModel):
         errors += self._check_layers(group, reference_shapes)
         return errors
 
+    def create_array(
+        self,
+        fs_group: zarr.Group,
+        name: str,
+        shape: tuple[int, ...],
+        *,
+        dtype: np.dtype | None = None,
+        chunks: tuple[int, ...] | str = "auto",
+        shards: tuple[int, ...] | str = "auto",
+    ) -> zarr.Array:
+        """Create a zarr array under ``fs_group`` driven by this spec.
+
+        ``name`` is either the ``array_name`` of an entry in
+        ``required_arrays`` (e.g. ``"csr/indices"``, ``"cell_sorted/starts"``)
+        or the name of a layer (e.g. ``"counts"``). Intermediate groups —
+        including the layers path like ``"csr/layers"`` — are auto-created
+        via ``require_group``. The dtype, ndim, and compressor on the
+        matching ``ArraySpec`` are the authority: ``dtype`` (if supplied)
+        must be one of ``allowed_dtypes``; ``len(shape)`` must match
+        ``ndim`` if the spec declares one; and the ArraySpec's
+        ``compressors`` is always passed through.
+
+        ``chunks`` and ``shards`` both default to ``"auto"``. The readers
+        assume sharded arrays, so never pass ``shards=None``.
+        """
+        assert shards is not None, "Shards must be provided for homeobox array readers to work!"
+        for array_spec in self.required_arrays:
+            if array_spec.array_name == name:
+                *subgroups, leaf = name.split("/")
+                parent = fs_group
+                for sg in subgroups:
+                    parent = parent.require_group(sg)
+                return _create_from_spec(array_spec, parent, leaf, shape, dtype, chunks, shards)
+
+        layer_spec = self.layers.array_specs_by_name.get(name)
+        if layer_spec is not None:
+            layers_group = fs_group.require_group(self.layers.path)
+            return _create_from_spec(layer_spec, layers_group, name, shape, dtype, chunks, shards)
+
+        known_top = [a.array_name for a in self.required_arrays]
+        known_layers = self.layers.allowed_names or self.layers.required_names
+        raise KeyError(
+            f"No ArraySpec named '{name}' in feature_space='{self.feature_space}'. "
+            f"Known top-level arrays: {known_top}; known layers: {known_layers}"
+        )
+
+
+def _create_from_spec(
+    array_spec: ArraySpec,
+    parent: zarr.Group,
+    leaf: str,
+    shape: tuple[int, ...],
+    dtype: np.dtype | None,
+    chunks: tuple[int, ...] | str,
+    shards: tuple[int, ...] | str,
+) -> zarr.Array:
+    resolved = np.dtype(dtype) if dtype is not None else array_spec.allowed_dtypes[0]
+    if resolved not in array_spec.allowed_dtypes:
+        raise ValueError(
+            f"dtype={resolved} not allowed for '{array_spec.array_name}'. "
+            f"Allowed: {[str(d) for d in array_spec.allowed_dtypes]}"
+        )
+    if array_spec.ndim is not None and len(shape) != array_spec.ndim:
+        raise ValueError(
+            f"'{array_spec.array_name}' expects ndim={array_spec.ndim}, got shape={shape}"
+        )
+    kwargs: dict = {}
+    if array_spec.compressors is not None:
+        kwargs["compressors"] = array_spec.compressors
+    return parent.create_array(
+        leaf,
+        shape=shape,
+        dtype=resolved,
+        chunks=chunks,
+        shards=shards,
+        **kwargs,
+    )
+
 
 # ---------------------------------------------------------------------------
 # Spec registry

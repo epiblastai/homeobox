@@ -65,12 +65,12 @@ def _make_sparse_adata(
     ``upregulated_cols`` are multiplied by ``up_factor`` to create
     proportional differences that survive library-size normalization.
     """
-    X = sp.random(n_obs, n_vars, density=0.8, format="csr", dtype=np.float32, random_state=rng)
-    X.data[:] = rng.integers(1, 20, size=X.nnz).astype(np.float32)
+    X = sp.random(n_obs, n_vars, density=0.8, format="csr", dtype=np.uint32, random_state=rng)
+    X.data[:] = rng.integers(1, 20, size=X.nnz).astype(np.uint32)
     if upregulated_cols:
         X_dense = X.toarray()
         for col in upregulated_cols:
-            X_dense[:, col] *= up_factor
+            X_dense[:, col] = (X_dense[:, col] * up_factor).astype(np.uint32)
         X = sp.csr_matrix(X_dense)
     var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
     return ad.AnnData(X=X, var=var)
