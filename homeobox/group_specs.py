@@ -1,21 +1,11 @@
 from enum import Enum
+from typing import Any
 
+import numpy as np
 import zarr
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from homeobox.protocols import Reconstructor
-
-
-# TODO: This seems totally unnecessary. We're just using the zarr dtype, I don't
-# believe this is required anywhere aside from validation, but then we're not validating
-# layer or assigning them a dtype, so it all seems a bit useless.
-class DTypeKind(str, Enum):
-    """Structured dtype.kind values used by NumPy and Zarr arrays."""
-
-    BOOL = "b"
-    SIGNED_INTEGER = "i"
-    UNSIGNED_INTEGER = "u"
-    FLOAT = "f"
 
 
 class PointerKind(str, Enum):
@@ -27,11 +17,25 @@ class PointerKind(str, Enum):
 class ArraySpec(BaseModel):
     """Expected properties of a single zarr array."""
 
-    # TODO: This should have an option for a compression
-    # codec, the default is to use zarr default of zstd
+    model_config = {"arbitrary_types_allowed": True}
+
     array_name: str
-    dtype_kind: DTypeKind | None = None
+    allowed_dtypes: list[np.dtype]
     ndim: int | None = None
+    # Typed as Any because pydantic can't introspect zarr's CompressorsLike
+    # (contains a forward-referenced JSON alias). Pass a value that
+    # zarr.core.array accepts as CompressorsLike — e.g. a Numcodec or None.
+    compressors: Any = None
+
+    @field_validator("allowed_dtypes", mode="before")
+    @classmethod
+    def _coerce_allowed_dtypes(cls, value: object) -> list[np.dtype]:
+        if not isinstance(value, list):
+            raise TypeError(
+                f"allowed_dtypes must be a list, got {type(value).__name__}. "
+                f"Pass e.g. [np.uint32] even for a single dtype."
+            )
+        return [np.dtype(entry) for entry in value]
 
 
 class LayersSpec(BaseModel):
@@ -39,17 +43,30 @@ class LayersSpec(BaseModel):
 
     # TODO: Write a more detailed docstring
 
-    # TODO: This should have an option for a compression
-    # codec, the default is to use zarr default of zstd
     prefix: str = ""
-    uniform_shape: bool = False
     match_shape_of: str | None = None
-    required: list[str] = []
-    allowed: list[str] = []
+    required: list[ArraySpec] = []
+    allowed: list[ArraySpec] = []
 
     @property
     def path(self) -> str:
         return f"{self.prefix}/layers" if self.prefix else "layers"
+
+    @property
+    def required_names(self) -> list[str]:
+        return [a.array_name for a in self.required]
+
+    @property
+    def allowed_names(self) -> list[str]:
+        return [a.array_name for a in self.allowed]
+
+    @property
+    def array_specs_by_name(self) -> dict[str, ArraySpec]:
+        """Merged lookup of required + allowed layer specs (required wins on conflict)."""
+        merged: dict[str, ArraySpec] = {a.array_name: a for a in self.allowed}
+        for a in self.required:
+            merged[a.array_name] = a
+        return merged
 
 
 class ZarrGroupSpec(BaseModel):
@@ -81,10 +98,10 @@ class ZarrGroupSpec(BaseModel):
                 errors.append(
                     f"'{array_spec.array_name}' has ndim={arr.ndim}, expected {array_spec.ndim}"
                 )
-            if array_spec.dtype_kind is not None and arr.dtype.kind != array_spec.dtype_kind.value:
+            if arr.dtype not in array_spec.allowed_dtypes:
                 errors.append(
-                    f"'{array_spec.array_name}' has dtype.kind='{arr.dtype.kind}', "
-                    f"expected '{array_spec.dtype_kind.value}'"
+                    f"'{array_spec.array_name}' has dtype={arr.dtype}, "
+                    f"expected one of {[str(d) for d in array_spec.allowed_dtypes]}"
                 )
         return errors, reference_shapes
 
@@ -104,30 +121,47 @@ class ZarrGroupSpec(BaseModel):
         except Exception:
             layers_group = None
 
-        if self.layers.required:
+        required_names = self.layers.required_names
+        allowed_names = self.layers.allowed_names
+        layer_specs = self.layers.array_specs_by_name
+
+        if required_names:
             if layers_group is None:
                 errors.append(
-                    f"Missing required '{layers_path}' subgroup "
-                    f"(required layers: {self.layers.required})"
+                    f"Missing required '{layers_path}' subgroup (required layers: {required_names})"
                 )
             else:
-                for layer_name in self.layers.required:
+                for layer_name in required_names:
                     if layer_name not in layers_group:
                         errors.append(f"Missing required layer '{layer_name}'")
 
-        if self.layers.allowed and layers_group is not None:
-            allowed_values = set(self.layers.allowed)
+        if allowed_names and layers_group is not None:
+            allowed_set = set(allowed_names)
             for name, _ in layers_group.arrays():
-                if name not in allowed_values:
+                if name not in allowed_set:
                     errors.append(
                         f"Unknown layer '{name}' in {layers_path}/ subgroup. "
-                        f"Allowed: {sorted(allowed_values)}"
+                        f"Allowed: {sorted(allowed_set)}"
                     )
 
         if layers_group is not None:
             sub_arrays = {k: v for k, v in layers_group.arrays()}
 
-            if self.layers.uniform_shape and sub_arrays:
+            for name, arr in sub_arrays.items():
+                layer_spec = layer_specs.get(name)
+                if layer_spec is None:
+                    continue
+                if layer_spec.ndim is not None and arr.ndim != layer_spec.ndim:
+                    errors.append(
+                        f"'{layers_path}/{name}' has ndim={arr.ndim}, expected {layer_spec.ndim}"
+                    )
+                if arr.dtype not in layer_spec.allowed_dtypes:
+                    errors.append(
+                        f"'{layers_path}/{name}' has dtype={arr.dtype}, "
+                        f"expected one of {[str(d) for d in layer_spec.allowed_dtypes]}"
+                    )
+
+            if sub_arrays:
                 shapes = {name: arr.shape for name, arr in sub_arrays.items()}
                 if len(set(shapes.values())) > 1:
                     errors.append(f"'{layers_path}' arrays have inconsistent shapes: {shapes}")
@@ -149,6 +183,84 @@ class ZarrGroupSpec(BaseModel):
         errors, reference_shapes = self._check_top_level_arrays(group)
         errors += self._check_layers(group, reference_shapes)
         return errors
+
+    def create_array(
+        self,
+        fs_group: zarr.Group,
+        name: str,
+        shape: tuple[int, ...],
+        *,
+        dtype: np.dtype | None = None,
+        chunks: tuple[int, ...] | str = "auto",
+        shards: tuple[int, ...] | str = "auto",
+    ) -> zarr.Array:
+        """Create a zarr array under ``fs_group`` driven by this spec.
+
+        ``name`` is either the ``array_name`` of an entry in
+        ``required_arrays`` (e.g. ``"csr/indices"``, ``"cell_sorted/starts"``)
+        or the name of a layer (e.g. ``"counts"``). Intermediate groups —
+        including the layers path like ``"csr/layers"`` — are auto-created
+        via ``require_group``. The dtype, ndim, and compressor on the
+        matching ``ArraySpec`` are the authority: ``dtype`` (if supplied)
+        must be one of ``allowed_dtypes``; ``len(shape)`` must match
+        ``ndim`` if the spec declares one; and the ArraySpec's
+        ``compressors`` is always passed through.
+
+        ``chunks`` and ``shards`` both default to ``"auto"``. The readers
+        assume sharded arrays, so never pass ``shards=None``.
+        """
+        assert shards is not None, "Shards must be provided for homeobox array readers to work!"
+        for array_spec in self.required_arrays:
+            if array_spec.array_name == name:
+                *subgroups, leaf = name.split("/")
+                parent = fs_group
+                for sg in subgroups:
+                    parent = parent.require_group(sg)
+                return _create_from_spec(array_spec, parent, leaf, shape, dtype, chunks, shards)
+
+        layer_spec = self.layers.array_specs_by_name.get(name)
+        if layer_spec is not None:
+            layers_group = fs_group.require_group(self.layers.path)
+            return _create_from_spec(layer_spec, layers_group, name, shape, dtype, chunks, shards)
+
+        known_top = [a.array_name for a in self.required_arrays]
+        known_layers = self.layers.allowed_names or self.layers.required_names
+        raise KeyError(
+            f"No ArraySpec named '{name}' in feature_space='{self.feature_space}'. "
+            f"Known top-level arrays: {known_top}; known layers: {known_layers}"
+        )
+
+
+def _create_from_spec(
+    array_spec: ArraySpec,
+    parent: zarr.Group,
+    leaf: str,
+    shape: tuple[int, ...],
+    dtype: np.dtype | None,
+    chunks: tuple[int, ...] | str,
+    shards: tuple[int, ...] | str,
+) -> zarr.Array:
+    resolved = np.dtype(dtype) if dtype is not None else array_spec.allowed_dtypes[0]
+    if resolved not in array_spec.allowed_dtypes:
+        raise ValueError(
+            f"dtype={resolved} not allowed for '{array_spec.array_name}'. "
+            f"Allowed: {[str(d) for d in array_spec.allowed_dtypes]}"
+        )
+    if array_spec.ndim is not None and len(shape) != array_spec.ndim:
+        raise ValueError(
+            f"'{array_spec.array_name}' expects ndim={array_spec.ndim}, got shape={shape}"
+        )
+    kwargs: dict = {}
+    if array_spec.compressors is not None:
+        kwargs["compressors"] = array_spec.compressors
+    return parent.create_array(
+        leaf,
+        shape=shape,
+        dtype=resolved,
+        chunks=chunks,
+        shards=shards,
+        **kwargs,
+    )
 
 
 # ---------------------------------------------------------------------------

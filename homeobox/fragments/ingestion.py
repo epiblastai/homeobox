@@ -26,6 +26,7 @@ import polars as pl
 import zarr
 
 from homeobox.codecs.bitpacking import BitpackingCodec
+from homeobox.group_specs import get_spec
 from homeobox.ingestion import _CHUNK_ELEMS, _SHARD_ELEMS
 
 FEATURE_SPACE = "chromatin_accessibility"
@@ -221,7 +222,7 @@ def write_fragment_arrays(
     Parameters
     ----------
     group
-        Zarr group to write into (e.g. ``atlas._root.create_group(uid)``).
+        Zarr group to write into (e.g. ``atlas.create_zarr_group(uid)``).
     chromosomes
         uint8 flat array of chromosome indices.
     starts
@@ -239,27 +240,26 @@ def write_fragment_arrays(
     n_fragments = len(chromosomes)
     batch_size = shard_shape[0]
 
-    cell_sorted = group.create_group("cell_sorted")
-
-    zarr_chroms = cell_sorted.create_array(
-        "chromosomes",
-        shape=(n_fragments,),
-        dtype=np.uint8,
+    spec = get_spec(FEATURE_SPACE)
+    zarr_chroms = spec.create_array(
+        group,
+        "cell_sorted/chromosomes",
+        (n_fragments,),
         chunks=chunk_shape,
         shards=shard_shape,
     )
-    zarr_starts = cell_sorted.create_array(
-        "starts",
-        shape=(n_fragments,),
-        dtype=np.uint32,
+    zarr_starts = spec.create_array(
+        group,
+        "cell_sorted/starts",
+        (n_fragments,),
         chunks=chunk_shape,
         shards=shard_shape,
-        compressors=BitpackingCodec(transform="delta"),
     )
-    zarr_lengths = cell_sorted.create_array(
-        "lengths",
-        shape=(n_fragments,),
-        dtype=np.uint16,
+    zarr_lengths = spec.create_array(
+        group,
+        "cell_sorted/lengths",
+        (n_fragments,),
+        dtype=lengths.dtype,
         chunks=chunk_shape,
         shards=shard_shape,
     )

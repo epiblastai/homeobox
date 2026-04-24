@@ -49,7 +49,7 @@ def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetRecord:
 
 def _make_sparse_adata(n_obs: int, n_vars: int, feature_uids: list[str]) -> ad.AnnData:
     rng = np.random.default_rng(0)
-    X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.float32, random_state=rng)
+    X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.uint32, random_state=rng)
     var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
     return ad.AnnData(X=X, var=var)
 
@@ -363,7 +363,7 @@ class TestCheckout:
             cell_schema=TestCellSchema,
             store=store,
         )
-        gr = pinned._get_group_reader("ds1/gene_expression", "gene_expression")
+        gr = pinned.get_group_reader("ds1/gene_expression", "gene_expression")
         np.testing.assert_array_equal(gr.get_remap(), remap_at_v0)
 
 

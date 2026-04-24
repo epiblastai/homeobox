@@ -17,7 +17,6 @@ import scipy.sparse as sp
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.feature_layouts import read_feature_layout
 from homeobox.group_specs import PointerKind, ZarrGroupSpec, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import (
@@ -26,8 +25,6 @@ from homeobox.schema import (
     make_uid,
 )
 from homeobox.util import sql_escape
-
-_INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
 
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
@@ -189,8 +186,7 @@ class SparseZarrWriter:
         group: zarr.Group,
         zarr_layer: str,
         *,
-        data_dtype: np.dtype = np.float32,
-        use_bitpacking: bool = False,
+        data_dtype: np.dtype | None = None,
         feature_space: str = "gene_expression",
         initial_capacity: int = _SHARD_ELEMS,
         chunk_elems: int = _CHUNK_ELEMS,
@@ -201,15 +197,16 @@ class SparseZarrWriter:
         Parameters
         ----------
         group
-            Zarr group (e.g., ``atlas._root.create_group(uid)``).
+            Zarr group (e.g., ``atlas.create_zarr_group(uid)``).
         zarr_layer
             Layer name (e.g., ``"counts"``).
         data_dtype
-            Data type for the values array.
-        use_bitpacking
-            Whether to use bitpacking codec for the values array.
+            Data type for the values array. If ``None``, the first entry of
+            the layer's ``allowed_dtypes`` in the spec is used.
         feature_space
-            Feature space name, used to look up the zarr group spec.
+            Feature space name, used to look up the zarr group spec. The
+            spec supplies dtype, ndim, and compressor for both the indices
+            and values arrays.
         initial_capacity
             Initial size for the flat arrays. Will be grown as needed.
         chunk_elems
@@ -217,50 +214,26 @@ class SparseZarrWriter:
         shard_elems
             Shard size for zarr arrays.
         """
-        from homeobox.codecs.bitpacking import BitpackingCodec
-
         spec = get_spec(feature_space)
-        prefix = spec.layers.prefix
-
-        indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-        layer_kwargs: dict = {}
-        if use_bitpacking:
-            layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
         chunk_shape = (chunk_elems,)
         shard_shape = (shard_elems,)
+        indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
 
-        if prefix:
-            prefix_group = group.create_group(prefix)
-            zarr_indices = prefix_group.create_array(
-                "indices",
-                shape=(initial_capacity,),
-                dtype=np.uint32,
-                chunks=chunk_shape,
-                shards=shard_shape,
-                **indices_kwargs,
-            )
-            layers_group = prefix_group.create_group("layers")
-        else:
-            zarr_indices = group.create_array(
-                "indices",
-                shape=(initial_capacity,),
-                dtype=np.uint32,
-                chunks=chunk_shape,
-                shards=shard_shape,
-                **indices_kwargs,
-            )
-            layers_group = group.create_group("layers")
-
-        zarr_values = layers_group.create_array(
+        zarr_indices = spec.create_array(
+            group,
+            indices_name,
+            (initial_capacity,),
+            chunks=chunk_shape,
+            shards=shard_shape,
+        )
+        zarr_values = spec.create_array(
+            group,
             zarr_layer,
-            shape=(initial_capacity,),
+            (initial_capacity,),
             dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
-            **layer_kwargs,
         )
-
         return cls(zarr_indices, zarr_values, shard_elems)
 
     @classmethod
@@ -389,8 +362,8 @@ def _build_cell_arrow_table(
         Arrow table matching the cell schema, ready for ``cell_table.add()``.
     """
     n_cells = len(obs_df)
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
+    arrow_schema = atlas.cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas.cell_schema)
 
     columns: dict[str, pa.Array] = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
@@ -398,7 +371,7 @@ def _build_cell_arrow_table(
     }
 
     # Fill pointer fields — real data where provided, zero-fill otherwise
-    for pf_name, pf in atlas._pointer_fields.items():
+    for pf_name, pf in atlas.pointer_fields.items():
         if pf_name in pointer_data:
             columns[pf_name] = pointer_data[pf_name]
         elif pf.pointer_kind is PointerKind.SPARSE:
@@ -501,12 +474,12 @@ def insert_cell_records(
     int
         Number of cells inserted.
     """
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
             f"No pointer field named '{field_name}'. "
-            f"Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field = atlas._pointer_fields[field_name]
+    pointer_field = atlas.pointer_fields[field_name]
 
     pointer_struct = _make_sparse_pointer(zarr_group, starts, ends, zarr_row_offset)
     arrow_table = _build_cell_arrow_table(
@@ -525,7 +498,6 @@ def _write_sparse_batched(
     zarr_layer: str,
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
-    use_bitpacking: bool,
     spec: ZarrGroupSpec,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pre-allocate and stream-write CSR data in shard-sized batches.
@@ -543,13 +515,6 @@ def _write_sparse_batched(
     tuple[np.ndarray, np.ndarray]
         ``(starts, ends)`` — per-cell indptr start/end positions.
     """
-    from homeobox.codecs.bitpacking import BitpackingCodec
-
-    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-    layer_kwargs: dict = {}
-    if use_bitpacking:
-        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
     backed_dense = _is_backed_dense(adata)
 
     if _is_backed_csr(adata):
@@ -580,36 +545,17 @@ def _write_sparse_batched(
         src_data = csr.data
         data_dtype = csr.data.dtype
 
-    # Create zarr arrays.
-    prefix = spec.layers.prefix
-    if prefix:
-        prefix_group = group.create_group(prefix)
-        zarr_indices = prefix_group.create_array(
-            "indices",
-            shape=(nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = prefix_group.create_group("layers")
-    else:
-        zarr_indices = group.create_array(
-            "indices",
-            shape=(nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = group.create_group("layers")
-    zarr_values = layers_group.create_array(
+    indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
+    zarr_indices = spec.create_array(
+        group, indices_name, (nnz,), chunks=chunk_shape, shards=shard_shape
+    )
+    zarr_values = spec.create_array(
+        group,
         zarr_layer,
-        shape=(nnz,),
+        (nnz,),
         dtype=data_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
-        **layer_kwargs,
     )
 
     if backed_dense:
@@ -661,11 +607,10 @@ def _write_dense_batched(
     batch_size = shard_shape[0]
     data_dtype = adata.X.dtype
 
-    layers_path = spec.find_layers_path()
-    layers_group = group.create_group(layers_path)
-    zarr_arr = layers_group.create_array(
+    zarr_arr = spec.create_array(
+        group,
         zarr_layer,
-        shape=(n_cells, n_vars),
+        (n_cells, n_vars),
         dtype=data_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
@@ -733,28 +678,28 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
-    if atlas._cell_schema is None:
+    if atlas.cell_schema is None:
         raise ValueError(
             "Cannot ingest data into an atlas opened without a cell schema. "
             "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
-            f"Schema {atlas._cell_schema.__name__} has no pointer field "
-            f"named '{field_name}'. Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Schema {atlas.cell_schema.__name__} has no pointer field "
+            f"named '{field_name}'. Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field: PointerField = atlas._pointer_fields[field_name]
+    pointer_field: PointerField = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.layers.allowed}"
+            f"'{feature_space}'. Allowed: {spec.layers.allowed_names}"
         )
 
-    obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
+    obs_errors = validate_obs_columns(adata.obs, atlas.cell_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
@@ -783,15 +728,6 @@ def add_anndata_batch(
                 f"Sparse feature space '{feature_space}' requires 1-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
-        if _is_backed_csr(adata):
-            data_dtype = np.dtype(adata.file._file["X"]["data"].dtype)
-        else:
-            # Works for both backed dense (h5py.Dataset) and in-memory.
-            data_dtype = np.dtype(adata.X.dtype)
-
-        # TODO: It's much better to define the compression directly in the
-        # ArraySpec than to try inferring it here.
-        use_bitpacking = data_dtype in _INTEGER_DTYPES
     else:
         n_vars = adata.n_vars
         if chunk_shape is None:
@@ -809,24 +745,13 @@ def add_anndata_batch(
                 f"Dense feature space '{feature_space}' requires 2-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
-        use_bitpacking = False
 
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=type(dataset_record).to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
+    atlas.register_dataset(dataset_record)
 
-    group = atlas._root.create_group(zarr_group)
+    group = atlas.create_zarr_group(zarr_group)
     if spec.pointer_kind is PointerKind.SPARSE:
         starts, ends = _write_sparse_batched(
-            group,
-            adata,
-            zarr_layer,
-            chunk_shape,
-            shard_shape,
-            use_bitpacking,
-            spec,
+            group, adata, zarr_layer, chunk_shape, shard_shape, spec
         )
     else:
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
@@ -904,7 +829,7 @@ def add_coo_batch(
     cell_col: int = 1,
     value_col: int = 2,
     one_indexed: bool = True,
-    value_dtype: np.dtype = np.int32,
+    value_dtype: np.dtype | None = None,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
 ) -> int:
@@ -956,7 +881,8 @@ def add_coo_batch(
     one_indexed:
         Whether the file uses 1-based indexing (True) or 0-based (False).
     value_dtype:
-        Numpy dtype for values. Default ``int32``.
+        Numpy dtype for values. If ``None`` (default), the first entry of
+        the layer's ``allowed_dtypes`` in the spec is used.
     chunk_shape:
         Zarr chunk shape (1-element tuple). Defaults to ``(_CHUNK_ELEMS,)``.
     shard_shape:
@@ -967,18 +893,18 @@ def add_coo_batch(
     int
         Number of cells ingested.
     """
-    if atlas._cell_schema is None:
+    if atlas.cell_schema is None:
         raise ValueError(
             "Cannot ingest data into an atlas opened without a cell schema. "
             "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
-            f"Schema {atlas._cell_schema.__name__} has no pointer field "
-            f"named '{field_name}'. Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Schema {atlas.cell_schema.__name__} has no pointer field "
+            f"named '{field_name}'. Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field: PointerField = atlas._pointer_fields[field_name]
+    pointer_field: PointerField = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
     if spec.pointer_kind is not PointerKind.SPARSE:
@@ -987,13 +913,13 @@ def add_coo_batch(
             f"but '{feature_space}' is {spec.pointer_kind.value}"
         )
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
-            f"Allowed: {spec.layers.allowed}"
+            f"Allowed: {spec.layers.allowed_names}"
         )
 
-    obs_errors = validate_obs_columns(obs_df, atlas._cell_schema)
+    obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
@@ -1005,7 +931,9 @@ def add_coo_batch(
     chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
     shard_shape = shard_shape or (_SHARD_ELEMS,)
 
-    use_bitpacking = value_dtype in _INTEGER_DTYPES
+    if value_dtype is None:
+        value_dtype = spec.layers.array_specs_by_name[zarr_layer].allowed_dtypes[0]
+
     zarr_group = dataset_record.zarr_group
     offset = 1 if one_indexed else 0
 
@@ -1043,53 +971,23 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Register dataset record
     # -----------------------------------------------------------------------
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=type(dataset_record).to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
+    atlas.register_dataset(dataset_record)
 
     # -----------------------------------------------------------------------
     # Pass 2: Stream triplet chunks into zarr
     # -----------------------------------------------------------------------
-    from homeobox.codecs.bitpacking import BitpackingCodec
-
-    group = atlas._root.create_group(zarr_group)
-    prefix = spec.layers.prefix
-
-    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-    layer_kwargs: dict = {}
-    if use_bitpacking:
-        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
-    if prefix:
-        prefix_group = group.create_group(prefix)
-        zarr_indices = prefix_group.create_array(
-            "indices",
-            shape=(total_nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = prefix_group.create_group("layers")
-    else:
-        zarr_indices = group.create_array(
-            "indices",
-            shape=(total_nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = group.create_group("layers")
-    zarr_values = layers_group.create_array(
+    group = atlas.create_zarr_group(zarr_group)
+    indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
+    zarr_indices = spec.create_array(
+        group, indices_name, (total_nnz,), chunks=chunk_shape, shards=shard_shape
+    )
+    zarr_values = spec.create_array(
+        group,
         zarr_layer,
-        shape=(total_nnz,),
+        (total_nnz,),
         dtype=value_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
-        **layer_kwargs,
     )
 
     # Use subprocess for gzip decompression (faster than Python gzip module)
@@ -1146,8 +1044,8 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Insert cell records
     # -----------------------------------------------------------------------
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
+    arrow_schema = atlas.cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas.cell_schema)
 
     pointer_struct = pa.StructArray.from_arrays(
         [
@@ -1166,7 +1064,7 @@ def add_coo_batch(
     }
 
     # Zero-fill other pointer fields
-    for other_pf_name, other_pf in atlas._pointer_fields.items():
+    for other_pf_name, other_pf in atlas.pointer_fields.items():
         if other_pf_name == pointer_field.field_name:
             continue
         if other_pf.pointer_kind is PointerKind.SPARSE:
@@ -1271,23 +1169,17 @@ def add_csc(
         If no cells or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
             f"No pointer field named '{field_name}'. "
-            f"Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field = atlas._pointer_fields[field_name]
+    pointer_field = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
 
     # Look up layout_uid for this zarr_group + feature_space
-    datasets_df = (
-        atlas._dataset_table.search()
-        .where(
-            f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
-            prefilter=True,
-        )
-        .select(["layout_uid"])
-        .to_polars()
+    datasets_df = atlas.find_datasets(zarr_group, feature_space=feature_space).select(
+        ["layout_uid"]
     )
     if datasets_df.is_empty():
         raise ValueError(
@@ -1334,7 +1226,7 @@ def add_csc(
         )
 
     # Get n_features from _feature_layouts
-    rows = read_feature_layout(atlas._feature_layouts_table, layout_uid)
+    rows = atlas.read_feature_layout(layout_uid)
     n_features = len(rows)
 
     spec = get_spec(feature_space)
@@ -1370,9 +1262,9 @@ def _add_csc_scipy(
     csr_prefix = spec.layers.prefix
     csr_layers_path = spec.find_layers_path()
 
-    root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="r")
-    csr_indices = root[f"{zarr_group}/{csr_prefix}/indices"][:]
-    csr_values = root[f"{zarr_group}/{csr_layers_path}/{layer_name}"][:]
+    csr_group = atlas.open_zarr_group(zarr_group)
+    csr_indices = csr_group[f"{csr_prefix}/indices"][:]
+    csr_values = csr_group[f"{csr_layers_path}/{layer_name}"][:]
 
     indptr = np.empty(n_cells + 1, dtype=np.int64)
     indptr[0] = 0
@@ -1388,8 +1280,7 @@ def _add_csc_scipy(
     csc = csr.tocsc()
 
     nnz = csc.nnz
-    _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
-    csc_group = _writable_root.require_group(f"{zarr_group}/csc")
+    csc_group = atlas.require_zarr_group(f"{zarr_group}/csc")
 
     csc_indices_zarr = csc_group.create_array(
         "indices",
@@ -1418,4 +1309,4 @@ def _add_csc_scipy(
     csc_group.create_array("indptr", data=csc.indptr.astype(np.int64))
 
     # Cache invalidation
-    atlas._group_readers.pop((zarr_group, feature_space), None)
+    atlas.invalidate_group_reader(zarr_group, feature_space)

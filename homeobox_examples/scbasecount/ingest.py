@@ -20,7 +20,7 @@ import pyarrow as pa
 import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.codecs.bitpacking import BitpackingCodec
+from homeobox.group_specs import get_spec
 from homeobox.ingestion import add_csc
 from homeobox.obs_alignment import PointerFieldInfo, _schema_obs_fields
 from homeobox.schema import make_uid
@@ -259,45 +259,27 @@ def ingest_genefull(
     union_indptr, union_indices, reindexed = _union_sparsity([unique, em, uniform])
     nnz = len(union_indices)
 
-    # Determine if data is integer for bitpacking
     data_dtype = unique.data.dtype
-    use_bitpacking = data_dtype in {
-        np.dtype("int32"),
-        np.dtype("int64"),
-        np.dtype("uint32"),
-        np.dtype("uint64"),
-    }
-    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-    layer_kwargs: dict = {}
-    if use_bitpacking:
-        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
 
     chunk_shape = (CHUNK_SIZE,)
     shard_shape = (SHARD_SIZE,)
 
-    # Write zarr group
+    spec = get_spec(FEATURE_SPACE)
     group = atlas._root.create_group(zarr_group)
-    csr_group = group.create_group("csr")
 
-    zarr_indices = csr_group.create_array(
-        "indices",
-        shape=(nnz,),
-        dtype=np.uint32,
-        chunks=chunk_shape,
-        shards=shard_shape,
-        **indices_kwargs,
+    zarr_indices = spec.create_array(
+        group, "csr/indices", (nnz,), chunks=chunk_shape, shards=shard_shape
     )
-    layers_group = csr_group.create_group("layers")
 
     layer_names = ["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"]
     for k, layer_name in enumerate(layer_names):
-        zarr_layer = layers_group.create_array(
+        zarr_layer = spec.create_array(
+            group,
             layer_name,
-            shape=(nnz,),
+            (nnz,),
             dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
-            **layer_kwargs,
         )
         # Write in batches
         batch_size = shard_shape[0]

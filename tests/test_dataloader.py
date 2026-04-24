@@ -62,8 +62,8 @@ def _make_sparse_adata(
     rng: np.random.Generator,
     tissues: list[str] | None = None,
 ) -> ad.AnnData:
-    X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.float32, random_state=rng)
-    X.data[:] = rng.integers(1, 100, size=X.nnz).astype(np.float32)
+    X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.uint32, random_state=rng)
+    X.data[:] = rng.integers(1, 100, size=X.nnz).astype(np.uint32)
     obs = {"tissue": tissues or [f"tissue_{i % 3}" for i in range(n_obs)]}
     var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
     return ad.AnnData(X=X, obs=obs, var=var)

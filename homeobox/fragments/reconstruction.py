@@ -51,7 +51,7 @@ def _resolve_chrom_names(
     """Look up chromosome sequence_name values for joined global indices."""
     if len(joined_globals) == 0:
         return []
-    registry_table = atlas._registry_tables[feature_space]
+    registry_table = atlas.registry_tables[feature_space]
     indices_sql = ", ".join(str(i) for i in joined_globals.tolist())
     registry_df = (
         registry_table.search()
@@ -147,7 +147,7 @@ class IntervalReconstructor:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
             ends = group_cells["_end"].to_numpy().astype(np.int64)
-            gr = atlas._get_group_reader(zg, spec.feature_space)
+            gr = atlas.get_group_reader(zg, spec.feature_space)
             readers = [gr.get_array_reader(name) for name in array_names]
             group_data.append((zg, group_cells, starts, ends, readers))
 
