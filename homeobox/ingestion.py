@@ -17,7 +17,6 @@ import scipy.sparse as sp
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.feature_layouts import read_feature_layout
 from homeobox.group_specs import PointerKind, ZarrGroupSpec, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import (
@@ -198,7 +197,7 @@ class SparseZarrWriter:
         Parameters
         ----------
         group
-            Zarr group (e.g., ``atlas._root.create_group(uid)``).
+            Zarr group (e.g., ``atlas.create_zarr_group(uid)``).
         zarr_layer
             Layer name (e.g., ``"counts"``).
         data_dtype
@@ -363,8 +362,8 @@ def _build_cell_arrow_table(
         Arrow table matching the cell schema, ready for ``cell_table.add()``.
     """
     n_cells = len(obs_df)
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
+    arrow_schema = atlas.cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas.cell_schema)
 
     columns: dict[str, pa.Array] = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
@@ -372,7 +371,7 @@ def _build_cell_arrow_table(
     }
 
     # Fill pointer fields — real data where provided, zero-fill otherwise
-    for pf_name, pf in atlas._pointer_fields.items():
+    for pf_name, pf in atlas.pointer_fields.items():
         if pf_name in pointer_data:
             columns[pf_name] = pointer_data[pf_name]
         elif pf.pointer_kind is PointerKind.SPARSE:
@@ -466,12 +465,12 @@ def insert_cell_records(
     int
         Number of cells inserted.
     """
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
             f"No pointer field named '{field_name}'. "
-            f"Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field = atlas._pointer_fields[field_name]
+    pointer_field = atlas.pointer_fields[field_name]
 
     pointer_struct = _make_sparse_pointer(zarr_group, starts, ends, zarr_row_offset)
     arrow_table = _build_cell_arrow_table(
@@ -670,18 +669,18 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
-    if atlas._cell_schema is None:
+    if atlas.cell_schema is None:
         raise ValueError(
             "Cannot ingest data into an atlas opened without a cell schema. "
             "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
-            f"Schema {atlas._cell_schema.__name__} has no pointer field "
-            f"named '{field_name}'. Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Schema {atlas.cell_schema.__name__} has no pointer field "
+            f"named '{field_name}'. Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field: PointerField = atlas._pointer_fields[field_name]
+    pointer_field: PointerField = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
@@ -691,7 +690,7 @@ def add_anndata_batch(
             f"'{feature_space}'. Allowed: {spec.layers.allowed_names}"
         )
 
-    obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
+    obs_errors = validate_obs_columns(adata.obs, atlas.cell_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
@@ -727,13 +726,9 @@ def add_anndata_batch(
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
 
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=type(dataset_record).to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
+    atlas.register_dataset(dataset_record)
 
-    group = atlas._root.create_group(zarr_group)
+    group = atlas.create_zarr_group(zarr_group)
     if spec.pointer_kind is PointerKind.SPARSE:
         starts, ends = _write_sparse_batched(
             group, adata, zarr_layer, chunk_shape, shard_shape, spec
@@ -878,18 +873,18 @@ def add_coo_batch(
     int
         Number of cells ingested.
     """
-    if atlas._cell_schema is None:
+    if atlas.cell_schema is None:
         raise ValueError(
             "Cannot ingest data into an atlas opened without a cell schema. "
             "Provide cell_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
-            f"Schema {atlas._cell_schema.__name__} has no pointer field "
-            f"named '{field_name}'. Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Schema {atlas.cell_schema.__name__} has no pointer field "
+            f"named '{field_name}'. Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field: PointerField = atlas._pointer_fields[field_name]
+    pointer_field: PointerField = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
     if spec.pointer_kind is not PointerKind.SPARSE:
@@ -904,7 +899,7 @@ def add_coo_batch(
             f"Allowed: {spec.layers.allowed_names}"
         )
 
-    obs_errors = validate_obs_columns(obs_df, atlas._cell_schema)
+    obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
@@ -956,16 +951,12 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Register dataset record
     # -----------------------------------------------------------------------
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=type(dataset_record).to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
+    atlas.register_dataset(dataset_record)
 
     # -----------------------------------------------------------------------
     # Pass 2: Stream triplet chunks into zarr
     # -----------------------------------------------------------------------
-    group = atlas._root.create_group(zarr_group)
+    group = atlas.create_zarr_group(zarr_group)
     indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
     zarr_indices = spec.create_array(
         group, indices_name, (total_nnz,), chunks=chunk_shape, shards=shard_shape
@@ -1033,8 +1024,8 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Insert cell records
     # -----------------------------------------------------------------------
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
+    arrow_schema = atlas.cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas.cell_schema)
 
     pointer_struct = pa.StructArray.from_arrays(
         [
@@ -1053,7 +1044,7 @@ def add_coo_batch(
     }
 
     # Zero-fill other pointer fields
-    for other_pf_name, other_pf in atlas._pointer_fields.items():
+    for other_pf_name, other_pf in atlas.pointer_fields.items():
         if other_pf_name == pointer_field.field_name:
             continue
         if other_pf.pointer_kind is PointerKind.SPARSE:
@@ -1149,23 +1140,17 @@ def add_csc(
         If no cells or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    if field_name not in atlas._pointer_fields:
+    if field_name not in atlas.pointer_fields:
         raise ValueError(
             f"No pointer field named '{field_name}'. "
-            f"Available: {sorted(atlas._pointer_fields.keys())}"
+            f"Available: {sorted(atlas.pointer_fields.keys())}"
         )
-    pointer_field = atlas._pointer_fields[field_name]
+    pointer_field = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
 
     # Look up layout_uid for this zarr_group + feature_space
-    datasets_df = (
-        atlas._dataset_table.search()
-        .where(
-            f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
-            prefilter=True,
-        )
-        .select(["layout_uid"])
-        .to_polars()
+    datasets_df = atlas.find_datasets(zarr_group, feature_space=feature_space).select(
+        ["layout_uid"]
     )
     if datasets_df.is_empty():
         raise ValueError(
@@ -1212,7 +1197,7 @@ def add_csc(
         )
 
     # Get n_features from _feature_layouts
-    rows = read_feature_layout(atlas._feature_layouts_table, layout_uid)
+    rows = atlas.read_feature_layout(layout_uid)
     n_features = len(rows)
 
     spec = get_spec(feature_space)
@@ -1248,9 +1233,9 @@ def _add_csc_scipy(
     csr_prefix = spec.layers.prefix
     csr_layers_path = spec.find_layers_path()
 
-    root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="r")
-    csr_indices = root[f"{zarr_group}/{csr_prefix}/indices"][:]
-    csr_values = root[f"{zarr_group}/{csr_layers_path}/{layer_name}"][:]
+    csr_group = atlas.open_zarr_group(zarr_group)
+    csr_indices = csr_group[f"{csr_prefix}/indices"][:]
+    csr_values = csr_group[f"{csr_layers_path}/{layer_name}"][:]
 
     indptr = np.empty(n_cells + 1, dtype=np.int64)
     indptr[0] = 0
@@ -1266,8 +1251,7 @@ def _add_csc_scipy(
     csc = csr.tocsc()
 
     nnz = csc.nnz
-    _writable_root = zarr.open_group(zarr.storage.ObjectStore(atlas._store), mode="a")
-    csc_group = _writable_root.require_group(f"{zarr_group}/csc")
+    csc_group = atlas.require_zarr_group(f"{zarr_group}/csc")
 
     csc_indices_zarr = csc_group.create_array(
         "indices",
@@ -1296,4 +1280,4 @@ def _add_csc_scipy(
     csc_group.create_array("indptr", data=csc.indptr.astype(np.int64))
 
     # Cache invalidation
-    atlas._group_readers.pop((zarr_group, feature_space), None)
+    atlas.invalidate_group_reader(zarr_group, feature_space)
