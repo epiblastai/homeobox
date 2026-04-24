@@ -11,12 +11,13 @@ import numpy as np
 
 from homeobox.group_specs import (
     ArraySpec,
+    FeatureSpaceSpec,
     LayersSpec,
     PointerKind,
     ZarrGroupSpec,
     register_spec,
 )
-from homeobox.reconstruction import SparseCSRReconstructor
+from homeobox.reconstruction import SparseGeneExpressionReconstructor
 from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
@@ -29,24 +30,26 @@ from homeobox.schema import (
 # Custom feature space spec for GeneFull_Ex50pAS layers
 # ---------------------------------------------------------------------------
 
-GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
+GENEFULL_EXPRESSION_SPEC = FeatureSpaceSpec(
     feature_space="genefull_expression",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
-    ],
-    layers=LayersSpec(
-        prefix="csr",
-        match_shape_of="csr/indices",
-        required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32])],
-        allowed=[
-            ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32]),
-            ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.uint32]),
-            ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.uint32]),
+    reconstructor=SparseGeneExpressionReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
         ],
+        layers=LayersSpec(
+            prefix="csr",
+            match_shape_of="csr/indices",
+            required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32])],
+            allowed=[
+                ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32]),
+                ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.uint32]),
+                ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.uint32]),
+            ],
+        ),
     ),
-    reconstructor=SparseCSRReconstructor(),
 )
 register_spec(GENEFULL_EXPRESSION_SPEC)
 

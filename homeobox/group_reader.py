@@ -142,9 +142,19 @@ class GroupReader:
 
     @property
     def has_csc(self) -> bool:
-        """Return True if this zarr group has CSC data (indptr in zarr)."""
+        """Return True if this zarr group has a feature-oriented (CSC) copy.
+
+        Resolved against the registered ``FeatureSpaceSpec.feature_oriented``:
+        if the spec declares no feature-oriented copy this always returns
+        False, otherwise the on-disk subgroup is validated against the spec.
+        """
+        from homeobox.group_specs import get_spec
+
+        spec = get_spec(self.feature_space)
+        if spec.feature_oriented is None:
+            return False
         self._ensure_initialized()
-        return "csc" in self._zarr_group_handle and "indptr" in self._zarr_group_handle["csc"]
+        return spec.has_feature_oriented_copy(self._zarr_group_handle)
 
     def get_csc_indptr(self) -> np.ndarray:
         """Lazily load and cache the CSC indptr array from zarr."""

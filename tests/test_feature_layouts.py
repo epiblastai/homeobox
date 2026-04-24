@@ -471,7 +471,7 @@ class TestGroupReaderRemap:
         assert result is remap  # frozen — same object
 
     def test_has_csc_via_zarr(self, tmp_path):
-        """has_csc checks for zarr indptr existence."""
+        """has_csc validates the CSC subgroup against the spec's feature_oriented layout."""
         import obstore
 
         from homeobox.group_reader import GroupReader
@@ -485,11 +485,19 @@ class TestGroupReaderRemap:
         )
         assert not gr.has_csc
 
-        # Create csc/indptr
+        # A partial CSC group (indptr only) does not satisfy the spec — still False.
         csc = grp.create_group("csc")
-        csc.create_array("indptr", data=np.array([0, 5, 10], dtype=np.int64))
+        csc.create_array("indptr", shape=(3,), dtype=np.int64)
+        gr_partial = GroupReader.for_worker(
+            "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
+        )
+        assert not gr_partial.has_csc
 
-        # Need fresh GroupReader since zarr handle is cached
+        # Populate the rest of the CSC layout: indices + layers/counts.
+        csc.create_array("indices", shape=(0,), dtype=np.uint32)
+        layers_grp = csc.create_group("layers")
+        layers_grp.create_array("counts", shape=(0,), dtype=np.uint32)
+
         gr2 = GroupReader.for_worker(
             "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
         )

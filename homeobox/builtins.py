@@ -10,21 +10,30 @@ from homeobox.codecs.bitpacking import BitpackingCodec
 from homeobox.fragments.reconstruction import IntervalReconstructor
 from homeobox.group_specs import (
     ArraySpec,
+    FeatureSpaceSpec,
     LayersSpec,
     PointerKind,
     ZarrGroupSpec,
     register_spec,
 )
-from homeobox.reconstruction import DenseReconstructor, SparseCSRReconstructor
+from homeobox.reconstruction import DenseReconstructor, SparseGeneExpressionReconstructor
 
 # ---------------------------------------------------------------------------
-# Built-in specs
+# Gene expression (CSR primary, optional CSC feature-oriented copy)
 # ---------------------------------------------------------------------------
 
-GENE_EXPRESSION_SPEC = ZarrGroupSpec(
-    feature_space="gene_expression",
-    pointer_kind=PointerKind.SPARSE,
-    has_var_df=True,
+_GENE_EXPRESSION_LAYER_SPECS = [
+    ArraySpec(
+        array_name="counts",
+        ndim=1,
+        allowed_dtypes=[np.uint32],
+        compressors=BitpackingCodec(transform="none"),
+    ),
+    ArraySpec(array_name="log_normalized", ndim=1, allowed_dtypes=[np.float32]),
+    ArraySpec(array_name="tpm", ndim=1, allowed_dtypes=[np.float32]),
+]
+
+GENE_EXPRESSION_CSR = ZarrGroupSpec(
     required_arrays=[
         ArraySpec(
             array_name="csr/indices",
@@ -44,95 +53,130 @@ GENE_EXPRESSION_SPEC = ZarrGroupSpec(
                 compressors=BitpackingCodec(transform="none"),
             ),
         ],
-        allowed=[
-            ArraySpec(
-                array_name="counts",
-                ndim=1,
-                allowed_dtypes=[np.uint32],
-                compressors=BitpackingCodec(transform="none"),
-            ),
-            ArraySpec(array_name="log_normalized", ndim=1, allowed_dtypes=[np.float32]),
-            ArraySpec(array_name="tpm", ndim=1, allowed_dtypes=[np.float32]),
-        ],
+        allowed=_GENE_EXPRESSION_LAYER_SPECS,
     ),
-    reconstructor=SparseCSRReconstructor(),
 )
 
-IMAGE_FEATURES_SPEC = ZarrGroupSpec(
+# TODO: I don't like that `csc/` isn't specified anywhere
+# as the group name / path
+GENE_EXPRESSION_CSC = ZarrGroupSpec(
+    required_arrays=[
+        ArraySpec(
+            array_name="indices",
+            ndim=1,
+            allowed_dtypes=[np.uint32],
+        ),
+        ArraySpec(
+            array_name="indptr",
+            ndim=1,
+            allowed_dtypes=[np.int64],
+        ),
+    ],
+    layers=LayersSpec(
+        match_shape_of="indices",
+        required=[
+            ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32]),
+        ],
+        allowed=_GENE_EXPRESSION_LAYER_SPECS,
+    ),
+)
+
+GENE_EXPRESSION_SPEC = FeatureSpaceSpec(
+    feature_space="gene_expression",
+    pointer_kind=PointerKind.SPARSE,
+    has_var_df=True,
+    reconstructor=SparseGeneExpressionReconstructor(),
+    zarr_group_spec=GENE_EXPRESSION_CSR,
+    feature_oriented=GENE_EXPRESSION_CSC,
+)
+
+# ---------------------------------------------------------------------------
+# Image features (dense)
+# ---------------------------------------------------------------------------
+
+IMAGE_FEATURES_SPEC = FeatureSpaceSpec(
     feature_space="image_features",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    layers=LayersSpec(
-        required=[
-            ArraySpec(array_name="ctrl_standardized", ndim=2, allowed_dtypes=[np.float32]),
-        ],
-        allowed=[
-            ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32]),
-            ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32]),
-            ArraySpec(array_name="ctrl_standardized", ndim=2, allowed_dtypes=[np.float32]),
-        ],
-    ),
     reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            required=[
+                ArraySpec(array_name="ctrl_standardized", ndim=2, allowed_dtypes=[np.float32]),
+            ],
+            allowed=[
+                ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32]),
+                ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32]),
+                ArraySpec(array_name="ctrl_standardized", ndim=2, allowed_dtypes=[np.float32]),
+            ],
+        ),
+    ),
 )
 
 # ---------------------------------------------------------------------------
 # Protein abundance (CITE-seq / ADT)
 # ---------------------------------------------------------------------------
 
-PROTEIN_ABUNDANCE_SPEC = ZarrGroupSpec(
+PROTEIN_ABUNDANCE_SPEC = FeatureSpaceSpec(
     feature_space="protein_abundance",
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
-    layers=LayersSpec(
-        required=[ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32])],
-        allowed=[
-            ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32]),
-            ArraySpec(array_name="clr_normalized", ndim=2, allowed_dtypes=[np.float32]),
-            ArraySpec(array_name="dsb_normalized", ndim=2, allowed_dtypes=[np.float32]),
-        ],
-    ),
     reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            required=[ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32])],
+            allowed=[
+                ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32]),
+                ArraySpec(array_name="clr_normalized", ndim=2, allowed_dtypes=[np.float32]),
+                ArraySpec(array_name="dsb_normalized", ndim=2, allowed_dtypes=[np.float32]),
+            ],
+        ),
+    ),
 )
 
 # ---------------------------------------------------------------------------
 # Chromatin accessibility (cell-sorted fragments)
 # ---------------------------------------------------------------------------
 
-CHROMATIN_ACCESSIBILITY_SPEC = ZarrGroupSpec(
+CHROMATIN_ACCESSIBILITY_SPEC = FeatureSpaceSpec(
     feature_space="chromatin_accessibility",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="cell_sorted/chromosomes", ndim=1, allowed_dtypes=[np.uint8]),
-        ArraySpec(
-            array_name="cell_sorted/starts",
-            ndim=1,
-            allowed_dtypes=[np.uint32],
-            compressors=BitpackingCodec(transform="delta"),
-        ),
-        ArraySpec(
-            array_name="cell_sorted/lengths",
-            ndim=1,
-            allowed_dtypes=[np.uint16, np.uint32],
-            compressors=BitpackingCodec(transform="none"),
-        ),
-    ],
-    layers=LayersSpec(),
     reconstructor=IntervalReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(array_name="cell_sorted/chromosomes", ndim=1, allowed_dtypes=[np.uint8]),
+            ArraySpec(
+                array_name="cell_sorted/starts",
+                ndim=1,
+                allowed_dtypes=[np.uint32],
+                compressors=BitpackingCodec(transform="delta"),
+            ),
+            ArraySpec(
+                array_name="cell_sorted/lengths",
+                ndim=1,
+                allowed_dtypes=[np.uint16, np.uint32],
+                compressors=BitpackingCodec(transform="none"),
+            ),
+        ],
+        layers=LayersSpec(),
+    ),
 )
 
 # ---------------------------------------------------------------------------
 # Image tiles
 # ---------------------------------------------------------------------------
 
-IMAGE_TILES_SPEC = ZarrGroupSpec(
+IMAGE_TILES_SPEC = FeatureSpaceSpec(
     feature_space="image_tiles",
     pointer_kind=PointerKind.DENSE,
     has_var_df=False,
-    required_arrays=[
-        ArraySpec(array_name="data", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]),
-    ],
     reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(array_name="data", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]),
+        ],
+    ),
 )
 
 

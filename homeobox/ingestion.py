@@ -17,7 +17,7 @@ import scipy.sparse as sp
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.group_specs import PointerKind, ZarrGroupSpec, get_spec
+from homeobox.group_specs import FeatureSpaceSpec, PointerKind, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import (
     DatasetRecord,
@@ -217,16 +217,20 @@ class SparseZarrWriter:
         spec = get_spec(feature_space)
         chunk_shape = (chunk_elems,)
         shard_shape = (shard_elems,)
-        indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
+        indices_name = (
+            f"{spec.zarr_group_spec.layers.prefix}/indices"
+            if spec.zarr_group_spec.layers.prefix
+            else "indices"
+        )
 
-        zarr_indices = spec.create_array(
+        zarr_indices = spec.zarr_group_spec.create_array(
             group,
             indices_name,
             (initial_capacity,),
             chunks=chunk_shape,
             shards=shard_shape,
         )
-        zarr_values = spec.create_array(
+        zarr_values = spec.zarr_group_spec.create_array(
             group,
             zarr_layer,
             (initial_capacity,),
@@ -262,7 +266,7 @@ class SparseZarrWriter:
             Shard size, must match the original arrays.
         """
         spec = get_spec(feature_space)
-        prefix = spec.layers.prefix
+        prefix = spec.zarr_group_spec.layers.prefix
 
         if prefix:
             zarr_indices = group[f"{prefix}/indices"]
@@ -489,7 +493,7 @@ def _write_sparse_batched(
     zarr_layer: str,
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
-    spec: ZarrGroupSpec,
+    spec: FeatureSpaceSpec,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pre-allocate and stream-write CSR data in shard-sized batches.
 
@@ -536,11 +540,15 @@ def _write_sparse_batched(
         src_data = csr.data
         data_dtype = csr.data.dtype
 
-    indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
-    zarr_indices = spec.create_array(
+    indices_name = (
+        f"{spec.zarr_group_spec.layers.prefix}/indices"
+        if spec.zarr_group_spec.layers.prefix
+        else "indices"
+    )
+    zarr_indices = spec.zarr_group_spec.create_array(
         group, indices_name, (nnz,), chunks=chunk_shape, shards=shard_shape
     )
-    zarr_values = spec.create_array(
+    zarr_values = spec.zarr_group_spec.create_array(
         group,
         zarr_layer,
         (nnz,),
@@ -587,7 +595,7 @@ def _write_dense_batched(
     zarr_layer: str,
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
-    spec: ZarrGroupSpec,
+    spec: FeatureSpaceSpec,
 ) -> None:
     """Pre-allocate and stream-write dense 2D data in shard-sized cell batches.
 
@@ -598,7 +606,7 @@ def _write_dense_batched(
     batch_size = shard_shape[0]
     data_dtype = adata.X.dtype
 
-    zarr_arr = spec.create_array(
+    zarr_arr = spec.zarr_group_spec.create_array(
         group,
         zarr_layer,
         (n_cells, n_vars),
@@ -684,10 +692,13 @@ def add_anndata_batch(
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
+    if (
+        spec.zarr_group_spec.layers.allowed
+        and zarr_layer not in spec.zarr_group_spec.layers.allowed_names
+    ):
         raise ValueError(
             f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.layers.allowed_names}"
+            f"'{feature_space}'. Allowed: {spec.zarr_group_spec.layers.allowed_names}"
         )
 
     obs_errors = validate_obs_columns(adata.obs, atlas.cell_schema)
@@ -893,10 +904,13 @@ def add_coo_batch(
             f"but '{feature_space}' is {spec.pointer_kind.value}"
         )
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
+    if (
+        spec.zarr_group_spec.layers.allowed
+        and zarr_layer not in spec.zarr_group_spec.layers.allowed_names
+    ):
         raise ValueError(
             f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
-            f"Allowed: {spec.layers.allowed_names}"
+            f"Allowed: {spec.zarr_group_spec.layers.allowed_names}"
         )
 
     obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
@@ -912,7 +926,7 @@ def add_coo_batch(
     shard_shape = shard_shape or (_SHARD_ELEMS,)
 
     if value_dtype is None:
-        value_dtype = spec.layers.array_specs_by_name[zarr_layer].allowed_dtypes[0]
+        value_dtype = spec.zarr_group_spec.layers.array_specs_by_name[zarr_layer].allowed_dtypes[0]
 
     zarr_group = dataset_record.zarr_group
     offset = 1 if one_indexed else 0
@@ -957,11 +971,15 @@ def add_coo_batch(
     # Pass 2: Stream triplet chunks into zarr
     # -----------------------------------------------------------------------
     group = atlas.create_zarr_group(zarr_group)
-    indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
-    zarr_indices = spec.create_array(
+    indices_name = (
+        f"{spec.zarr_group_spec.layers.prefix}/indices"
+        if spec.zarr_group_spec.layers.prefix
+        else "indices"
+    )
+    zarr_indices = spec.zarr_group_spec.create_array(
         group, indices_name, (total_nnz,), chunks=chunk_shape, shards=shard_shape
     )
-    zarr_values = spec.create_array(
+    zarr_values = spec.zarr_group_spec.create_array(
         group,
         zarr_layer,
         (total_nnz,),
@@ -1227,11 +1245,11 @@ def _add_csc_scipy(
     chunk_size: int,
     shard_size: int,
     feature_space: str,
-    spec: ZarrGroupSpec,
+    spec: FeatureSpaceSpec,
 ) -> None:
     """CSR-to-CSC using scipy (fast, but loads full matrix into RAM)."""
-    csr_prefix = spec.layers.prefix
-    csr_layers_path = spec.find_layers_path()
+    csr_prefix = spec.zarr_group_spec.layers.prefix
+    csr_layers_path = spec.zarr_group_spec.find_layers_path()
 
     csr_group = atlas.open_zarr_group(zarr_group)
     csr_indices = csr_group[f"{csr_prefix}/indices"][:]
@@ -1250,21 +1268,27 @@ def _add_csc_scipy(
     )
     csc = csr.tocsc()
 
+    if spec.feature_oriented is None:
+        raise ValueError(
+            f"Feature space '{feature_space}' has no feature_oriented spec; "
+            "cannot write a CSC copy."
+        )
+    csc_spec = spec.feature_oriented
+
     nnz = csc.nnz
     csc_group = atlas.require_zarr_group(f"{zarr_group}/csc")
 
-    csc_indices_zarr = csc_group.create_array(
+    csc_indices_zarr = csc_spec.create_array(
+        csc_group,
         "indices",
-        shape=(nnz,),
-        dtype=np.uint32,
+        (nnz,),
         chunks=(chunk_size,),
         shards=(shard_size,),
     )
-    layers_group = csc_group.create_group("layers")
-    csc_values_zarr = layers_group.create_array(
+    csc_values_zarr = csc_spec.create_array(
+        csc_group,
         layer_name,
-        shape=(nnz,),
-        dtype=np.uint32,
+        (nnz,),
         chunks=(chunk_size,),
         shards=(shard_size,),
     )
@@ -1277,7 +1301,8 @@ def _add_csc_scipy(
         csc_values_zarr[written:end] = csc.data[written:end].astype(np.uint32)
         written = end
 
-    csc_group.create_array("indptr", data=csc.indptr.astype(np.int64))
+    csc_spec.create_array(csc_group, "indptr", csc.indptr.shape)
+    csc_group["indptr"][:] = csc.indptr.astype(np.int64)
 
     # Cache invalidation
     atlas.invalidate_group_reader(zarr_group, feature_space)

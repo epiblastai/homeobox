@@ -241,21 +241,21 @@ def write_fragment_arrays(
     batch_size = shard_shape[0]
 
     spec = get_spec(FEATURE_SPACE)
-    zarr_chroms = spec.create_array(
+    zarr_chroms = spec.zarr_group_spec.create_array(
         group,
         "cell_sorted/chromosomes",
         (n_fragments,),
         chunks=chunk_shape,
         shards=shard_shape,
     )
-    zarr_starts = spec.create_array(
+    zarr_starts = spec.zarr_group_spec.create_array(
         group,
         "cell_sorted/starts",
         (n_fragments,),
         chunks=chunk_shape,
         shards=shard_shape,
     )
-    zarr_lengths = spec.create_array(
+    zarr_lengths = spec.zarr_group_spec.create_array(
         group,
         "cell_sorted/lengths",
         (n_fragments,),

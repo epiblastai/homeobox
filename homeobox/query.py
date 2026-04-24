@@ -408,9 +408,8 @@ class AtlasQuery:
             Container with shared ``obs``, per-modality data in ``mod``,
             and boolean presence masks in ``present``.
         """
-        from homeobox.fragments.reconstruction import IntervalReconstructor
         from homeobox.multimodal import MultimodalResult
-        from homeobox.reconstruction import DenseReconstructor, _build_obs_df
+        from homeobox.reconstruction import _build_obs_df
 
         cells_pl = self._materialize_cells()
         obs = _build_obs_df(cells_pl)
@@ -425,6 +424,7 @@ class AtlasQuery:
         for pf in active_pfs.values():
             spec = get_spec(pf.feature_space)
             reconstructor = spec.reconstructor
+            endpoints = spec.valid_endpoints()
 
             # Compute presence mask from pointer column
             ptr_col = cells_pl[pf.field_name]
@@ -434,10 +434,16 @@ class AtlasQuery:
             if not mask.any():
                 continue
 
-            # Dispatch to the appropriate reconstruction method
-            if isinstance(reconstructor, IntervalReconstructor):
+            # TODO: Might make sense to not just have `endpoint` but `default_endpoint`
+            # instead. That specifies what the natural preferred type is. This isn't perfect
+            # when there are cases where a reconstructor isn't oriented toward 1 specific feature
+            # space (i.e., DenseReconstructor can be for image tiles or image features).
+            # Dispatch to the appropriate endpoint:
+            # fragments first (modality-native), then raw array for var-less
+            # dense feature spaces, otherwise an AnnData.
+            if "as_fragments" in endpoints:
                 result = reconstructor.as_fragments(self._atlas, cells_pl, pf, spec)
-            elif isinstance(reconstructor, DenseReconstructor) and not spec.has_var_df:
+            elif "as_array" in endpoints and not spec.has_var_df:
                 result = reconstructor.as_array(self._atlas, cells_pl, pf, spec)
             else:
                 result = self._reconstruct_single_space_anndata(cells_pl, pf)
@@ -453,17 +459,16 @@ class AtlasQuery:
         Parameters
         ----------
         field_name
-            Pointer-field attribute name whose feature_space uses an
-            :class:`~homeobox.fragments.reconstruction.IntervalReconstructor`.
+            Pointer-field attribute name whose feature_space exposes an
+            ``as_fragments`` endpoint (e.g. chromatin accessibility).
         """
-        from homeobox.fragments.reconstruction import IntervalReconstructor
-
         pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
-        if not isinstance(spec.reconstructor, IntervalReconstructor):
+        endpoints = spec.valid_endpoints()
+        if "as_fragments" not in endpoints:
             raise TypeError(
-                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
-                f"IntervalReconstructor (got {type(spec.reconstructor).__name__})"
+                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not "
+                f"support as_fragments. Valid endpoints: {endpoints}"
             )
 
         cells_pl = self._materialize_cells()
@@ -478,8 +483,8 @@ class AtlasQuery:
         Parameters
         ----------
         field_name
-            Pointer-field attribute name whose feature_space uses a
-            :class:`~homeobox.reconstruction.DenseReconstructor`.
+            Pointer-field attribute name whose feature_space exposes an
+            ``as_array`` endpoint (e.g. dense modalities like image tiles).
 
         Returns
         -------
@@ -487,14 +492,15 @@ class AtlasQuery:
             The raw NumPy array and a DataFrame of cell metadata for the
             cells present in this modality.
         """
-        from homeobox.reconstruction import DenseReconstructor, _build_obs_df
+        from homeobox.reconstruction import _build_obs_df
 
         pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
-        if not isinstance(spec.reconstructor, DenseReconstructor):
+        endpoints = spec.valid_endpoints()
+        if "as_array" not in endpoints:
             raise TypeError(
-                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
-                f"DenseReconstructor (got {type(spec.reconstructor).__name__})"
+                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not "
+                f"support as_array. Valid endpoints: {endpoints}"
             )
 
         cells_pl = self._materialize_cells()
@@ -585,7 +591,8 @@ class AtlasQuery:
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
         if layer is None:
-            layer = spec.layers.required[0].array_name if spec.layers.required else ""
+            zgs_layers = spec.zarr_group_spec.layers
+            layer = zgs_layers.required[0].array_name if zgs_layers.required else ""
 
         cells_pl = self._materialize_cells_for_dataset()
 
@@ -647,9 +654,8 @@ class AtlasQuery:
             layers = {}
             for fn, pf in resolved_pfs.items():
                 fs_spec = get_spec(pf.feature_space)
-                layers[fn] = (
-                    fs_spec.layers.required[0].array_name if fs_spec.layers.required else ""
-                )
+                zgs_layers = fs_spec.zarr_group_spec.layers
+                layers[fn] = zgs_layers.required[0].array_name if zgs_layers.required else ""
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fn, pf in resolved_pfs.items():
@@ -683,8 +689,12 @@ class AtlasQuery:
     ) -> ad.AnnData:
         """Reconstruct an AnnData for a single feature space."""
         spec = get_spec(pf.feature_space)
-        if spec.reconstructor is None:
-            raise ValueError(f"No reconstructor registered for feature space '{pf.feature_space}'")
+        endpoints = spec.valid_endpoints()
+        if "as_anndata" not in endpoints:
+            raise TypeError(
+                f"Feature space '{pf.feature_space}' does not support as_anndata. "
+                f"Valid endpoints: {endpoints}"
+            )
 
         wanted_globals = None
         if pf.feature_space in self._feature_filter:
