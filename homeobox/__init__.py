@@ -1,5 +1,6 @@
 import homeobox.builtins  # noqa: F401  # register built-in specs
 import homeobox.codecs.bitpacking  # noqa: F401  # register bitpacking codec
+from homeobox import spatial
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
     CellDataset,
@@ -60,4 +61,5 @@ __all__ = [
     "GenomeSortedReader",
     "RegionResult",
     "MultimodalResult",
+    "spatial",
 ]
