@@ -102,6 +102,119 @@ def test_last_axis_crossing_raises(tmp_path):
         ba.read_ranges(starts, ends)
 
 
+def test_read_boxes_2d_no_trailing(tmp_path):
+    shape = (32, 32)
+    arr, values = _make_sharded(tmp_path, shape, chunks=(4, 4), shards=(16, 16))
+    ba = BatchArray.from_array(arr)
+
+    box_shape = (5, 6)
+    mins = np.array([[0, 0], [3, 14], [10, 26], [20, 8]], dtype=np.int64)
+    maxes = mins + np.asarray(box_shape, dtype=np.int64)
+    flat = ba.read_boxes(mins, maxes)
+    out = flat.reshape(len(mins), *box_shape)
+
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=True)):
+        np.testing.assert_array_equal(out[i], values[lo[0] : hi[0], lo[1] : hi[1]])
+
+
+def test_read_boxes_trailing_axis_fuses_strips(tmp_path):
+    # HWC-like layout: 2-D box on a 3-D array with small trailing axis.
+    # Exercises the pivot-shrink path (axis n-1 == C is fully included AND
+    # matches output extent → absorbed into pivot → multi-row contiguous strips).
+    shape = (32, 32, 5)
+    arr, values = _make_sharded(tmp_path, shape, chunks=(8, 8, 5), shards=(16, 16, 5))
+    ba = BatchArray.from_array(arr)
+
+    box_shape = (10, 12)
+    mins = np.array([[0, 0], [5, 3], [14, 18], [20, 20]], dtype=np.int64)
+    maxes = mins + np.asarray(box_shape, dtype=np.int64)
+    flat = ba.read_boxes(mins, maxes)
+    out = flat.reshape(len(mins), *box_shape, shape[-1])
+
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=True)):
+        np.testing.assert_array_equal(out[i], values[lo[0] : hi[0], lo[1] : hi[1], :])
+
+
+def test_read_boxes_rank_equals_ndim(tmp_path):
+    shape = (12, 12, 12)
+    arr, values = _make_sharded(tmp_path, shape, chunks=(4, 4, 4), shards=(8, 8, 8))
+    ba = BatchArray.from_array(arr)
+
+    box_shape = (3, 4, 5)
+    mins = np.array([[0, 0, 0], [5, 2, 3], [9, 8, 7]], dtype=np.int64)
+    maxes = mins + np.asarray(box_shape, dtype=np.int64)
+    flat = ba.read_boxes(mins, maxes)
+    out = flat.reshape(len(mins), *box_shape)
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=True)):
+        expected = values[lo[0] : hi[0], lo[1] : hi[1], lo[2] : hi[2]]
+        np.testing.assert_array_equal(out[i], expected)
+
+
+def test_read_boxes_full_array_single_subchunk(tmp_path):
+    # Single box covering the entire array. With shards == shape, axes
+    # collapse all the way so pivot=0 and one strip per subchunk is emitted.
+    shape = (8, 8, 4)
+    arr, values = _make_sharded(tmp_path, shape, chunks=(8, 8, 4), shards=(8, 8, 4))
+    ba = BatchArray.from_array(arr)
+
+    mins = np.array([[0, 0]], dtype=np.int64)
+    maxes = np.array([[8, 8]], dtype=np.int64)
+    flat = ba.read_boxes(mins, maxes)
+    out = flat.reshape(1, 8, 8, 4)
+    np.testing.assert_array_equal(out[0], values)
+
+
+def test_read_boxes_edge_partial_subchunk(tmp_path):
+    # D_a not a multiple of chunk size — the last subchunk along axis 1 is
+    # partial (extent 3 instead of the chunk-shape's 4).
+    shape = (16, 11)
+    arr, values = _make_sharded(tmp_path, shape, chunks=(4, 4), shards=(8, 8))
+    ba = BatchArray.from_array(arr)
+
+    # Box that hits the partial-edge subchunk on axis 1.
+    mins = np.array([[0, 5], [6, 7]], dtype=np.int64)
+    maxes = mins + np.asarray([4, 4], dtype=np.int64)
+    flat = ba.read_boxes(mins, maxes)
+    out = flat.reshape(len(mins), 4, 4)
+    for i, (lo, hi) in enumerate(zip(mins, maxes, strict=True)):
+        np.testing.assert_array_equal(out[i], values[lo[0] : hi[0], lo[1] : hi[1]])
+
+
+def test_read_boxes_empty_batch(tmp_path):
+    shape = (8, 8)
+    arr, _ = _make_sharded(tmp_path, shape, chunks=(4, 4), shards=(8, 8))
+    ba = BatchArray.from_array(arr)
+    flat = ba.read_boxes(np.zeros((0, 2), dtype=np.int64), np.zeros((0, 2), dtype=np.int64))
+    assert flat.size == 0
+
+
+def test_read_boxes_validation_errors(tmp_path):
+    shape = (8, 8)
+    arr, _ = _make_sharded(tmp_path, shape, chunks=(4, 4), shards=(8, 8))
+    ba = BatchArray.from_array(arr)
+
+    # Non-uniform box shape.
+    with pytest.raises(RuntimeError, match="non-uniform box shape"):
+        ba.read_boxes(
+            np.array([[0, 0], [0, 0]], dtype=np.int64),
+            np.array([[3, 3], [4, 4]], dtype=np.int64),
+        )
+
+    # Max exceeds array extent.
+    with pytest.raises(RuntimeError, match="exceeds array extent"):
+        ba.read_boxes(
+            np.array([[0, 0]], dtype=np.int64),
+            np.array([[9, 9]], dtype=np.int64),
+        )
+
+    # Negative min_corner.
+    with pytest.raises(RuntimeError, match="negative min_corner"):
+        ba.read_boxes(
+            np.array([[-1, 0]], dtype=np.int64),
+            np.array([[2, 3]], dtype=np.int64),
+        )
+
+
 def test_fill_value_subchunk(tmp_path):
     # Write only subchunk (0,0) of shard (0,0); the other three subchunks in
     # that shard (and therefore strips landing in them) must come back as
