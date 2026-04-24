@@ -130,7 +130,7 @@ IMAGE_TILES_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=False,
     required_arrays=[
-        ArraySpec(array_name="data", ndim=4, allowed_dtypes=[np.uint8, np.uint16]),
+        ArraySpec(array_name="data", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]),
     ],
     reconstructor=DenseReconstructor(),
 )
