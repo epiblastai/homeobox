@@ -582,7 +582,7 @@ class AtlasQuery:
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
         if layer is None:
-            layer = spec.layers.required[0] if spec.layers.required else ""
+            layer = spec.layers.required[0].array_name if spec.layers.required else ""
 
         cells_pl = self._materialize_cells_for_dataset()
 
@@ -644,7 +644,9 @@ class AtlasQuery:
             layers = {}
             for fn, pf in resolved_pfs.items():
                 fs_spec = get_spec(pf.feature_space)
-                layers[fn] = fs_spec.layers.required[0] if fs_spec.layers.required else ""
+                layers[fn] = (
+                    fs_spec.layers.required[0].array_name if fs_spec.layers.required else ""
+                )
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fn, pf in resolved_pfs.items():

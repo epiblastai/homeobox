@@ -59,13 +59,13 @@ def _(mo):
 
 @app.cell
 def _():
+    import numpy as np
     import polars as pl
     from tqdm.auto import tqdm
 
     from homeobox.atlas import RaggedAtlas
     from homeobox.group_specs import (
         ArraySpec,
-        DTypeKind,
         LayersSpec,
         PointerKind,
         ZarrGroupSpec,
@@ -78,14 +78,17 @@ def _():
         pointer_kind=PointerKind.SPARSE,
         has_var_df=True,
         required_arrays=[
-            ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
+            ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
         ],
         layers=LayersSpec(
             prefix="csr",
-            uniform_shape=True,
             match_shape_of="csr/indices",
-            required=["Unique"],
-            allowed=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+            required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32])],
+            allowed=[
+                ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32]),
+                ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.int32]),
+                ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.int32]),
+            ],
         ),
         reconstructor=SparseCSRReconstructor(),
     )

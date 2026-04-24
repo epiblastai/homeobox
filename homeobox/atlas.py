@@ -409,9 +409,6 @@ class RaggedAtlas:
 
     # -- Feature registration -----------------------------------------------
 
-    # TODO: Add a dedupe_on option that checks the features for duplicates in
-    # specified column. For example, for a gene registry, this might check if
-    # the ensembl id is already registered in the table and skip it if so.
     def register_features(
         self,
         feature_space: str,

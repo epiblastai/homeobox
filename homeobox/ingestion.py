@@ -27,8 +27,6 @@ from homeobox.schema import (
 )
 from homeobox.util import sql_escape
 
-_INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
-
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
 _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
@@ -189,8 +187,7 @@ class SparseZarrWriter:
         group: zarr.Group,
         zarr_layer: str,
         *,
-        data_dtype: np.dtype = np.float32,
-        use_bitpacking: bool = False,
+        data_dtype: np.dtype | None = None,
         feature_space: str = "gene_expression",
         initial_capacity: int = _SHARD_ELEMS,
         chunk_elems: int = _CHUNK_ELEMS,
@@ -205,11 +202,12 @@ class SparseZarrWriter:
         zarr_layer
             Layer name (e.g., ``"counts"``).
         data_dtype
-            Data type for the values array.
-        use_bitpacking
-            Whether to use bitpacking codec for the values array.
+            Data type for the values array. If ``None``, the first entry of
+            the layer's ``allowed_dtypes`` in the spec is used.
         feature_space
-            Feature space name, used to look up the zarr group spec.
+            Feature space name, used to look up the zarr group spec. The
+            spec supplies dtype, ndim, and compressor for both the indices
+            and values arrays.
         initial_capacity
             Initial size for the flat arrays. Will be grown as needed.
         chunk_elems
@@ -217,50 +215,26 @@ class SparseZarrWriter:
         shard_elems
             Shard size for zarr arrays.
         """
-        from homeobox.codecs.bitpacking import BitpackingCodec
-
         spec = get_spec(feature_space)
-        prefix = spec.layers.prefix
-
-        indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-        layer_kwargs: dict = {}
-        if use_bitpacking:
-            layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
         chunk_shape = (chunk_elems,)
         shard_shape = (shard_elems,)
+        indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
 
-        if prefix:
-            prefix_group = group.create_group(prefix)
-            zarr_indices = prefix_group.create_array(
-                "indices",
-                shape=(initial_capacity,),
-                dtype=np.uint32,
-                chunks=chunk_shape,
-                shards=shard_shape,
-                **indices_kwargs,
-            )
-            layers_group = prefix_group.create_group("layers")
-        else:
-            zarr_indices = group.create_array(
-                "indices",
-                shape=(initial_capacity,),
-                dtype=np.uint32,
-                chunks=chunk_shape,
-                shards=shard_shape,
-                **indices_kwargs,
-            )
-            layers_group = group.create_group("layers")
-
-        zarr_values = layers_group.create_array(
+        zarr_indices = spec.create_array(
+            group,
+            indices_name,
+            (initial_capacity,),
+            chunks=chunk_shape,
+            shards=shard_shape,
+        )
+        zarr_values = spec.create_array(
+            group,
             zarr_layer,
-            shape=(initial_capacity,),
+            (initial_capacity,),
             dtype=data_dtype,
             chunks=chunk_shape,
             shards=shard_shape,
-            **layer_kwargs,
         )
-
         return cls(zarr_indices, zarr_values, shard_elems)
 
     @classmethod
@@ -516,7 +490,6 @@ def _write_sparse_batched(
     zarr_layer: str,
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
-    use_bitpacking: bool,
     spec: ZarrGroupSpec,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Pre-allocate and stream-write CSR data in shard-sized batches.
@@ -534,13 +507,6 @@ def _write_sparse_batched(
     tuple[np.ndarray, np.ndarray]
         ``(starts, ends)`` — per-cell indptr start/end positions.
     """
-    from homeobox.codecs.bitpacking import BitpackingCodec
-
-    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-    layer_kwargs: dict = {}
-    if use_bitpacking:
-        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
     backed_dense = _is_backed_dense(adata)
 
     if _is_backed_csr(adata):
@@ -571,36 +537,17 @@ def _write_sparse_batched(
         src_data = csr.data
         data_dtype = csr.data.dtype
 
-    # Create zarr arrays.
-    prefix = spec.layers.prefix
-    if prefix:
-        prefix_group = group.create_group(prefix)
-        zarr_indices = prefix_group.create_array(
-            "indices",
-            shape=(nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = prefix_group.create_group("layers")
-    else:
-        zarr_indices = group.create_array(
-            "indices",
-            shape=(nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = group.create_group("layers")
-    zarr_values = layers_group.create_array(
+    indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
+    zarr_indices = spec.create_array(
+        group, indices_name, (nnz,), chunks=chunk_shape, shards=shard_shape
+    )
+    zarr_values = spec.create_array(
+        group,
         zarr_layer,
-        shape=(nnz,),
+        (nnz,),
         dtype=data_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
-        **layer_kwargs,
     )
 
     if backed_dense:
@@ -652,11 +599,10 @@ def _write_dense_batched(
     batch_size = shard_shape[0]
     data_dtype = adata.X.dtype
 
-    layers_path = spec.find_layers_path()
-    layers_group = group.create_group(layers_path)
-    zarr_arr = layers_group.create_array(
+    zarr_arr = spec.create_array(
+        group,
         zarr_layer,
-        shape=(n_cells, n_vars),
+        (n_cells, n_vars),
         dtype=data_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
@@ -739,10 +685,10 @@ def add_anndata_batch(
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.layers.allowed}"
+            f"'{feature_space}'. Allowed: {spec.layers.allowed_names}"
         )
 
     obs_errors = validate_obs_columns(adata.obs, atlas._cell_schema)
@@ -755,11 +701,6 @@ def add_anndata_batch(
     n_cells = adata.n_obs
     zarr_group = dataset_record.zarr_group
 
-    # TODO: spec.required_arrays is a list with expected dtype and ndim
-    # we should be validating or casting the data from the data to match.
-    # I would suggest a `coerce_dtype` argument that is default False. We raise
-    # a hard error when it fails. If `coerce_dtype` is True then we validate that
-    # the conversion works without loss (convert then np.isclose?)
     if spec.pointer_kind is PointerKind.SPARSE:
         chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
         shard_shape = shard_shape or (_SHARD_ELEMS,)
@@ -768,15 +709,6 @@ def add_anndata_batch(
                 f"Sparse feature space '{feature_space}' requires 1-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
-        if _is_backed_csr(adata):
-            data_dtype = np.dtype(adata.file._file["X"]["data"].dtype)
-        else:
-            # Works for both backed dense (h5py.Dataset) and in-memory.
-            data_dtype = np.dtype(adata.X.dtype)
-
-        # TODO: It's much better to define the compression directly in the
-        # ArraySpec than to try inferring it here.
-        use_bitpacking = data_dtype in _INTEGER_DTYPES
     else:
         n_vars = adata.n_vars
         if chunk_shape is None:
@@ -794,7 +726,6 @@ def add_anndata_batch(
                 f"Dense feature space '{feature_space}' requires 2-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
-        use_bitpacking = False
 
     dataset_arrow = pa.Table.from_pylist(
         [dataset_record.model_dump()],
@@ -805,13 +736,7 @@ def add_anndata_batch(
     group = atlas._root.create_group(zarr_group)
     if spec.pointer_kind is PointerKind.SPARSE:
         starts, ends = _write_sparse_batched(
-            group,
-            adata,
-            zarr_layer,
-            chunk_shape,
-            shard_shape,
-            use_bitpacking,
-            spec,
+            group, adata, zarr_layer, chunk_shape, shard_shape, spec
         )
     else:
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
@@ -889,7 +814,7 @@ def add_coo_batch(
     cell_col: int = 1,
     value_col: int = 2,
     one_indexed: bool = True,
-    value_dtype: np.dtype = np.int32,
+    value_dtype: np.dtype | None = None,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
 ) -> int:
@@ -941,7 +866,8 @@ def add_coo_batch(
     one_indexed:
         Whether the file uses 1-based indexing (True) or 0-based (False).
     value_dtype:
-        Numpy dtype for values. Default ``int32``.
+        Numpy dtype for values. If ``None`` (default), the first entry of
+        the layer's ``allowed_dtypes`` in the spec is used.
     chunk_shape:
         Zarr chunk shape (1-element tuple). Defaults to ``(_CHUNK_ELEMS,)``.
     shard_shape:
@@ -972,10 +898,10 @@ def add_coo_batch(
             f"but '{feature_space}' is {spec.pointer_kind.value}"
         )
 
-    if spec.layers.allowed and zarr_layer not in spec.layers.allowed:
+    if spec.layers.allowed and zarr_layer not in spec.layers.allowed_names:
         raise ValueError(
             f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
-            f"Allowed: {spec.layers.allowed}"
+            f"Allowed: {spec.layers.allowed_names}"
         )
 
     obs_errors = validate_obs_columns(obs_df, atlas._cell_schema)
@@ -990,7 +916,9 @@ def add_coo_batch(
     chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
     shard_shape = shard_shape or (_SHARD_ELEMS,)
 
-    use_bitpacking = value_dtype in _INTEGER_DTYPES
+    if value_dtype is None:
+        value_dtype = spec.layers.array_specs_by_name[zarr_layer].allowed_dtypes[0]
+
     zarr_group = dataset_record.zarr_group
     offset = 1 if one_indexed else 0
 
@@ -1037,44 +965,18 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Pass 2: Stream triplet chunks into zarr
     # -----------------------------------------------------------------------
-    from homeobox.codecs.bitpacking import BitpackingCodec
-
     group = atlas._root.create_group(zarr_group)
-    prefix = spec.layers.prefix
-
-    indices_kwargs: dict = {"compressors": BitpackingCodec(transform="delta")}
-    layer_kwargs: dict = {}
-    if use_bitpacking:
-        layer_kwargs["compressors"] = BitpackingCodec(transform="none")
-
-    if prefix:
-        prefix_group = group.create_group(prefix)
-        zarr_indices = prefix_group.create_array(
-            "indices",
-            shape=(total_nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = prefix_group.create_group("layers")
-    else:
-        zarr_indices = group.create_array(
-            "indices",
-            shape=(total_nnz,),
-            dtype=np.uint32,
-            chunks=chunk_shape,
-            shards=shard_shape,
-            **indices_kwargs,
-        )
-        layers_group = group.create_group("layers")
-    zarr_values = layers_group.create_array(
+    indices_name = f"{spec.layers.prefix}/indices" if spec.layers.prefix else "indices"
+    zarr_indices = spec.create_array(
+        group, indices_name, (total_nnz,), chunks=chunk_shape, shards=shard_shape
+    )
+    zarr_values = spec.create_array(
+        group,
         zarr_layer,
-        shape=(total_nnz,),
+        (total_nnz,),
         dtype=value_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
-        **layer_kwargs,
     )
 
     # Use subprocess for gzip decompression (faster than Python gzip module)
