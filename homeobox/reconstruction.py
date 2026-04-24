@@ -61,7 +61,7 @@ def _load_remaps_and_features(
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
         for zg in groups:
-            group_remaps[zg] = atlas._get_group_reader(zg, spec.feature_space).get_remap()
+            group_remaps[zg] = atlas.get_group_reader(zg, spec.feature_space).get_remap()
 
     if wanted_globals is not None:
         joined_globals = wanted_globals
@@ -168,15 +168,15 @@ def _build_var(
     joined_globals: np.ndarray,
 ) -> pd.DataFrame:
     """Build a var DataFrame from the feature registry."""
-    if feature_space not in atlas._registry_tables:
+    if feature_space not in atlas.registry_tables:
         raise ValueError(
             f"No registry table for feature space '{feature_space}'. "
-            f"Available: {sorted(atlas._registry_tables.keys())}"
+            f"Available: {sorted(atlas.registry_tables.keys())}"
         )
     if len(joined_globals) == 0:
         return pd.DataFrame(index=pd.RangeIndex(0))
 
-    registry_table = atlas._registry_tables[feature_space]
+    registry_table = atlas.registry_tables[feature_space]
     indices_sql = ", ".join(str(i) for i in joined_globals.tolist())
     registry_df = (
         registry_table.search()
@@ -323,7 +323,7 @@ class SparseCSRReconstructor:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
             ends = group_cells["_end"].to_numpy().astype(np.int64)
-            gr = atlas._get_group_reader(zg, pf.feature_space)
+            gr = atlas.get_group_reader(zg, pf.feature_space)
             idx_reader = gr.get_array_reader(index_array_name)
             layers_path = spec.find_layers_path()
             lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
@@ -444,7 +444,7 @@ class DenseReconstructor:
             positions = group_cells["_pos"].to_numpy().astype(np.int64)
             starts = positions
             ends = positions + 1
-            gr = atlas._get_group_reader(zg, pf.feature_space)
+            gr = atlas.get_group_reader(zg, pf.feature_space)
             readers = [gr.get_array_reader(an) for an in array_names]
             group_data.append((zg, group_cells, starts, ends, offset, readers))
             offset += len(positions)
@@ -537,7 +537,7 @@ class DenseReconstructor:
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             positions = group_cells["_pos"].to_numpy().astype(np.int64)
-            gr = atlas._get_group_reader(zg, pf.feature_space)
+            gr = atlas.get_group_reader(zg, pf.feature_space)
             reader = gr.get_array_reader(array_name)
 
             shape_tail = tuple(reader.shape[1:])
@@ -786,7 +786,7 @@ class FeatureCSCReconstructor:
 
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
-            gr = atlas._get_group_reader(zg, spec.feature_space)
+            gr = atlas.get_group_reader(zg, spec.feature_space)
 
             if gr.has_csc:
                 info, coro = _prepare_csc_group(gr, group_cells, wanted_globals, layers_to_read)

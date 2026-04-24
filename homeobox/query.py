@@ -169,8 +169,8 @@ class AtlasQuery:
         requested features. The ``feature_join`` setting is ignored for
         filtered feature spaces; intersection semantics are used.
         """
-        if feature_space not in self._atlas._registry_tables:
-            known = sorted(self._atlas._registry_tables.keys())
+        if feature_space not in self._atlas.registry_tables:
+            known = sorted(self._atlas.registry_tables.keys())
             raise ValueError(f"No registry for feature space '{feature_space}'. Available: {known}")
         self._feature_filter[feature_space] = list(uids)
         return self
@@ -591,7 +591,7 @@ class AtlasQuery:
             from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
-                self._atlas._registry_tables[feature_space],
+                self._atlas.registry_tables[feature_space],
                 self._feature_filter[feature_space],
             )
 
@@ -655,7 +655,7 @@ class AtlasQuery:
                 from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
                 wg = resolve_feature_uids_to_global_indices(
-                    self._atlas._registry_tables[pf.feature_space],
+                    self._atlas.registry_tables[pf.feature_space],
                     self._feature_filter[pf.feature_space],
                 )
                 if wanted_globals is None:
@@ -688,7 +688,7 @@ class AtlasQuery:
             from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
-                self._atlas._registry_tables[pf.feature_space],
+                self._atlas.registry_tables[pf.feature_space],
                 self._feature_filter[pf.feature_space],
             )
 

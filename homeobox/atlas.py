@@ -331,7 +331,7 @@ class RaggedAtlas:
         """
         return [pf for pf in self._pointer_fields.values() if pf.feature_space == feature_space]
 
-    def _get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
+    def get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
         """Return (cached) GroupReader for the given zarr_group + feature_space.
 
         Uses an LRU policy capped at _MAX_GROUP_READERS entries. The least recently
@@ -405,6 +405,21 @@ class RaggedAtlas:
     def pointer_fields(self) -> dict[str, PointerField]:
         """Pointer fields declared on the cell schema, keyed by field name."""
         return self._pointer_fields
+
+    @property
+    def registry_tables(self) -> dict[str, lancedb.table.Table]:
+        """Feature registry tables, keyed by feature space."""
+        return self._registry_tables
+
+    @property
+    def store(self) -> obstore.store.ObjectStore:
+        """Underlying obstore ObjectStore for zarr I/O."""
+        return self._store
+
+    @property
+    def db_uri(self) -> str:
+        """LanceDB connection URI this atlas was opened from."""
+        return self._db_uri
 
     # -- Dataset / zarr helpers --------------------------------------------
 
