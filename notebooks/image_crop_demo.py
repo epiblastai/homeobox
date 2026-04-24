@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.21.1"
 app = marimo.App(width="medium")
 
 
@@ -15,6 +15,7 @@ def _():
     import homeobox as hox
     from homeobox.batch_array import BatchArray
     from homeobox.spatial import CropReconstructor
+
     return BatchArray, CropReconstructor, hox, mo, np, obstore, plt, zarr
 
 
@@ -93,7 +94,7 @@ def _(CropReconstructor, batch_arr, box_h, box_w):
 @app.cell
 def _(arr, box_shape, n_boxes, np, seed):
     rng = np.random.default_rng(int(seed.value))
-    h, w = arr.shape
+    h, w, c = arr.shape
     bh, bw = box_shape
     mins = np.stack(
         [
@@ -171,6 +172,97 @@ def _(arr, maxes, mins, np, plt):
     ax.set_xticks([])
     ax.set_yticks([])
     fig2
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Benchmark: `CropReconstructor` vs. zarr-async + zarrs codec
+
+    Same `mins` / `maxes` through two paths:
+
+    - `CropReconstructor.read(mins, maxes)` — homeobox's raveled-range reader.
+    - `zarr.AsyncArray.getitem` fanned out with `asyncio.gather`, decoded by
+      the `zarrs` Rust codec pipeline.
+
+    One warmup run + 3 timed runs; `min` / `median` reported. Outputs are
+    asserted equal before timings are shown.
+    """)
+    return
+
+
+@app.cell
+def _(arr, zarr):
+    import zarrs  # noqa: F401  — ensures the pipeline string below resolves
+
+    zarr.config.set({"codec_pipeline.path": "zarrs.ZarrsCodecPipeline"})
+    async_arr = arr._async_array
+    return (async_arr,)
+
+
+@app.cell
+def _(async_arr, np):
+    import asyncio
+
+    from zarr.core.sync import sync as zarr_sync
+
+    def read_zarrs(mins, maxes):
+        async def _gather():
+            coros = [
+                async_arr.getitem(
+                    (slice(int(lo[0]), int(hi[0])), slice(int(lo[1]), int(hi[1])))
+                )
+                for lo, hi in zip(mins, maxes, strict=True)
+            ]
+            return await asyncio.gather(*coros)
+
+        return np.stack(zarr_sync(_gather()), axis=0)
+
+    return (read_zarrs,)
+
+
+@app.cell
+def _(maxes, mins, read_zarrs, recon):
+    import time
+
+    def _bench(fn, n_warmup=1, n_runs=3):
+        for _ in range(n_warmup):
+            out = fn()
+        times = []
+        for _ in range(n_runs):
+            t0 = time.perf_counter()
+            out = fn()
+            times.append(time.perf_counter() - t0)
+        return out, times
+
+    hox_out, hox_times = _bench(lambda: recon.read(mins, maxes))
+    zarrs_out, zarrs_times = _bench(lambda: read_zarrs(mins, maxes))
+    return hox_out, hox_times, zarrs_out, zarrs_times
+
+
+@app.cell
+def _(hox_out, np, zarrs_out):
+    assert hox_out.shape == zarrs_out.shape, (hox_out.shape, zarrs_out.shape)
+    assert np.array_equal(hox_out, zarrs_out), "crop outputs differ between paths"
+    return
+
+
+@app.cell
+def _(hox_times, mo, np, zarrs_times):
+    _hox_runs = ", ".join(f"{t * 1e3:.2f}" for t in hox_times)
+    _zarrs_runs = ", ".join(f"{t * 1e3:.2f}" for t in zarrs_times)
+    mo.md(f"""
+    | path | min (ms) | median (ms) | runs (ms) |
+    | --- | --- | --- | --- |
+    | `CropReconstructor.read` | {min(hox_times) * 1e3:.2f} | {np.median(hox_times) * 1e3:.2f} | {_hox_runs} |
+    | zarr async + zarrs codec | {min(zarrs_times) * 1e3:.2f} | {np.median(zarrs_times) * 1e3:.2f} | {_zarrs_runs} |
+    """)
+    return
+
+
+@app.cell
+def _():
     return
 
 
