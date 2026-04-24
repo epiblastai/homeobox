@@ -133,48 +133,129 @@ maturin develop --release
 ## Quickstart
 
 ```python
-import obstore.store
-from homeobox.atlas import RaggedAtlas
-from homeobox.schema import (
-    HoxBaseSchema, FeatureBaseSchema, SparseZarrPointer, PointerField,
-)
-from homeobox.ingestion import add_from_anndata
+import os
+import numpy as np
+import scanpy as sc
+import homeobox as hox
 
-# homeobox registers built-in specs (gene_expression, image_features) at import time —
-# no register_spec() call needed for these feature spaces.
-
-# 1. Define schemas
-class GeneFeature(FeatureBaseSchema):
+# 1. Define schemas: one for gene features, one for cell metadata.
+#    Each pointer column is declared with PointerField.declare, which
+#    binds the column name to a registered feature_space.
+class GeneFeature(hox.FeatureBaseSchema):
     gene_symbol: str
 
-class CellSchema(HoxBaseSchema):
-    cell_type: str | None = None
-    gene_expression: SparseZarrPointer | None = PointerField.declare(
+class CellSchema(hox.HoxBaseSchema):
+    gene_expression: hox.SparseZarrPointer | None = hox.PointerField.declare(
         feature_space="gene_expression"
     )
 
-# 2. Create atlas
-store = obstore.store.LocalStore("/data/atlas/arrays")
-atlas = RaggedAtlas.create(
-    db_uri="/data/atlas/db",
+# 2. Create an atlas
+atlas_dir = "./hox_example_atlas/"
+os.makedirs(atlas_dir, exist_ok=True)
+atlas = hox.create_or_open_atlas(
+    atlas_path=atlas_dir,
     cell_table_name="cells",
     cell_schema=CellSchema,
-    store=store,
+    dataset_table_name="datasets",
+    dataset_schema=hox.DatasetRecord,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
-# 3. Register features and ingest
+# 3. Load a dataset and register its genes
+adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
+adata.X = adata.X.astype(np.uint32)  # the counts layer must be np.uint32
+features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
-add_from_anndata(atlas, adata, field_name="gene_expression",
-                 zarr_layer="counts", dataset_record=record)
 
-# 4. Snapshot and query
-# optimize() assigns global_index to any newly registered features internally
+# 4. Prepare var and ingest. `field_name` selects the cell-schema column
+#    to populate; its feature_space is resolved from PointerField.declare.
+adata.var["global_feature_uid"] = adata.var_names
+record = hox.DatasetRecord(
+    zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
+)
+hox.add_from_anndata(
+    atlas, adata, field_name="gene_expression",
+    zarr_layer="counts", dataset_record=record,
+)
+
+# 5. Optimize tables and create a snapshot
 atlas.optimize()
 atlas.snapshot()
 
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", CellSchema, store)
-adata = atlas_r.query().where("cell_type = 'T cells'").to_anndata()
+# 6. Open the atlas and query
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=CellSchema)
+result = atlas_r.query().limit(500).to_anndata()
+print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
 
 For a full walkthrough with two heterogeneous datasets, see [Building an Atlas](atlas.md).
+
+## Ingesting image tiles
+
+Not every modality fits in an AnnData. The built-in ``image_tiles`` feature
+space stores a single 4D ``(n_cells, n_channels, H, W)`` array per dataset
+with no feature registry. Ingestion is a few lines on top of
+``atlas.create_zarr_group`` and the spec's ``create_array`` helper.
+
+```python
+import os
+import numpy as np
+import homeobox as hox
+from homeobox.group_specs import get_spec
+
+# 1. Schema with a single dense pointer into image_tiles.
+class TileSchema(hox.HoxBaseSchema):
+    image_tiles: hox.DenseZarrPointer | None = hox.PointerField.declare(
+        feature_space="image_tiles"
+    )
+
+# 2. image_tiles has no feature registry, so registry_schemas is empty.
+atlas_dir = "./hox_tile_atlas/"
+os.makedirs(atlas_dir, exist_ok=True)
+atlas = hox.create_or_open_atlas(
+    atlas_path=atlas_dir,
+    cell_table_name="cells",
+    cell_schema=TileSchema,
+    dataset_table_name="datasets",
+    dataset_schema=hox.DatasetRecord,
+    registry_schemas={},
+)
+
+# 3. Fabricate 128 random 5-channel, 96×96 uint8 tiles.
+n_cells, n_channels, h, w = 128, 5, 96, 96
+tiles = np.random.randint(0, 256, (n_cells, n_channels, h, w), dtype=np.uint8)
+
+# 4. Register the dataset, create the zarr group, and write the 4D array.
+#    The spec's create_array enforces ndim=4 and the allowed dtype set.
+record = hox.DatasetRecord(
+    zarr_group="random_tiles", feature_space="image_tiles", n_cells=n_cells,
+)
+atlas.register_dataset(record)
+group = atlas.create_zarr_group(record.zarr_group)
+
+spec = get_spec("image_tiles")
+arr = spec.create_array(
+    group, "data", shape=tiles.shape, dtype=np.uint8,
+    chunks=(1, n_channels, h, w),
+    shards=(64, n_channels, h, w),
+)
+arr[:] = tiles
+
+# 5. Insert one cell row per tile with a DenseZarrPointer at that position.
+rows = [
+    TileSchema(
+        dataset_uid=record.dataset_uid,
+        image_tiles=hox.DenseZarrPointer(zarr_group=record.zarr_group, position=i),
+    )
+    for i in range(n_cells)
+]
+atlas.cell_table.add(rows)
+
+atlas.optimize()
+atlas.snapshot()
+
+# 6. Query tiles back as a raw 4D array + obs DataFrame.
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=TileSchema)
+tile_array, obs = atlas_r.query().to_array("image_tiles")
+print(tile_array.shape, tile_array.dtype)  # (128, 5, 96, 96) uint8
+```
