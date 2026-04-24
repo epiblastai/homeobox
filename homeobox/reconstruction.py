@@ -316,7 +316,7 @@ class SparseCSRReconstructor:
         group_data: list[
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
         ] = []
-        # TODO: Can this be parallelized? Probably onlt the group_cells step, isn't there a groupby equivalent
+        # TODO: Can this be parallelized? Probably only the group_cells step, isn't there a groupby equivalent
         # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
         # the loop should be quite fast.
         for zg in groups:
