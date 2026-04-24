@@ -18,8 +18,6 @@ class ArraySpec(BaseModel):
 
     model_config = {"arbitrary_types_allowed": True}
 
-    # TODO: This should have an option for a compression
-    # codec, the default is to use zarr default of zstd
     array_name: str
     allowed_dtypes: list[np.dtype]
     ndim: int | None = None
