@@ -12,6 +12,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
+import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.fragments.ingestion import (
@@ -24,16 +25,132 @@ from homeobox.fragments.ingestion import (
     write_genome_sorted_arrays,
 )
 from homeobox.group_specs import PointerKind, get_spec
-from homeobox.ingestion import (
-    _CHUNK_ELEMS,
-    _write_dense_batched,
-    _write_sparse_batched,
-    write_feature_layout,
-)
-from homeobox.obs_alignment import _schema_obs_fields
+from homeobox.ingestion import SparseZarrWriter, write_feature_layout
+from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import DatasetRecord, make_uid
 
+_CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
+_SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
+
+
+def _make_sparse_pointer(
+    zarr_group: str,
+    starts: np.ndarray,
+    ends: np.ndarray,
+) -> pa.StructArray:
+    n_cells = len(starts)
+    return pa.StructArray.from_arrays(
+        [
+            pa.array([zarr_group] * n_cells, type=pa.string()),
+            pa.array(starts.astype(np.int64), type=pa.int64()),
+            pa.array(ends.astype(np.int64), type=pa.int64()),
+            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
+        ],
+        names=["zarr_group", "start", "end", "zarr_row"],
+    )
+
+
+def _make_dense_pointer(zarr_group: str, n_cells: int) -> pa.StructArray:
+    return pa.StructArray.from_arrays(
+        [
+            pa.array([zarr_group] * n_cells, type=pa.string()),
+            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
+        ],
+        names=["zarr_group", "position"],
+    )
+
+
+def _zero_sparse_pointer(n_cells: int) -> pa.StructArray:
+    return pa.StructArray.from_arrays(
+        [
+            pa.array([""] * n_cells, type=pa.string()),
+            pa.array([0] * n_cells, type=pa.int64()),
+            pa.array([0] * n_cells, type=pa.int64()),
+            pa.array([0] * n_cells, type=pa.int64()),
+        ],
+        names=["zarr_group", "start", "end", "zarr_row"],
+    )
+
+
+def _zero_dense_pointer(n_cells: int) -> pa.StructArray:
+    return pa.StructArray.from_arrays(
+        [
+            pa.array([""] * n_cells, type=pa.string()),
+            pa.array([0] * n_cells, type=pa.int64()),
+        ],
+        names=["zarr_group", "position"],
+    )
+
+
+def _build_cell_arrow_table(
+    atlas: RaggedAtlas,
+    obs_df: pd.DataFrame,
+    *,
+    dataset_uid: str,
+    pointer_data: dict[str, pa.StructArray],
+) -> pa.Table:
+    """Build an Arrow table of cell records ready for insertion.
+
+    ``pointer_data`` is keyed by pointer field name. Pointer fields not in
+    the dict are zero-filled.
+    """
+    n_cells = len(obs_df)
+    arrow_schema = atlas.cell_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas.cell_schema)
+
+    columns: dict[str, pa.Array] = {
+        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
+        "dataset_uid": pa.array([dataset_uid] * n_cells, type=pa.string()),
+    }
+
+    for pf_name, pf in atlas.pointer_fields.items():
+        if pf_name in pointer_data:
+            columns[pf_name] = pointer_data[pf_name]
+        elif pf.pointer_kind is PointerKind.SPARSE:
+            columns[pf_name] = _zero_sparse_pointer(n_cells)
+        else:
+            columns[pf_name] = _zero_dense_pointer(n_cells)
+
+    for col in schema_fields:
+        if col in obs_df.columns:
+            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
+    for col in schema_fields:
+        if col not in columns:
+            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
+
+    return pa.table(columns, schema=arrow_schema)
+
+
+def _write_dense_modality(
+    group,
+    adata: ad.AnnData,
+    zarr_layer: str,
+    spec,
+) -> None:
+    """Pre-allocate and stream-write a dense 2D modality using the spec."""
+    n_cells, n_vars = adata.shape
+    chunk_rows = max(1, _CHUNK_ELEMS // n_vars) if n_vars > 0 else 1
+    shard_rows = max(1, _SHARD_ELEMS // n_vars) if n_vars > 0 else 1
+    shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
+    chunk_shape = (chunk_rows, n_vars)
+    shard_shape = (shard_rows, n_vars)
+    data_dtype = adata.X.dtype
+
+    zarr_arr = spec.zarr_group_spec.create_array(
+        group,
+        zarr_layer,
+        (n_cells, n_vars),
+        dtype=data_dtype,
+        chunks=chunk_shape,
+        shards=shard_shape,
+    )
+
+    written = 0
+    while written < n_cells:
+        end = min(written + shard_rows, n_cells)
+        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
+        written = end
 
 
 def add_multimodal_batch(
@@ -55,130 +172,96 @@ def add_multimodal_batch(
     atlas
         Open RaggedAtlas.
     modalities
-        ``{feature_space: AnnData}`` — each AnnData must have the same
-        number of cells in the same barcode order. ``adata.var`` must
-        have a ``global_feature_uid`` column.
+        ``{field_name: AnnData}`` — keyed by pointer field name in the
+        cell schema. Each AnnData must have the same number of cells in
+        the same barcode order. ``adata.var`` must have a
+        ``global_feature_uid`` column for feature spaces with var_df.
     obs_df
         Shared obs DataFrame for all modalities (validated, schema-aligned).
     zarr_layer
         Zarr layer name (e.g. ``"counts"``).
     dataset_records
-        ``{feature_space: DatasetRecord}`` — one per modality.
+        ``{field_name: DatasetRecord}`` — one per modality, keyed the same
+        way as ``modalities``. All records must share a single ``dataset_uid``.
 
     Returns
     -------
     int
         Number of cells ingested.
     """
+    if atlas.cell_schema is None:
+        raise ValueError("Cannot ingest data into an atlas opened without a cell schema.")
+
+    if set(modalities.keys()) != set(dataset_records.keys()):
+        raise ValueError(
+            f"modalities and dataset_records must share keys; "
+            f"got modalities={sorted(modalities.keys())}, "
+            f"dataset_records={sorted(dataset_records.keys())}"
+        )
+
+    for field_name in modalities:
+        if field_name not in atlas.pointer_fields:
+            raise ValueError(
+                f"No pointer field named '{field_name}'. "
+                f"Available: {sorted(atlas.pointer_fields.keys())}"
+            )
+
     n_cells = len(obs_df)
-    for fs, adata in modalities.items():
-        assert adata.n_obs == n_cells, f"Modality {fs} has {adata.n_obs} cells, expected {n_cells}"
+    for field_name, adata in modalities.items():
+        if adata.n_obs != n_cells:
+            raise ValueError(
+                f"Modality '{field_name}' has {adata.n_obs} cells, expected {n_cells}"
+            )
+
+    obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
+    if obs_errors:
+        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
     shared_dataset_uid = next(iter(dataset_records.values())).dataset_uid
-    for fs, ds in dataset_records.items():
+    for field_name, ds in dataset_records.items():
         if ds.dataset_uid != shared_dataset_uid:
             raise ValueError(
                 f"All modalities in a multimodal batch must share dataset_uid; "
-                f"modality '{fs}' has dataset_uid={ds.dataset_uid!r}, "
+                f"modality '{field_name}' has dataset_uid={ds.dataset_uid!r}, "
                 f"expected {shared_dataset_uid!r}"
             )
 
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
-
-    # Write dataset records and zarr arrays; collect pointer data
     pointer_data: dict[str, pa.StructArray] = {}
 
-    for fs, adata in modalities.items():
-        spec = get_spec(fs)
-        ds = dataset_records[fs]
+    for field_name, adata in modalities.items():
+        pointer_field = atlas.pointer_fields[field_name]
+        feature_space = pointer_field.feature_space
+        spec = get_spec(feature_space)
+        ds = dataset_records[field_name]
         zarr_group = ds.zarr_group
 
-        # Add dataset record
-        ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=type(ds).to_arrow_schema())
-        atlas._dataset_table.add(ds_arrow)
-
-        # Write zarr
-        group = atlas._root.create_group(zarr_group)
+        atlas.register_dataset(ds)
+        group = atlas.create_zarr_group(zarr_group)
 
         if spec.pointer_kind is PointerKind.SPARSE:
-            starts, ends = _write_sparse_batched(
+            csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
+            writer = SparseZarrWriter.create(
                 group,
-                adata,
                 zarr_layer,
-                (_CHUNK_ELEMS,),
-                (_CHUNKS_PER_SHARD * _CHUNK_ELEMS,),
-                spec,
+                data_dtype=csr.dtype,
+                feature_space=feature_space,
             )
-            pointer_data[fs] = pa.StructArray.from_arrays(
-                [
-                    pa.array([fs] * n_cells, type=pa.string()),
-                    pa.array([zarr_group] * n_cells, type=pa.string()),
-                    pa.array(starts.astype(np.int64), type=pa.int64()),
-                    pa.array(ends.astype(np.int64), type=pa.int64()),
-                    pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
-            )
+            starts, ends = writer.append_csr(csr)
+            writer.trim()
+            pointer_data[field_name] = _make_sparse_pointer(zarr_group, starts, ends)
         else:
-            n_vars = adata.n_vars
-            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
-            chunk_shape = (chunk_rows, n_vars)
-            shard_shape = (chunk_rows * _CHUNKS_PER_SHARD, n_vars)
-            _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
-            pointer_data[fs] = pa.StructArray.from_arrays(
-                [
-                    pa.array([fs] * n_cells, type=pa.string()),
-                    pa.array([zarr_group] * n_cells, type=pa.string()),
-                    pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "position"],
-            )
+            _write_dense_modality(group, adata, zarr_layer, spec)
+            pointer_data[field_name] = _make_dense_pointer(zarr_group, n_cells)
 
-        # Write feature layout
         if spec.has_var_df:
-            write_feature_layout(atlas, adata, fs, zarr_group)
+            write_feature_layout(atlas, adata, feature_space, zarr_group)
 
-    # Build cell records with all pointers
-    columns = {
-        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([shared_dataset_uid] * n_cells, type=pa.string()),
-    }
-
-    # Fill pointer fields — real data for modalities we have, zero-fill for others
-    for pf_name, pf in atlas._pointer_fields.items():
-        if pf.feature_space in pointer_data:
-            columns[pf_name] = pointer_data[pf.feature_space]
-        elif pf.pointer_kind is PointerKind.SPARSE:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
-            )
-        else:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "position"],
-            )
-
-    # Add obs columns
-    for col in schema_fields:
-        if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
-    for col in schema_fields:
-        if col not in columns:
-            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
+    arrow_table = _build_cell_arrow_table(
+        atlas,
+        obs_df,
+        dataset_uid=shared_dataset_uid,
+        pointer_data=pointer_data,
+    )
     atlas.cell_table.add(arrow_table)
     return n_cells
 
@@ -194,7 +277,7 @@ def add_fragment_batch(
     *,
     obs_df: pd.DataFrame,
     chrom_uids: dict[str, str],
-    feature_space: str,
+    field_name: str,
     dataset_record: DatasetRecord,
     barcode_col: str = "barcode",
     fragments: pl.DataFrame | None = None,
@@ -220,8 +303,10 @@ def add_fragment_batch(
         ``{chromosome_name: global_feature_uid}`` mapping for all
         chromosomes that may appear in the fragment data. Chromosomes
         not in this dict are silently dropped.
-    feature_space
-        Feature space name (``"chromatin_accessibility"``).
+    field_name
+        Cell-schema attribute name for the pointer column to populate
+        (e.g. ``"chromatin_accessibility"``). The feature_space is
+        derived from its registered ``PointerField``.
     dataset_record
         Dataset record to register.
     barcode_col
@@ -241,9 +326,16 @@ def add_fragment_batch(
     if (bed_path is None) == (fragments is None):
         raise ValueError("Exactly one of bed_path or fragments must be provided.")
 
-    if atlas._cell_schema is None:
+    if atlas.cell_schema is None:
         raise ValueError("Cannot ingest data into an atlas opened without a cell schema.")
 
+    if field_name not in atlas.pointer_fields:
+        raise ValueError(
+            f"No pointer field named '{field_name}'. "
+            f"Available: {sorted(atlas.pointer_fields.keys())}"
+        )
+    pointer_field = atlas.pointer_fields[field_name]
+    feature_space = pointer_field.feature_space
     get_spec(feature_space)
     zarr_group = dataset_record.zarr_group
 
@@ -276,16 +368,16 @@ def add_fragment_batch(
     obs_df = obs_df.loc[cell_ids]
     n_cells = len(cell_ids)
 
+    obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
+    if obs_errors:
+        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
+
     # --- Write dataset record ---
     dataset_record.n_cells = n_cells
-    ds_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=type(dataset_record).to_arrow_schema(),
-    )
-    atlas._dataset_table.add(ds_arrow)
+    atlas.register_dataset(dataset_record)
 
     # --- Write zarr arrays ---
-    group = atlas._root.create_group(zarr_group)
+    group = atlas.create_zarr_group(zarr_group)
     write_fragment_arrays(group, chromosomes, starts, lengths)
 
     # Genome-sorted arrays for range queries
@@ -302,72 +394,18 @@ def add_fragment_batch(
             "global_feature_uid": [chrom_uids[c] for c in chrom_order],
         }
     )
-    atlas.add_or_reuse_layout(var_df, dataset_record.zarr_group, feature_space)
+    atlas.add_or_reuse_layout(var_df, zarr_group, feature_space)
 
     # --- Build and insert cell records ---
-    arrow_schema = atlas._cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas._cell_schema)
-
-    pointer_field = None
-    for pf in atlas._pointer_fields.values():
-        if pf.feature_space == feature_space:
-            pointer_field = pf
-            break
-    assert pointer_field is not None
-
     pointer_starts = offsets[:-1].astype(np.int64)
     pointer_ends = offsets[1:].astype(np.int64)
+    pointer_struct = _make_sparse_pointer(zarr_group, pointer_starts, pointer_ends)
 
-    pointer_struct = pa.StructArray.from_arrays(
-        [
-            pa.array([feature_space] * n_cells, type=pa.string()),
-            pa.array([zarr_group] * n_cells, type=pa.string()),
-            pa.array(pointer_starts, type=pa.int64()),
-            pa.array(pointer_ends, type=pa.int64()),
-            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
-        ],
-        names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
+    arrow_table = _build_cell_arrow_table(
+        atlas,
+        obs_df,
+        dataset_uid=dataset_record.dataset_uid,
+        pointer_data={field_name: pointer_struct},
     )
-
-    columns = {
-        "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.dataset_uid] * n_cells, type=pa.string()),
-        pointer_field.field_name: pointer_struct,
-    }
-
-    # Zero-fill other pointer fields
-    for other_name, other_pf in atlas._pointer_fields.items():
-        if other_name == pointer_field.field_name:
-            continue
-        if other_pf.pointer_kind is PointerKind.SPARSE:
-            columns[other_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "start", "end", "zarr_row"],
-            )
-        else:
-            columns[other_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["feature_space", "zarr_group", "position"],
-            )
-
-    # Add obs columns
-    for col in schema_fields:
-        if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
-    for col in schema_fields:
-        if col not in columns:
-            columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
     atlas.cell_table.add(arrow_table)
     return n_cells
