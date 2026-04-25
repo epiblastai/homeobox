@@ -123,12 +123,12 @@ def _build_sparse_modality_data(
     integer group ID array.
     """
     fs = pf.feature_space
-    if len(spec.required_arrays) != 1:
+    if len(spec.zarr_group_spec.required_arrays) != 1:
         raise NotImplementedError(
             f"Sparse modality requires exactly 1 index array, "
-            f"got {len(spec.required_arrays)} for '{fs}'"
+            f"got {len(spec.zarr_group_spec.required_arrays)} for '{fs}'"
         )
-    index_array_name = spec.required_arrays[0].array_name
+    index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
 
     filtered, groups = _prepare_sparse_cells(cells_indexed, pf)
     groups = sorted(groups)
@@ -143,7 +143,7 @@ def _build_sparse_modality_data(
 
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
-    layers_path = spec.find_layers_path()
+    layers_path = spec.zarr_group_spec.find_layers_path()
     n_features = (
         len(wanted_globals_for_fs)
         if wanted_globals_for_fs is not None
@@ -207,16 +207,22 @@ def _build_dense_modality_data(
     }
 
     # Determine read path and shape based on spec capabilities
-    has_layers = bool(spec.layers.required) or bool(spec.layers.allowed)
+    has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
+        spec.zarr_group_spec.layers.allowed
+    )
     per_cell_shape: tuple[int, ...] | None = None
     array_name = ""
 
     if has_layers:
-        layers_path = spec.find_layers_path()
+        layers_path = spec.zarr_group_spec.find_layers_path()
         array_path = f"{layers_path}/{layer}"
     else:
         layers_path = ""
-        array_name = spec.required_arrays[0].array_name if spec.required_arrays else "data"
+        array_name = (
+            spec.zarr_group_spec.required_arrays[0].array_name
+            if spec.zarr_group_spec.required_arrays
+            else "data"
+        )
         array_path = array_name
 
     if groups:

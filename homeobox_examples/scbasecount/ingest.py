@@ -267,13 +267,13 @@ def ingest_genefull(
     spec = get_spec(FEATURE_SPACE)
     group = atlas._root.create_group(zarr_group)
 
-    zarr_indices = spec.create_array(
+    zarr_indices = spec.zarr_group_spec.create_array(
         group, "csr/indices", (nnz,), chunks=chunk_shape, shards=shard_shape
     )
 
     layer_names = ["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"]
     for k, layer_name in enumerate(layer_names):
-        zarr_layer = spec.create_array(
+        zarr_layer = spec.zarr_group_spec.create_array(
             group,
             layer_name,
             (nnz,),

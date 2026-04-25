@@ -253,3 +253,28 @@ def test_tile_dataset_empty_query(single_group_tile_atlas):
 
     sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
     assert len(sampler) == 0
+
+
+def test_tile_to_anndata_raises_with_endpoint_hint(single_group_tile_atlas):
+    """Calling to_anndata on image_tiles surfaces a helpful endpoint error."""
+    atlas, _ = single_group_tile_atlas
+
+    with pytest.raises(TypeError) as exc:
+        atlas.query().to_anndata()
+
+    msg = str(exc.value)
+    assert "image_tiles" in msg
+    assert "as_anndata" in msg
+    assert "as_array" in msg
+
+
+def test_tile_to_fragments_raises_with_endpoint_hint(single_group_tile_atlas):
+    """Calling to_fragments on image_tiles surfaces a helpful endpoint error."""
+    atlas, _ = single_group_tile_atlas
+
+    with pytest.raises(TypeError) as exc:
+        atlas.query().to_fragments(field_name="image_tiles")
+
+    msg = str(exc.value)
+    assert "as_fragments" in msg
+    assert "as_array" in msg
