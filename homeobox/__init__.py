@@ -4,6 +4,7 @@ from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
     CellDataset,
     DenseBatch,
+    DiscreteSpatialBatch,
     MultimodalBatch,
     MultimodalCellDataset,
     SparseBatch,
@@ -21,6 +22,7 @@ from homeobox.sampler import CellSampler
 from homeobox.schema import (
     DatasetRecord,
     DenseZarrPointer,
+    DiscreteSpatialPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -35,6 +37,7 @@ __all__ = [
     "MultimodalCellDataset",
     "SparseBatch",
     "DenseBatch",
+    "DiscreteSpatialBatch",
     "MultimodalBatch",
     "make_loader",
     "sparse_to_dense_collate",
@@ -49,6 +52,7 @@ __all__ = [
     "PointerField",
     "SparseZarrPointer",
     "DenseZarrPointer",
+    "DiscreteSpatialPointer",
     "FragmentResult",
     "IntervalReconstructor",
     "FragmentCounter",

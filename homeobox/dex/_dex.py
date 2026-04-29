@@ -97,6 +97,8 @@ def _load_adata(
 def _extract_matrix(adata: ad.AnnData, pointer_kind: PointerKind):
     """Return CSR for SPARSE, float64 ndarray for DENSE."""
     X = adata.X
+    if pointer_kind == PointerKind.DISCRETE_SPATIAL:
+        raise NotImplementedError("DiscreteSpatialPointer is not supported by homeobox DEx.")
     if pointer_kind == PointerKind.SPARSE:
         if not issparse(X):
             from scipy.sparse import csr_matrix
@@ -146,6 +148,8 @@ def _compare(
     control_idx_cache=None,
 ) -> pl.DataFrame:
     """Run the full stats pipeline for one comparison. Returns a DataFrame."""
+    if pointer_kind == PointerKind.DISCRETE_SPATIAL:
+        raise NotImplementedError("DiscreteSpatialPointer is not supported by homeobox DEx.")
     eps = 1e-9
     is_log1p = pointer_kind == PointerKind.SPARSE
 
@@ -247,6 +251,8 @@ def dex(
 
     spec = get_spec(feature_space)
     pointer_kind = spec.pointer_kind
+    if pointer_kind == PointerKind.DISCRETE_SPATIAL:
+        raise NotImplementedError("DiscreteSpatialPointer is not supported by homeobox DEx.")
 
     # -- Load all groups in parallel ----------------------------------------
     with ThreadPoolExecutor(max_workers=len(target) + 1) as pool:

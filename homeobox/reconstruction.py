@@ -528,8 +528,8 @@ class DenseReconstructor(Reconstructor):
         if array_name is None:
             if not zgs.required_arrays:
                 raise ValueError(
-                    f"Spec for '{pf.feature_space}' has no required_arrays; "
-                    "pass array_name explicitly"
+                    f"Spec for '{pf.feature_space}' has no required_arrays "
+                    "and no required layers; pass array_name explicitly"
                 )
             array_name = zgs.required_arrays[0].array_name
 

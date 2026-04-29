@@ -889,6 +889,18 @@ class RaggedAtlas:
         validation errors are found.
 
         """
+        # TODO: Standardize the record-writing path. `snapshot()` reads
+        # `self.cell_table.version` / `self._dataset_table.version` from the
+        # handles this atlas holds; writes via a fresh `atlas.db.open_table(name).add(...)`
+        # advance the on-disk version without advancing these handles, so the
+        # snapshot silently records the pre-write versions and `checkout_latest`
+        # reopens an empty-looking atlas. This has not bitten in practice
+        # because the usual workflow is multiple writer processes followed by
+        # opening a fresh atlas and calling snapshot — which guarantees every
+        # held handle is at the latest version. For single-process / notebook
+        # workflows it is a footgun. Options: expose `add_cell_records` /
+        # `add_dataset_records` / `add_feature_records` as the blessed path, or
+        # detect version drift here and raise with a pointer to those methods.
         errors = self.validate()
         if errors:
             raise ValueError(
