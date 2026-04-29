@@ -1286,6 +1286,9 @@ class MultimodalCellDataset(_AsyncDataset):
         self._loop_thread: threading.Thread | None = None
         self._cell_table: lancedb.table.Table | None = None
 
+    def __len__(self) -> int:
+        return self.n_cells
+
     @property
     def n_cells(self) -> int:
         return self._n_cells
