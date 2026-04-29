@@ -291,7 +291,7 @@ def _build_discrete_spatial_modality_data(
         for zg in groups
     }
 
-    layers_path = spec.find_layers_path()
+    layers_path = spec.zarr_group_spec.find_layers_path()
     array_path = f"{layers_path}/{layer}" if layers_path else layer
 
     if groups:
