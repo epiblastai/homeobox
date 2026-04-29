@@ -12,11 +12,13 @@ if TYPE_CHECKING:
 import lancedb
 import obstore
 import polars as pl
+import pyarrow as pa
 import zarr
 
 from homeobox.feature_layouts import (
     build_feature_layout_df,
     layout_exists,
+    read_feature_layout,
     reindex_registry,
     sync_layouts_global_index,
     validate_feature_layout,
@@ -329,7 +331,7 @@ class RaggedAtlas:
         """
         return [pf for pf in self._pointer_fields.values() if pf.feature_space == feature_space]
 
-    def _get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
+    def get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
         """Return (cached) GroupReader for the given zarr_group + feature_space.
 
         Uses an LRU policy capped at _MAX_GROUP_READERS entries. The least recently
@@ -392,6 +394,74 @@ class RaggedAtlas:
         print(summary)
         return summary
 
+    # -- Public accessors ---------------------------------------------------
+
+    @property
+    def cell_schema(self) -> type[HoxBaseSchema] | None:
+        """Cell schema class, or ``None`` if the atlas was opened without one."""
+        return self._cell_schema
+
+    @property
+    def pointer_fields(self) -> dict[str, PointerField]:
+        """Pointer fields declared on the cell schema, keyed by field name."""
+        return self._pointer_fields
+
+    @property
+    def registry_tables(self) -> dict[str, lancedb.table.Table]:
+        """Feature registry tables, keyed by feature space."""
+        return self._registry_tables
+
+    @property
+    def store(self) -> obstore.store.ObjectStore:
+        """Underlying obstore ObjectStore for zarr I/O."""
+        return self._store
+
+    @property
+    def db_uri(self) -> str:
+        """LanceDB connection URI this atlas was opened from."""
+        return self._db_uri
+
+    # -- Dataset / zarr helpers --------------------------------------------
+
+    def register_dataset(self, dataset_record: DatasetRecord) -> None:
+        """Insert a ``DatasetRecord`` into the dataset table."""
+        arrow_table = pa.Table.from_pylist(
+            [dataset_record.model_dump()],
+            schema=type(dataset_record).to_arrow_schema(),
+        )
+        self._dataset_table.add(arrow_table)
+
+    def find_datasets(
+        self,
+        zarr_group: str,
+        feature_space: str | None = None,
+    ) -> pl.DataFrame:
+        """Return dataset rows matching ``zarr_group`` (and optionally ``feature_space``)."""
+        where = f"zarr_group = '{sql_escape(zarr_group)}'"
+        if feature_space is not None:
+            where += f" AND feature_space = '{sql_escape(feature_space)}'"
+        return self._dataset_table.search().where(where, prefilter=True).to_polars()
+
+    def create_zarr_group(self, zarr_group: str) -> zarr.Group:
+        """Create a new zarr group at ``zarr_group`` under the atlas root."""
+        return self._root.create_group(zarr_group)
+
+    def open_zarr_group(self, zarr_group: str) -> zarr.Group:
+        """Return the existing zarr group at ``zarr_group`` under the atlas root."""
+        return self._root[zarr_group]
+
+    def require_zarr_group(self, zarr_group: str) -> zarr.Group:
+        """Return (creating if missing) the zarr group at ``zarr_group``."""
+        return self._root.require_group(zarr_group)
+
+    def read_feature_layout(self, layout_uid: str) -> pl.DataFrame:
+        """Read all feature-layout rows for ``layout_uid``, sorted by ``local_index``."""
+        return read_feature_layout(self._feature_layouts_table, layout_uid)
+
+    def invalidate_group_reader(self, zarr_group: str, feature_space: str) -> None:
+        """Drop the cached GroupReader for ``(zarr_group, feature_space)``."""
+        self._group_readers.pop((zarr_group, feature_space), None)
+
     # -- Query entry point --------------------------------------------------
 
     def query(self) -> "AtlasQuery":
@@ -409,9 +479,6 @@ class RaggedAtlas:
 
     # -- Feature registration -----------------------------------------------
 
-    # TODO: Add a dedupe_on option that checks the features for duplicates in
-    # specified column. For example, for a gene registry, this might check if
-    # the ensembl id is already registered in the table and skip it if so.
     def register_features(
         self,
         feature_space: str,
@@ -770,7 +837,7 @@ class RaggedAtlas:
             spec = get_spec(fs)
             for zg in groups:
                 group = self._root[zg]
-                group_errors = spec.validate_group(group)
+                group_errors = spec.zarr_group_spec.validate_group(group)
                 for e in group_errors:
                     errors.append(f"zarr group '{zg}': {e}")
         return errors

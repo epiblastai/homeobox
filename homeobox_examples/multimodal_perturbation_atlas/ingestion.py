@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
-import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.fragments.ingestion import (
@@ -33,8 +32,6 @@ from homeobox.ingestion import (
 )
 from homeobox.obs_alignment import _schema_obs_fields
 from homeobox.schema import DatasetRecord, make_uid
-
-_INTEGER_DTYPES = {np.dtype("int32"), np.dtype("int64"), np.dtype("uint32"), np.dtype("uint64")}
 
 _CHUNKS_PER_SHARD = 1024
 
@@ -105,19 +102,12 @@ def add_multimodal_batch(
         group = atlas._root.create_group(zarr_group)
 
         if spec.pointer_kind is PointerKind.SPARSE:
-            data_dtype = (
-                np.dtype(adata.X.dtype)
-                if not sp.issparse(adata.X)
-                else np.dtype(adata.X.data.dtype)
-            )
-            use_bitpacking = data_dtype in _INTEGER_DTYPES
             starts, ends = _write_sparse_batched(
                 group,
                 adata,
                 zarr_layer,
                 (_CHUNK_ELEMS,),
                 (_CHUNKS_PER_SHARD * _CHUNK_ELEMS,),
-                use_bitpacking,
                 spec,
             )
             pointer_data[fs] = pa.StructArray.from_arrays(

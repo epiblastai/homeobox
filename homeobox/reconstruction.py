@@ -9,8 +9,7 @@ import pandas as pd
 import polars as pl
 import scipy.sparse as sp
 
-from homeobox.group_specs import ZarrGroupSpec
-from homeobox.protocols import Reconstructor
+from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_cells,
@@ -19,6 +18,7 @@ from homeobox.read import (
     _read_sparse_group,
     _sync_gather,
 )
+from homeobox.reconstructor_base import Reconstructor, endpoint
 from homeobox.schema import PointerField
 
 if TYPE_CHECKING:
@@ -31,7 +31,9 @@ if TYPE_CHECKING:
 # Re-export for downstream convenience
 __all__ = [
     "Reconstructor",
+    "endpoint",
     "SparseCSRReconstructor",
+    "SparseGeneExpressionReconstructor",
     "DenseReconstructor",
     "FeatureCSCReconstructor",
     "_get_pointer_columns",
@@ -46,7 +48,7 @@ __all__ = [
 def _load_remaps_and_features(
     atlas: "RaggedAtlas",
     groups: list[str],
-    spec: ZarrGroupSpec,
+    spec: FeatureSpaceSpec,
     feature_join: Literal["union", "intersection"] = "union",
     wanted_globals: np.ndarray | None = None,
 ) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, np.ndarray], int]:
@@ -61,7 +63,7 @@ def _load_remaps_and_features(
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
         for zg in groups:
-            group_remaps[zg] = atlas._get_group_reader(zg, spec.feature_space).get_remap()
+            group_remaps[zg] = atlas.get_group_reader(zg, spec.feature_space).get_remap()
 
     if wanted_globals is not None:
         joined_globals = wanted_globals
@@ -168,15 +170,15 @@ def _build_var(
     joined_globals: np.ndarray,
 ) -> pd.DataFrame:
     """Build a var DataFrame from the feature registry."""
-    if feature_space not in atlas._registry_tables:
+    if feature_space not in atlas.registry_tables:
         raise ValueError(
             f"No registry table for feature space '{feature_space}'. "
-            f"Available: {sorted(atlas._registry_tables.keys())}"
+            f"Available: {sorted(atlas.registry_tables.keys())}"
         )
     if len(joined_globals) == 0:
         return pd.DataFrame(index=pd.RangeIndex(0))
 
-    registry_table = atlas._registry_tables[feature_space]
+    registry_table = atlas.registry_tables[feature_space]
     indices_sql = ", ".join(str(i) for i in joined_globals.tolist())
     registry_df = (
         registry_table.search()
@@ -192,14 +194,14 @@ def _build_var(
 
 
 def _resolve_layers(
-    spec: ZarrGroupSpec,
+    spec: FeatureSpaceSpec,
     layer_overrides: list[str] | None,
     feature_space: str,
 ) -> list[str]:
     """Return the list of layers to read, from overrides or the spec default."""
     if layer_overrides is not None:
         return layer_overrides
-    layers = list(spec.layers.required)
+    layers = spec.zarr_group_spec.layers.required_names
     if not layers:
         raise ValueError(
             f"No layers specified and spec for '{feature_space}' has no required layers"
@@ -232,15 +234,20 @@ def _assemble_anndata(
 # ---------------------------------------------------------------------------
 
 
-class SparseCSRReconstructor:
-    """Reconstruct sparse CSR data (e.g. gene expression) across zarr groups."""
+class SparseCSRReconstructor(Reconstructor):
+    """Reconstruct sparse CSR data across zarr groups.
+
+    Internal building block: a feature-space-level reconstructor (e.g.
+    :class:`SparseGeneExpressionReconstructor`) decides whether to call
+    this or :class:`FeatureCSCReconstructor`.
+    """
 
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
         pf: PointerField,
-        spec: ZarrGroupSpec,
+        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
@@ -252,11 +259,6 @@ class SparseCSRReconstructor:
         space, and assembles the result into an AnnData with sparse CSR
         matrices.
 
-        When *wanted_globals* is provided and the number of requested
-        cells is small relative to the feature count, automatically
-        delegates to :class:`FeatureCSCReconstructor` for more efficient
-        column-oriented reads.
-
         Parameters
         ----------
         atlas:
@@ -266,7 +268,7 @@ class SparseCSRReconstructor:
         pf:
             Pointer field info describing the feature space and zarr layout.
         spec:
-            Zarr group spec for the feature space.
+            FeatureSpaceSpec for this feature space.
         layer_overrides:
             Explicit list of layers to read. Defaults to the spec's required layers.
         feature_join:
@@ -276,27 +278,21 @@ class SparseCSRReconstructor:
             If provided, pin the output feature space to these global indices.
             Overrides *feature_join*.
         """
-        if wanted_globals is not None:
-            if feature_join != "union":
-                raise ValueError(
-                    "feature_join has no effect when wanted_globals is provided; "
-                    "the feature space is pinned to the requested globals."
-                )
-            # CSC is optimized for few features / many cells (column-oriented reads);
-            # delegate when cells outnumber wanted features
-            if len(cells_pl) > len(wanted_globals):
-                return FeatureCSCReconstructor().as_anndata(
-                    atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
-                )
+        if wanted_globals is not None and feature_join != "union":
+            raise ValueError(
+                "feature_join has no effect when wanted_globals is provided; "
+                "the feature space is pinned to the requested globals."
+            )
 
+        zgs = spec.zarr_group_spec
         # Determine index array name from spec's required_arrays
-        if len(spec.required_arrays) != 1:
+        if len(zgs.required_arrays) != 1:
             raise NotImplementedError(
                 f"Sparse reconstruction for feature space '{pf.feature_space}' "
-                f"is not yet supported (requires {len(spec.required_arrays)} "
-                f"primary arrays: {[a.array_name for a in spec.required_arrays]})"
+                f"is not yet supported (requires {len(zgs.required_arrays)} "
+                f"primary arrays: {[a.array_name for a in zgs.required_arrays]})"
             )
-        index_array_name = spec.required_arrays[0].array_name
+        index_array_name = zgs.required_arrays[0].array_name
 
         cells_pl_original = cells_pl
         cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
@@ -316,16 +312,16 @@ class SparseCSRReconstructor:
         group_data: list[
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
         ] = []
-        # TODO: Can this be parallelized? Probably onlt the group_cells step, isn't there a groupby equivalent
+        # TODO: Can this be parallelized? Probably only the group_cells step, isn't there a groupby equivalent
         # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
         # the loop should be quite fast.
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
             ends = group_cells["_end"].to_numpy().astype(np.int64)
-            gr = atlas._get_group_reader(zg, pf.feature_space)
+            gr = atlas.get_group_reader(zg, pf.feature_space)
             idx_reader = gr.get_array_reader(index_array_name)
-            layers_path = spec.find_layers_path()
+            layers_path = zgs.find_layers_path()
             lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
             group_data.append((zg, group_cells, starts, ends, idx_reader, lyr_readers))
 
@@ -394,19 +390,26 @@ class SparseCSRReconstructor:
         )
 
 
-class DenseReconstructor:
-    """Reconstruct dense data (e.g. protein abundance) across zarr groups."""
+class DenseReconstructor(Reconstructor):
+    """Reconstruct dense data (e.g. protein abundance, image features, image tiles).
 
+    Exposes both :meth:`as_anndata` (when the feature space has a feature
+    registry) and :meth:`as_array` (raw N-D array preserving full
+    dimensionality).
+    """
+
+    @endpoint
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
         pf: PointerField,
-        spec: ZarrGroupSpec,
+        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        zgs = spec.zarr_group_spec
         cells_pl_original = cells_pl
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
         if not groups:
@@ -419,11 +422,11 @@ class DenseReconstructor:
             return _build_obs_only_anndata(cells_pl_original)
 
         layers_to_read = (
-            layer_overrides if layer_overrides is not None else list(spec.layers.required)
+            layer_overrides if layer_overrides is not None else zgs.layers.required_names
         )
 
         # Resolve array names: "{layers_path}/{ln}" for layered specs, "data" for plain
-        layers_path = spec.find_layers_path()
+        layers_path = zgs.find_layers_path()
         array_names = (
             [f"{layers_path}/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
         )
@@ -444,7 +447,7 @@ class DenseReconstructor:
             positions = group_cells["_pos"].to_numpy().astype(np.int64)
             starts = positions
             ends = positions + 1
-            gr = atlas._get_group_reader(zg, pf.feature_space)
+            gr = atlas.get_group_reader(zg, pf.feature_space)
             readers = [gr.get_array_reader(an) for an in array_names]
             group_data.append((zg, group_cells, starts, ends, offset, readers))
             offset += len(positions)
@@ -491,12 +494,13 @@ class DenseReconstructor:
             atlas, pf.feature_space, joined_globals, obs_parts, output_keys, all_layers
         )
 
+    @endpoint
     def as_array(
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
         pf: PointerField,
-        spec: ZarrGroupSpec,
+        spec: FeatureSpaceSpec,
         array_name: str | None = None,
     ) -> np.ndarray:
         """Return raw dense data as a NumPy array preserving all dimensions.
@@ -515,25 +519,19 @@ class DenseReconstructor:
         pf:
             Pointer field info for the feature space.
         spec:
-            Zarr group spec for the feature space.
+            FeatureSpaceSpec for this feature space.
         array_name:
-            Zarr array to read within each group. Defaults to
-            ``"{layers_path}/{layers.required[0]}"`` for layer-backed specs
-            (e.g. ``embedding``, ``image_features``), else the first entry
-            in ``spec.required_arrays`` for plain dense specs (e.g.
-            ``image_tiles``).
+            Zarr array to read within each group.  Defaults to the first
+            entry in ``spec.zarr_group_spec.required_arrays``.
         """
+        zgs = spec.zarr_group_spec
         if array_name is None:
-            if spec.layers is not None and spec.layers.required:
-                layers_path = spec.find_layers_path()
-                array_name = f"{layers_path}/{spec.layers.required[0]}"
-            elif spec.required_arrays:
-                array_name = spec.required_arrays[0].array_name
-            else:
+            if not zgs.required_arrays:
                 raise ValueError(
                     f"Spec for '{pf.feature_space}' has no required_arrays "
                     "and no required layers; pass array_name explicitly"
                 )
+            array_name = zgs.required_arrays[0].array_name
 
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
 
@@ -544,7 +542,7 @@ class DenseReconstructor:
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             positions = group_cells["_pos"].to_numpy().astype(np.int64)
-            gr = atlas._get_group_reader(zg, pf.feature_space)
+            gr = atlas.get_group_reader(zg, pf.feature_space)
             reader = gr.get_array_reader(array_name)
 
             shape_tail = tuple(reader.shape[1:])
@@ -739,13 +737,15 @@ def _build_coo_to_csr(
     return stacked
 
 
-class FeatureCSCReconstructor:
+class FeatureCSCReconstructor(Reconstructor):
     """Reconstruct sparse data using CSC for groups that have it, CSR otherwise.
 
-    Intended for feature-filtered queries (few features, many cells).
-    When a group has CSC data (populated ``csc_start``/``csc_end`` in var.parquet),
-    reads O(nnz for wanted features) instead of O(nnz per cell × n_cells).
-    Falls back to CSR for groups that have not been post-processed by ``add_csc``.
+    Internal building block. Intended for feature-filtered queries (few
+    features, many cells). When a group has CSC data (populated
+    ``csc_start``/``csc_end`` in var.parquet), reads O(nnz for wanted
+    features) instead of O(nnz per cell × n_cells). Falls back to CSR
+    for groups that have not been post-processed by ``add_csc`` — this
+    keeps half-built atlases queryable.
     """
 
     def as_anndata(
@@ -753,27 +753,28 @@ class FeatureCSCReconstructor:
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
         pf: PointerField,
-        spec: ZarrGroupSpec,
+        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
         if wanted_globals is None:
-            return SparseCSRReconstructor().as_anndata(
-                atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
+            raise ValueError(
+                "FeatureCSCReconstructor requires wanted_globals; "
+                "for full-feature reads use SparseCSRReconstructor."
             )
-
         if feature_join != "union":
             raise ValueError(
                 "feature_join has no effect when wanted_globals is provided; "
                 "the feature space is pinned to the requested globals."
             )
 
-        if len(spec.required_arrays) != 1:
+        zgs = spec.zarr_group_spec
+        if len(zgs.required_arrays) != 1:
             raise NotImplementedError(
                 f"CSC reconstruction for '{pf.feature_space}' requires exactly one primary array"
             )
-        csr_index_name = spec.required_arrays[0].array_name
+        csr_index_name = zgs.required_arrays[0].array_name
 
         cells_pl_original = cells_pl
         cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
@@ -793,7 +794,7 @@ class FeatureCSCReconstructor:
 
         for zg in groups:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
-            gr = atlas._get_group_reader(zg, spec.feature_space)
+            gr = atlas.get_group_reader(zg, spec.feature_space)
 
             if gr.has_csc:
                 info, coro = _prepare_csc_group(gr, group_cells, wanted_globals, layers_to_read)
@@ -803,7 +804,7 @@ class FeatureCSCReconstructor:
                 starts = group_cells["_start"].to_numpy().astype(np.int64)
                 ends = group_cells["_end"].to_numpy().astype(np.int64)
                 idx_reader = gr.get_array_reader(csr_index_name)
-                layers_path = spec.find_layers_path()
+                layers_path = zgs.find_layers_path()
                 lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
                 read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
                 group_info.append({"mode": "csr", "group_cells": group_cells, "zg": zg})
@@ -865,4 +866,42 @@ class FeatureCSCReconstructor:
 
         return _assemble_anndata(
             atlas, pf.feature_space, wanted_globals, obs_parts, layers_to_read, stacked
+        )
+
+
+class SparseGeneExpressionReconstructor(Reconstructor):
+    """Reconstructor for sparse, AnnData-shaped feature spaces (e.g. gene expression).
+
+    Owns the CSR↔CSC dispatch heuristic. Delegates to
+    :class:`SparseCSRReconstructor` for unfiltered or cell-bound queries
+    and to :class:`FeatureCSCReconstructor` for feature-filtered queries
+    where a feature-oriented (CSC) copy exists and would be cheaper to
+    read.
+    """
+
+    def __init__(self) -> None:
+        self._csr = SparseCSRReconstructor()
+        self._csc = FeatureCSCReconstructor()
+
+    @endpoint
+    def as_anndata(
+        self,
+        atlas: "RaggedAtlas",
+        cells_pl: pl.DataFrame,
+        pf: PointerField,
+        spec: FeatureSpaceSpec,
+        layer_overrides: list[str] | None = None,
+        feature_join: Literal["union", "intersection"] = "union",
+        wanted_globals: np.ndarray | None = None,
+    ) -> ad.AnnData:
+        # CSC is optimized for few features / many cells (column-oriented reads);
+        # delegate when a feature-oriented copy exists and cells outnumber wanted features.
+        use_csc = (
+            wanted_globals is not None
+            and spec.feature_oriented is not None
+            and len(cells_pl) > len(wanted_globals)
+        )
+        impl = self._csc if use_csc else self._csr
+        return impl.as_anndata(
+            atlas, cells_pl, pf, spec, layer_overrides, feature_join, wanted_globals
         )

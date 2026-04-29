@@ -59,35 +59,41 @@ def _(mo):
 
 @app.cell
 def _():
+    import numpy as np
     import polars as pl
     from tqdm.auto import tqdm
 
     from homeobox.atlas import RaggedAtlas
     from homeobox.group_specs import (
         ArraySpec,
-        DTypeKind,
+        FeatureSpaceSpec,
         LayersSpec,
         PointerKind,
         ZarrGroupSpec,
         register_spec,
     )
-    from homeobox.reconstruction import SparseCSRReconstructor
+    from homeobox.reconstruction import SparseGeneExpressionReconstructor
 
-    GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
+    GENEFULL_EXPRESSION_SPEC = FeatureSpaceSpec(
         feature_space="genefull_expression",
         pointer_kind=PointerKind.SPARSE,
         has_var_df=True,
-        required_arrays=[
-            ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER),
-        ],
-        layers=LayersSpec(
-            prefix="csr",
-            uniform_shape=True,
-            match_shape_of="csr/indices",
-            required=["Unique"],
-            allowed=["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"],
+        reconstructor=SparseGeneExpressionReconstructor(),
+        zarr_group_spec=ZarrGroupSpec(
+            required_arrays=[
+                ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
+            ],
+            layers=LayersSpec(
+                prefix="csr",
+                match_shape_of="csr/indices",
+                required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32])],
+                allowed=[
+                    ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32]),
+                    ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.int32]),
+                    ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.int32]),
+                ],
+            ),
         ),
-        reconstructor=SparseCSRReconstructor(),
     )
     register_spec(GENEFULL_EXPRESSION_SPEC)
     return RaggedAtlas, pl, tqdm

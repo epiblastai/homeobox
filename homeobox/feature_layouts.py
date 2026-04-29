@@ -16,7 +16,7 @@ from homeobox.util import sql_escape
 if TYPE_CHECKING:
     import zarr
 
-    from homeobox.group_specs import ZarrGroupSpec
+    from homeobox.group_specs import FeatureSpaceSpec
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +203,7 @@ def validate_feature_layout(
     layouts_table: lancedb.table.Table,
     layout_uid: str,
     *,
-    spec: "ZarrGroupSpec",
+    spec: "FeatureSpaceSpec",
     group: "zarr.Group | None" = None,
     expected_feature_count: int | None = None,
     registry_table: lancedb.table.Table | None = None,
@@ -257,7 +257,7 @@ def validate_feature_layout(
 
 def _get_local_feature_count(
     group: "zarr.Group",
-    spec: "ZarrGroupSpec",
+    spec: "FeatureSpaceSpec",
 ) -> int | None:
     """Derive the expected number of local features from the zarr group."""
     import zarr

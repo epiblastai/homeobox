@@ -91,7 +91,7 @@ def _build_sparse_group_readers(
     """
     group_readers: dict[str, GroupReader] = {}
     for zg in groups:
-        raw_remap = atlas._get_group_reader(zg, feature_space).get_remap()
+        raw_remap = atlas.get_group_reader(zg, feature_space).get_remap()
         effective_remap = (
             _apply_wanted_globals_remap(raw_remap, wanted_globals_for_fs)
             if wanted_globals_for_fs is not None
@@ -100,7 +100,7 @@ def _build_sparse_group_readers(
         group_readers[zg] = GroupReader.for_worker(
             zarr_group=zg,
             feature_space=feature_space,
-            store=atlas._store,
+            store=atlas.store,
             remap=effective_remap,
         )
     return group_readers
@@ -124,12 +124,12 @@ def _build_sparse_modality_data(
     integer group ID array.
     """
     fs = pf.feature_space
-    if len(spec.required_arrays) != 1:
+    if len(spec.zarr_group_spec.required_arrays) != 1:
         raise NotImplementedError(
             f"Sparse modality requires exactly 1 index array, "
-            f"got {len(spec.required_arrays)} for '{fs}'"
+            f"got {len(spec.zarr_group_spec.required_arrays)} for '{fs}'"
         )
-    index_array_name = spec.required_arrays[0].array_name
+    index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
 
     filtered, groups = _prepare_sparse_cells(cells_indexed, pf)
     groups = sorted(groups)
@@ -144,11 +144,11 @@ def _build_sparse_modality_data(
 
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
-    layers_path = spec.find_layers_path()
+    layers_path = spec.zarr_group_spec.find_layers_path()
     n_features = (
         len(wanted_globals_for_fs)
         if wanted_globals_for_fs is not None
-        else atlas._registry_tables[fs].count_rows()
+        else atlas.registry_tables[fs].count_rows()
     )
     layer_dtype = (
         group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
@@ -201,36 +201,42 @@ def _build_dense_modality_data(
         zg: GroupReader.for_worker(
             zarr_group=zg,
             feature_space=fs,
-            store=atlas._store,
+            store=atlas.store,
             remap=np.array([], dtype=np.int32),
         )
         for zg in groups
     }
 
     # Determine read path and shape based on spec capabilities
-    has_layers = bool(spec.layers.required) or bool(spec.layers.allowed)
+    has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
+        spec.zarr_group_spec.layers.allowed
+    )
     per_cell_shape: tuple[int, ...] | None = None
     array_name = ""
 
     if has_layers:
-        layers_path = spec.find_layers_path()
+        layers_path = spec.zarr_group_spec.find_layers_path()
         array_path = f"{layers_path}/{layer}"
     else:
         layers_path = ""
-        array_name = spec.required_arrays[0].array_name if spec.required_arrays else "data"
+        array_name = (
+            spec.zarr_group_spec.required_arrays[0].array_name
+            if spec.zarr_group_spec.required_arrays
+            else "data"
+        )
         array_path = array_name
 
     if groups:
         reader = group_readers[groups[0]].get_array_reader(array_path)
         layer_dtype = reader._native_dtype
         if spec.has_var_df:
-            n_features = atlas._registry_tables[fs].count_rows()
+            n_features = atlas.registry_tables[fs].count_rows()
         else:
             per_cell_shape = tuple(reader.shape[1:])
             n_features = int(np.prod(per_cell_shape)) if per_cell_shape else 0
     else:
         layer_dtype = np.dtype(np.float32)
-        n_features = atlas._registry_tables[fs].count_rows() if spec.has_var_df else 0
+        n_features = atlas.registry_tables[fs].count_rows() if spec.has_var_df else 0
 
     mod_data = _ModalityData(
         kind=PointerKind.DENSE,
@@ -1002,12 +1008,12 @@ class CellDataset(_AsyncDataset):
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
     ) -> None:
-        pf = atlas._pointer_fields[field_name]
+        pf = atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
 
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
         # Workers reconstruct the zarr root lazily from this store.
-        self._store = atlas._store
+        self._store = atlas.store
         self._pointer_kind = spec.pointer_kind
 
         # Build modality data (filters empty cells, builds remaps & readers)
@@ -1045,7 +1051,7 @@ class CellDataset(_AsyncDataset):
         self._pointer_field = field_name
         self._metadata_columns = metadata_columns
         self._lance_info = (
-            atlas._db_uri,
+            atlas.db_uri,
             atlas.cell_table.name,
             atlas.cell_table.version,
             getattr(atlas.db, "storage_options", None),
@@ -1224,7 +1230,7 @@ class MultimodalCellDataset(_AsyncDataset):
 
         # Store lance info for lazy table reconstruction in workers
         self._lance_info = (
-            atlas._db_uri,
+            atlas.db_uri,
             atlas.cell_table.name,
             atlas.cell_table.version,
             getattr(atlas.db, "storage_options", None),
@@ -1244,7 +1250,7 @@ class MultimodalCellDataset(_AsyncDataset):
         modality_groups_np: dict[str, np.ndarray] = {}
 
         for fn in field_names:
-            pf = atlas._pointer_fields[fn]
+            pf = atlas.pointer_fields[fn]
             self._pointer_fields[fn] = pf.field_name
             spec = get_spec(pf.feature_space)
             layer = layers.get(fn, "counts")

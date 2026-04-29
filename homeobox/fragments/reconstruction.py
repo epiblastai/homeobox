@@ -1,13 +1,13 @@
 """Interval-based reconstruction for chromatin accessibility fragments."""
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
 import polars as pl
 
-from homeobox.group_specs import ZarrGroupSpec
+from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.obs_alignment import PointerField
 from homeobox.read import (
     _prepare_sparse_cells,
@@ -18,10 +18,9 @@ from homeobox.reconstruction import (
     _build_obs_df,
     _load_remaps_and_features,
 )
+from homeobox.reconstructor_base import Reconstructor, endpoint
 
 if TYPE_CHECKING:
-    import anndata as ad
-
     from homeobox.atlas import RaggedAtlas
 
 
@@ -51,7 +50,7 @@ def _resolve_chrom_names(
     """Look up chromosome sequence_name values for joined global indices."""
     if len(joined_globals) == 0:
         return []
-    registry_table = atlas._registry_tables[feature_space]
+    registry_table = atlas.registry_tables[feature_space]
     indices_sql = ", ".join(str(i) for i in joined_globals.tolist())
     registry_df = (
         registry_table.search()
@@ -63,40 +62,22 @@ def _resolve_chrom_names(
     return registry_df["sequence_name"].to_list()
 
 
-class IntervalReconstructor:
+class IntervalReconstructor(Reconstructor):
     """Reconstruct chromatin accessibility data as raw genomic fragments.
 
     Fragments are stored as three parallel 1D arrays (chromosomes, starts,
-    lengths) with sparse pointers giving per-cell ranges.  This data cannot
-    be represented as a cell-by-feature AnnData matrix, so :meth:`as_anndata`
-    raises :class:`NotImplementedError`.  Use :meth:`as_fragments` instead.
+    lengths) with sparse pointers giving per-cell ranges. This data cannot
+    be represented as a cell-by-feature AnnData matrix; the only endpoint
+    is :meth:`as_fragments`.
     """
 
-    def as_anndata(
-        self,
-        atlas: "RaggedAtlas",
-        cells_pl: "pl.DataFrame",
-        pf: "PointerField",
-        spec: "ZarrGroupSpec",
-        layer_overrides: "list[str] | None" = None,
-        feature_join: "Literal['union', 'intersection']" = "union",
-        wanted_globals: "np.ndarray | None" = None,
-    ) -> "ad.AnnData":
-        # TODO: Consider returning this in the SnapATAC2 format with fragments stored in
-        # obsm and the dimenionsality of the array is num_cells x len(genome). Non-zero values
-        # are run lengths (positive or negative depending on strand), therefore `indices` of the
-        # array are the global genomic positions.
-        raise NotImplementedError(
-            "Chromatin accessibility fragments cannot be represented as AnnData. "
-            "Use IntervalReconstructor.as_fragments() instead."
-        )
-
+    @endpoint
     def as_fragments(
         self,
         atlas: "RaggedAtlas",
         cells_pl: pl.DataFrame,
         pf: PointerField,
-        spec: ZarrGroupSpec,
+        spec: FeatureSpaceSpec,
     ) -> FragmentResult:
         """Read cell-sorted fragment arrays and return raw intervals.
 
@@ -110,7 +91,7 @@ class IntervalReconstructor:
         pf:
             Pointer field info for chromatin_accessibility.
         spec:
-            The ``CHROMATIN_ACCESSIBILITY_SPEC`` zarr group spec.
+            The ``CHROMATIN_ACCESSIBILITY_SPEC`` feature-space spec.
 
         Returns
         -------
@@ -139,7 +120,7 @@ class IntervalReconstructor:
         chrom_names = _resolve_chrom_names(atlas, spec.feature_space, joined_globals)
 
         # Array names from spec (chromosomes, starts, lengths)
-        array_names = [a.array_name for a in spec.required_arrays]
+        array_names = [a.array_name for a in spec.zarr_group_spec.required_arrays]
 
         # Prepare per-group readers and ranges
         group_data: list[tuple[str, pl.DataFrame, np.ndarray, np.ndarray, list]] = []
@@ -147,7 +128,7 @@ class IntervalReconstructor:
             group_cells = cells_pl.filter(pl.col("_zg") == zg)
             starts = group_cells["_start"].to_numpy().astype(np.int64)
             ends = group_cells["_end"].to_numpy().astype(np.int64)
-            gr = atlas._get_group_reader(zg, spec.feature_space)
+            gr = atlas.get_group_reader(zg, spec.feature_space)
             readers = [gr.get_array_reader(name) for name in array_names]
             group_data.append((zg, group_cells, starts, ends, readers))
 

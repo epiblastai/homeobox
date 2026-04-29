@@ -42,7 +42,6 @@ The `PointerKind` declared in the spec must match the pointer field types used i
 | Field | Type | Description |
 |---|---|---|
 | `prefix` | `str` | Path prefix before `layers/`. Empty string means `"layers/"` at the group root; `"csr"` means `"csr/layers/"`. |
-| `uniform_shape` | `bool` | When `True`, all arrays in the layers subgroup must share the same shape. Useful for asserting that all layers have identical cell and feature counts. |
 | `match_shape_of` | `str \| None` | When set, every array in the layers subgroup must have the same shape as the sibling array named here (resolved relative to the parent group). |
 | `required` | `list[str]` | Layer names that must exist in the layers subgroup. Also used as the default layers to read at query time. |
 | `allowed` | `list[str]` | Whitelist of valid layer names for ingestion validation. |
@@ -101,7 +100,6 @@ ZarrGroupSpec(
     required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER)],
     layers=LayersSpec(
         prefix="csr",
-        uniform_shape=True,
         match_shape_of="csr/indices",
         required=["counts"],
         allowed=["counts", "log_normalized", "tpm"],
@@ -110,7 +108,7 @@ ZarrGroupSpec(
 )
 ```
 
-The `match_shape_of="csr/indices"` constraint on the layers subgroup ensures that every layer array has the same number of entries as the indices array — a prerequisite for correct CSR reads. The `uniform_shape=True` constraint ensures that all layers within the subgroup have matching shapes with each other, preventing partial ingestion where one layer has more entries than another.
+The `match_shape_of="csr/indices"` constraint on the layers subgroup ensures that every layer array has the same number of entries as the indices array — a prerequisite for correct CSR reads.
 
 ### `IMAGE_FEATURES_SPEC`
 
@@ -120,7 +118,6 @@ ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     layers=LayersSpec(
-        uniform_shape=True,
         required=["raw"],
         allowed=["raw", "log_normalized", "ctrl_standardized"],
     ),
@@ -128,7 +125,7 @@ ZarrGroupSpec(
 )
 ```
 
-No `required_arrays` at the root because dense groups place everything under `layers/`. The `uniform_shape=True` on the layers subgroup enforces that all layer arrays share the same `(N_cells, N_features)` shape.
+No `required_arrays` at the root because dense groups place everything under `layers/`.
 
 ---
 
@@ -153,7 +150,6 @@ LOGNORM_RNA_SPEC = ZarrGroupSpec(
     pointer_kind=PointerKind.DENSE,
     has_var_df=True,
     layers=LayersSpec(
-        uniform_shape=True,
         required=["log_normalized"],
         allowed=["log_normalized"],
     ),
@@ -179,7 +175,6 @@ ATAC_SPEC = ZarrGroupSpec(
     required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER)],
     layers=LayersSpec(
         prefix="csr",
-        uniform_shape=True,
         match_shape_of="csr/indices",
         required=["counts"],
         allowed=["counts"],

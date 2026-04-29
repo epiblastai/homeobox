@@ -432,7 +432,6 @@ FK_TABLE_SCHEMAS: dict[str, type[LanceModel]] = {
 
 class CellIndex(HoxBaseSchema):
     # Assay used like Perturb-seq, Cell Painting, snATAC-seq, Drop-seq, etc.
-    # TODO: Validate this against a controlled vocabulary, EFO
     assay: str
     # The organism that the cells in this sample come from, e.g. human, mouse, etc.
     organism: str

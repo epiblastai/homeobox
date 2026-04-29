@@ -131,7 +131,7 @@ class AtlasQuery:
         ``feature_space`` matches is included. Use :meth:`select_fields` for
         exact-field selection when multiple fields share a feature space.
         """
-        known = {pf.feature_space for pf in self._atlas._pointer_fields.values()}
+        known = {pf.feature_space for pf in self._atlas.pointer_fields.values()}
         unknown = set(spaces) - known
         if unknown:
             raise ValueError(
@@ -148,7 +148,7 @@ class AtlasQuery:
         multiple columns in the same feature space (e.g. ``cycle1_image_tiles``
         and ``cycle2_image_tiles``).
         """
-        known = set(self._atlas._pointer_fields.keys())
+        known = set(self._atlas.pointer_fields.keys())
         unknown = set(field_names) - known
         if unknown:
             raise ValueError(
@@ -169,8 +169,8 @@ class AtlasQuery:
         requested features. The ``feature_join`` setting is ignored for
         filtered feature spaces; intersection semantics are used.
         """
-        if feature_space not in self._atlas._registry_tables:
-            known = sorted(self._atlas._registry_tables.keys())
+        if feature_space not in self._atlas.registry_tables:
+            known = sorted(self._atlas.registry_tables.keys())
             raise ValueError(f"No registry for feature space '{feature_space}'. Available: {known}")
         self._feature_filter[feature_space] = list(uids)
         return self
@@ -205,7 +205,7 @@ class AtlasQuery:
         """Build a LanceDB query from the current state."""
         q = self._build_base_query()
         if self._select_columns is not None:
-            pointer_cols = list(self._atlas._pointer_fields.keys())
+            pointer_cols = list(self._atlas.pointer_fields.keys())
             columns = list(dict.fromkeys(self._select_columns + pointer_cols))
             q = q.select(columns)
         return q
@@ -233,7 +233,7 @@ class AtlasQuery:
             return self._drop_score(self._materialize_balanced_for_dataset())
 
         q = self._build_base_query().with_row_id(True)
-        pointer_cols = list(self._atlas._pointer_fields.keys())
+        pointer_cols = list(self._atlas.pointer_fields.keys())
         q = q.select(pointer_cols)
         return self._drop_score(q.to_polars())
 
@@ -256,12 +256,12 @@ class AtlasQuery:
         unique_values = self._discover_balanced_groups(column)
         n_groups = len(unique_values)
         if n_groups == 0:
-            pointer_cols = list(self._atlas._pointer_fields.keys())
+            pointer_cols = list(self._atlas.pointer_fields.keys())
             q = self._build_base_query().with_row_id(True).select(pointer_cols)
             return q.to_polars().head(0)
 
         per_group = self._balanced_limit_n // n_groups
-        pointer_cols = list(self._atlas._pointer_fields.keys())
+        pointer_cols = list(self._atlas.pointer_fields.keys())
 
         frames: list[pl.DataFrame] = []
         for val in unique_values:
@@ -304,7 +304,7 @@ class AtlasQuery:
             q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
             q = q.where(combined).limit(per_group)
             if self._select_columns is not None:
-                pointer_cols = list(self._atlas._pointer_fields.keys())
+                pointer_cols = list(self._atlas.pointer_fields.keys())
                 columns = list(dict.fromkeys(self._select_columns + pointer_cols))
                 q = q.select(columns)
             frames.append(q.to_polars())
@@ -313,7 +313,7 @@ class AtlasQuery:
 
     def _active_pointer_fields(self) -> dict[str, PointerField]:
         """Return pointer fields filtered by ``feature_spaces`` / ``select_fields``."""
-        pfs = self._atlas._pointer_fields
+        pfs = self._atlas.pointer_fields
         if self._field_names is not None:
             return {k: pfs[k] for k in self._field_names}
         if self._feature_spaces is not None:
@@ -375,6 +375,9 @@ class AtlasQuery:
         # Pick the first feature space that has data for the queried cells
         # TODO: Add a warning on this behavior. Should be clear to the user
         # that if they want a specific field they should use `select_fields`
+        # TODO: We also shouldn't assume that all reconstructors have an `as_anndata`
+        # method. This is something we should be able to figure out and warning or error.
+        # if the wrong kind of feature space is selected.
         for pf in active_pfs.values():
             zg = cells_pl[pf.field_name].struct.field("zarr_group")
             if (zg != "").any():
@@ -405,9 +408,8 @@ class AtlasQuery:
             Container with shared ``obs``, per-modality data in ``mod``,
             and boolean presence masks in ``present``.
         """
-        from homeobox.fragments.reconstruction import IntervalReconstructor
         from homeobox.multimodal import MultimodalResult
-        from homeobox.reconstruction import DenseReconstructor, _build_obs_df
+        from homeobox.reconstruction import _build_obs_df
 
         cells_pl = self._materialize_cells()
         obs = _build_obs_df(cells_pl)
@@ -422,6 +424,7 @@ class AtlasQuery:
         for pf in active_pfs.values():
             spec = get_spec(pf.feature_space)
             reconstructor = spec.reconstructor
+            endpoints = spec.valid_endpoints()
 
             # Compute presence mask from pointer column
             ptr_col = cells_pl[pf.field_name]
@@ -431,10 +434,16 @@ class AtlasQuery:
             if not mask.any():
                 continue
 
-            # Dispatch to the appropriate reconstruction method
-            if isinstance(reconstructor, IntervalReconstructor):
+            # TODO: Might make sense to not just have `endpoint` but `default_endpoint`
+            # instead. That specifies what the natural preferred type is. This isn't perfect
+            # when there are cases where a reconstructor isn't oriented toward 1 specific feature
+            # space (i.e., DenseReconstructor can be for image tiles or image features).
+            # Dispatch to the appropriate endpoint:
+            # fragments first (modality-native), then raw array for var-less
+            # dense feature spaces, otherwise an AnnData.
+            if "as_fragments" in endpoints:
                 result = reconstructor.as_fragments(self._atlas, cells_pl, pf, spec)
-            elif isinstance(reconstructor, DenseReconstructor) and not spec.has_var_df:
+            elif "as_array" in endpoints and not spec.has_var_df:
                 result = reconstructor.as_array(self._atlas, cells_pl, pf, spec)
             else:
                 result = self._reconstruct_single_space_anndata(cells_pl, pf)
@@ -450,17 +459,16 @@ class AtlasQuery:
         Parameters
         ----------
         field_name
-            Pointer-field attribute name whose feature_space uses an
-            :class:`~homeobox.fragments.reconstruction.IntervalReconstructor`.
+            Pointer-field attribute name whose feature_space exposes an
+            ``as_fragments`` endpoint (e.g. chromatin accessibility).
         """
-        from homeobox.fragments.reconstruction import IntervalReconstructor
-
-        pf = self._atlas._pointer_fields[field_name]
+        pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
-        if not isinstance(spec.reconstructor, IntervalReconstructor):
+        endpoints = spec.valid_endpoints()
+        if "as_fragments" not in endpoints:
             raise TypeError(
-                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
-                f"IntervalReconstructor (got {type(spec.reconstructor).__name__})"
+                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not "
+                f"support as_fragments. Valid endpoints: {endpoints}"
             )
 
         cells_pl = self._materialize_cells()
@@ -475,8 +483,8 @@ class AtlasQuery:
         Parameters
         ----------
         field_name
-            Pointer-field attribute name whose feature_space uses a
-            :class:`~homeobox.reconstruction.DenseReconstructor`.
+            Pointer-field attribute name whose feature_space exposes an
+            ``as_array`` endpoint (e.g. dense modalities like image tiles).
 
         Returns
         -------
@@ -486,12 +494,13 @@ class AtlasQuery:
         """
         from homeobox.reconstruction import _build_obs_df
 
-        pf = self._atlas._pointer_fields[field_name]
+        pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
-        if not hasattr(spec.reconstructor, "as_array"):
+        endpoints = spec.valid_endpoints()
+        if "as_array" not in endpoints:
             raise TypeError(
-                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not use "
-                f"a reconstructor with 'as_array', (got {type(spec.reconstructor).__name__})"
+                f"Field '{field_name}' (feature_space='{pf.feature_space}') does not "
+                f"support as_array. Valid endpoints: {endpoints}"
             )
 
         cells_pl = self._materialize_cells()
@@ -578,11 +587,12 @@ class AtlasQuery:
         from homeobox.dataloader import CellDataset
         from homeobox.group_specs import get_spec
 
-        pf = self._atlas._pointer_fields[field_name]
+        pf = self._atlas.pointer_fields[field_name]
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
         if layer is None:
-            layer = spec.layers.required[0] if spec.layers.required else ""
+            zgs_layers = spec.zarr_group_spec.layers
+            layer = zgs_layers.required[0].array_name if zgs_layers.required else ""
 
         cells_pl = self._materialize_cells_for_dataset()
 
@@ -591,7 +601,7 @@ class AtlasQuery:
             from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
-                self._atlas._registry_tables[feature_space],
+                self._atlas.registry_tables[feature_space],
                 self._feature_filter[feature_space],
             )
 
@@ -638,13 +648,14 @@ class AtlasQuery:
 
         cells_pl = self._materialize_cells_for_dataset()
 
-        resolved_pfs = {fn: self._atlas._pointer_fields[fn] for fn in field_names}
+        resolved_pfs = {fn: self._atlas.pointer_fields[fn] for fn in field_names}
 
         if layers is None:
             layers = {}
             for fn, pf in resolved_pfs.items():
                 fs_spec = get_spec(pf.feature_space)
-                layers[fn] = fs_spec.layers.required[0] if fs_spec.layers.required else ""
+                zgs_layers = fs_spec.zarr_group_spec.layers
+                layers[fn] = zgs_layers.required[0].array_name if zgs_layers.required else ""
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fn, pf in resolved_pfs.items():
@@ -653,7 +664,7 @@ class AtlasQuery:
                 from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
                 wg = resolve_feature_uids_to_global_indices(
-                    self._atlas._registry_tables[pf.feature_space],
+                    self._atlas.registry_tables[pf.feature_space],
                     self._feature_filter[pf.feature_space],
                 )
                 if wanted_globals is None:
@@ -678,15 +689,19 @@ class AtlasQuery:
     ) -> ad.AnnData:
         """Reconstruct an AnnData for a single feature space."""
         spec = get_spec(pf.feature_space)
-        if spec.reconstructor is None:
-            raise ValueError(f"No reconstructor registered for feature space '{pf.feature_space}'")
+        endpoints = spec.valid_endpoints()
+        if "as_anndata" not in endpoints:
+            raise TypeError(
+                f"Feature space '{pf.feature_space}' does not support as_anndata. "
+                f"Valid endpoints: {endpoints}"
+            )
 
         wanted_globals = None
         if pf.feature_space in self._feature_filter:
             from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
 
             wanted_globals = resolve_feature_uids_to_global_indices(
-                self._atlas._registry_tables[pf.feature_space],
+                self._atlas.registry_tables[pf.feature_space],
                 self._feature_filter[pf.feature_space],
             )
 
