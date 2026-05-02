@@ -526,12 +526,21 @@ class DenseReconstructor(Reconstructor):
         """
         zgs = spec.zarr_group_spec
         if array_name is None:
-            if not zgs.required_arrays:
+            if zgs.required_arrays:
+                array_name = zgs.required_arrays[0].array_name
+            elif zgs.layers.required:
+                array_name = f"{zgs.layers.path}/{zgs.layers.required[0].array_name}"
+            else:
                 raise ValueError(
                     f"Spec for '{pf.feature_space}' has no required_arrays "
                     "and no required layers; pass array_name explicitly"
                 )
-            array_name = zgs.required_arrays[0].array_name
+        elif (
+            not zgs.required_arrays
+            and zgs.layers.required
+            and "/" not in array_name
+        ):
+            array_name = f"{zgs.layers.path}/{array_name}"
 
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
 
