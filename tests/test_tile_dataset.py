@@ -12,6 +12,7 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.dataloader import (
     DenseBatch,
     dense_to_tensor_collate,
+    multimodal_to_dense_collate,
 )
 from homeobox.sampler import CellSampler
 from homeobox.schema import (
@@ -296,6 +297,38 @@ def test_dense_to_tensor_collate_handles_list_tiles(variable_shape_tile_atlas):
     assert len(result["X"]) == 2
     assert all(isinstance(tile, torch.Tensor) for tile in result["X"])
     assert [tuple(tile.shape) for tile in result["X"]] == [(3, 8, 8), (3, 8, 8)]
+
+
+def test_multimodal_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas):
+    """Multimodal datasets can opt into list-backed variable-size tile batches."""
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_multimodal_dataset(["image_tiles"], stack_dense=False)
+    batch = ds.__getitems__(list(range(7)))
+    tile_batch = batch.modalities["image_tiles"]
+
+    assert isinstance(tile_batch, DenseBatch)
+    assert isinstance(tile_batch.data, list)
+    assert len(tile_batch.data) == 7
+    assert {tile.shape for tile in tile_batch.data} == {(3, 8, 8), (3, 10, 6)}
+
+
+def test_multimodal_to_dense_collate_handles_list_tiles(variable_shape_tile_atlas):
+    """multimodal_to_dense_collate returns one tensor per cell for list-backed tiles."""
+    torch = pytest.importorskip("torch")
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_multimodal_dataset(
+        ["image_tiles"],
+        stack_dense={"image_tiles": False},
+    )
+    batch = ds.__getitems__(list(range(2)))
+
+    result = multimodal_to_dense_collate(batch)
+    tensors = result["image_tiles"]["X"]
+    assert len(tensors) == 2
+    assert all(isinstance(tile, torch.Tensor) for tile in tensors)
+    assert [tuple(tile.shape) for tile in tensors] == [(3, 8, 8), (3, 8, 8)]
 
 
 def test_dense_to_tensor_collate(single_group_tile_atlas):

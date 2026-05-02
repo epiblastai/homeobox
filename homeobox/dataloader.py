@@ -1018,6 +1018,9 @@ class MultimodalCellDataset(_AsyncDataset):
     wanted_globals:
         Optional ``{field_name: sorted int64 array}`` of global feature
         indices to keep per modality.
+    stack_dense:
+        Whether dense batches should be stacked into a single ndarray. May be
+        a single bool for all dense modalities or a mapping by field name.
     """
 
     def __init__(
@@ -1029,6 +1032,7 @@ class MultimodalCellDataset(_AsyncDataset):
         layers: dict[str, str],
         metadata_columns: list[str] | None = None,
         wanted_globals: dict[str, np.ndarray] | None = None,
+        stack_dense: bool | dict[str, bool] = True,
     ) -> None:
         self._field_names = field_names
         self._n_cells = cells_pl.height
@@ -1067,8 +1071,17 @@ class MultimodalCellDataset(_AsyncDataset):
                     atlas, cells_indexed, pf, spec, layer, wg, self._n_cells
                 )
             else:
+                stack_dense_for_field = (
+                    stack_dense.get(fn, True) if isinstance(stack_dense, dict) else stack_dense
+                )
                 _, groups_np, modality_data[fn] = _build_dense_modality_data(
-                    atlas, cells_indexed, pf, spec, layer, self._n_cells
+                    atlas,
+                    cells_indexed,
+                    pf,
+                    spec,
+                    layer,
+                    self._n_cells,
+                    stack_dense=stack_dense_for_field,
                 )
             modality_groups_np[fn] = groups_np
 
@@ -1231,6 +1244,8 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
     for fs, mod_batch in batch.modalities.items():
         if isinstance(mod_batch, SparseBatch):
             result[fs] = {"X": _sparse_batch_to_dense_tensor(mod_batch)}
+        elif isinstance(mod_batch.data, list):
+            result[fs] = {"X": [torch.from_numpy(np.ascontiguousarray(x)) for x in mod_batch.data]}
         else:
             result[fs] = {"X": torch.from_numpy(mod_batch.data)}
 
