@@ -837,7 +837,7 @@ class RaggedAtlas:
             spec = get_spec(fs)
             for zg in groups:
                 group = self._root[zg]
-                group_errors = spec.validate_group(group)
+                group_errors = spec.zarr_group_spec.validate_group(group)
                 for e in group_errors:
                     errors.append(f"zarr group '{zg}': {e}")
         return errors
