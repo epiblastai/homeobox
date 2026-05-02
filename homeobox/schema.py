@@ -333,7 +333,7 @@ class FeatureBaseSchema(StableUIDBaseSchema):
     global_index: int | None = None
 
 
-class DatasetRecord(LanceModel):
+class DatasetSchema(LanceModel):
     """Metadata for a single ingested dataset.
 
     ``zarr_group`` is the per-row primary key (unique per modality write).

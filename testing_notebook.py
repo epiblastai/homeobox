@@ -21,7 +21,7 @@ from homeobox.atlas import (
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
@@ -140,7 +140,7 @@ def test_full_workflow():
                 "protein_abundance": FeatureBaseSchema,
             },
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
 
         # 1. Register features
@@ -261,7 +261,7 @@ def test_layer_name_required_for_sparse():
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
 
         gene_uids = ["g1", "g2", "g3"]
@@ -309,7 +309,7 @@ def test_obs_validation_before_write():
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
 
         gene_uids = ["g1", "g2"]

@@ -27,7 +27,7 @@ from homeobox.schema import make_uid
 from homeobox_examples.scbasecount.schema import (
     CellObs,
     GeneFeatureSpace,
-    ScBasecountDatasetRecord,
+    ScBasecountDatasetSchema,
 )
 
 FEATURE_SPACE = "genefull_expression"
@@ -86,7 +86,7 @@ def create_atlas(atlas_dir: str) -> RaggedAtlas:
         cell_table_name="cells",
         cell_schema=CellObs,
         dataset_table_name="datasets",
-        dataset_schema=ScBasecountDatasetRecord,
+        dataset_schema=ScBasecountDatasetSchema,
         store=store,
         registry_schemas={FEATURE_SPACE: GeneFeatureSpace},
     )
@@ -326,10 +326,10 @@ def ingest_genefull(
         if field in sample_row:
             dataset_kwargs[field] = sample_row[field]
 
-    dataset_record = ScBasecountDatasetRecord(**dataset_kwargs)
+    dataset_record = ScBasecountDatasetSchema(**dataset_kwargs)
     dataset_arrow = pa.Table.from_pylist(
         [dataset_record.model_dump()],
-        schema=ScBasecountDatasetRecord.to_arrow_schema(),
+        schema=ScBasecountDatasetSchema.to_arrow_schema(),
     )
     atlas._dataset_table.add(dataset_arrow)
 

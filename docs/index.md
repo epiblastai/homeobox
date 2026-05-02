@@ -63,7 +63,7 @@ graph TD
         cells["cell table\n(HoxBaseSchema)"]
         registry["feature registry\n(FeatureBaseSchema)"]
         layouts["_feature_layouts\n(local→global index map)"]
-        datasets["datasets table\n(DatasetRecord)"]
+        datasets["datasets table\n(DatasetSchema)"]
         versions["atlas_versions\n(AtlasVersionRecord)"]
     end
 
@@ -119,7 +119,7 @@ maturin develop --release
 
 ### Reference
 
-- **[Schemas](schemas.md)** — all LanceDB schema classes: `HoxBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `PointerField`, `FeatureBaseSchema`, `DatasetRecord`, `FeatureLayout`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are declared and validated.
+- **[Schemas](schemas.md)** — all LanceDB schema classes: `HoxBaseSchema`, `SparseZarrPointer`, `DenseZarrPointer`, `PointerField`, `FeatureBaseSchema`, `DatasetSchema`, `FeatureLayout`, `AtlasVersionRecord`. Covers the `uid`/`global_index` split and how pointer fields are declared and validated.
 - **[Feature Layouts](feature_layouts.md)** — Python API for the `_feature_layouts` table: computing layout UIDs, building layout DataFrames, reindexing the registry, syncing global indices, and resolving feature UIDs to global positions.
 - **[Group Specs](group_specs.md)** — `ZarrGroupSpec`, `PointerKind`, `ArraySpec`, `LayersSpec`, built-in specs, and how to define custom specs for new assay types.
 - **[Querying](querying.md)** — the `AtlasQuery` fluent builder: filtering cells, controlling feature reconstruction, union/intersection joins, feature-filtered queries, and all terminal methods (`.to_anndata()`, `.to_mudata()`, `.to_batches()`, `.count()`).
@@ -156,7 +156,7 @@ atlas = hox.create_or_open_atlas(
     cell_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
-    dataset_schema=hox.DatasetRecord,
+    dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
@@ -169,7 +169,7 @@ atlas.register_features("gene_expression", features)
 # 4. Prepare var and ingest. `field_name` selects the cell-schema column
 #    to populate; its feature_space is resolved from PointerField.declare.
 adata.var["global_feature_uid"] = adata.var_names
-record = hox.DatasetRecord(
+record = hox.DatasetSchema(
     zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
 )
 hox.add_from_anndata(
@@ -216,7 +216,7 @@ atlas = hox.create_or_open_atlas(
     cell_table_name="cells",
     cell_schema=TileSchema,
     dataset_table_name="datasets",
-    dataset_schema=hox.DatasetRecord,
+    dataset_schema=hox.DatasetSchema,
     registry_schemas={},
 )
 
@@ -226,7 +226,7 @@ tiles = np.random.randint(0, 256, (n_cells, n_channels, h, w), dtype=np.uint8)
 
 # 4. Register the dataset, create the zarr group, and write the 4D array.
 #    The spec's create_array enforces ndim=4 and the allowed dtype set.
-record = hox.DatasetRecord(
+record = hox.DatasetSchema(
     zarr_group="random_tiles", feature_space="image_tiles", n_cells=n_cells,
 )
 atlas.register_dataset(record)

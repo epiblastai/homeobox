@@ -114,7 +114,7 @@ class CellSchema(HoxBaseSchema):
 import os
 import obstore.store
 from homeobox.atlas import RaggedAtlas
-from homeobox.schema import DatasetRecord
+from homeobox.schema import DatasetSchema
 
 os.makedirs("/tmp/pbmc_atlas/arrays", exist_ok=True)
 store = obstore.store.LocalStore("/tmp/pbmc_atlas/arrays")
@@ -124,7 +124,7 @@ atlas = RaggedAtlas.create(
     cell_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
-    dataset_schema=DatasetRecord,    # use a subclass to add provenance fields
+    dataset_schema=DatasetSchema,    # use a subclass to add provenance fields
     store=store,
     registry_schemas={"lognorm_rna": GeneFeature},  # one entry per has_var_df=True space
 )
@@ -174,7 +174,7 @@ pbmc3k_aligned = align_obs_to_schema(
 ```python
 from homeobox.ingestion import add_from_anndata
 
-dataset_3k = DatasetRecord(
+dataset_3k = DatasetSchema(
     zarr_group="pbmc3k",          # path within the object store
     feature_space="lognorm_rna",
     n_cells=pbmc3k.n_obs,
@@ -254,7 +254,7 @@ pbmc68k_aligned = align_obs_to_schema(
     pbmc68k, CellSchema, obs_to_schema={"bulk_labels": "cell_type"}
 )
 
-dataset_68k = DatasetRecord(
+dataset_68k = DatasetSchema(
     zarr_group="pbmc68k",
     feature_space="lognorm_rna",
     n_cells=pbmc68k.n_obs,
