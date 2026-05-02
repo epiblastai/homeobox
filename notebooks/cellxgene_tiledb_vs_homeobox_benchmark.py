@@ -43,7 +43,7 @@ def _(mo):
     | System | Dataset path |
     |--------|-------------|
     | **TileDB-SOMA** (`tiledbsoma-ml`) | `s3://epiblast-public/cellxgene_mouse_tiledb/` |
-    | **homeobox** (`CellDataset` + `CellSampler`) | `s3://epiblast-public/cellxgene_mouse_homeobox/` |
+    | **homeobox** (`CellDataset`) | `s3://epiblast-public/cellxgene_mouse_homeobox/` |
 
     Both atlases contain the same ~44M cell mouse atlas from CellxGene Census.
     We benchmark random-shuffle streaming throughput for single-worker and
@@ -202,22 +202,22 @@ def _(np, tiledbsoma, time, tqdm):
 def _(np, time, tqdm):
     def run_homeobox_epoch(atlas, n_cells, batch_size, seed, num_workers):
         """Stream one epoch through homeobox CellDataset and return timing stats."""
+        import torch
+
         from homeobox.dataloader import make_loader, sparse_to_dense_collate
-        from homeobox.sampler import CellSampler
 
         ds = atlas.query().limit(n_cells).to_cell_dataset(
             feature_space="gene_expression",
             layer="counts",
             metadata_columns=["cell_type"],
         )
-        sampler = CellSampler(
-            ds.groups_np,
+        loader = make_loader(
+            ds,
             batch_size=batch_size,
             shuffle=True,
-            seed=seed,
             num_workers=num_workers,
+            generator=torch.Generator().manual_seed(seed),
         )
-        loader = make_loader(ds, sampler)
 
         warmup = 10
         batch_times = []
@@ -394,15 +394,15 @@ def _(mo, multi_worker_df):
     - **Peak TileDB-SOMA throughput**: `{best_tiledb:,.0f}` cells/s
     - **Peak speedup (homeobox / TileDB)**: `{peak_speedup:.2f}x`
 
-    homeobox's `CellSampler` bin-packs zarr groups across workers for reader
-    cache locality, while `tiledbsoma-ml` uses shuffle-chunk + IO-batch
+    homeobox uses a map-style dataset with PyTorch's built-in
+    `RandomSampler`, while `tiledbsoma-ml` uses shuffle-chunk + IO-batch
     pipelining. The architectures differ fundamentally:
 
     | | TileDB-SOMA | homeobox |
     |---|---|---|
     | Dataset type | `IterableDataset` | Map-style (`__getitems__`) |
-    | Shuffle | Chunk-level + IO-batch | Full per-group, epoch-level |
-    | Worker dispatch | Round-robin by PyTorch | Bin-packed by `CellSampler` |
+    | Shuffle | Chunk-level + IO-batch | Full random per epoch |
+    | Worker dispatch | Round-robin by PyTorch | Round-robin by PyTorch |
     | Sparse output | `scipy.sparse` or dense | `SparseBatch` (flat CSR arrays) |
     | I/O backend | TileDB core (C++) | zarr + async Python |
     """)
