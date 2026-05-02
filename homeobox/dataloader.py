@@ -1,31 +1,23 @@
 """Fast batch dataloader for ML training from homeobox atlases.
 
 :class:`CellDataset` is a pure data-access object: it resolves zarr
-remaps and exposes ``__getitems__`` for batched async I/O.  Batch
-planning (shuffle, worker-locality, balancing) lives in
-:mod:`homeobox.sampler`.
+remaps and exposes ``__getitems__`` for batched async I/O.
 
-Designed for the ``query -> CellDataset + Sampler -> SparseBatch ->
-collate_fn -> GPU`` pipeline.  Reader initialisation is deferred to the
-worker process, making the dataset safely picklable for spawn-based
+Designed for the ``query -> CellDataset -> SparseBatch -> collate_fn ->
+GPU`` pipeline.  Reader initialisation is deferred to the worker
+process, making the dataset safely picklable for spawn-based
 multiprocessing.
 
 Pointer structs and metadata columns are loaded lazily per-batch via
-lance's ``take_row_ids`` API, keeping init-time memory proportional to
-``n_cells * (8 + 4)`` bytes (row IDs + group IDs) rather than
-materializing the full cell table.
+lance's ``take_row_ids`` API rather than materializing the full cell
+table at init time.
 
 Usage::
 
     dataset = atlas.query().to_cell_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
-    sampler = CellSampler(dataset.groups_np, batch_size=256,
-                          shuffle=True, seed=42, num_workers=4)
-
-    for epoch in range(n_epochs):
-        sampler.set_epoch(epoch)
-        loader = make_loader(dataset, sampler)
-        for batch in loader:
-            X = sparse_to_dense_collate(batch)["X"]
+    loader = make_loader(dataset, batch_size=256, shuffle=True, num_workers=4)
+    for batch in loader:
+        X = sparse_to_dense_collate(batch)["X"]
 """
 
 import asyncio
@@ -114,13 +106,12 @@ def _build_sparse_modality_data(
     layer: str,
     wanted_globals_for_fs: np.ndarray | None,
     n_cells: int,
-) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
+) -> "tuple[pl.DataFrame, _ModalityData]":
     """Build ``_ModalityData`` for a sparse pointer-field modality.
 
-    Returns ``(filtered_cells, groups_np, modality_data)`` where
-    *filtered_cells* is the DataFrame after empty-cell removal (with
-    internal columns added), and *groups_np* is the per-present-cell
-    integer group ID array.
+    Returns ``(filtered_cells, modality_data)`` where *filtered_cells*
+    is the DataFrame after empty-cell removal (with internal columns
+    added).
     """
     fs = pf.feature_space
     if len(spec.zarr_group_spec.required_arrays) != 1:
@@ -135,11 +126,6 @@ def _build_sparse_modality_data(
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, cell_positions = _build_present_arrays(present_indices, n_cells)
-
-    if len(present_indices) > 0 and groups:
-        groups_np = _build_groups_np(filtered["_zg"], groups)
-    else:
-        groups_np = np.array([], dtype=np.int32)
 
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
@@ -167,7 +153,7 @@ def _build_sparse_modality_data(
         present_mask=present_mask,
         cell_positions=cell_positions,
     )
-    return filtered, groups_np, mod_data
+    return filtered, mod_data
 
 
 def _build_dense_modality_data(
@@ -179,11 +165,11 @@ def _build_dense_modality_data(
     layer: str,
     n_cells: int,
     stack_dense: bool = True,
-) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
+) -> "tuple[pl.DataFrame, _ModalityData]":
     """Build ``_ModalityData`` for a dense pointer-field modality.
 
-    Returns ``(filtered_cells, groups_np, modality_data)`` where
-    *filtered_cells* is the DataFrame after empty-cell removal.
+    Returns ``(filtered_cells, modality_data)`` where *filtered_cells*
+    is the DataFrame after empty-cell removal.
     """
     fs = pf.feature_space
     filtered, groups = _prepare_dense_cells(cells_indexed, pf)
@@ -191,11 +177,6 @@ def _build_dense_modality_data(
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, cell_positions = _build_present_arrays(present_indices, n_cells)
-
-    if len(present_indices) > 0 and groups:
-        groups_np = _build_groups_np(filtered["_zg"], groups)
-    else:
-        groups_np = np.array([], dtype=np.int32)
 
     group_readers: dict[str, GroupReader] = {
         zg: GroupReader.for_worker(
@@ -253,7 +234,7 @@ def _build_dense_modality_data(
         array_name=array_name,
         stack_dense=stack_dense,
     )
-    return filtered, groups_np, mod_data
+    return filtered, mod_data
 
 
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
@@ -779,9 +760,8 @@ class CellDataset(_AsyncDataset):
     """Map-style dataset for fast batch access over an atlas query.
 
     Pure data-access object: resolves zarr remaps and exposes
-    :meth:`__getitems__` for batched async I/O.  Batch planning lives in
-    :mod:`homeobox.sampler`.  Use :func:`make_loader` to wire dataset and
-    sampler into a ``torch.utils.data.DataLoader``.
+    :meth:`__getitems__` for batched async I/O.  Use :func:`make_loader`
+    to wrap it in a ``torch.utils.data.DataLoader``.
 
     Pointer structs and metadata are loaded lazily per-batch via lance's
     ``take_row_ids`` API rather than being stored in memory at init time.
@@ -835,7 +815,7 @@ class CellDataset(_AsyncDataset):
         cells_indexed = cells_pl.with_row_index("_orig_idx")
 
         if spec.pointer_kind is PointerKind.SPARSE:
-            filtered, groups_np, self._mod_data = _build_sparse_modality_data(
+            filtered, self._mod_data = _build_sparse_modality_data(
                 atlas,
                 cells_indexed,
                 pf,
@@ -845,7 +825,7 @@ class CellDataset(_AsyncDataset):
                 cells_pl.height,
             )
         else:
-            filtered, groups_np, self._mod_data = _build_dense_modality_data(
+            filtered, self._mod_data = _build_dense_modality_data(
                 atlas,
                 cells_indexed,
                 pf,
@@ -855,9 +835,7 @@ class CellDataset(_AsyncDataset):
                 stack_dense=stack_dense,
             )
 
-        # Store only the lightweight arrays needed for sampling + lazy loading
         self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
-        self._groups_np = groups_np
         self._n_cells = len(self._row_ids)
         self._pointer_field = field_name
         self._metadata_columns = metadata_columns
@@ -886,10 +864,8 @@ class CellDataset(_AsyncDataset):
         """Per-cell array shape, or ``None`` for flat/sparse feature spaces."""
         return self._mod_data.per_cell_shape
 
-    @property
-    def groups_np(self) -> np.ndarray:
-        """Integer group id for each cell (length = n_cells)."""
-        return self._groups_np
+    def __len__(self) -> int:
+        return self._n_cells
 
     def __getitems__(self, cell_indices: list[int]) -> "SparseBatch | DenseBatch":
         """Fetch a batch of cells by index.
@@ -998,9 +974,6 @@ class MultimodalCellDataset(_AsyncDataset):
     Each modality's sub-batch contains only the cells that have it; a
     ``present`` mask tracks membership.  No synthetic fill values.
 
-    Compatible with :class:`~homeobox.sampler.CellSampler` via
-    :attr:`groups_np` (derived from the first / primary feature space).
-
     Parameters
     ----------
     atlas:
@@ -1009,8 +982,7 @@ class MultimodalCellDataset(_AsyncDataset):
         Polars DataFrame of cell records (from a query). Must include
         ``_rowid`` column.
     field_names:
-        Ordered list of pointer-field attribute names. The first is the
-        "primary" field used to derive :attr:`groups_np` for the sampler.
+        Ordered list of pointer-field attribute names.
     layers:
         ``{field_name: layer_name}`` mapping.
     metadata_columns:
@@ -1057,7 +1029,6 @@ class MultimodalCellDataset(_AsyncDataset):
         cells_indexed = cells_pl.with_row_index("_orig_idx")
 
         modality_data: dict[str, _ModalityData] = {}
-        modality_groups_np: dict[str, np.ndarray] = {}
 
         for fn in field_names:
             pf = atlas.pointer_fields[fn]
@@ -1067,14 +1038,14 @@ class MultimodalCellDataset(_AsyncDataset):
 
             if spec.pointer_kind is PointerKind.SPARSE:
                 wg = wanted_globals.get(fn) if wanted_globals is not None else None
-                _, groups_np, modality_data[fn] = _build_sparse_modality_data(
+                _, modality_data[fn] = _build_sparse_modality_data(
                     atlas, cells_indexed, pf, spec, layer, wg, self._n_cells
                 )
             else:
                 stack_dense_for_field = (
                     stack_dense.get(fn, True) if isinstance(stack_dense, dict) else stack_dense
                 )
-                _, groups_np, modality_data[fn] = _build_dense_modality_data(
+                _, modality_data[fn] = _build_dense_modality_data(
                     atlas,
                     cells_indexed,
                     pf,
@@ -1083,23 +1054,8 @@ class MultimodalCellDataset(_AsyncDataset):
                     self._n_cells,
                     stack_dense=stack_dense_for_field,
                 )
-            modality_groups_np[fn] = groups_np
 
         self._modality_data = modality_data
-
-        # TODO: Clean this up when when we remove bucketing on the sampler
-        # groups_np for sampler: derived from the primary (first) field.
-        # Cells absent from the primary modality get a sentinel group id
-        # (= len(unique_groups)), which is a valid bucket for the sampler.
-        primary_fn = field_names[0]
-        primary_mod = modality_data[primary_fn]
-        n_primary_groups = len(primary_mod.unique_groups)
-        self._groups_np = np.full(self._n_cells, n_primary_groups, dtype=np.int32)
-        if primary_mod.present_mask.any():
-            primary_present = np.where(primary_mod.present_mask)[0]
-            mod_positions = primary_mod.cell_positions[primary_present]
-            self._groups_np[primary_present] = modality_groups_np[primary_fn][mod_positions]
-
         self._n_features = {fn: modality_data[fn].n_features for fn in field_names}
 
         # Worker-local state — initialized lazily in _ensure_initialized()
@@ -1116,10 +1072,8 @@ class MultimodalCellDataset(_AsyncDataset):
         """Per-modality feature counts."""
         return self._n_features
 
-    @property
-    def groups_np(self) -> np.ndarray:
-        """Integer group id for each cell (length = n_cells); for sampler use."""
-        return self._groups_np
+    def __len__(self) -> int:
+        return self._n_cells
 
     def __getitems__(self, cell_indices: list[int]) -> MultimodalBatch:
         """Fetch a multimodal batch of cells by index."""
@@ -1286,21 +1240,44 @@ def dense_to_tensor_collate(batch: DenseBatch) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def make_loader(dataset: CellDataset, sampler, **kwargs):
+def make_loader(
+    dataset: "CellDataset | MultimodalCellDataset",
+    *,
+    batch_size: int = 1024,
+    shuffle: bool = False,
+    drop_last: bool = False,
+    num_workers: int = 0,
+    batch_sampler=None,
+    **kwargs,
+):
     """Create a DataLoader with the right defaults for CellDataset.
 
-    Uses ``batch_sampler`` so PyTorch calls ``dataset.__getitems__(indices)``
-    for each batch yielded by ``sampler``.  Defaults:
-    ``collate_fn=_identity_collate``, ``num_workers=sampler.num_workers``,
-    ``multiprocessing_context="spawn"``, ``persistent_workers=False``.
-    Any of these can be overridden via ``kwargs``.
+    By default uses PyTorch's automatic ``BatchSampler`` driven by
+    ``shuffle`` + ``batch_size``, so ``dataset.__getitems__(indices)``
+    is called per batch.  Pass a custom ``batch_sampler`` to override;
+    ``batch_size``, ``shuffle``, and ``drop_last`` are then ignored
+    (PyTorch's requirement).
+
+    Defaults: ``collate_fn=_identity_collate``,
+    ``multiprocessing_context="spawn"`` when ``num_workers > 0``,
+    ``persistent_workers=False``.
 
     Parameters
     ----------
     dataset:
-        A :class:`CellDataset` instance.
-    sampler:
-        A :class:`~homeobox.sampler.CellSampler` instance.
+        A :class:`CellDataset` or :class:`MultimodalCellDataset`.
+    batch_size:
+        Cells per batch.
+    shuffle:
+        Whether to shuffle cells each epoch (requires ``__len__`` on
+        the dataset).
+    drop_last:
+        Drop the trailing incomplete batch.
+    num_workers:
+        DataLoader worker count.
+    batch_sampler:
+        Optional custom batch sampler. Mutually exclusive with
+        ``batch_size``/``shuffle``/``drop_last``.
     **kwargs:
         Forwarded to ``torch.utils.data.DataLoader``, overriding defaults.
 
@@ -1310,14 +1287,18 @@ def make_loader(dataset: CellDataset, sampler, **kwargs):
     """
     from torch.utils.data import DataLoader
 
-    defaults = dict(
-        batch_sampler=sampler,
-        num_workers=sampler.num_workers,
+    defaults: dict = dict(
+        num_workers=num_workers,
         collate_fn=_identity_collate,
-        multiprocessing_context="spawn",
         persistent_workers=False,
     )
+    if batch_sampler is not None:
+        defaults["batch_sampler"] = batch_sampler
+    else:
+        defaults["batch_size"] = batch_size
+        defaults["shuffle"] = shuffle
+        defaults["drop_last"] = drop_last
+    if num_workers > 0:
+        defaults["multiprocessing_context"] = "spawn"
     defaults.update(kwargs)
-    if defaults["num_workers"] == 0 and "multiprocessing_context" not in kwargs:
-        defaults["multiprocessing_context"] = None
     return DataLoader(dataset, **defaults)

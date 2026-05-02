@@ -38,7 +38,7 @@ def _(mo):
     3. Working with **ragged feature spaces** (union vs. intersection joins)
     4. Feature selection via registry lookup
     5. AnnData / batch reconstruction
-    6. ML training with `CellDataset` + `CellSampler`
+    6. ML training with `CellDataset`
     """)
     return
 
@@ -442,25 +442,23 @@ def _(atlas, sample_srx):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 6. ML training with `CellDataset` + `CellSampler`
+    ## 6. ML training with `CellDataset`
 
     homeobox provides a purpose-built dataloader pipeline for training on
     sparse single-cell data:
 
     ```
-    AtlasQuery → CellDataset + CellSampler → DataLoader → SparseBatch → collate_fn → GPU
+    AtlasQuery → CellDataset → DataLoader → SparseBatch → collate_fn → GPU
     ```
 
-    - **`CellDataset`** — a `torch.utils.data.Dataset` that maps cell
-      indices to sparse zarr reads. It owns no batching logic.
-    - **`CellSampler`** — a `torch.utils.data.Sampler` that plans which
-      cells go in each batch. It groups cells by zarr group for I/O
-      locality and bin-packs groups across DataLoader workers so each
-      worker warms a small, stable reader cache.
-    - **`make_loader`** — a convenience function that wires a dataset and
-      sampler into a standard `DataLoader` with the right collation.
-    - **`sparse_to_dense_collate`** — converts the list of `SparseBatch`
-      objects from the loader into a dense `(batch_size, n_features)` tensor.
+    - **`CellDataset`** — a map-style `torch.utils.data.Dataset` that
+      maps cell indices to sparse zarr reads. Exposes `__len__` so
+      PyTorch's built-in samplers can drive it.
+    - **`make_loader`** — wraps `torch.utils.data.DataLoader` with the
+      right defaults (`shuffle`, `batch_size`, `num_workers`,
+      identity collate, `multiprocessing_context="spawn"`).
+    - **`sparse_to_dense_collate`** — converts a `SparseBatch` from the
+      loader into a dense `(batch_size, n_features)` tensor.
     """)
     return
 
@@ -470,9 +468,8 @@ def _():
     import torch
 
     from homeobox.dataloader import make_loader, sparse_to_dense_collate
-    from homeobox.sampler import CellSampler
 
-    return CellSampler, make_loader, sparse_to_dense_collate, torch
+    return make_loader, sparse_to_dense_collate, torch
 
 
 @app.cell(hide_code=True)
@@ -506,59 +503,32 @@ def _(atlas):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ### Configure the `CellSampler`
+    ### Run one epoch
 
-    The sampler takes `dataset.groups_np` — an integer array that maps
-    each cell to its zarr group. At construction it bin-packs groups
-    across workers (largest-first greedy) so each worker touches a
-    minimal subset of zarr groups, keeping reader caches warm.
+    `make_loader` wraps the dataset in a standard
+    `torch.utils.data.DataLoader`. Pass `shuffle=True` for random
+    sampling each epoch (PyTorch's built-in `RandomSampler` does the
+    work). `drop_last=True` discards the trailing incomplete batch so
+    every batch has exactly `batch_size` cells.
 
-    `drop_last=True` discards the trailing incomplete batch so every
-    batch has exactly `batch_size` cells — convenient for fixed-size
-    GPU kernels.
+    Each iteration yields a `SparseBatch` which `sparse_to_dense_collate`
+    converts into a dense `(batch_size, n_features)` float32 tensor.
     """)
     return
 
 
 @app.cell
-def _(CellSampler, dataset):
+def _(dataset, make_loader, sparse_to_dense_collate, torch, tqdm):
     BATCH_SIZE = 1024
     NUM_WORKERS = 4  # 0 for in-process (notebook-friendly); use 4+ in real training
 
-    sampler = CellSampler(
-        dataset.groups_np,
+    loader = make_loader(
+        dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        seed=42,
-        num_workers=NUM_WORKERS,
         drop_last=True,
+        num_workers=NUM_WORKERS,
     )
-    print(f"Sampler: {len(sampler)} batches per epoch")
-    return (sampler,)
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ### Run one epoch
-
-    `make_loader` wires the dataset and sampler into a standard
-    `torch.utils.data.DataLoader`. Each iteration yields a list of
-    `SparseBatch` objects (one per cell in the batch), which
-    `sparse_to_dense_collate` stacks into a dense
-    `(batch_size, n_features)` float32 tensor.
-
-    Call `sampler.set_epoch(epoch)` before each epoch to get a fresh
-    shuffle while keeping reproducibility (the RNG seed is
-    `seed + epoch`).
-    """)
-    return
-
-
-@app.cell
-def _(dataset, make_loader, sampler, sparse_to_dense_collate, torch, tqdm):
-    sampler.set_epoch(0)
-    loader = make_loader(dataset, sampler)
 
     for batch_idx, batch in tqdm(enumerate(loader), total=len(loader)):
         result = sparse_to_dense_collate(batch)
@@ -588,11 +558,6 @@ def _(mo):
 
     That's the core training loop. In a real training script you'd wrap
     this in an epoch loop and feed `X` into your model.
-
-    homeobox also provides a `BalancedCellSampler` that draws equal cells
-    per category (e.g. cell type or dataset) each epoch — useful when
-    dataset sizes span orders of magnitude and you want more equal
-    representation during training.
     """)
     return
 

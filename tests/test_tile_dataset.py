@@ -14,7 +14,6 @@ from homeobox.dataloader import (
     dense_to_tensor_collate,
     multimodal_to_dense_collate,
 )
-from homeobox.sampler import CellSampler
 from homeobox.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -180,26 +179,29 @@ def test_tile_dataset_shapes(single_group_tile_atlas):
     assert batch.n_features == 3 * 8 * 8
 
 
-def test_tile_dataset_with_sampler(two_group_tile_atlas):
-    """CellDataset + CellSampler works for tile data across multiple groups."""
+def test_tile_dataset_multi_group(two_group_tile_atlas):
+    """CellDataset yields DenseBatch for tile data across multiple groups."""
     atlas, _ = two_group_tile_atlas
 
     ds = atlas.query().to_cell_dataset("image_tiles")
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
 
     assert ds.n_cells == 35
-    assert len(sampler) == 4  # ceil(35/10)
+    assert len(ds) == 35
 
     total_cells = 0
-    for indices in sampler:
+    n_batches = 0
+    for start in range(0, ds.n_cells, 10):
+        indices = list(range(start, min(start + 10, ds.n_cells)))
         batch = ds.__getitems__(indices)
         assert isinstance(batch, DenseBatch)
         assert batch.data.ndim == 4
         assert batch.data.shape[1:] == (3, 8, 8)
         assert batch.data.dtype == np.uint16
         total_cells += batch.data.shape[0]
+        n_batches += 1
 
     assert total_cells == 35
+    assert n_batches == 4  # ceil(35/10)
 
 
 def test_tile_dataset_metadata(single_group_tile_atlas):
@@ -247,8 +249,7 @@ def test_tile_dataset_two_groups_round_trip(two_group_tile_atlas):
     all_original = np.concatenate([tiles for _, tiles in all_tiles], axis=0)
 
     ds = atlas.query().to_cell_dataset("image_tiles")
-    sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(ds.n_cells)))
 
     assert batch.data.shape[0] == 35
     # Compare sets of tiles
@@ -351,9 +352,7 @@ def test_tile_dataset_empty_query(single_group_tile_atlas):
 
     ds = atlas.query().where("cell_type = 'nonexistent'").to_cell_dataset("image_tiles")
     assert ds.n_cells == 0
-
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
-    assert len(sampler) == 0
+    assert len(ds) == 0
 
 
 def test_tile_to_anndata_raises_with_endpoint_hint(single_group_tile_atlas):

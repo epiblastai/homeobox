@@ -562,9 +562,8 @@ class AtlasQuery:
         :class:`~homeobox.dataloader.DenseBatch` objects via
         :meth:`~homeobox.dataloader.CellDataset.__getitems__`.
 
-        Pair with a :class:`~homeobox.sampler.CellSampler` for batch planning,
-        then use :func:`~homeobox.dataloader.make_loader` to create the
-        DataLoader.
+        Use :func:`~homeobox.dataloader.make_loader` to wrap the dataset
+        in a ``torch.utils.data.DataLoader``.
 
         Parameters
         ----------
@@ -634,15 +633,13 @@ class AtlasQuery:
         modality present. A ``present`` mask tracks membership. No fill
         values are added.
 
-        Pair with :class:`~homeobox.sampler.CellSampler` (using
-        ``dataset.groups_np``) and :func:`~homeobox.dataloader.make_loader`
-        for the standard training loop.
+        Use :func:`~homeobox.dataloader.make_loader` to wrap the dataset
+        in a ``torch.utils.data.DataLoader``.
 
         Parameters
         ----------
         field_names:
-            Ordered list of pointer-field attribute names to include. The
-            first is the "primary" field used to derive ``groups_np``.
+            Ordered list of pointer-field attribute names to include.
         layers:
             ``{field_name: layer_name}`` mapping.  Defaults to the first
             required layer of each pointer field's feature space (or ``""``

@@ -41,7 +41,7 @@ def _(mo):
     5. MuData reconstruction (multimodal queries)
     6. Unified multimodal queries with `to_multimodal()`
     7. Perturbation-aware queries (`PerturbationQuery`)
-    8. ML training with `CellDataset` + `CellSampler`
+    8. ML training with `CellDataset`
     9. Chromatin accessibility (ATAC-seq fragments)
     10. Image features and tiles (Cell Painting)
     """)
@@ -761,17 +761,18 @@ def _(atlas_rw, sample_uid):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 8. ML training with `CellDataset` + `CellSampler`
+    ## 8. ML training with `CellDataset`
 
     homeobox provides a purpose-built dataloader pipeline:
 
     ```
-    AtlasQuery → CellDataset + CellSampler → DataLoader → SparseBatch → collate_fn → GPU
+    AtlasQuery → CellDataset → DataLoader → SparseBatch → collate_fn → GPU
     ```
 
     - **`CellDataset`** maps cell indices to sparse zarr reads
-    - **`CellSampler`** groups cells by zarr group for I/O locality
-    - **`make_loader`** wires them into a standard `DataLoader`
+    - **`make_loader`** wraps it in a standard `DataLoader` with the
+      right defaults (`shuffle`, `batch_size`, `num_workers`, spawn
+      multiprocessing)
     - **`sparse_to_dense_collate`** converts sparse batches to dense tensors
     """)
     return
@@ -782,9 +783,8 @@ def _():
     import torch
 
     from homeobox.dataloader import make_loader, sparse_to_dense_collate
-    from homeobox.sampler import CellSampler
 
-    return CellSampler, make_loader, sparse_to_dense_collate, torch
+    return make_loader, sparse_to_dense_collate, torch
 
 
 @app.cell
@@ -803,26 +803,18 @@ def _(atlas_rw):
 
 
 @app.cell
-def _(CellSampler, dataset):
+def _(dataset, make_loader, sparse_to_dense_collate, torch):
     BATCH_SIZE = 1024
     NUM_WORKERS = 4
 
-    sampler = CellSampler(
-        dataset.groups_np,
+    loader = make_loader(
+        dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        seed=42,
-        num_workers=NUM_WORKERS,
         drop_last=True,
+        num_workers=NUM_WORKERS,
+        generator=torch.Generator().manual_seed(42),
     )
-    print(f"Sampler: {len(sampler)} batches per epoch")
-    return (sampler,)
-
-
-@app.cell
-def _(dataset, make_loader, sampler, sparse_to_dense_collate, torch):
-    sampler.set_epoch(0)
-    loader = make_loader(dataset, sampler)
 
     for batch_idx, batch in enumerate(loader):
         result = sparse_to_dense_collate(batch)
