@@ -4,7 +4,12 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from homeobox.schema import StableUIDBaseSchema, StableUIDField, make_stable_uid
+from homeobox.schema import (
+    STABLE_UID_METADATA_KEY,
+    StableUIDBaseSchema,
+    StableUIDField,
+    make_stable_uid,
+)
 from homeobox.standardization.types import (
     GeneResolution,
     GuideRnaResolution,
@@ -181,6 +186,17 @@ def test_stable_uid_base_exposes_stable_uid_field_names():
     assert RandomThing.stable_uid_field_names() == []
 
 
+def test_stable_uid_base_arrow_schema_stamps_stable_uid_metadata():
+    schema = StableThing.to_arrow_schema()
+    assert schema.field("external_id").metadata[STABLE_UID_METADATA_KEY] == b"true"
+    assert schema.field("label").metadata is None
+
+
+def test_stable_uid_base_arrow_schema_without_stable_uid_has_no_metadata():
+    schema = RandomThing.to_arrow_schema()
+    assert schema.field("label").metadata is None
+
+
 def test_stable_uid_base_rejects_multiple_stable_uid_fields():
     with pytest.raises(TypeError, match="at most one StableUIDField"):
 
@@ -233,6 +249,12 @@ def test_small_molecule_schema_accepts_pubchem_stable_uid():
         name="aspirin",
     )
     assert molecule.uid == make_stable_uid("2244")
+
+
+def test_small_molecule_schema_arrow_schema_stamps_pubchem_cid_metadata():
+    schema = SmallMoleculeSchema.to_arrow_schema()
+    assert schema.field("pubchem_cid").metadata[STABLE_UID_METADATA_KEY] == b"true"
+    assert schema.field("name").metadata is None
 
 
 def test_small_molecule_schema_rejects_random_uid_when_pubchem_cid_present():

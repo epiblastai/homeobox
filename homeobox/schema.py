@@ -34,6 +34,9 @@ ZarrPointer = SparseZarrPointer | DenseZarrPointer
 # _infer_pointer_fields_from_arrow() when a schema class is not available.
 POINTER_FEATURE_SPACE_METADATA_KEY: bytes = b"homeobox.feature_space"
 
+# Arrow field metadata key used to persist which column drives stable UID generation.
+STABLE_UID_METADATA_KEY: bytes = b"homeobox.stable_uid"
+
 
 def make_uid() -> str:
     """Generate a random 16-character hex uid."""
@@ -205,6 +208,18 @@ class StableUIDBaseSchema(LanceModel):
                 f"when {field_name} is not None"
             )
         return self
+
+    @classmethod
+    def to_arrow_schema(cls) -> pa.Schema:
+        """Return the Arrow schema with stable UID field metadata stamped."""
+        schema: pa.Schema = super().to_arrow_schema()
+        for name in cls.stable_uid_field_names():
+            idx = schema.get_field_index(name)
+            field = schema.field(idx)
+            new_metadata = dict(field.metadata or {})
+            new_metadata[STABLE_UID_METADATA_KEY] = b"true"
+            schema = schema.set(idx, field.with_metadata(new_metadata))
+        return schema
 
 
 class HoxBaseSchema(LanceModel):
