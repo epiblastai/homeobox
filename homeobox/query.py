@@ -474,7 +474,9 @@ class AtlasQuery:
         cells_pl = self._materialize_cells()
         return spec.reconstructor.as_fragments(self._atlas, cells_pl, pf, spec)
 
-    def to_array(self, field_name: str) -> "tuple[np.ndarray, pandas.DataFrame]":
+    def to_array(
+        self, field_name: str, array_name: str | None = None
+    ) -> "tuple[np.ndarray, pandas.DataFrame]":
         """Reconstruct a single dense pointer field as a raw array.
 
         Returns the full-dimensionality array (e.g. 4D for image tiles)
@@ -485,6 +487,12 @@ class AtlasQuery:
         field_name
             Pointer-field attribute name whose feature_space exposes an
             ``as_array`` endpoint (e.g. dense modalities like image tiles).
+        array_name
+            Zarr array to read within each group. Defaults to the first
+            entry in the spec's ``required_arrays`` (or, if none, the
+            first required layer). For specs that expose multiple layers
+            (e.g. ``embedding``), pass the layer name like ``"raw"`` or
+            ``"pca_whitened"`` to select among them.
 
         Returns
         -------
@@ -504,7 +512,7 @@ class AtlasQuery:
             )
 
         cells_pl = self._materialize_cells()
-        array = spec.reconstructor.as_array(self._atlas, cells_pl, pf, spec)
+        array = spec.reconstructor.as_array(self._atlas, cells_pl, pf, spec, array_name=array_name)
         obs = _build_obs_df(cells_pl)
         return array, obs
 

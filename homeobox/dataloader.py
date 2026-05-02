@@ -45,6 +45,7 @@ from homeobox.group_specs import PointerKind, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_cells,
+    _prepare_discrete_spatial_cells,
     _prepare_sparse_cells,
 )
 
@@ -254,6 +255,73 @@ def _build_dense_modality_data(
     return filtered, groups_np, mod_data
 
 
+def _build_discrete_spatial_modality_data(
+    atlas: "RaggedAtlas",
+    cells_indexed: pl.DataFrame,
+    pf,
+    spec,
+    layer: str,
+    n_cells: int,
+) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
+    """Build ``_ModalityData`` for a DiscreteSpatial pointer-field modality.
+
+    Each pointer is a rank-1 box ``[min_corner[0], max_corner[0])`` into a
+    2-D ``(total_rows, n_features)`` zarr array; per-cell row count is
+    variable. Returned batches use :class:`DiscreteSpatialBatch`.
+    """
+    fs = pf.feature_space
+    filtered, groups = _prepare_discrete_spatial_cells(cells_indexed, pf)
+    groups = sorted(groups)
+
+    present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
+    present_mask, cell_positions = _build_present_arrays(present_indices, n_cells)
+
+    if len(present_indices) > 0 and groups:
+        groups_np = _build_groups_np(filtered["_zg"], groups)
+    else:
+        groups_np = np.array([], dtype=np.int32)
+
+    group_readers: dict[str, GroupReader] = {
+        zg: GroupReader.for_worker(
+            zarr_group=zg,
+            feature_space=fs,
+            store=atlas._store,
+            remap=np.array([], dtype=np.int32),
+        )
+        for zg in groups
+    }
+
+    layers_path = spec.zarr_group_spec.find_layers_path()
+    array_path = f"{layers_path}/{layer}" if layers_path else layer
+
+    if groups:
+        reader = group_readers[groups[0]].get_array_reader(array_path)
+        if len(reader.shape) != 2:
+            raise ValueError(
+                f"DiscreteSpatial modality '{fs}' requires a 2-D zarr array at "
+                f"'{array_path}', got shape {tuple(reader.shape)}"
+            )
+        n_features = int(reader.shape[1])
+        layer_dtype = reader._native_dtype
+    else:
+        n_features = 0
+        layer_dtype = np.dtype(np.float32)
+
+    mod_data = _ModalityData(
+        kind=PointerKind.DISCRETE_SPATIAL,
+        unique_groups=groups,
+        group_readers=group_readers,
+        n_features=n_features,
+        index_array_name="",
+        layer=layer,
+        layer_dtype=layer_dtype,
+        layers_path=layers_path,
+        present_mask=present_mask,
+        cell_positions=cell_positions,
+    )
+    return filtered, groups_np, mod_data
+
+
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
     """Scatter a SparseBatch into a dense float32 torch tensor (n_cells, n_features)."""
     import torch
@@ -365,6 +433,38 @@ class DenseBatch:
 
 
 @dataclass
+class DiscreteSpatialBatch:
+    """Variable-length dense batch for DiscreteSpatialPointer modalities.
+
+    Each present cell contributes a 2-D slab
+    ``data[offsets[i]:offsets[i+1], :]`` of shape
+    ``(max_corner[0] - min_corner[0], n_features)``. Slabs for different
+    cells have different row counts, so they are concatenated along axis 0
+    with CSR-style ``offsets`` demarcating per-cell spans.
+
+    Attributes
+    ----------
+    data:
+        shape ``(total_rows, n_features)``, dtype = modality layer dtype.
+        Rows are grouped by cell in query order (aligned with the
+        ``True`` entries of the parent :class:`MultimodalBatch.present` mask).
+    offsets:
+        int64, shape ``(n_present + 1,)``. Cell ``i``'s rows are
+        ``data[offsets[i]:offsets[i+1], :]``.
+    n_features:
+        Trailing-axis feature count (e.g. embedding_dim).
+    metadata:
+        Optional dict of obs columns as numpy arrays, aligned to the
+        ``n_present`` cells (not the total rows).
+    """
+
+    data: np.ndarray
+    offsets: np.ndarray
+    n_features: int
+    metadata: dict[str, np.ndarray] | None = None
+
+
+@dataclass
 class MultimodalBatch:
     """Container for a within-cell multimodal training batch.
 
@@ -387,7 +487,7 @@ class MultimodalBatch:
 
     n_cells: int
     metadata: dict[str, np.ndarray] | None
-    modalities: dict[str, "SparseBatch | DenseBatch"]
+    modalities: dict[str, "SparseBatch | DenseBatch | DiscreteSpatialBatch"]
     present: dict[str, np.ndarray]
 
 
@@ -635,15 +735,95 @@ async def _take_dense_from_pointers(
     )
 
 
+async def _take_discrete_spatial_from_pointers(
+    groups_np: np.ndarray,
+    starts: np.ndarray,
+    ends: np.ndarray,
+    mod_data: _ModalityData,
+) -> DiscreteSpatialBatch:
+    """Fetch a DiscreteSpatial batch from per-cell pointer arrays.
+
+    Each cell contributes a variable-length slab ``[start, end)`` read from
+    axis 0 of a 2-D ``(total_rows, n_features)`` zarr array per group.
+    """
+    n_present = len(groups_np)
+    n_features = mod_data.n_features
+    out_dtype = mod_data.layer_dtype
+    lengths = (ends - starts).astype(np.int64)
+
+    array_path = (
+        f"{mod_data.layers_path}/{mod_data.layer}" if mod_data.layers_path else mod_data.layer
+    )
+
+    sort_order = np.argsort(groups_np, kind="stable")
+    sorted_groups = groups_np[sort_order]
+    sorted_starts = starts[sort_order]
+    sorted_ends = ends[sort_order]
+    sorted_lengths = lengths[sort_order]
+
+    tasks = []
+    group_slice_ranges: list[tuple[int, int]] = []
+    pos = 0
+    for gid in np.unique(sorted_groups):
+        mask = sorted_groups == gid
+        count = int(mask.sum())
+        zg = mod_data.unique_groups[gid]
+        gr = mod_data.group_readers[zg]
+        tasks.append(
+            gr.get_array_reader(array_path).read_ranges(sorted_starts[mask], sorted_ends[mask])
+        )
+        group_slice_ranges.append((pos, pos + count))
+        pos += count
+
+    results = await asyncio.gather(*tasks)
+
+    total_rows = int(sorted_lengths.sum())
+    sorted_data = np.empty((total_rows, n_features), dtype=out_dtype)
+    sorted_offsets = np.zeros(n_present + 1, dtype=np.int64)
+    np.cumsum(sorted_lengths, out=sorted_offsets[1:])
+    for (s_cell, e_cell), (flat_data, _lens) in zip(group_slice_ranges, results, strict=True):
+        sd_s = int(sorted_offsets[s_cell])
+        sd_e = int(sorted_offsets[e_cell])
+        n_rows = sd_e - sd_s
+        sorted_data[sd_s:sd_e] = flat_data.reshape(n_rows, n_features)
+
+    # Reorder cells back to input (groups_np) order; row block ``i`` in the
+    # output is source row block ``inv_sort[i]``.
+    inv_sort = np.argsort(sort_order, kind="stable")
+    new_lengths = sorted_lengths[inv_sort]
+    new_offsets = np.zeros(n_present + 1, dtype=np.int64)
+    np.cumsum(new_lengths, out=new_offsets[1:])
+
+    if total_rows == 0:
+        return DiscreteSpatialBatch(
+            data=np.zeros((0, n_features), dtype=out_dtype),
+            offsets=new_offsets,
+            n_features=n_features,
+        )
+
+    # Segment-arange gather: for each output row, compute its source row in sorted_data.
+    src_starts = sorted_offsets[:-1][inv_sort]
+    within = np.arange(total_rows, dtype=np.int64) - np.repeat(new_offsets[:-1], new_lengths)
+    gather = np.repeat(src_starts, new_lengths) + within
+
+    return DiscreteSpatialBatch(
+        data=sorted_data[gather],
+        offsets=new_offsets,
+        n_features=n_features,
+    )
+
+
 async def _fetch_modality_from_pointers(
     groups_np: np.ndarray,
     starts: np.ndarray,
     ends: np.ndarray,
     mod_data: _ModalityData,
-) -> "SparseBatch | DenseBatch":
-    """Dispatch to sparse or dense fetch using pointer arrays."""
+) -> "SparseBatch | DenseBatch | DiscreteSpatialBatch":
+    """Dispatch to sparse, dense, or discrete-spatial fetch using pointer arrays."""
     if mod_data.kind is PointerKind.SPARSE:
         return await _take_sparse_from_pointers(groups_np, starts, ends, mod_data)
+    if mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+        return await _take_discrete_spatial_from_pointers(groups_np, starts, ends, mod_data)
     return await _take_dense_from_pointers(groups_np, starts, ends, mod_data)
 
 
@@ -674,6 +854,20 @@ def _extract_pointers_dense(
     return groups_np, pos_arr, pos_arr + 1
 
 
+def _extract_pointers_discrete_spatial(
+    take_result: pl.DataFrame,
+    pointer_field: str,
+    unique_groups: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract (groups_np, starts, ends) from a take result for a rank-1 DiscreteSpatial field."""
+    pointer_df = take_result[pointer_field].struct.unnest()
+    zg_series = pointer_df["zarr_group"]
+    groups_np = _build_groups_np(zg_series, unique_groups)
+    starts = pointer_df["min_corner"].list.first().to_numpy().astype(np.int64)
+    ends = pointer_df["max_corner"].list.first().to_numpy().astype(np.int64)
+    return groups_np, starts, ends
+
+
 async def _take_multimodal(
     take_result: pl.DataFrame,
     modality_data: dict[str, _ModalityData],
@@ -686,7 +880,7 @@ async def _take_multimodal(
     tasks: list = []
     task_fs: list[str] = []
     present_masks: dict[str, np.ndarray] = {}
-    empty_modalities: dict[str, SparseBatch | DenseBatch] = {}
+    empty_modalities: dict[str, SparseBatch | DenseBatch | DiscreteSpatialBatch] = {}
 
     for fs, mod_data in modality_data.items():
         pf_name = pointer_fields[fs]
@@ -704,6 +898,12 @@ async def _take_multimodal(
                 empty_modalities[fs] = SparseBatch(
                     indices=np.array([], dtype=np.int32),
                     values=np.array([], dtype=mod_data.layer_dtype),
+                    offsets=np.zeros(1, dtype=np.int64),
+                    n_features=mod_data.n_features,
+                )
+            elif mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+                empty_modalities[fs] = DiscreteSpatialBatch(
+                    data=np.zeros((0, mod_data.n_features), dtype=mod_data.layer_dtype),
                     offsets=np.zeros(1, dtype=np.int64),
                     n_features=mod_data.n_features,
                 )
@@ -725,6 +925,10 @@ async def _take_multimodal(
             groups_np, starts, ends = _extract_pointers_sparse(
                 present_take, pf_name, mod_data.unique_groups
             )
+        elif mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+            groups_np, starts, ends = _extract_pointers_discrete_spatial(
+                present_take, pf_name, mod_data.unique_groups
+            )
         else:
             groups_np, starts, ends = _extract_pointers_dense(
                 present_take, pf_name, mod_data.unique_groups
@@ -735,7 +939,7 @@ async def _take_multimodal(
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
 
-    modalities: dict[str, SparseBatch | DenseBatch] = dict(empty_modalities)
+    modalities: dict[str, SparseBatch | DenseBatch | DiscreteSpatialBatch] = dict(empty_modalities)
     for fs, result in zip(task_fs, results, strict=True):
         modalities[fs] = result
 
@@ -814,6 +1018,11 @@ class CellDataset(_AsyncDataset):
         # Build modality data (filters empty cells, builds remaps & readers)
         cells_indexed = cells_pl.with_row_index("_orig_idx")
 
+        if spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            raise NotImplementedError(
+                "DiscreteSpatialPointer is not supported by the homeobox dataloader; "
+                "implement a custom dataset/fetch path."
+            )
         if spec.pointer_kind is PointerKind.SPARSE:
             filtered, groups_np, self._mod_data = _build_sparse_modality_data(
                 atlas,
@@ -851,6 +1060,9 @@ class CellDataset(_AsyncDataset):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._cell_table: lancedb.table.Table | None = None
+
+    def __len__(self) -> int:
+        return self.n_cells
 
     @property
     def n_cells(self) -> int:
@@ -904,6 +1116,11 @@ class CellDataset(_AsyncDataset):
         take_result = _reorder_take_result(take_result, batch_row_ids)
 
         # 3. Extract pointer data and dispatch async read
+        if self._pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            raise NotImplementedError(
+                "DiscreteSpatialPointer is not supported by the homeobox dataloader; "
+                "implement a custom dataset/fetch path."
+            )
         if self._pointer_kind is PointerKind.SPARSE:
             groups_np, starts, ends = _extract_pointers_sparse(
                 take_result, self._pointer_field, self._mod_data.unique_groups
@@ -1045,6 +1262,10 @@ class MultimodalCellDataset(_AsyncDataset):
                 _, groups_np, modality_data[fn] = _build_sparse_modality_data(
                     atlas, cells_indexed, pf, spec, layer, wg, self._n_cells
                 )
+            elif spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+                _, groups_np, modality_data[fn] = _build_discrete_spatial_modality_data(
+                    atlas, cells_indexed, pf, spec, layer, self._n_cells
+                )
             else:
                 _, groups_np, modality_data[fn] = _build_dense_modality_data(
                     atlas, cells_indexed, pf, spec, layer, self._n_cells
@@ -1072,6 +1293,9 @@ class MultimodalCellDataset(_AsyncDataset):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._cell_table: lancedb.table.Table | None = None
+
+    def __len__(self) -> int:
+        return self.n_cells
 
     @property
     def n_cells(self) -> int:

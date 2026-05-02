@@ -133,9 +133,6 @@ PROTEIN_ABUNDANCE_SPEC = FeatureSpaceSpec(
     ),
 )
 
-# ---------------------------------------------------------------------------
-# Chromatin accessibility (cell-sorted fragments)
-# ---------------------------------------------------------------------------
 
 CHROMATIN_ACCESSIBILITY_SPEC = FeatureSpaceSpec(
     feature_space="chromatin_accessibility",
@@ -162,9 +159,6 @@ CHROMATIN_ACCESSIBILITY_SPEC = FeatureSpaceSpec(
     ),
 )
 
-# ---------------------------------------------------------------------------
-# Image tiles
-# ---------------------------------------------------------------------------
 
 IMAGE_TILES_SPEC = FeatureSpaceSpec(
     feature_space="image_tiles",
@@ -179,11 +173,40 @@ IMAGE_TILES_SPEC = FeatureSpaceSpec(
 )
 
 
+EMBEDDING_SPEC = FeatureSpaceSpec(
+    feature_space="embedding",
+    pointer_kind=PointerKind.DENSE,
+    # The var_df for embeddings is trivial dimensionality
+    has_var_df=False,
+    reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            required=[
+                ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32, np.float16]),
+            ],
+            allowed=[
+                ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32, np.float16]),
+                ArraySpec(
+                    array_name="ctrl_standardized",
+                    ndim=2,
+                    allowed_dtypes=[np.float32, np.float16],
+                ),
+                ArraySpec(
+                    array_name="pca_whitened",
+                    ndim=2,
+                    allowed_dtypes=[np.float32, np.float16],
+                ),
+            ],
+        ),
+    ),
+)
+
 for _spec in [
     GENE_EXPRESSION_SPEC,
     IMAGE_FEATURES_SPEC,
     PROTEIN_ABUNDANCE_SPEC,
     CHROMATIN_ACCESSIBILITY_SPEC,
     IMAGE_TILES_SPEC,
+    EMBEDDING_SPEC,
 ]:
     register_spec(_spec)
