@@ -25,7 +25,6 @@ import numpy as np
 import polars as pl
 import zarr
 
-from homeobox.codecs.bitpacking import BitpackingCodec
 from homeobox.group_specs import get_spec
 from homeobox.ingestion import _CHUNK_ELEMS, _SHARD_ELEMS
 
@@ -429,34 +428,23 @@ def write_genome_sorted_arrays(
     n_fragments = len(starts)
     batch_size = shard_shape[0]
 
-    genome_sorted = group.create_group("genome_sorted")
+    gs_spec = get_spec(FEATURE_SPACE).feature_oriented
 
-    # Large sharded arrays
-    zarr_cell_ids = genome_sorted.create_array(
-        "cell_ids",
-        shape=(n_fragments,),
-        dtype=np.uint32,
-        chunks=chunk_shape,
-        shards=shard_shape,
-        compressors=BitpackingCodec(transform="none"),
+    zarr_cell_ids = gs_spec.create_array(
+        group, "genome_sorted/cell_ids", (n_fragments,), chunks=chunk_shape, shards=shard_shape
     )
-    zarr_starts = genome_sorted.create_array(
-        "starts",
-        shape=(n_fragments,),
-        dtype=np.uint32,
-        chunks=chunk_shape,
-        shards=shard_shape,
-        compressors=BitpackingCodec(transform="delta"),
+    zarr_starts = gs_spec.create_array(
+        group, "genome_sorted/starts", (n_fragments,), chunks=chunk_shape, shards=shard_shape
     )
-    zarr_lengths = genome_sorted.create_array(
-        "lengths",
-        shape=(n_fragments,),
-        dtype=np.uint16,
+    zarr_lengths = gs_spec.create_array(
+        group,
+        "genome_sorted/lengths",
+        (n_fragments,),
+        dtype=lengths.dtype,
         chunks=chunk_shape,
         shards=shard_shape,
     )
 
-    # Write large arrays in shard-sized batches
     written = 0
     while written < n_fragments:
         end = min(written + batch_size, n_fragments)
@@ -465,12 +453,10 @@ def write_genome_sorted_arrays(
         zarr_lengths[written:end] = lengths[written:end]
         written = end
 
-    # Small index arrays (not sharded)
-    genome_sorted.create_array(
-        "chrom_offsets",
-        data=chrom_offsets.astype(np.int64),
+    zarr_chrom_offsets = gs_spec.create_array(
+        group, "genome_sorted/chrom_offsets", chrom_offsets.shape
     )
-    genome_sorted.create_array(
-        "end_max",
-        data=end_max.astype(np.uint32),
-    )
+    zarr_chrom_offsets[:] = chrom_offsets.astype(np.int64)
+
+    zarr_end_max = gs_spec.create_array(group, "genome_sorted/end_max", end_max.shape)
+    zarr_end_max[:] = end_max.astype(np.uint32)
