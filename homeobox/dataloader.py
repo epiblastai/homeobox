@@ -885,11 +885,10 @@ async def _take_multimodal(
     for fs, mod_data in modality_data.items():
         pf_name = pointer_fields[fs]
 
-        # Every supported pointer kind carries a ``zarr_group`` discriminator;
-        # empty string = modality absent for that cell.
+        # Extract pointers for ALL batch cells for this modality
         pointer_df = take_result[pf_name].struct.unnest()
         zg_series = pointer_df["zarr_group"]
-        batch_present = (zg_series != "").to_numpy()
+        batch_present = zg_series.is_not_null().to_numpy()
 
         present_masks[fs] = batch_present
         present_indices = np.where(batch_present)[0]

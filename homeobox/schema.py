@@ -15,15 +15,15 @@ from homeobox.group_specs import PointerKind, get_spec
 
 
 class SparseZarrPointer(LanceModel):
-    zarr_group: str
-    start: int
-    end: int
-    zarr_row: int  # cell's 0-indexed position within this zarr group (for CSC lookup)
+    zarr_group: str | None = None
+    start: int | None = None
+    end: int | None = None
+    zarr_row: int | None = None  # cell's 0-indexed position within this zarr group (for CSC lookup)
 
 
 class DenseZarrPointer(LanceModel):
-    zarr_group: str
-    position: int
+    zarr_group: str | None = None
+    position: int | None = None
 
 
 class DiscreteSpatialPointer(LanceModel):

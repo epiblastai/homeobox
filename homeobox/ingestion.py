@@ -374,37 +374,12 @@ def _build_cell_arrow_table(
         "dataset_uid": pa.array([dataset_uid] * n_cells, type=pa.string()),
     }
 
-    # Fill pointer fields — real data where provided, zero-fill otherwise
-    for pf_name, pf in atlas.pointer_fields.items():
+    # Fill pointer fields — real data where provided, null-fill otherwise
+    for pf_name in atlas.pointer_fields:
         if pf_name in pointer_data:
             columns[pf_name] = pointer_data[pf_name]
-        elif pf.pointer_kind is PointerKind.SPARSE:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["zarr_group", "start", "end", "zarr_row"],
-            )
-        elif pf.pointer_kind is PointerKind.DISCRETE_SPATIAL:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([[]] * n_cells, type=pa.list_(pa.int64())),
-                    pa.array([[]] * n_cells, type=pa.list_(pa.int64())),
-                ],
-                names=["zarr_group", "min_corner", "max_corner"],
-            )
         else:
-            columns[pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_cells, type=pa.string()),
-                    pa.array([0] * n_cells, type=pa.int64()),
-                ],
-                names=["zarr_group", "position"],
-            )
+            columns[pf_name] = pa.nulls(n_cells, type=arrow_schema.field(pf_name).type)
 
     # Add obs columns
     for col in schema_fields:
