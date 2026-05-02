@@ -74,7 +74,7 @@ atlas = hox.create_or_open_atlas(
     cell_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
-    dataset_schema=hox.DatasetRecord,
+    dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
@@ -87,7 +87,7 @@ atlas.register_features("gene_expression", features)
 # 4. Prepare var and ingest. `field_name` selects the cell-schema column
 #    to populate; its feature_space is resolved from PointerField.declare.
 adata.var["global_feature_uid"] = adata.var_names
-record = hox.DatasetRecord(
+record = hox.DatasetSchema(
     zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
 )
 hox.add_from_anndata(
@@ -132,7 +132,7 @@ atlas = hox.create_or_open_atlas(
     cell_table_name="cells",
     cell_schema=TileSchema,
     dataset_table_name="datasets",
-    dataset_schema=hox.DatasetRecord,
+    dataset_schema=hox.DatasetSchema,
     registry_schemas={},
 )
 
@@ -142,7 +142,7 @@ tiles = np.random.randint(0, 256, (n_cells, n_channels, h, w), dtype=np.uint8)
 
 # 4. Register the dataset, create the zarr group, and write the 4D array.
 #    The spec's create_array enforces ndim=4 and the allowed dtype set.
-record = hox.DatasetRecord(
+record = hox.DatasetSchema(
     zarr_group="random_tiles", feature_space="image_tiles", n_cells=n_cells,
 )
 atlas.register_dataset(record)
@@ -296,7 +296,7 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 - **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
 - **[PyTorch Data Loading](docs/dataloader.md)**: `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
 - **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
-- **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetRecord`.
+- **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetSchema`.
 - **[Full docs site](https://epiblastai.github.io/homeobox/)**
 
 ---

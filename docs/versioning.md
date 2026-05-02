@@ -44,7 +44,7 @@ import obstore.store
 import homeobox
 from homeobox.atlas import RaggedAtlas
 from homeobox.schema import HoxBaseSchema, SparseZarrPointer, PointerField
-from homeobox.schema import DatasetRecord
+from homeobox.schema import DatasetSchema
 from my_project.schemas import GeneSchema  # a FeatureBaseSchema subclass
 
 store = obstore.store.S3Store("s3://my-bucket/my-atlas/zarr")
@@ -54,7 +54,7 @@ atlas = RaggedAtlas.create(
     cell_table_name="cells",
     cell_schema=MyCellSchema,
     dataset_table_name="datasets",
-    dataset_schema=DatasetRecord,
+    dataset_schema=DatasetSchema,
     store=store,
     registry_schemas={
         "gene_expression": GeneSchema,

@@ -14,7 +14,7 @@ from homeobox.dataloader import (
     dense_to_tensor_collate,
 )
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     HoxBaseSchema,
     PointerField,
@@ -57,7 +57,7 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
 
     rng = np.random.default_rng(42)
@@ -77,12 +77,12 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
 
         # Write dataset record
         ds_uid = make_uid()
-        ds = DatasetRecord(
+        ds = DatasetSchema(
             zarr_group=group_uid,
             feature_space="image_tiles",
             n_cells=n_cells,
         )
-        ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetRecord.to_arrow_schema())
+        ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
         atlas._dataset_table.add(ds_arrow)
 
         # Build cell records with tile pointers

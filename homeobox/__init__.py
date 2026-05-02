@@ -18,7 +18,7 @@ from homeobox.ingestion import add_anndata_batch, add_csc, add_from_anndata
 from homeobox.multimodal import MultimodalResult
 from homeobox.query import AtlasQuery
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
@@ -45,7 +45,7 @@ __all__ = [
     "add_csc",
     "HoxBaseSchema",
     "FeatureBaseSchema",
-    "DatasetRecord",
+    "DatasetSchema",
     "PointerField",
     "StableUIDBaseSchema",
     "StableUIDField",

@@ -27,7 +27,7 @@ from homeobox.fragments.ingestion import (
 from homeobox.group_specs import PointerKind, get_spec
 from homeobox.ingestion import SparseZarrWriter, write_feature_layout
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
-from homeobox.schema import DatasetRecord, make_uid
+from homeobox.schema import DatasetSchema, make_uid
 
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
@@ -159,7 +159,7 @@ def add_multimodal_batch(
     *,
     obs_df: pd.DataFrame,
     zarr_layer: str,
-    dataset_records: dict[str, DatasetRecord],
+    dataset_records: dict[str, DatasetSchema],
 ) -> int:
     """Ingest aligned multimodal data, creating one cell record per cell.
 
@@ -181,7 +181,7 @@ def add_multimodal_batch(
     zarr_layer
         Zarr layer name (e.g. ``"counts"``).
     dataset_records
-        ``{field_name: DatasetRecord}`` — one per modality, keyed the same
+        ``{field_name: DatasetSchema}`` — one per modality, keyed the same
         way as ``modalities``. All records must share a single ``dataset_uid``.
 
     Returns
@@ -276,7 +276,7 @@ def add_fragment_batch(
     obs_df: pd.DataFrame,
     chrom_uids: dict[str, str],
     field_name: str,
-    dataset_record: DatasetRecord,
+    dataset_record: DatasetSchema,
     barcode_col: str = "barcode",
     fragments: pl.DataFrame | None = None,
 ) -> int:

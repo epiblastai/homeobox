@@ -24,7 +24,7 @@ This skill consumes outputs from the `geo-data-preparer` skill. Before starting,
 
 - **Fragment CSVs** per experiment: `{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv` — produced by the preparer and its resolver subagents
 - **Finalized global tables**: `{SchemaClassName}.parquet` (e.g., `GenomicFeatureSchema.parquet`, `GeneticPerturbationSchema.parquet`, `PublicationSchema.parquet`) — these are the type-coerced parquet outputs from the resolvers, NOT the `_resolved.csv` files
-- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetRecord`, and foreign key schema classes
+- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetSchema`, and foreign key schema classes
 - **Atlas path** — directory for the atlas (new or existing), containing `lance_db/` and `zarr_store/`
 - **Data files** — the h5ad, mtx bundles, COO triplet files, or other matrix files for each experiment
 - **metadata.json** — GEO series/sample metadata (written by `geo-data-preparer`)
@@ -60,7 +60,7 @@ Check that all expected files exist before writing any ingestion code:
 - Data files (h5ad, COO triplet matrices, mtx bundles, etc.) for each experiment
 - `metadata.json` and `publication.json` at the accession level (publication.json includes `publication_uid`)
 
-Read `metadata.json` to extract series/sample metadata needed for `DatasetRecord` fields.
+Read `metadata.json` to extract series/sample metadata needed for `DatasetSchema` fields.
 
 ### 2. Assemble fragment CSVs
 
@@ -101,7 +101,7 @@ The ingestion script reads the parquet directly — no further type coercion nee
 
 Read the schema file to identify:
 - The **obs schema** (`HoxBaseSchema` subclass) — e.g., `CellIndex`
-- The **dataset schema** (`DatasetRecord` subclass) — e.g., `DatasetSchema`
+- The **dataset schema** (`DatasetSchema` subclass) — e.g., `DatasetSchema`
 - **Feature registry schemas** (`FeatureBaseSchema` subclasses) — e.g., `GenomicFeatureSchema`, `ProteinSchema`
 - **Foreign key schemas** (`LanceModel` subclasses that are not feature registries) — e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `PublicationSchema`
 
@@ -250,7 +250,7 @@ adata.var["global_feature_uid"] = var_df["global_feature_uid"].values
 # Create dataset record — zarr_group MUST be the auto-generated dataset uid.
 # Do NOT use accession IDs, experiment names, or feature spaces as zarr_group.
 # All dataset metadata (accession, organism, cell_line, etc.) belongs in the
-# DatasetRecord fields — that is what the datasets table is for.
+# DatasetSchema fields — that is what the datasets table is for.
 dataset_uid = make_uid()
 dataset_record = DatasetSchema(
     dataset_uid=dataset_uid,
@@ -371,7 +371,7 @@ import polars as pl
 import pyarrow as pa
 from homeobox.atlas import RaggedAtlas
 from homeobox.ingestion import add_anndata_batch, add_coo_batch
-from homeobox.schema import make_uid, DatasetRecord, FeatureBaseSchema, HoxBaseSchema
+from homeobox.schema import make_uid, DatasetSchema, FeatureBaseSchema, HoxBaseSchema
 ```
 
 ## Directory Layout (Expected Input)

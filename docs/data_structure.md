@@ -13,7 +13,7 @@ No manifest files or external sidecars need to be maintained outside the atlas.
 graph TD
     subgraph LanceDB
         cells["cell table\n(HoxBaseSchema subclass)"]
-        datasets["datasets table\n(DatasetRecord)"]
+        datasets["datasets table\n(DatasetSchema)"]
         layouts["_feature_layouts table\n(FeatureLayout)"]
         reg["registry tables\n(FeatureBaseSchema subclasses)"]
         versions["atlas_versions table\n(AtlasVersionRecord)"]
@@ -41,7 +41,7 @@ Every cell row carries:
 | Field | Type | Description |
 |---|---|---|
 | `uid` | `str` | Random 16-char hex. Unique per cell; safe for concurrent writes. |
-| `dataset_uid` | `str` | Links back to the originating `DatasetRecord`. |
+| `dataset_uid` | `str` | Links back to the originating `DatasetSchema`. |
 | _pointer fields_ | `SparseZarrPointer \| DenseZarrPointer \| None` | One column per feature space the cell may have been profiled in. |
 
 Pointer fields are declared via `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. Column names are free-form — a schema may declare multiple columns in the same feature space (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`). At least one pointer field must be declared.
@@ -159,7 +159,7 @@ A cell is located at row index `position` from the cell's `DenseZarrPointer`.
 
 ## Datasets table
 
-Every ingested zarr group is registered as a `DatasetRecord`. `zarr_group` is the per-row primary key; `dataset_uid` is the logical dataset identifier and may be shared across rows that represent different modalities of a single multimodal batch.
+Every ingested zarr group is registered as a `DatasetSchema`. `zarr_group` is the per-row primary key; `dataset_uid` is the logical dataset identifier and may be shared across rows that represent different modalities of a single multimodal batch.
 
 | Field | Description |
 |---|---|
@@ -191,7 +191,7 @@ An FTS index on `feature_uid` and a scalar index on `layout_uid` make two querie
 
 ```mermaid
 erDiagram
-    DatasetRecord {
+    DatasetSchema {
         str zarr_group PK
         str dataset_uid
         str feature_space
@@ -208,7 +208,7 @@ erDiagram
         int local_index
         int global_index
     }
-    DatasetRecord }o--|| FeatureLayout : "references layout"
+    DatasetSchema }o--|| FeatureLayout : "references layout"
     FeatureRegistry ||--o{ FeatureLayout : "referenced by"
 ```
 

@@ -26,7 +26,7 @@ from homeobox.obs_alignment import (
 )
 from homeobox.schema import (
     POINTER_FEATURE_SPACE_METADATA_KEY,
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     HoxBaseSchema,
     PointerField,
@@ -144,7 +144,7 @@ def dual_cycle_atlas(tmp_path):
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
 
     rng = np.random.default_rng(7)
@@ -160,14 +160,14 @@ def dual_cycle_atlas(tmp_path):
 
     dataset_uid = make_uid()
     for zg in (cycle1_group, cycle2_group):
-        ds = DatasetRecord(
+        ds = DatasetSchema(
             dataset_uid=dataset_uid,
             zarr_group=zg,
             feature_space="image_tiles",
             n_cells=n_cells,
         )
         atlas._dataset_table.add(
-            pa.Table.from_pylist([ds.model_dump()], schema=DatasetRecord.to_arrow_schema())
+            pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
         )
 
     arrow_schema = DualCycleTileSchema.to_arrow_schema()

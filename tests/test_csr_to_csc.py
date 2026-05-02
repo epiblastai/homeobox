@@ -12,7 +12,7 @@ from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_csc, add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -53,7 +53,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
 
     gene_uids = [f"gene_{i}" for i in range(n_vars)]
@@ -73,7 +73,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
         adata,
         field_name="gene_expression",
         zarr_layer="counts",
-        dataset_record=DatasetRecord(
+        dataset_record=DatasetSchema(
             zarr_group=zarr_group,
             feature_space="gene_expression",
             n_cells=n_obs,
