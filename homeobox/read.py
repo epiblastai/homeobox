@@ -26,7 +26,7 @@ def _prepare_sparse_cells(
         struct_df["end"].alias("_end"),
         struct_df["zarr_row"].alias("_zarr_row"),
     )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
+    cells_pl = cells_pl.filter(pl.col("_zg").is_not_null())
     groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
     return cells_pl, groups
 
@@ -45,7 +45,7 @@ def _prepare_dense_cells(
         struct_df["zarr_group"].alias("_zg"),
         struct_df["position"].alias("_pos"),
     )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
+    cells_pl = cells_pl.filter(pl.col("_zg").is_not_null())
     groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
     return cells_pl, groups
 

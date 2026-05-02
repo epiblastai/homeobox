@@ -692,14 +692,9 @@ async def _take_multimodal(
         pf_name = pointer_fields[fs]
 
         # Extract pointers for ALL batch cells for this modality
-        if mod_data.kind is PointerKind.SPARSE:
-            pointer_df = take_result[pf_name].struct.unnest()
-            zg_series = pointer_df["zarr_group"]
-            batch_present = (zg_series != "").to_numpy()
-        else:
-            pointer_df = take_result[pf_name].struct.unnest()
-            zg_series = pointer_df["zarr_group"]
-            batch_present = (zg_series != "").to_numpy()
+        pointer_df = take_result[pf_name].struct.unnest()
+        zg_series = pointer_df["zarr_group"]
+        batch_present = zg_series.is_not_null().to_numpy()
 
         present_masks[fs] = batch_present
         present_indices = np.where(batch_present)[0]

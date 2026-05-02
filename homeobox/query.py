@@ -380,7 +380,7 @@ class AtlasQuery:
         # if the wrong kind of feature space is selected.
         for pf in active_pfs.values():
             zg = cells_pl[pf.field_name].struct.field("zarr_group")
-            if (zg != "").any():
+            if zg.is_not_null().any():
                 return self._reconstruct_single_space_anndata(cells_pl, pf)
 
         return _build_obs_only_anndata(cells_pl)
@@ -429,7 +429,7 @@ class AtlasQuery:
             # Compute presence mask from pointer column
             ptr_col = cells_pl[pf.field_name]
             zg_series = ptr_col.struct.field("zarr_group")
-            mask = (zg_series != "").to_numpy()
+            mask = zg_series.is_not_null().to_numpy()
 
             if not mask.any():
                 continue
