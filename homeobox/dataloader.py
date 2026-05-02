@@ -178,6 +178,7 @@ def _build_dense_modality_data(
     spec,
     layer: str,
     n_cells: int,
+    stack_dense: bool = True,
 ) -> "tuple[pl.DataFrame, np.ndarray, _ModalityData]":
     """Build ``_ModalityData`` for a dense pointer-field modality.
 
@@ -250,6 +251,7 @@ def _build_dense_modality_data(
         cell_positions=cell_positions,
         per_cell_shape=per_cell_shape,
         array_name=array_name,
+        stack_dense=stack_dense,
     )
     return filtered, groups_np, mod_data
 
@@ -345,20 +347,19 @@ class SparseBatch:
 class DenseBatch:
     """Dense batch for ML training.
 
-    Represents a batch of cells as a 2D float32 matrix. Only cells that
-    have this modality are included (no fill values).
+    Represents a batch of cells as dense arrays. Only cells that have this
+    modality are included (no fill values).
 
     Attributes
     ----------
     data:
-        float32, shape (n_cells_with_modality, n_features). Rows are in
-        query order (aligned with True entries of the parent
-        ``MultimodalBatch.present[fs]`` mask).
+        Stacked ndarray with leading cell axis, or one ndarray per cell when
+        dense stacking is disabled. Rows/items are in query order.
     n_features:
         Feature space width.
     """
 
-    data: np.ndarray
+    data: np.ndarray | list[np.ndarray]
     n_features: int
     metadata: dict[str, np.ndarray] | None = None
     per_cell_shape: tuple[int, ...] | None = None
@@ -412,6 +413,7 @@ class _ModalityData:
     cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for CellDataset
     per_cell_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
     array_name: str = ""  # direct zarr array for layer-less specs (e.g., "data")
+    stack_dense: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -609,12 +611,14 @@ async def _take_dense_from_pointers(
         count = int(mask.sum())
         zg = mod_data.unique_groups[gid]
         gr = mod_data.group_readers[zg]
+        group_reader = gr.get_array_reader(array_path)
+        group_cell_shape = tuple(group_reader.shape[1:]) if not mod_data.stack_dense else cell_shape
         tasks.append(
             _take_group_dense(
-                gr.get_array_reader(array_path),
+                group_reader,
                 sorted_starts[mask],
                 sorted_ends[mask],
-                cell_shape,
+                group_cell_shape,
                 mod_data.layer_dtype if mod_data.per_cell_shape is not None else None,
             )
         )
@@ -622,6 +626,17 @@ async def _take_dense_from_pointers(
         pos += count
 
     results = await asyncio.gather(*tasks)
+
+    if not mod_data.stack_dense:
+        sorted_items: list[np.ndarray] = []
+        for group_data in results:
+            sorted_items.extend(group_data[i] for i in range(group_data.shape[0]))
+        inv_sort = np.argsort(sort_order, kind="stable")
+        return DenseBatch(
+            data=[sorted_items[i] for i in inv_sort],
+            n_features=mod_data.n_features,
+            per_cell_shape=mod_data.per_cell_shape,
+        )
 
     sorted_data = np.empty((n_present, *cell_shape), dtype=out_dtype)
     for (s, e), group_data in zip(group_slices, results, strict=True):
@@ -790,6 +805,10 @@ class CellDataset(_AsyncDataset):
         When set, :attr:`n_features` reflects the filtered count and
         batch ``indices`` are bounded by that value.  Only valid for
         sparse feature spaces with a feature registry.
+    stack_dense:
+        Whether dense batches should be stacked into a single ndarray. Set
+        to ``False`` to return one array per cell, which allows variable-size
+        image tiles.
     """
 
     def __init__(
@@ -802,6 +821,7 @@ class CellDataset(_AsyncDataset):
         layer: str = "counts",
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
+        stack_dense: bool = True,
     ) -> None:
         pf = atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
@@ -832,6 +852,7 @@ class CellDataset(_AsyncDataset):
                 spec,
                 layer,
                 cells_pl.height,
+                stack_dense=stack_dense,
             )
 
         # Store only the lightweight arrays needed for sampling + lazy loading
@@ -1232,7 +1253,10 @@ def dense_to_tensor_collate(batch: DenseBatch) -> dict:
     """
     import torch
 
-    result: dict = {"X": torch.from_numpy(np.ascontiguousarray(batch.data))}
+    if isinstance(batch.data, list):
+        result: dict = {"X": [torch.from_numpy(np.ascontiguousarray(x)) for x in batch.data]}
+    else:
+        result = {"X": torch.from_numpy(np.ascontiguousarray(batch.data))}
     if batch.metadata:
         for col, arr in batch.metadata.items():
             if arr.dtype.kind in ("i", "u", "f"):
