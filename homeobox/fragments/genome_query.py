@@ -136,6 +136,9 @@ class GenomeSortedReader:
                 f"Feature space '{_FEATURE_SPACE}' has no feature_oriented spec; "
                 "cannot read genome-sorted fragments."
             )
+        # Mirrors the CSC convention: every required array is named
+        # "<subgroup>/<leaf>" (e.g. "genome_sorted/cell_ids"), so the leaf
+        # after the first slash is a stable lookup key for callers.
         self._paths = {
             name.split("/", 1)[1]: name for name in (a.array_name for a in spec.required_arrays)
         }
