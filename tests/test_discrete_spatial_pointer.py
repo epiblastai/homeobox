@@ -20,6 +20,7 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.dataloader import CellDataset, DiscreteSpatialBatch, MultimodalCellDataset
 from homeobox.dex._dex import _compare, _extract_matrix, dex
 from homeobox.group_specs import (
+    FeatureSpaceSpec,
     LayersSpec,
     PointerKind,
     ZarrGroupSpec,
@@ -53,14 +54,14 @@ _DS_FS = "test_discrete_spatial_boxes"
 
 if _DS_FS not in registered_feature_spaces():
     register_spec(
-        ZarrGroupSpec(
+        FeatureSpaceSpec(
             feature_space=_DS_FS,
             pointer_kind=PointerKind.DISCRETE_SPATIAL,
             has_var_df=False,
-            layers=LayersSpec(),
             # reconstructor is never invoked in these tests; DenseReconstructor
             # is a convenient concrete Protocol implementation.
             reconstructor=DenseReconstructor(),
+            zarr_group_spec=ZarrGroupSpec(layers=LayersSpec()),
         )
     )
 
