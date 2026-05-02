@@ -16,7 +16,7 @@ from homeobox.schema import (
     PointerField,
     SparseZarrPointer,
     _iter_pointer_annotations,
-    _read_pointer_json_schema_extra,
+    _read_field_json_schema_extra,
 )
 
 
@@ -35,7 +35,7 @@ def _extract_pointer_fields(
     """
     result: dict[str, PointerField] = {}
     for name, pointer_type in _iter_pointer_annotations(schema_cls):
-        extra = _read_pointer_json_schema_extra(schema_cls, name) or {}
+        extra = _read_field_json_schema_extra(schema_cls, name) or {}
         feature_space = extra.get("feature_space")
         if not feature_space:
             raise TypeError(

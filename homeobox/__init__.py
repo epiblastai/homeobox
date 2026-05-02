@@ -25,6 +25,8 @@ from homeobox.schema import (
     HoxBaseSchema,
     PointerField,
     SparseZarrPointer,
+    StableUIDBaseSchema,
+    StableUIDField,
 )
 
 __all__ = [
@@ -47,6 +49,8 @@ __all__ = [
     "FeatureBaseSchema",
     "DatasetRecord",
     "PointerField",
+    "StableUIDBaseSchema",
+    "StableUIDField",
     "SparseZarrPointer",
     "DenseZarrPointer",
     "FragmentResult",
