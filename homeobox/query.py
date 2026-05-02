@@ -552,6 +552,7 @@ class AtlasQuery:
         field_name: str,
         layer: str | None = None,
         metadata_columns: list[str] | None = None,
+        stack_dense: bool = True,
     ) -> "CellDataset":
         """Create a CellDataset for fast ML training iteration.
 
@@ -574,6 +575,10 @@ class AtlasQuery:
             layered specs or ignored for layer-less specs (e.g. ``image_tiles``).
         metadata_columns:
             Obs column names to include as metadata on each batch.
+        stack_dense:
+            Whether dense batches should be stacked into a single ndarray. Set
+            to ``False`` to return one array per cell, which allows variable-size
+            image tiles.
 
         Notes
         -----
@@ -611,6 +616,7 @@ class AtlasQuery:
             layer=layer,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
+            stack_dense=stack_dense,
         )
 
     def to_multimodal_dataset(
@@ -618,6 +624,7 @@ class AtlasQuery:
         field_names: list[str],
         layers: dict[str, str] | None = None,
         metadata_columns: list[str] | None = None,
+        stack_dense: bool | dict[str, bool] = True,
     ) -> "MultimodalCellDataset":
         """Create a MultimodalCellDataset for within-cell multimodal training.
 
@@ -639,6 +646,10 @@ class AtlasQuery:
             for layer-less specs) when omitted.
         metadata_columns:
             Obs column names to include as metadata on each batch.
+        stack_dense:
+            Whether dense batches should be stacked into a single ndarray.
+            May be a single bool for all dense modalities or a mapping by
+            field name, e.g. ``{"image_tiles": False}``.
         """
         from homeobox.dataloader import MultimodalCellDataset
         from homeobox.group_specs import get_spec
@@ -675,6 +686,7 @@ class AtlasQuery:
             layers=layers,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
+            stack_dense=stack_dense,
         )
 
     # -- Reconstruction internals -------------------------------------------

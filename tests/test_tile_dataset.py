@@ -12,6 +12,7 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.dataloader import (
     DenseBatch,
     dense_to_tensor_collate,
+    multimodal_to_dense_collate,
 )
 from homeobox.schema import (
     DatasetSchema,
@@ -44,7 +45,14 @@ def _write_image_tiles_zarr(group: zarr.Group, tiles: np.ndarray) -> None:
     group.create_array("data", data=tiles, chunks=chunk_shape, shards=shard_shape)
 
 
-def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, w=8):
+def _make_tile_atlas(
+    tmp_path,
+    n_cells_per_group: list[int],
+    n_channels=3,
+    h=8,
+    w=8,
+    tile_shapes: list[tuple[int, int, int]] | None = None,
+):
     """Create an atlas with image_tiles data across multiple zarr groups."""
     atlas_dir = str(tmp_path / "atlas")
     os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
@@ -66,9 +74,17 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
 
     for group_idx, n_cells in enumerate(n_cells_per_group):
         group_uid = f"ds{group_idx}/image_tiles"
+        group_n_channels, group_h, group_w = (
+            tile_shapes[group_idx] if tile_shapes is not None else (n_channels, h, w)
+        )
 
         # Generate random tile data
-        tiles = rng.integers(0, 65535, size=(n_cells, n_channels, h, w), dtype=np.uint16)
+        tiles = rng.integers(
+            0,
+            65535,
+            size=(n_cells, group_n_channels, group_h, group_w),
+            dtype=np.uint16,
+        )
         all_tiles.append((group_uid, tiles))
 
         # Write zarr
@@ -126,6 +142,17 @@ def single_group_tile_atlas(tmp_path):
 def two_group_tile_atlas(tmp_path):
     """Atlas with 2 zarr groups, 20+15 cells, 3-channel 8x8 tiles."""
     atlas, all_tiles = _make_tile_atlas(tmp_path, [20, 15])
+    return atlas, all_tiles
+
+
+@pytest.fixture
+def variable_shape_tile_atlas(tmp_path):
+    """Atlas with two zarr groups whose tiles have different H/W."""
+    atlas, all_tiles = _make_tile_atlas(
+        tmp_path,
+        [4, 3],
+        tile_shapes=[(3, 8, 8), (3, 10, 6)],
+    )
     return atlas, all_tiles
 
 
@@ -229,6 +256,80 @@ def test_tile_dataset_two_groups_round_trip(two_group_tile_atlas):
     batch_set = {tuple(batch.data[i].ravel()) for i in range(batch.data.shape[0])}
     ref_set = {tuple(all_original[i].ravel()) for i in range(all_original.shape[0])}
     assert batch_set == ref_set
+
+
+def test_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas):
+    """List mode returns per-cell arrays when zarr groups have different tile shapes."""
+    atlas, all_tiles = variable_shape_tile_atlas
+
+    ds = atlas.query().to_cell_dataset("image_tiles", stack_dense=False)
+    batch = ds.__getitems__(list(range(7)))
+
+    assert isinstance(batch, DenseBatch)
+    assert isinstance(batch.data, list)
+    assert len(batch.data) == 7
+    assert {tile.shape for tile in batch.data} == {(3, 8, 8), (3, 10, 6)}
+    assert all(tile.dtype == np.uint16 for tile in batch.data)
+
+    batch_set = {tuple(tile.ravel()) for tile in batch.data}
+    ref_set = {tuple(tile.ravel()) for _, tiles in all_tiles for tile in tiles}
+    assert batch_set == ref_set
+
+
+def test_tile_dataset_variable_group_shapes_stacked_mode_raises(variable_shape_tile_atlas):
+    """Default stacked mode fails when a batch spans incompatible tile shapes."""
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_cell_dataset("image_tiles")
+
+    with pytest.raises(ValueError):
+        ds.__getitems__(list(range(7)))
+
+
+def test_dense_to_tensor_collate_handles_list_tiles(variable_shape_tile_atlas):
+    """dense_to_tensor_collate returns one tensor per cell for list-backed tiles."""
+    torch = pytest.importorskip("torch")
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_cell_dataset("image_tiles", stack_dense=False)
+    batch = ds.__getitems__(list(range(2)))
+
+    result = dense_to_tensor_collate(batch)
+    assert len(result["X"]) == 2
+    assert all(isinstance(tile, torch.Tensor) for tile in result["X"])
+    assert [tuple(tile.shape) for tile in result["X"]] == [(3, 8, 8), (3, 8, 8)]
+
+
+def test_multimodal_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas):
+    """Multimodal datasets can opt into list-backed variable-size tile batches."""
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_multimodal_dataset(["image_tiles"], stack_dense=False)
+    batch = ds.__getitems__(list(range(7)))
+    tile_batch = batch.modalities["image_tiles"]
+
+    assert isinstance(tile_batch, DenseBatch)
+    assert isinstance(tile_batch.data, list)
+    assert len(tile_batch.data) == 7
+    assert {tile.shape for tile in tile_batch.data} == {(3, 8, 8), (3, 10, 6)}
+
+
+def test_multimodal_to_dense_collate_handles_list_tiles(variable_shape_tile_atlas):
+    """multimodal_to_dense_collate returns one tensor per cell for list-backed tiles."""
+    torch = pytest.importorskip("torch")
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_multimodal_dataset(
+        ["image_tiles"],
+        stack_dense={"image_tiles": False},
+    )
+    batch = ds.__getitems__(list(range(2)))
+
+    result = multimodal_to_dense_collate(batch)
+    tensors = result["image_tiles"]["X"]
+    assert len(tensors) == 2
+    assert all(isinstance(tile, torch.Tensor) for tile in tensors)
+    assert [tuple(tile.shape) for tile in tensors] == [(3, 8, 8), (3, 8, 8)]
 
 
 def test_dense_to_tensor_collate(single_group_tile_atlas):
