@@ -316,7 +316,7 @@ class HoxBaseSchema(LanceModel):
 AUTO_FIELDS: frozenset[str] = frozenset(HoxBaseSchema.model_fields)
 
 
-class FeatureBaseSchema(LanceModel):
+class FeatureBaseSchema(StableUIDBaseSchema):
     """
     Minimal schema for a global feature registry entry.
 
@@ -330,7 +330,6 @@ class FeatureBaseSchema(LanceModel):
             reassigned once set — use uid for durable references.
     """
 
-    uid: str = Field(default_factory=make_uid)
     global_index: int | None = None
 
 

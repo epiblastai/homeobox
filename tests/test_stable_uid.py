@@ -16,7 +16,14 @@ from homeobox.standardization.types import (
     MoleculeResolution,
     ProteinResolution,
 )
-from homeobox_examples.multimodal_perturbation_atlas.schema import SmallMoleculeSchema
+from homeobox_examples.multimodal_perturbation_atlas.schema import (
+    GeneticPerturbationSchema,
+    ImageFeatureSchema,
+    ProteinSchema,
+    PublicationSchema,
+    ReferenceSequenceSchema,
+    SmallMoleculeSchema,
+)
 
 
 def test_make_stable_uid_deterministic():
@@ -255,6 +262,24 @@ def test_small_molecule_schema_arrow_schema_stamps_pubchem_cid_metadata():
     schema = SmallMoleculeSchema.to_arrow_schema()
     assert schema.field("pubchem_cid").metadata[STABLE_UID_METADATA_KEY] == b"true"
     assert schema.field("name").metadata is None
+
+
+def test_multimodal_atlas_schema_stable_uid_markers():
+    cases = [
+        (PublicationSchema, "pmid"),
+        (ReferenceSequenceSchema, "genbank_accession"),
+        (ProteinSchema, "uniprot_id"),
+        (ImageFeatureSchema, "feature_name"),
+        (SmallMoleculeSchema, "pubchem_cid"),
+        (GeneticPerturbationSchema, "guide_sequence"),
+    ]
+
+    for schema_cls, field_name in cases:
+        assert schema_cls.stable_uid_field_names() == [field_name]
+        assert (
+            schema_cls.to_arrow_schema().field(field_name).metadata[STABLE_UID_METADATA_KEY]
+            == b"true"
+        )
 
 
 def test_small_molecule_schema_rejects_random_uid_when_pubchem_cid_present():
