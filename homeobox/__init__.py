@@ -17,7 +17,6 @@ from homeobox.fragments.reconstruction import FragmentResult, IntervalReconstruc
 from homeobox.ingestion import add_anndata_batch, add_csc, add_from_anndata
 from homeobox.multimodal import MultimodalResult
 from homeobox.query import AtlasQuery
-from homeobox.sampler import CellSampler
 from homeobox.schema import (
     DatasetRecord,
     DenseZarrPointer,
@@ -39,7 +38,6 @@ __all__ = [
     "make_loader",
     "sparse_to_dense_collate",
     "dense_to_tensor_collate",
-    "CellSampler",
     "add_from_anndata",
     "add_anndata_batch",
     "add_csc",

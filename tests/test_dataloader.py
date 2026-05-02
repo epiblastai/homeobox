@@ -1,4 +1,4 @@
-"""Tests for homeobox.dataloader and homeobox.sampler."""
+"""Tests for homeobox.dataloader."""
 
 import os
 
@@ -11,14 +11,13 @@ import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.dataloader import (
-    CellDataset,
     SparseBatch,
+    make_loader,
     sparse_to_dense_collate,
 )
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
-from homeobox.sampler import CellSampler
 from homeobox.schema import (
     DatasetRecord,
     FeatureBaseSchema,
@@ -175,21 +174,32 @@ def single_group_atlas(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _iter_indices(n: int, batch_size: int, drop_last: bool = False):
+    """Yield successive batches of indices [0, n)."""
+    for start in range(0, n, batch_size):
+        end = start + batch_size
+        if end > n:
+            if drop_last:
+                continue
+            end = n
+        yield list(range(start, end))
+
+
 def test_cell_dataset_shapes(two_group_atlas):
-    """CellDataset + CellSampler yield SparseBatch with correct shapes."""
+    """CellDataset yields SparseBatch with correct shapes."""
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts")
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
 
     assert ds.n_cells == 35
+    assert len(ds) == 35
     assert ds.n_features == 10
-    assert len(sampler) == 4  # ceil(35/10)
 
     total_cells = 0
-    for indices in sampler:
+    n_batches = 0
+    for indices in _iter_indices(ds.n_cells, batch_size=10):
         batch = ds.__getitems__(indices)
         assert isinstance(batch, SparseBatch)
         n = len(batch.offsets) - 1
@@ -201,22 +211,22 @@ def test_cell_dataset_shapes(two_group_atlas):
             assert np.all(batch.indices >= 0)
             assert np.all(batch.indices < batch.n_features)
         total_cells += n
+        n_batches += 1
 
     assert total_cells == 35
+    assert n_batches == 4  # ceil(35/10)
 
 
 def test_cell_dataset_drop_last(two_group_atlas):
-    """drop_last=True on sampler skips the last incomplete batch."""
+    """drop_last=True skips the last incomplete batch."""
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts")
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, drop_last=True, num_workers=1)
 
-    assert len(sampler) == 3  # 35 // 10
-    batches = [ds.__getitems__(indices) for indices in sampler]
-    assert len(batches) == 3
+    batches = [ds.__getitems__(idxs) for idxs in _iter_indices(ds.n_cells, 10, drop_last=True)]
+    assert len(batches) == 3  # 35 // 10
     assert all(len(b.offsets) - 1 == 10 for b in batches)
 
 
@@ -227,11 +237,10 @@ def test_cell_dataset_empty(two_group_atlas):
         .where("tissue = 'nonexistent'")
         .to_cell_dataset("gene_expression", "counts")
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
 
     assert ds.n_cells == 0
-    assert len(sampler) == 0
-    assert list(sampler) == []
+    assert len(ds) == 0
+    assert list(_iter_indices(ds.n_cells, 10)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +260,7 @@ def test_round_trip_values(single_group_atlas):
 
     # CellDataset path (single batch, no shuffle, with uid metadata)
     ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(ds.n_cells)))
 
     # Reconstruct dense from SparseBatch
     n_cells = len(batch.offsets) - 1
@@ -283,8 +291,7 @@ def test_round_trip_two_groups(two_group_atlas):
     ref_uids = list(adata.obs.index)
 
     ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
-    sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(ds.n_cells)))
     n_cells = len(batch.offsets) - 1
 
     cd_dense = np.zeros((n_cells, ds.n_features), dtype=np.float32)
@@ -308,91 +315,44 @@ def test_round_trip_two_groups(two_group_atlas):
 # ---------------------------------------------------------------------------
 
 
-def test_shuffle_different_epochs(two_group_atlas):
-    """Two epochs with shuffle produce different batch compositions."""
+def test_shuffle_with_loader(two_group_atlas):
+    """make_loader(shuffle=True) yields all cells in shuffled order."""
+    pytest.importorskip("torch")
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
+    loader = make_loader(ds, batch_size=10, shuffle=True, num_workers=0)
 
-    sampler.set_epoch(0)
-    epoch1_uids = []
-    for indices in sampler:
-        batch = ds.__getitems__(indices)
-        epoch1_uids.extend(batch.metadata["uid"].tolist())
+    uids = []
+    for batch in loader:
+        uids.extend(batch.metadata["uid"].tolist())
 
-    sampler.set_epoch(1)
-    epoch2_uids = []
-    for indices in sampler:
-        batch = ds.__getitems__(indices)
-        epoch2_uids.extend(batch.metadata["uid"].tolist())
-
-    # Same cells overall
-    assert sorted(epoch1_uids) == sorted(epoch2_uids)
-    # But different order
-    assert epoch1_uids != epoch2_uids
+    assert len(uids) == ds.n_cells
+    assert len(set(uids)) == ds.n_cells
 
 
 def test_shuffle_reproducible(two_group_atlas):
-    """Same seed + epoch produces same order when base cell order is identical."""
-    # Use _materialize_cells_for_dataset to get _rowid column
-    q = two_group_atlas.query().feature_spaces("gene_expression")
-    cells_pl = q._materialize_cells_for_dataset().sort("_rowid")
+    """Same torch generator seed produces same shuffle order."""
+    torch = pytest.importorskip("torch")
 
-    ds1 = CellDataset(
-        atlas=two_group_atlas,
-        cells_pl=cells_pl,
-        metadata_columns=["uid"],
-    )
-    ds2 = CellDataset(
-        atlas=two_group_atlas,
-        cells_pl=cells_pl,
-        metadata_columns=["uid"],
+    ds = (
+        two_group_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
     )
 
-    sampler1 = CellSampler(ds1.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
-    sampler2 = CellSampler(ds2.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
+    def collect(seed: int) -> list[str]:
+        gen = torch.Generator().manual_seed(seed)
+        loader = make_loader(ds, batch_size=10, shuffle=True, num_workers=0, generator=gen)
+        out: list[str] = []
+        for batch in loader:
+            out.extend(batch.metadata["uid"].tolist())
+        return out
 
-    uids1 = []
-    for indices in sampler1:
-        batch = ds1.__getitems__(indices)
-        uids1.extend(batch.metadata["uid"].tolist())
-
-    uids2 = []
-    for indices in sampler2:
-        batch = ds2.__getitems__(indices)
-        uids2.extend(batch.metadata["uid"].tolist())
-
-    assert uids1 == uids2
-
-
-# ---------------------------------------------------------------------------
-# Tests: CellSampler
-# ---------------------------------------------------------------------------
-
-
-def test_cell_sampler_set_epoch_reproducible(two_group_atlas):
-    """CellSampler with same seed+epoch produces identical batches."""
-    q = two_group_atlas.query().feature_spaces("gene_expression")
-    cells_pl = q._materialize_cells_for_dataset().sort("_rowid")
-    ds = CellDataset(atlas=two_group_atlas, cells_pl=cells_pl)
-
-    sampler1 = CellSampler(ds.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
-    sampler2 = CellSampler(ds.groups_np, batch_size=10, shuffle=True, seed=42, num_workers=1)
-
-    # Same epoch → same batches
-    sampler1.set_epoch(3)
-    sampler2.set_epoch(3)
-    assert list(sampler1) == list(sampler2)
-
-    # Different epoch → different batches
-    sampler1.set_epoch(0)
-    plan_e0 = list(sampler1)
-    sampler1.set_epoch(1)
-    plan_e1 = list(sampler1)
-    assert plan_e0 != plan_e1
+    assert collect(42) == collect(42)
+    assert collect(42) != collect(7)
 
 
 # ---------------------------------------------------------------------------
@@ -407,8 +367,7 @@ def test_metadata_columns(two_group_atlas):
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
     )
-    sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(ds.n_cells)))
 
     assert batch.metadata is not None
     assert "tissue" in batch.metadata
@@ -424,8 +383,7 @@ def test_no_metadata(two_group_atlas):
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts")
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(min(10, ds.n_cells))))
     assert batch.metadata is None
 
 
@@ -442,8 +400,7 @@ def test_sparse_to_dense_collate(single_group_atlas):
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts")
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(10)))
 
     result = sparse_to_dense_collate(batch)
     X = result["X"]
@@ -466,8 +423,7 @@ def test_collate_with_metadata(two_group_atlas):
         .feature_spaces("gene_expression")
         .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue"])
     )
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    batch = ds.__getitems__(list(range(10)))
 
     result = sparse_to_dense_collate(batch)
     assert "X" in result
@@ -491,11 +447,10 @@ def test_lazy_metadata_round_trip(two_group_atlas):
 
     # Lazy path: metadata loaded per-batch
     ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
-    sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
 
     all_uids = []
     all_tissues = []
-    for indices in sampler:
+    for indices in _iter_indices(ds.n_cells, batch_size=100):
         batch = ds.__getitems__(indices)
         all_uids.extend(batch.metadata["uid"].tolist())
         all_tissues.extend(batch.metadata["tissue"].tolist())
