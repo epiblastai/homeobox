@@ -20,7 +20,7 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import FeatureSpaceSpec, PointerKind, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     PointerField,
     make_uid,
 )
@@ -612,7 +612,7 @@ def add_anndata_batch(
     *,
     field_name: str,
     zarr_layer: str,
-    dataset_record: DatasetRecord,
+    dataset_record: DatasetSchema,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
 ) -> int:
@@ -644,7 +644,7 @@ def add_anndata_batch(
     dataset_record:
         Dataset record to register. ``dataset_record.zarr_group`` is used as
         the zarr group path (relative to the atlas store). Construct with
-        :class:`DatasetRecord` or a subclass for richer metadata.
+        :class:`DatasetSchema` or a subclass for richer metadata.
     chunk_shape:
         Zarr chunk shape. For sparse feature spaces this must be a 1-element
         tuple; for dense a 2-element tuple ``(n_cells_per_chunk, n_features)``.
@@ -762,7 +762,7 @@ def add_from_anndata(
     *,
     field_name: str,
     zarr_layer: str,
-    dataset_record: DatasetRecord,
+    dataset_record: DatasetSchema,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
 ) -> int:
@@ -796,7 +796,7 @@ def add_coo_batch(
     var_df: pl.DataFrame,
     field_name: str,
     zarr_layer: str,
-    dataset_record: DatasetRecord,
+    dataset_record: DatasetSchema,
     n_cells: int,
     n_features: int,
     separator: str = "\t",

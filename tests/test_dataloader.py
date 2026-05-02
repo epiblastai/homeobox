@@ -19,7 +19,7 @@ from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -27,8 +27,8 @@ from homeobox.schema import (
 )
 
 
-def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetRecord:
-    return DatasetRecord(
+def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
+    return DatasetSchema(
         zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs
     )
 
@@ -81,7 +81,7 @@ def two_group_atlas(tmp_path):
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
 
     gene_uids = [f"gene_{i}" for i in range(10)]
@@ -101,7 +101,7 @@ def two_group_atlas(tmp_path):
         adata1,
         field_name="gene_expression",
         zarr_layer="counts",
-        dataset_record=DatasetRecord(
+        dataset_record=DatasetSchema(
             zarr_group="ds1/gene_expression",
             feature_space="gene_expression",
             n_cells=20,
@@ -116,7 +116,7 @@ def two_group_atlas(tmp_path):
         adata2,
         field_name="gene_expression",
         zarr_layer="counts",
-        dataset_record=DatasetRecord(
+        dataset_record=DatasetSchema(
             zarr_group="ds2/gene_expression",
             feature_space="gene_expression",
             n_cells=15,
@@ -140,7 +140,7 @@ def single_group_atlas(tmp_path):
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
 
     gene_uids = [f"gene_{i}" for i in range(5)]
@@ -158,7 +158,7 @@ def single_group_atlas(tmp_path):
         adata,
         field_name="gene_expression",
         zarr_layer="counts",
-        dataset_record=DatasetRecord(
+        dataset_record=DatasetSchema(
             zarr_group="ds/gene_expression",
             feature_space="gene_expression",
             n_cells=10,

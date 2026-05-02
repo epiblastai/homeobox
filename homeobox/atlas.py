@@ -27,7 +27,7 @@ from homeobox.group_specs import get_spec
 from homeobox.obs_alignment import _extract_pointer_fields, _infer_pointer_fields_from_arrow
 from homeobox.schema import (
     AtlasVersionRecord,
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     FeatureLayout,
     HoxBaseSchema,
@@ -183,7 +183,7 @@ class RaggedAtlas:
         cell_table_name: str,
         cell_schema: type[HoxBaseSchema],
         dataset_table_name: str,
-        dataset_schema: type[DatasetRecord],
+        dataset_schema: type[DatasetSchema],
         *,
         store: obstore.store.ObjectStore,
         registry_schemas: dict[str, type[FeatureBaseSchema]],
@@ -203,7 +203,7 @@ class RaggedAtlas:
         dataset_table_name:
             Name for the dataset metadata table.
         dataset_schema:
-            A :class:`DatasetRecord` subclass for the dataset schema.
+            A :class:`DatasetSchema` subclass for the dataset schema.
         store:
             An obstore ObjectStore for zarr I/O.
         registry_schemas:
@@ -423,8 +423,8 @@ class RaggedAtlas:
 
     # -- Dataset / zarr helpers --------------------------------------------
 
-    def register_dataset(self, dataset_record: DatasetRecord) -> None:
-        """Insert a ``DatasetRecord`` into the dataset table."""
+    def register_dataset(self, dataset_record: DatasetSchema) -> None:
+        """Insert a ``DatasetSchema`` into the dataset table."""
         arrow_table = pa.Table.from_pylist(
             [dataset_record.model_dump()],
             schema=type(dataset_record).to_arrow_schema(),
@@ -541,7 +541,7 @@ class RaggedAtlas:
 
         Computes the layout_uid from the feature ordering in var_df. If
         the layout already exists in the table, skips insertion. Otherwise
-        inserts the layout rows. Updates the DatasetRecord to set layout_uid.
+        inserts the layout rows. Updates the DatasetSchema to set layout_uid.
 
         Parameters
         ----------
@@ -549,7 +549,7 @@ class RaggedAtlas:
             One row per local feature in local feature order.
             Must have a ``global_feature_uid`` column.
         zarr_group:
-            The DatasetRecord zarr_group (per-row primary key) for this dataset.
+            The DatasetSchema zarr_group (per-row primary key) for this dataset.
         feature_space:
             Which feature space this dataset belongs to (used to look up registry).
 
@@ -575,7 +575,7 @@ class RaggedAtlas:
                 .execute(layout_df)
             )
 
-        # Update DatasetRecord with layout_uid
+        # Update DatasetSchema with layout_uid
         (
             self._dataset_table.merge_insert(on="zarr_group")
             .when_matched_update_all()
@@ -1176,7 +1176,7 @@ def create_or_open_atlas(
     cell_table_name: str,
     cell_schema: type[HoxBaseSchema],
     dataset_table_name: str,
-    dataset_schema: type[DatasetRecord],
+    dataset_schema: type[DatasetSchema],
     *,
     registry_schemas: dict[str, type[FeatureBaseSchema]],
     version_table_name: str = "atlas_versions",
@@ -1203,7 +1203,7 @@ def create_or_open_atlas(
     dataset_table_name:
         Name for the dataset metadata table.
     dataset_schema:
-        A :class:`DatasetRecord` subclass for the dataset schema.
+        A :class:`DatasetSchema` subclass for the dataset schema.
     registry_schemas:
         Mapping of feature space names to their registry schema classes.
     version_table_name:

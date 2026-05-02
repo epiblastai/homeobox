@@ -3,7 +3,7 @@
 Defines:
 - GENEFULL_EXPRESSION_SPEC: custom zarr group spec for Unique/EM/Uniform layers
 - GeneFeatureSpace: feature registry schema for genes (var metadata)
-- ScBasecountDatasetRecord: dataset-level metadata with scBaseCount provenance
+- ScBasecountDatasetSchema: dataset-level metadata with scBaseCount provenance
 - CellObs: cell-level observation schema with genefull_expression pointer
 """
 
@@ -19,7 +19,7 @@ from homeobox.group_specs import (
 )
 from homeobox.reconstruction import SparseGeneExpressionReconstructor
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -72,7 +72,7 @@ class GeneFeatureSpace(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class ScBasecountDatasetRecord(DatasetRecord):
+class ScBasecountDatasetSchema(DatasetSchema):
     """Dataset record with scBaseCount provenance."""
 
     srx_accession: str

@@ -33,7 +33,7 @@ from homeobox.obs_alignment import PointerFieldInfo, _schema_obs_fields
 from homeobox.schema import make_uid
 from homeobox_examples.cellxgene_census_tiledb.schema import (
     CellObs,
-    CensusDatasetRecord,
+    CensusDatasetSchema,
     GeneFeatureSpace,
 )
 
@@ -89,7 +89,7 @@ def create_atlas(atlas_dir: str) -> RaggedAtlas:
         cell_table_name="cells",
         cell_schema=CellObs,
         dataset_table_name="datasets",
-        dataset_schema=CensusDatasetRecord,
+        dataset_schema=CensusDatasetSchema,
         store=store,
         registry_schemas={FEATURE_SPACE: GeneFeatureSpace},
     )
@@ -293,7 +293,7 @@ def ingest_dataset(
     ends = indptr[1:]
 
     # --- Write dataset record ---
-    dataset_record = CensusDatasetRecord(
+    dataset_record = CensusDatasetSchema(
         dataset_uid=zarr_group,
         zarr_group=zarr_group,
         feature_space=FEATURE_SPACE,
@@ -302,7 +302,7 @@ def ingest_dataset(
     )
     dataset_arrow = pa.Table.from_pylist(
         [dataset_record.model_dump()],
-        schema=CensusDatasetRecord.to_arrow_schema(),
+        schema=CensusDatasetSchema.to_arrow_schema(),
     )
     atlas._dataset_table.add(dataset_arrow)
 

@@ -14,7 +14,7 @@ from homeobox.feature_layouts import read_feature_layout, reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -41,8 +41,8 @@ class TestCellSchema(HoxBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetRecord:
-    return DatasetRecord(
+def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
+    return DatasetSchema(
         zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs
     )
 
@@ -65,7 +65,7 @@ def _make_atlas(tmp_path) -> RaggedAtlas:
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
     gene_uids = [f"gene_{i}" for i in range(10)]
     atlas.register_features(
@@ -159,7 +159,7 @@ class TestSnapshot:
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
         # Opening with a non-existent version table name raises immediately.
         with pytest.raises(ValueError, match="not found"):
@@ -185,7 +185,7 @@ class TestSnapshot:
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
         # Register features but deliberately skip reindex_registry
         atlas.register_features(

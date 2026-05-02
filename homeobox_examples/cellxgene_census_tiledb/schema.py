@@ -6,7 +6,7 @@ tiledbsoma exposes (no feature_reference, feature_biotype, feature_is_filtered).
 """
 
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -23,7 +23,7 @@ class GeneFeatureSpace(FeatureBaseSchema):
     feature_length: int
 
 
-class CensusDatasetRecord(DatasetRecord):
+class CensusDatasetSchema(DatasetSchema):
     """Dataset record with cellxgene census provenance."""
 
     cellxgene_dataset_id: str

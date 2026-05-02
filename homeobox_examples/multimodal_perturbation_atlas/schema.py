@@ -10,7 +10,7 @@ from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
@@ -132,7 +132,7 @@ class PublicationSectionSchema(LanceModel):
 # ---------------------------------------------------------------------------
 
 
-class DatasetSchema(DatasetRecord):
+class DatasetSchema(DatasetSchema):
     # Foreign key: The uid for an associated publication
     publication_uid: str | None
     # Database from which the dataset was downloaded, if applicable
