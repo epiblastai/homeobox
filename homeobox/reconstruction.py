@@ -1,4 +1,4 @@
-"""Reconstruction helpers for building AnnData from atlas query results."""
+"""Reconstruction helpers for building outputs from atlas query results."""
 
 import functools
 from typing import TYPE_CHECKING, Literal
@@ -535,11 +535,7 @@ class DenseReconstructor(Reconstructor):
                     f"Spec for '{pf.feature_space}' has no required_arrays "
                     "and no required layers; pass array_name explicitly"
                 )
-        elif (
-            not zgs.required_arrays
-            and zgs.layers.required
-            and "/" not in array_name
-        ):
+        elif not zgs.required_arrays and zgs.layers.required and "/" not in array_name:
             array_name = f"{zgs.layers.path}/{array_name}"
 
         cells_pl, groups = _prepare_dense_cells(cells_pl, pf)

@@ -1,4 +1,4 @@
-"""Tests for the additive `DiscreteSpatialPointer` pointer type.
+"""Tests for the `DiscreteSpatialPointer` pointer type.
 
 Core learns the type at the schema level *and* supports the read path in
 :class:`MultimodalCellDataset` (via :class:`DiscreteSpatialBatch`). The
@@ -177,9 +177,7 @@ def populated_atlas(tmp_path):
         shards=(total_rows, n_features),
         dtype=np.float32,
     )
-    _arr[:] = np.arange(total_rows * n_features, dtype=np.float32).reshape(
-        total_rows, n_features
-    )
+    _arr[:] = np.arange(total_rows * n_features, dtype=np.float32).reshape(total_rows, n_features)
     atlas._dataset_table.add(
         pa.Table.from_pylist(
             [
@@ -284,9 +282,7 @@ class TestMultimodalDiscreteSpatialRoundtrip:
         assert isinstance(sub, DiscreteSpatialBatch)
         n_features = sub.n_features
         assert sub.n_features == 4
-        expected_lengths = [
-            max_corners[i][0] - min_corners[i][0] for i in range(len(min_corners))
-        ]
+        expected_lengths = [max_corners[i][0] - min_corners[i][0] for i in range(len(min_corners))]
         np.testing.assert_array_equal(
             np.diff(sub.offsets), np.array(expected_lengths, dtype=np.int64)
         )
