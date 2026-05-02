@@ -2,7 +2,7 @@
 
 Includes multimodal batch ingestion (gene_expression + protein_abundance
 + chromatin_accessibility in one pass). Fragment-specific ingestion
-functions have been moved to :mod:`homeobox.fragments.ingestion`.
+functions are in :mod:`homeobox.fragments.ingestion`.
 """
 
 from pathlib import Path
@@ -209,9 +209,7 @@ def add_multimodal_batch(
     n_cells = len(obs_df)
     for field_name, adata in modalities.items():
         if adata.n_obs != n_cells:
-            raise ValueError(
-                f"Modality '{field_name}' has {adata.n_obs} cells, expected {n_cells}"
-            )
+            raise ValueError(f"Modality '{field_name}' has {adata.n_obs} cells, expected {n_cells}")
 
     obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
     if obs_errors:
