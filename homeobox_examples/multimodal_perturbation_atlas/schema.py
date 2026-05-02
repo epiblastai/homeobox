@@ -16,6 +16,8 @@ from homeobox.schema import (
     HoxBaseSchema,
     PointerField,
     SparseZarrPointer,
+    StableUIDBaseSchema,
+    StableUIDField,
     make_uid,
 )
 from homeobox.standardization.perturbations import GeneticPerturbationType
@@ -285,16 +287,13 @@ class ImageFeatureSchema(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class SmallMoleculeSchema(LanceModel):
+class SmallMoleculeSchema(StableUIDBaseSchema):
     """Small molecule data, either perturbations or features in themselves."""
-
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
 
     # The smiles string for the molecule
     smiles: str | None
     # PubChem CID for the molecule
-    pubchem_cid: int | None
+    pubchem_cid: int | None = StableUIDField.declare(default=None)
     # Standard name for the molecule
     iupac_name: str | None
     inchi_key: str | None
