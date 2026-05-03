@@ -188,7 +188,7 @@ class AtlasQuery:
 
     def _build_base_query(self) -> "LanceQueryBuilder":
         """Build a query with search, where, and limit applied (no column selection)."""
-        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._offset_n is not None:
@@ -239,7 +239,7 @@ class AtlasQuery:
 
     def _discover_balanced_groups(self, column: str) -> list:
         """Discover unique values of *column* across all matching rows."""
-        q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+        q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._search_query is not None:
@@ -272,7 +272,7 @@ class AtlasQuery:
             else:
                 combined = group_filter
 
-            q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+            q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
             q = q.where(combined).limit(per_group).with_row_id(True)
             q = q.select(pointer_cols)
             frames.append(q.to_polars())
@@ -301,7 +301,7 @@ class AtlasQuery:
             else:
                 combined = group_filter
 
-            q = self._atlas.cell_table.search(self._search_query, **self._search_kwargs)
+            q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
             q = q.where(combined).limit(per_group)
             if self._select_columns is not None:
                 pointer_cols = list(self._atlas.pointer_fields.keys())
@@ -342,7 +342,7 @@ class AtlasQuery:
 
         if group_by is None:
             # Fetch only a single cheap column to count rows
-            any_col = self._atlas.cell_table.schema.names[0]
+            any_col = self._atlas.obs_table.schema.names[0]
             return len(q.select([any_col]).to_arrow())
 
         cols = [group_by] if isinstance(group_by, str) else list(group_by)

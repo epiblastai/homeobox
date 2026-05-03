@@ -363,7 +363,7 @@ def _build_cell_arrow_table(
     Returns
     -------
     pa.Table
-        Arrow table matching the cell schema, ready for ``cell_table.add()``.
+        Arrow table matching the cell schema, ready for ``obs_table.add()``.
     """
     n_cells = len(obs_df)
     arrow_schema = atlas.cell_schema.to_arrow_schema()
@@ -467,7 +467,7 @@ def insert_cell_records(
         dataset_uid=dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
     )
-    atlas.cell_table.add(arrow_table)
+    atlas.obs_table.add(arrow_table)
     return len(obs_df)
 
 
@@ -752,7 +752,7 @@ def add_anndata_batch(
         dataset_uid=dataset_record.dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
     )
-    atlas.cell_table.add(arrow_table)
+    atlas.obs_table.add(arrow_table)
     return n_cells
 
 
@@ -1077,7 +1077,7 @@ def add_coo_batch(
             columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
 
     arrow_table = pa.table(columns, schema=arrow_schema)
-    atlas.cell_table.add(arrow_table)
+    atlas.obs_table.add(arrow_table)
     return n_cells
 
 
@@ -1163,7 +1163,7 @@ def add_csc(
 
     # Query all cells in this zarr group via the specified pointer column
     cells_df = (
-        atlas.cell_table.search()
+        atlas.obs_table.search()
         .where(f"{field_name}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
         .select([field_name])
         .to_polars()

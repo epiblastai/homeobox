@@ -841,15 +841,15 @@ class CellDataset(_AsyncDataset):
         self._metadata_columns = metadata_columns
         self._lance_info = (
             atlas.db_uri,
-            atlas.cell_table.name,
-            atlas.cell_table.version,
+            atlas.obs_table.name,
+            atlas.obs_table.version,
             getattr(atlas.db, "storage_options", None),
         )
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
-        self._cell_table: lancedb.table.Table | None = None
+        self._obs_table: lancedb.table.Table | None = None
 
     @property
     def n_cells(self) -> int:
@@ -891,7 +891,7 @@ class CellDataset(_AsyncDataset):
             select_cols.extend(self._metadata_columns)
 
         take_result = (
-            self._cell_table.take_row_ids(batch_row_ids.tolist())
+            self._obs_table.take_row_ids(batch_row_ids.tolist())
             .with_row_id()
             .select(select_cols)
             .to_polars()
@@ -945,8 +945,8 @@ class CellDataset(_AsyncDataset):
         self._start_event_loop()
         db_uri, table_name, table_version, storage_options = self._lance_info
         db = lancedb.connect(db_uri, storage_options=storage_options)
-        self._cell_table = db.open_table(table_name)
-        self._cell_table.checkout(table_version)
+        self._obs_table = db.open_table(table_name)
+        self._obs_table.checkout(table_version)
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
@@ -955,7 +955,7 @@ class CellDataset(_AsyncDataset):
         # GroupReader.__getstate__ zeroes its own transient zarr state.
         state["_loop"] = None
         state["_loop_thread"] = None
-        state["_cell_table"] = None
+        state["_obs_table"] = None
         return state
 
 
@@ -1013,8 +1013,8 @@ class MultimodalCellDataset(_AsyncDataset):
         # Store lance info for lazy table reconstruction in workers
         self._lance_info = (
             atlas.db_uri,
-            atlas.cell_table.name,
-            atlas.cell_table.version,
+            atlas.obs_table.name,
+            atlas.obs_table.version,
             getattr(atlas.db, "storage_options", None),
         )
 
@@ -1061,7 +1061,7 @@ class MultimodalCellDataset(_AsyncDataset):
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
-        self._cell_table: lancedb.table.Table | None = None
+        self._obs_table: lancedb.table.Table | None = None
 
     @property
     def n_cells(self) -> int:
@@ -1088,7 +1088,7 @@ class MultimodalCellDataset(_AsyncDataset):
         select_cols = list(dict.fromkeys(select_cols))  # dedupe
 
         take_result = (
-            self._cell_table.take_row_ids(batch_row_ids.tolist())
+            self._obs_table.take_row_ids(batch_row_ids.tolist())
             .with_row_id()
             .select(select_cols)
             .to_polars()
@@ -1115,14 +1115,14 @@ class MultimodalCellDataset(_AsyncDataset):
         self._start_event_loop()
         db_uri, table_name, table_version, storage_options = self._lance_info
         db = lancedb.connect(db_uri, storage_options=storage_options)
-        self._cell_table = db.open_table(table_name)
-        self._cell_table.checkout(table_version)
+        self._obs_table = db.open_table(table_name)
+        self._obs_table.checkout(table_version)
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
         state["_loop"] = None
         state["_loop_thread"] = None
-        state["_cell_table"] = None
+        state["_obs_table"] = None
         return state
 
 

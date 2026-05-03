@@ -136,7 +136,7 @@ class RaggedAtlas:
     def __init__(
         self,
         db: lancedb.DBConnection,
-        cell_table: lancedb.table.Table,
+        obs_table: lancedb.table.Table,
         cell_schema: type[HoxBaseSchema] | None,
         root: zarr.Group,
         registry_tables: dict[str, lancedb.table.Table],
@@ -149,7 +149,7 @@ class RaggedAtlas:
         # directly, use create, open or checkout classmethods instead.
         self.db = db
         self._db_uri = db.uri
-        self.cell_table = cell_table
+        self.obs_table = obs_table
         self._cell_schema = cell_schema
         self._root = root
         self._store = root.store.store
@@ -161,7 +161,7 @@ class RaggedAtlas:
         if cell_schema is not None:
             self._pointer_fields = _extract_pointer_fields(cell_schema)
         else:
-            self._pointer_fields = _infer_pointer_fields_from_arrow(cell_table.schema)
+            self._pointer_fields = _infer_pointer_fields_from_arrow(obs_table.schema)
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
@@ -180,7 +180,7 @@ class RaggedAtlas:
     def create(
         cls,
         db_uri: str,
-        hox_table_name: str,
+        obs_table_name: str,
         cell_schema: type[HoxBaseSchema],
         dataset_table_name: str,
         dataset_schema: type[DatasetSchema],
@@ -196,7 +196,7 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI (local path or remote).
-        hox_table_name:
+        obs_table_name:
             Name for the cell table.
         cell_schema:
             A :class:`HoxBaseSchema` subclass declaring the pointer fields.
@@ -217,7 +217,7 @@ class RaggedAtlas:
         """
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
-        cell_table = db.create_table(hox_table_name, schema=cell_schema)
+        obs_table = db.create_table(obs_table_name, schema=cell_schema)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
         registry_tables: dict[str, lancedb.table.Table] = {}
@@ -235,7 +235,7 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            cell_table=cell_table,
+            obs_table=obs_table,
             cell_schema=cell_schema,
             root=root,
             registry_tables=registry_tables,
@@ -248,7 +248,7 @@ class RaggedAtlas:
     def open(
         cls,
         db_uri: str,
-        hox_table_name: str,
+        obs_table_name: str,
         cell_schema: type[HoxBaseSchema] | None = None,
         dataset_table_name: str = "datasets",
         *,
@@ -263,7 +263,7 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI.
-        hox_table_name:
+        obs_table_name:
             Name of the cell table.
         cell_schema:
             The schema class.  If ``None``, pointer fields are inferred
@@ -284,7 +284,7 @@ class RaggedAtlas:
         """
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
-        cell_table = db.open_table(hox_table_name)
+        obs_table = db.open_table(obs_table_name)
         dataset_table = db.open_table(dataset_table_name)
 
         if registry_tables is None:
@@ -312,7 +312,7 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            cell_table=cell_table,
+            obs_table=obs_table,
             cell_schema=cell_schema,
             root=root,
             registry_tables=resolved_registries,
@@ -385,7 +385,7 @@ class RaggedAtlas:
                 lines.append(f"    {field.name}: {field.type}")
 
         lines.append("Atlas tables:")
-        _fmt_table("Cell table", self.cell_table)
+        _fmt_table("Cell table", self.obs_table)
         _fmt_table("Dataset table", self._dataset_table)
         for fs, reg_table in sorted(self._registry_tables.items()):
             _fmt_table(f"Registry [{fs}]", reg_table)
@@ -601,7 +601,7 @@ class RaggedAtlas:
         updated indices to ``_feature_layouts`` via
         :func:`~homeobox.feature_layouts.sync_layouts_global_index`.
         """
-        self.cell_table.optimize()
+        self.obs_table.optimize()
         self._dataset_table.optimize()
         self._deduplicate_new_rows(
             self._feature_layouts_table, subset=["layout_uid", "feature_uid"]
@@ -907,14 +907,14 @@ class RaggedAtlas:
 
         record = AtlasVersionRecord(
             version=next_version,
-            hox_table_name=self.cell_table.name,
-            cell_table_version=self.cell_table.version,
+            obs_table_name=self.obs_table.name,
+            obs_table_version=self.obs_table.version,
             dataset_table_name=self._dataset_table.name,
             dataset_table_version=self._dataset_table.version,
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
             feature_layouts_table_version=self._feature_layouts_table.version,
-            total_cells=self.cell_table.count_rows(),
+            total_cells=self.obs_table.count_rows(),
         )
         self._version_table.add([record])
         return next_version
@@ -993,8 +993,8 @@ class RaggedAtlas:
         if store is None:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
-        cell_table = db.open_table(row["hox_table_name"])
-        cell_table.checkout(row["cell_table_version"])
+        obs_table = db.open_table(row["obs_table_name"])
+        obs_table.checkout(row["obs_table_version"])
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1014,7 +1014,7 @@ class RaggedAtlas:
 
         atlas = cls(
             db=db,
-            cell_table=cell_table,
+            obs_table=obs_table,
             cell_schema=cell_schema,
             root=root,
             registry_tables=resolved_registries,
@@ -1081,9 +1081,9 @@ class RaggedAtlas:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
         # Restore each table to its snapshot version
-        cell_table = db.open_table(row["hox_table_name"])
-        cell_table.checkout(row["cell_table_version"])
-        cell_table.restore()
+        obs_table = db.open_table(row["obs_table_name"])
+        obs_table.checkout(row["obs_table_version"])
+        obs_table.restore()
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1106,7 +1106,7 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            cell_table=cell_table,
+            obs_table=obs_table,
             cell_schema=cell_schema,
             root=root,
             registry_tables=resolved_registries,
@@ -1173,7 +1173,7 @@ class RaggedAtlas:
 
 def create_or_open_atlas(
     atlas_path: str,
-    hox_table_name: str,
+    obs_table_name: str,
     cell_schema: type[HoxBaseSchema],
     dataset_table_name: str,
     dataset_schema: type[DatasetSchema],
@@ -1196,7 +1196,7 @@ def create_or_open_atlas(
     atlas_path:
         Root directory or URI for the atlas.  Local paths and ``s3://``
         URIs are both supported.
-    hox_table_name:
+    obs_table_name:
         Name for the cell table.
     cell_schema:
         A :class:`HoxBaseSchema` subclass declaring the pointer fields.
@@ -1229,7 +1229,7 @@ def create_or_open_atlas(
     db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
     existing_tables = set(db.list_tables().tables)
 
-    if hox_table_name in existing_tables:
+    if obs_table_name in existing_tables:
         # Explicitly pass registry table names so open() doesn't rely on
         # the datasets table (which may be empty for a freshly-initialised atlas).
         registry_tables = {
@@ -1237,7 +1237,7 @@ def create_or_open_atlas(
         }
         return RaggedAtlas.open(
             db_uri=db_uri,
-            hox_table_name=hox_table_name,
+            obs_table_name=obs_table_name,
             cell_schema=cell_schema,
             dataset_table_name=dataset_table_name,
             store=store,
@@ -1248,7 +1248,7 @@ def create_or_open_atlas(
     else:
         return RaggedAtlas.create(
             db_uri=db_uri,
-            hox_table_name=hox_table_name,
+            obs_table_name=obs_table_name,
             cell_schema=cell_schema,
             dataset_table_name=dataset_table_name,
             dataset_schema=dataset_schema,

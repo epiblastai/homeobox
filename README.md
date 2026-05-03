@@ -71,7 +71,7 @@ atlas_dir = "./hox_example_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    hox_table_name="cells",
+    obs_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
@@ -129,7 +129,7 @@ atlas_dir = "./hox_tile_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    hox_table_name="cells",
+    obs_table_name="cells",
     cell_schema=TileSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
@@ -164,7 +164,7 @@ rows = [
     )
     for i in range(n_cells)
 ]
-atlas.cell_table.add(rows)
+atlas.obs_table.add(rows)
 
 atlas.optimize()
 atlas.snapshot()
