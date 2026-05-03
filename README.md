@@ -1,7 +1,7 @@
 # homeobox
 Designed for building heterogeneous biomedical data atlases for interactive analysis and ML training.
 
-Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
+Metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
 
 - **[Documentation](https://epiblastai.github.io/homeobox/)**
 
@@ -35,7 +35,7 @@ maturin develop --release
 
 Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
-Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group.
+Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every row carries a pointer into its group.
 
 ```
 Cell table (shared)                Zarr (per-dataset)
@@ -71,7 +71,7 @@ atlas_dir = "./hox_example_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    cell_table_name="cells",
+    hox_table_name="cells",
     cell_schema=CellSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
@@ -129,7 +129,7 @@ atlas_dir = "./hox_tile_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    cell_table_name="cells",
+    hox_table_name="cells",
     cell_schema=TileSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,

@@ -1,7 +1,7 @@
 [project]
 name = "homeobox"
 version = "0.2.3"
-description = "Cell-centric ML training backend on LanceDB and sharded zarr"
+description = "Multimodal biomedical atlas builder"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
