@@ -1,9 +1,9 @@
 """Fast batch dataloader for ML training from homeobox atlases.
 
-:class:`CellDataset` is a pure data-access object: it resolves zarr
+:class:`UnimodalHoxDataset` is a pure data-access object: it resolves zarr
 remaps and exposes ``__getitems__`` for batched async I/O.
 
-Designed for the ``query -> CellDataset -> SparseBatch -> collate_fn ->
+Designed for the ``query -> UnimodalHoxDataset -> SparseBatch -> collate_fn ->
 GPU`` pipeline.  Reader initialisation is deferred to the worker
 process, making the dataset safely picklable for spawn-based
 multiprocessing.
@@ -375,7 +375,7 @@ class MultimodalBatch:
 
 @dataclass
 class _ModalityData:
-    """Pre-computed per-modality metadata for CellDataset and MultimodalCellDataset.
+    """Pre-computed per-modality metadata for UnimodalHoxDataset and MultimodalHoxDataset.
 
     Built at ``__init__`` time; all fields are picklable.  Does NOT store
     per-cell pointer arrays (starts/ends/groups_np) — those are loaded
@@ -390,8 +390,8 @@ class _ModalityData:
     layer: str
     layer_dtype: np.dtype
     layers_path: str = ""  # e.g. "csr/layers" or "layers"
-    present_mask: np.ndarray | None = None  # bool, (n_total_cells,); None for CellDataset
-    cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for CellDataset
+    present_mask: np.ndarray | None = None  # bool, (n_total_cells,); None for UnimodalHoxDataset
+    cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for UnimodalHoxDataset
     per_cell_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
     array_name: str = ""  # direct zarr array for layer-less specs (e.g., "data")
     stack_dense: bool = True
@@ -752,11 +752,11 @@ async def _take_multimodal(
 
 
 # ---------------------------------------------------------------------------
-# CellDataset
+# UnimodalHoxDataset
 # ---------------------------------------------------------------------------
 
 
-class CellDataset(_AsyncDataset):
+class UnimodalHoxDataset(_AsyncDataset):
     """Map-style dataset for fast batch access over an atlas query.
 
     Pure data-access object: resolves zarr remaps and exposes
@@ -960,11 +960,11 @@ class CellDataset(_AsyncDataset):
 
 
 # ---------------------------------------------------------------------------
-# MultimodalCellDataset
+# MultimodalHoxDataset
 # ---------------------------------------------------------------------------
 
 
-class MultimodalCellDataset(_AsyncDataset):
+class MultimodalHoxDataset(_AsyncDataset):
     """Map-style multimodal dataset for fast batch access over an atlas query.
 
     Supports within-cell multimodal batches where each cell may have data
@@ -1241,7 +1241,7 @@ def dense_to_tensor_collate(batch: DenseBatch) -> dict:
 
 
 def make_loader(
-    dataset: "CellDataset | MultimodalCellDataset",
+    dataset: "UnimodalHoxDataset | MultimodalHoxDataset",
     *,
     batch_size: int = 1024,
     shuffle: bool = False,
@@ -1250,7 +1250,7 @@ def make_loader(
     batch_sampler=None,
     **kwargs,
 ):
-    """Create a DataLoader with the right defaults for CellDataset.
+    """Create a DataLoader with the right defaults for UnimodalHoxDataset.
 
     By default uses PyTorch's automatic ``BatchSampler`` driven by
     ``shuffle`` + ``batch_size``, so ``dataset.__getitems__(indices)``
@@ -1265,7 +1265,7 @@ def make_loader(
     Parameters
     ----------
     dataset:
-        A :class:`CellDataset` or :class:`MultimodalCellDataset`.
+        A :class:`UnimodalHoxDataset` or :class:`MultimodalHoxDataset`.
     batch_size:
         Cells per batch.
     shuffle:

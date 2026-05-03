@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     import pandas
     from lancedb.query import LanceQueryBuilder
 
-    from homeobox.dataloader import CellDataset, MultimodalCellDataset
+    from homeobox.dataloader import MultimodalHoxDataset, UnimodalHoxDataset
     from homeobox.fragments.reconstruction import FragmentResult
     from homeobox.multimodal import MultimodalResult
 
@@ -224,7 +224,7 @@ class AtlasQuery:
         return self._drop_score(self._build_scanner().to_polars())
 
     def _materialize_cells_for_dataset(self) -> pl.DataFrame:
-        """Materialise a lightweight cell DataFrame with row IDs for CellDataset.
+        """Materialise a lightweight cell DataFrame with row IDs for UnimodalHoxDataset.
 
         Returns only pointer columns + ``_rowid`` (lance's built-in row ID).
         Metadata is loaded lazily per batch via ``take_row_ids``.
@@ -553,14 +553,14 @@ class AtlasQuery:
         layer: str | None = None,
         metadata_columns: list[str] | None = None,
         stack_dense: bool = True,
-    ) -> "CellDataset":
-        """Create a CellDataset for fast ML training iteration.
+    ) -> "UnimodalHoxDataset":
+        """Create a UnimodalHoxDataset for fast ML training iteration.
 
         Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
-        this returns a :class:`~homeobox.dataloader.CellDataset` that yields
+        this returns a :class:`~homeobox.dataloader.UnimodalHoxDataset` that yields
         lightweight :class:`~homeobox.dataloader.SparseBatch` or
         :class:`~homeobox.dataloader.DenseBatch` objects via
-        :meth:`~homeobox.dataloader.CellDataset.__getitems__`.
+        :meth:`~homeobox.dataloader.UnimodalHoxDataset.__getitems__`.
 
         Use :func:`~homeobox.dataloader.make_loader` to wrap the dataset
         in a ``torch.utils.data.DataLoader``.
@@ -588,7 +588,7 @@ class AtlasQuery:
         (``wanted_globals`` is derived from the filter; ``n_features``
         reflects the filtered count).
         """
-        from homeobox.dataloader import CellDataset
+        from homeobox.dataloader import UnimodalHoxDataset
         from homeobox.group_specs import get_spec
 
         pf = self._atlas.pointer_fields[field_name]
@@ -609,7 +609,7 @@ class AtlasQuery:
                 self._feature_filter[feature_space],
             )
 
-        return CellDataset(
+        return UnimodalHoxDataset(
             atlas=self._atlas,
             cells_pl=cells_pl,
             field_name=field_name,
@@ -625,8 +625,8 @@ class AtlasQuery:
         layers: dict[str, str] | None = None,
         metadata_columns: list[str] | None = None,
         stack_dense: bool | dict[str, bool] = True,
-    ) -> "MultimodalCellDataset":
-        """Create a MultimodalCellDataset for within-cell multimodal training.
+    ) -> "MultimodalHoxDataset":
+        """Create a MultimodalHoxDataset for within-cell multimodal training.
 
         Each yielded :class:`~homeobox.dataloader.MultimodalBatch` contains
         one sub-batch per modality with only the cells that have that
@@ -651,7 +651,7 @@ class AtlasQuery:
             May be a single bool for all dense modalities or a mapping by
             field name, e.g. ``{"image_tiles": False}``.
         """
-        from homeobox.dataloader import MultimodalCellDataset
+        from homeobox.dataloader import MultimodalHoxDataset
         from homeobox.group_specs import get_spec
 
         cells_pl = self._materialize_cells_for_dataset()
@@ -679,7 +679,7 @@ class AtlasQuery:
                     wanted_globals = {}
                 wanted_globals[fn] = wg
 
-        return MultimodalCellDataset(
+        return MultimodalHoxDataset(
             atlas=self._atlas,
             cells_pl=cells_pl,
             field_names=field_names,

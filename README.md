@@ -233,7 +233,7 @@ Benchmarked against TileDB-SOMA on a ~44M cell mouse atlas (CellxGene Census), r
 
 ### ML dataloader throughput
 
-`CellDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
+`UnimodalHoxDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
 
 ![Dataloader throughput: homeobox vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
 
@@ -294,7 +294,7 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 - **[Building an Atlas](docs/atlas.md)**: end-to-end walkthrough with two heterogeneous datasets.
 - **[Array Storage](docs/array_storage.md)**: `add_from_anndata` internals, BP-128 bitpacking, CSC column index for fast feature-filtered reads.
 - **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
-- **[PyTorch Data Loading](docs/dataloader.md)**: `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
+- **[PyTorch Data Loading](docs/dataloader.md)**: `UnimodalHoxDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
 - **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
 - **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetSchema`.
 - **[Full docs site](https://epiblastai.github.io/homeobox/)**

@@ -17,7 +17,7 @@ class GroupReader:
     """Encapsulates all per-(zarr_group, feature_space) read state.
 
     Used by both the reconstruction path (RaggedAtlas) and the ML training
-    path (CellDataset worker processes).
+    path (UnimodalHoxDataset worker processes).
 
     ``zarr_group`` is the string path within the object store (e.g.
     ``"datasets/abc123/rna"``).  It is the durable, picklable identity of
@@ -89,7 +89,7 @@ class GroupReader:
     ) -> "GroupReader":
         """Create a GroupReader for a DataLoader worker.
 
-        Accepts a pre-resolved remap (already version-checked at CellDataset
+        Accepts a pre-resolved remap (already version-checked at UnimodalHoxDataset
         init time). The zarr group handle is ``None`` until first use.
         """
         return cls(
