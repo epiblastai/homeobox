@@ -10,7 +10,7 @@ import polars as pl
 from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.obs_alignment import PointerField
 from homeobox.read import (
-    _prepare_sparse_cells,
+    _prepare_sparse_obs,
     _read_parallel_arrays,
     _sync_gather,
 )
@@ -99,7 +99,7 @@ class IntervalReconstructor(Reconstructor):
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
         cells_pl_original = cells_pl
-        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
+        cells_pl, groups = _prepare_sparse_obs(cells_pl, pf)
         if not groups:
             return FragmentResult(
                 chromosomes=np.array([], dtype=np.uint8),

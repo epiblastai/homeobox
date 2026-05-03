@@ -12,8 +12,8 @@ import scipy.sparse as sp
 from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.read import (
     _apply_wanted_globals_remap,
-    _prepare_dense_cells,
-    _prepare_sparse_cells,
+    _prepare_dense_obs,
+    _prepare_sparse_obs,
     _read_dense_group,
     _read_sparse_group,
     _sync_gather,
@@ -295,7 +295,7 @@ class SparseCSRReconstructor(Reconstructor):
         index_array_name = zgs.required_arrays[0].array_name
 
         cells_pl_original = cells_pl
-        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
+        cells_pl, groups = _prepare_sparse_obs(cells_pl, pf)
         if not groups:
             return _build_obs_only_anndata(cells_pl_original)
 
@@ -411,7 +411,7 @@ class DenseReconstructor(Reconstructor):
     ) -> ad.AnnData:
         zgs = spec.zarr_group_spec
         cells_pl_original = cells_pl
-        cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
+        cells_pl, groups = _prepare_dense_obs(cells_pl, pf)
         if not groups:
             return _build_obs_only_anndata(cells_pl_original)
 
@@ -533,7 +533,7 @@ class DenseReconstructor(Reconstructor):
                 )
             array_name = zgs.required_arrays[0].array_name
 
-        cells_pl, groups = _prepare_dense_cells(cells_pl, pf)
+        cells_pl, groups = _prepare_dense_obs(cells_pl, pf)
 
         # Prepare per-group reads and discover per-cell shape
         per_cell_shape: tuple[int, ...] | None = None
@@ -777,7 +777,7 @@ class FeatureCSCReconstructor(Reconstructor):
         csr_index_name = zgs.required_arrays[0].array_name
 
         cells_pl_original = cells_pl
-        cells_pl, groups = _prepare_sparse_cells(cells_pl, pf)
+        cells_pl, groups = _prepare_sparse_obs(cells_pl, pf)
         if not groups:
             return _build_obs_only_anndata(cells_pl_original)
 

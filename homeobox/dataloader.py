@@ -9,12 +9,12 @@ process, making the dataset safely picklable for spawn-based
 multiprocessing.
 
 Pointer structs and metadata columns are loaded lazily per-batch via
-lance's ``take_row_ids`` API rather than materializing the full cell
+lance's ``take_row_ids`` API rather than materializing the full obs
 table at init time.
 
 Usage::
 
-    dataset = atlas.query().to_cell_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
+    dataset = atlas.query().to_unimodal_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
     loader = make_loader(dataset, batch_size=256, shuffle=True, num_workers=4)
     for batch in loader:
         X = sparse_to_dense_collate(batch)["X"]
@@ -36,8 +36,8 @@ from homeobox.group_reader import GroupReader
 from homeobox.group_specs import PointerKind, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
-    _prepare_dense_cells,
-    _prepare_sparse_cells,
+    _prepare_dense_obs,
+    _prepare_sparse_obs,
 )
 
 # ---------------------------------------------------------------------------
@@ -53,21 +53,21 @@ def _build_groups_np(zg_series: pl.Series, groups: list[str]) -> np.ndarray:
 
 def _build_present_arrays(
     present_indices: np.ndarray,
-    n_cells: int,
+    n_rows: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build presence mask and per-cell position index for one modality.
+    """Build presence mask and per-row position index for one modality.
 
-    Returns ``(present_mask, cell_positions)`` where:
+    Returns ``(present_mask, row_positions)`` where:
 
-    - ``present_mask[i]`` is True if cell *i* has this modality
-    - ``cell_positions[i]`` is the index into the modality's present-cell arrays, or -1 if absent
+    - ``present_mask[i]`` is True if row *i* has this modality
+    - ``row_positions[i]`` is the index into the modality's present-row arrays, or -1 if absent
     """
-    present_mask = np.zeros(n_cells, dtype=bool)
-    cell_positions = np.full(n_cells, -1, dtype=np.int64)
+    present_mask = np.zeros(n_rows, dtype=bool)
+    row_positions = np.full(n_rows, -1, dtype=np.int64)
     if len(present_indices) > 0:
         present_mask[present_indices] = True
-        cell_positions[present_indices] = np.arange(len(present_indices), dtype=np.int64)
-    return present_mask, cell_positions
+        row_positions[present_indices] = np.arange(len(present_indices), dtype=np.int64)
+    return present_mask, row_positions
 
 
 def _build_sparse_group_readers(
@@ -99,18 +99,18 @@ def _build_sparse_group_readers(
 
 def _build_sparse_modality_data(
     atlas: "RaggedAtlas",
-    cells_indexed: pl.DataFrame,
+    rows_indexed: pl.DataFrame,
     # TODO: type these
     pf,
     spec,
     layer: str,
     wanted_globals_for_fs: np.ndarray | None,
-    n_cells: int,
+    n_rows: int,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
     """Build ``_ModalityData`` for a sparse pointer-field modality.
 
-    Returns ``(filtered_cells, modality_data)`` where *filtered_cells*
-    is the DataFrame after empty-cell removal (with internal columns
+    Returns ``(filtered_rows, modality_data)`` where *filtered_rows*
+    is the DataFrame after empty-row removal (with internal columns
     added).
     """
     fs = pf.feature_space
@@ -121,11 +121,11 @@ def _build_sparse_modality_data(
         )
     index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
 
-    filtered, groups = _prepare_sparse_cells(cells_indexed, pf)
+    filtered, groups = _prepare_sparse_obs(rows_indexed, pf)
     groups = sorted(groups)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
-    present_mask, cell_positions = _build_present_arrays(present_indices, n_cells)
+    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
     group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
@@ -151,32 +151,32 @@ def _build_sparse_modality_data(
         layer_dtype=layer_dtype,
         layers_path=layers_path,
         present_mask=present_mask,
-        cell_positions=cell_positions,
+        row_positions=row_positions,
     )
     return filtered, mod_data
 
 
 def _build_dense_modality_data(
     atlas: "RaggedAtlas",
-    cells_indexed: pl.DataFrame,
+    rows_indexed: pl.DataFrame,
     # TODO: Should type these
     pf,
     spec,
     layer: str,
-    n_cells: int,
+    n_rows: int,
     stack_dense: bool = True,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
     """Build ``_ModalityData`` for a dense pointer-field modality.
 
-    Returns ``(filtered_cells, modality_data)`` where *filtered_cells*
-    is the DataFrame after empty-cell removal.
+    Returns ``(filtered_rows, modality_data)`` where *filtered_rows*
+    is the DataFrame after empty-row removal.
     """
     fs = pf.feature_space
-    filtered, groups = _prepare_dense_cells(cells_indexed, pf)
+    filtered, groups = _prepare_dense_obs(rows_indexed, pf)
     groups = sorted(groups)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
-    present_mask, cell_positions = _build_present_arrays(present_indices, n_cells)
+    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
     group_readers: dict[str, GroupReader] = {
         zg: GroupReader.for_worker(
@@ -192,7 +192,7 @@ def _build_dense_modality_data(
     has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
         spec.zarr_group_spec.layers.allowed
     )
-    per_cell_shape: tuple[int, ...] | None = None
+    per_row_shape: tuple[int, ...] | None = None
     array_name = ""
 
     if has_layers:
@@ -213,8 +213,8 @@ def _build_dense_modality_data(
         if spec.has_var_df:
             n_features = atlas.registry_tables[fs].count_rows()
         else:
-            per_cell_shape = tuple(reader.shape[1:])
-            n_features = int(np.prod(per_cell_shape)) if per_cell_shape else 0
+            per_row_shape = tuple(reader.shape[1:])
+            n_features = int(np.prod(per_row_shape)) if per_row_shape else 0
     else:
         layer_dtype = np.dtype(np.float32)
         n_features = atlas.registry_tables[fs].count_rows() if spec.has_var_df else 0
@@ -229,8 +229,8 @@ def _build_dense_modality_data(
         layer_dtype=layer_dtype,
         layers_path=layers_path,
         present_mask=present_mask,
-        cell_positions=cell_positions,
-        per_cell_shape=per_cell_shape,
+        row_positions=row_positions,
+        per_row_shape=per_row_shape,
         array_name=array_name,
         stack_dense=stack_dense,
     )
@@ -238,14 +238,14 @@ def _build_dense_modality_data(
 
 
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
-    """Scatter a SparseBatch into a dense float32 torch tensor (n_cells, n_features)."""
+    """Scatter a SparseBatch into a dense float32 torch tensor (n_rows, n_features)."""
     import torch
 
-    n_cells = len(batch.offsets) - 1
-    X = torch.zeros(n_cells, batch.n_features, dtype=torch.float32)
-    if n_cells > 0 and len(batch.indices) > 0:
+    n_rows = len(batch.offsets) - 1
+    X = torch.zeros(n_rows, batch.n_features, dtype=torch.float32)
+    if n_rows > 0 and len(batch.indices) > 0:
         lengths = np.diff(batch.offsets)
-        row_indices = np.repeat(np.arange(n_cells), lengths)
+        row_indices = np.repeat(np.arange(n_rows), lengths)
         X[row_indices, batch.indices] = torch.from_numpy(batch.values.astype(np.float32))
     return X
 
@@ -300,7 +300,7 @@ def _identity_collate(x):
 class SparseBatch:
     """Minimal sparse batch for ML training.
 
-    Represents a batch of cells as flat CSR-style arrays, avoiding
+    Represents a batch of rows as flat CSR-style arrays, avoiding
     the overhead of full AnnData/scipy/var DataFrame construction.
 
     Attributes
@@ -310,11 +310,11 @@ class SparseBatch:
     values:
         Native dtype, flat expression values.
     offsets:
-        int64, CSR-style indptr (length = n_cells + 1).
+        int64, CSR-style indptr (length = n_rows + 1).
     n_features:
         Global feature space width (registry size).
     metadata:
-        Optional dict of obs columns as numpy arrays, aligned to cells.
+        Optional dict of obs columns as numpy arrays, aligned to rows.
     """
 
     indices: np.ndarray
@@ -328,13 +328,13 @@ class SparseBatch:
 class DenseBatch:
     """Dense batch for ML training.
 
-    Represents a batch of cells as dense arrays. Only cells that have this
+    Represents a batch of rows as dense arrays. Only rows that have this
     modality are included (no fill values).
 
     Attributes
     ----------
     data:
-        Stacked ndarray with leading cell axis, or one ndarray per cell when
+        Stacked ndarray with leading row axis, or one ndarray per row when
         dense stacking is disabled. Rows/items are in query order.
     n_features:
         Feature space width.
@@ -343,31 +343,31 @@ class DenseBatch:
     data: np.ndarray | list[np.ndarray]
     n_features: int
     metadata: dict[str, np.ndarray] | None = None
-    per_cell_shape: tuple[int, ...] | None = None
+    per_row_shape: tuple[int, ...] | None = None
 
 
 @dataclass
 class MultimodalBatch:
-    """Container for a within-cell multimodal training batch.
+    """Container for a within-row multimodal training batch.
 
     Analogous to MuData at training time: each modality contains only the
-    cells that have it, and ``present`` tracks membership.  No synthetic
-    fill values are added for absent cells.
+    rows that have it, and ``present`` tracks membership.  No synthetic
+    fill values are added for absent rows.
 
     Attributes
     ----------
-    n_cells:
-        Total cells in the batch (query order).
+    n_rows:
+        Total rows in the batch (query order).
     metadata:
-        Optional dict of obs columns aligned to ``n_cells`` (query order).
+        Optional dict of obs columns aligned to ``n_rows`` (query order).
     modalities:
         ``{feature_space: SparseBatch | DenseBatch}``. Each sub-batch has
         ``present[fs].sum()`` rows in query order.
     present:
-        ``{feature_space: bool ndarray}``, shape ``(n_cells,)`` per modality.
+        ``{feature_space: bool ndarray}``, shape ``(n_rows,)`` per modality.
     """
 
-    n_cells: int
+    n_rows: int
     metadata: dict[str, np.ndarray] | None
     modalities: dict[str, "SparseBatch | DenseBatch"]
     present: dict[str, np.ndarray]
@@ -378,7 +378,7 @@ class _ModalityData:
     """Pre-computed per-modality metadata for UnimodalHoxDataset and MultimodalHoxDataset.
 
     Built at ``__init__`` time; all fields are picklable.  Does NOT store
-    per-cell pointer arrays (starts/ends/groups_np) — those are loaded
+    per-row pointer arrays (starts/ends/groups_np) — those are loaded
     lazily per batch via lance ``take_row_ids``.
     """
 
@@ -390,9 +390,9 @@ class _ModalityData:
     layer: str
     layer_dtype: np.dtype
     layers_path: str = ""  # e.g. "csr/layers" or "layers"
-    present_mask: np.ndarray | None = None  # bool, (n_total_cells,); None for UnimodalHoxDataset
-    cell_positions: np.ndarray | None = None  # int64, (n_total_cells,); None for UnimodalHoxDataset
-    per_cell_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
+    present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
+    row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
+    per_row_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
     array_name: str = ""  # direct zarr array for layer-less specs (e.g., "data")
     stack_dense: bool = True
 
@@ -421,10 +421,10 @@ async def _take_group_sparse(
     remapped = remap[flat_indices.astype(np.intp)]
     mask = remapped >= 0
     if not mask.all():
-        cell_ids = np.repeat(np.arange(len(lengths)), lengths)
+        row_ids = np.repeat(np.arange(len(lengths)), lengths)
         remapped = remapped[mask]
         flat_values = flat_values[mask]
-        lengths = np.bincount(cell_ids[mask], minlength=len(lengths)).astype(np.int64)
+        lengths = np.bincount(row_ids[mask], minlength=len(lengths)).astype(np.int64)
     return remapped, flat_values, lengths
 
 
@@ -437,12 +437,12 @@ async def _take_sparse_from_pointers(
     ends: np.ndarray,
     mod_data: _ModalityData,
 ) -> SparseBatch:
-    """Fetch a sparse batch from per-cell pointer arrays.
+    """Fetch a sparse batch from per-row pointer arrays.
 
     Unlike the old ``_take_sparse`` which indexed into stored arrays,
     this receives the pointer data directly (loaded from lance per-batch).
     """
-    n_cells = len(groups_np)
+    n_rows = len(groups_np)
 
     # Sort by group for ordered concatenation
     sort_order = np.argsort(groups_np, kind="stable")
@@ -484,7 +484,7 @@ async def _take_sparse_from_pointers(
     lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
 
     # Build CSR-style offsets
-    offsets = np.zeros(n_cells + 1, dtype=np.int64)
+    offsets = np.zeros(n_rows + 1, dtype=np.int64)
     np.cumsum(lengths, out=offsets[1:])
 
     batch = SparseBatch(
@@ -501,10 +501,10 @@ async def _take_sparse_from_pointers(
 
 def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBatch:
     """Reorder rows of a SparseBatch; ``perm[i]`` is the source row for output row ``i``."""
-    n_cells = len(perm)
+    n_rows = len(perm)
     sorted_lengths = np.diff(batch.offsets)
     new_lengths = sorted_lengths[perm]
-    new_offsets = np.zeros(n_cells + 1, dtype=np.int64)
+    new_offsets = np.zeros(n_rows + 1, dtype=np.int64)
     np.cumsum(new_lengths, out=new_offsets[1:])
 
     reordered_metadata = (
@@ -521,7 +521,7 @@ def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBa
 
     # Segment-arange gather: for each output row i, collect elements from source row perm[i]
     src_starts = batch.offsets[:-1][perm]
-    cumlen = np.zeros(n_cells + 1, dtype=np.int64)
+    cumlen = np.zeros(n_rows + 1, dtype=np.int64)
     np.cumsum(new_lengths, out=cumlen[1:])
     within = np.arange(total, dtype=np.int64) - np.repeat(cumlen[:-1], new_lengths)
     gather = np.repeat(src_starts, new_lengths) + within
@@ -538,20 +538,20 @@ async def _take_group_dense(
     reader: BatchAsyncArray,
     starts: np.ndarray,
     ends: np.ndarray,
-    cell_shape: tuple[int, ...],
+    row_shape: tuple[int, ...],
     dtype: np.dtype | None = None,
 ) -> np.ndarray:
     """Read dense data for one zarr group.
 
     Parameters
     ----------
-    cell_shape:
-        Per-cell shape, e.g. ``(n_features,)`` for 2D or ``(C, H, W)`` for tiles.
+    row_shape:
+        Per-row shape, e.g. ``(n_features,)`` for 2D or ``(C, H, W)`` for tiles.
     dtype:
         Output dtype.  ``None`` means cast to float32 (legacy 2D behaviour).
     """
     flat_data, _ = await reader.read_ranges(starts, ends)
-    out = flat_data.reshape(len(starts), *cell_shape)
+    out = flat_data.reshape(len(starts), *row_shape)
     if dtype is None:
         return out.astype(np.float32)
     return out if out.dtype == dtype else out.astype(dtype)
@@ -563,15 +563,15 @@ async def _take_dense_from_pointers(
     ends: np.ndarray,
     mod_data: _ModalityData,
 ) -> DenseBatch:
-    """Fetch a dense batch from per-cell pointer arrays."""
+    """Fetch a dense batch from per-row pointer arrays."""
     n_present = len(groups_np)
 
-    # Determine per-cell shape and output dtype
-    if mod_data.per_cell_shape is not None:
-        cell_shape = mod_data.per_cell_shape
+    # Determine per-row shape and output dtype
+    if mod_data.per_row_shape is not None:
+        row_shape = mod_data.per_row_shape
         out_dtype = mod_data.layer_dtype
     else:
-        cell_shape = (mod_data.n_features,)
+        row_shape = (mod_data.n_features,)
         out_dtype = np.dtype(np.float32)
 
     # Determine which zarr array to read
@@ -593,14 +593,14 @@ async def _take_dense_from_pointers(
         zg = mod_data.unique_groups[gid]
         gr = mod_data.group_readers[zg]
         group_reader = gr.get_array_reader(array_path)
-        group_cell_shape = tuple(group_reader.shape[1:]) if not mod_data.stack_dense else cell_shape
+        group_row_shape = tuple(group_reader.shape[1:]) if not mod_data.stack_dense else row_shape
         tasks.append(
             _take_group_dense(
                 group_reader,
                 sorted_starts[mask],
                 sorted_ends[mask],
-                group_cell_shape,
-                mod_data.layer_dtype if mod_data.per_cell_shape is not None else None,
+                group_row_shape,
+                mod_data.layer_dtype if mod_data.per_row_shape is not None else None,
             )
         )
         group_slices.append((pos, pos + count))
@@ -616,10 +616,10 @@ async def _take_dense_from_pointers(
         return DenseBatch(
             data=[sorted_items[i] for i in inv_sort],
             n_features=mod_data.n_features,
-            per_cell_shape=mod_data.per_cell_shape,
+            per_row_shape=mod_data.per_row_shape,
         )
 
-    sorted_data = np.empty((n_present, *cell_shape), dtype=out_dtype)
+    sorted_data = np.empty((n_present, *row_shape), dtype=out_dtype)
     for (s, e), group_data in zip(group_slices, results, strict=True):
         sorted_data[s:e] = group_data
 
@@ -627,7 +627,7 @@ async def _take_dense_from_pointers(
     return DenseBatch(
         data=sorted_data[inv_sort],
         n_features=mod_data.n_features,
-        per_cell_shape=mod_data.per_cell_shape,
+        per_row_shape=mod_data.per_row_shape,
     )
 
 
@@ -677,7 +677,7 @@ async def _take_multimodal(
     metadata_columns: list[str] | None,
 ) -> MultimodalBatch:
     """Fetch a multimodal batch from a lance take result."""
-    n_cells = take_result.height
+    n_rows = take_result.height
 
     tasks: list = []
     task_fs: list[str] = []
@@ -687,7 +687,7 @@ async def _take_multimodal(
     for fs, mod_data in modality_data.items():
         pf_name = pointer_fields[fs]
 
-        # Extract pointers for ALL batch cells for this modality
+        # Extract pointers for ALL batch rows for this modality
         pointer_df = take_result[pf_name].struct.unnest()
         zg_series = pointer_df["zarr_group"]
         batch_present = zg_series.is_not_null().to_numpy()
@@ -704,18 +704,18 @@ async def _take_multimodal(
                     n_features=mod_data.n_features,
                 )
             else:
-                if mod_data.per_cell_shape is not None:
-                    empty_shape = (0, *mod_data.per_cell_shape)
+                if mod_data.per_row_shape is not None:
+                    empty_shape = (0, *mod_data.per_row_shape)
                 else:
                     empty_shape = (0, mod_data.n_features)
                 empty_modalities[fs] = DenseBatch(
                     data=np.zeros(empty_shape, dtype=mod_data.layer_dtype),
                     n_features=mod_data.n_features,
-                    per_cell_shape=mod_data.per_cell_shape,
+                    per_row_shape=mod_data.per_row_shape,
                 )
             continue
 
-        # Extract pointers only for present cells
+        # Extract pointers only for present rows
         present_take = take_result[present_indices.tolist()]
         if mod_data.kind is PointerKind.SPARSE:
             groups_np, starts, ends = _extract_pointers_sparse(
@@ -744,7 +744,7 @@ async def _take_multimodal(
         }
 
     return MultimodalBatch(
-        n_cells=n_cells,
+        n_rows=n_rows,
         metadata=metadata,
         modalities=modalities,
         present=present_masks,
@@ -770,11 +770,11 @@ class UnimodalHoxDataset(_AsyncDataset):
     ----------
     atlas:
         The atlas to read from.
-    cells_pl:
-        Polars DataFrame of cell records (from a query). Must include
+    obs_pl:
+        Polars DataFrame of row records (from a query). Must include
         ``_rowid`` column (via ``with_row_id(True)``).
     field_name:
-        Pointer-field attribute name on the cell schema.
+        Pointer-field attribute name on the row schema.
     layer:
         Which layer to read within the pointer field's feature space.
         May be ``""`` for layer-less specs such as ``image_tiles``.
@@ -787,14 +787,14 @@ class UnimodalHoxDataset(_AsyncDataset):
         sparse feature spaces with a feature registry.
     stack_dense:
         Whether dense batches should be stacked into a single ndarray. Set
-        to ``False`` to return one array per cell, which allows variable-size
+        to ``False`` to return one array per row, which allows variable-size
         image tiles.
     """
 
     def __init__(
         self,
         atlas: "RaggedAtlas",
-        cells_pl: pl.DataFrame,
+        obs_pl: pl.DataFrame,
         # TODO: Shouldn't default this
         field_name: str = "gene_expression",
         # TODO: Should be `layer: str | None = None`
@@ -811,32 +811,32 @@ class UnimodalHoxDataset(_AsyncDataset):
         self._store = atlas.store
         self._pointer_kind = spec.pointer_kind
 
-        # Build modality data (filters empty cells, builds remaps & readers)
-        cells_indexed = cells_pl.with_row_index("_orig_idx")
+        # Build modality data (filters empty rows, builds remaps & readers)
+        rows_indexed = obs_pl.with_row_index("_orig_idx")
 
         if spec.pointer_kind is PointerKind.SPARSE:
             filtered, self._mod_data = _build_sparse_modality_data(
                 atlas,
-                cells_indexed,
+                rows_indexed,
                 pf,
                 spec,
                 layer,
                 wanted_globals,
-                cells_pl.height,
+                obs_pl.height,
             )
         else:
             filtered, self._mod_data = _build_dense_modality_data(
                 atlas,
-                cells_indexed,
+                rows_indexed,
                 pf,
                 spec,
                 layer,
-                cells_pl.height,
+                obs_pl.height,
                 stack_dense=stack_dense,
             )
 
         self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
-        self._n_cells = len(self._row_ids)
+        self._n_rows = len(self._row_ids)
         self._pointer_field = field_name
         self._metadata_columns = metadata_columns
         self._lance_info = (
@@ -852,23 +852,23 @@ class UnimodalHoxDataset(_AsyncDataset):
         self._obs_table: lancedb.table.Table | None = None
 
     @property
-    def n_cells(self) -> int:
-        return self._n_cells
+    def n_rows(self) -> int:
+        return self._n_rows
 
     @property
     def n_features(self) -> int:
         return self._mod_data.n_features
 
     @property
-    def per_cell_shape(self) -> tuple[int, ...] | None:
-        """Per-cell array shape, or ``None`` for flat/sparse feature spaces."""
-        return self._mod_data.per_cell_shape
+    def per_row_shape(self) -> tuple[int, ...] | None:
+        """Per-row array shape, or ``None`` for flat/sparse feature spaces."""
+        return self._mod_data.per_row_shape
 
     def __len__(self) -> int:
-        return self._n_cells
+        return self._n_rows
 
-    def __getitems__(self, cell_indices: list[int]) -> "SparseBatch | DenseBatch":
-        """Fetch a batch of cells by index.
+    def __getitems__(self, row_indices: list[int]) -> "SparseBatch | DenseBatch":
+        """Fetch a batch of rows by index.
 
         Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
         indices (PyTorch >= 2.0 ``__getitems__`` protocol).
@@ -878,11 +878,11 @@ class UnimodalHoxDataset(_AsyncDataset):
 
         Parameters
         ----------
-        cell_indices:
-            List of 0-based cell indices into this dataset's cell arrays.
+        row_indices:
+            List of 0-based row indices into this dataset's row arrays.
         """
         self._ensure_initialized()
-        indices_arr = np.array(cell_indices, dtype=np.int64)
+        indices_arr = np.array(row_indices, dtype=np.int64)
 
         # 1. Lance take: pointer + metadata in one call
         batch_row_ids = self._row_ids[indices_arr]
@@ -930,7 +930,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         return batch
 
     def __getitem__(self, idx: int) -> "SparseBatch | DenseBatch":
-        """Fetch a single cell as a batch."""
+        """Fetch a single row as a batch."""
         return self.__getitems__([idx])
 
     def _ensure_initialized(self) -> None:
@@ -967,19 +967,19 @@ class UnimodalHoxDataset(_AsyncDataset):
 class MultimodalHoxDataset(_AsyncDataset):
     """Map-style multimodal dataset for fast batch access over an atlas query.
 
-    Supports within-cell multimodal batches where each cell may have data
+    Supports within-row multimodal batches where each row may have data
     from multiple modalities (e.g. CITE-seq RNA + protein, multiome RNA +
     ATAC).  Yields :class:`MultimodalBatch` via :meth:`__getitems__`.
 
-    Each modality's sub-batch contains only the cells that have it; a
+    Each modality's sub-batch contains only the rows that have it; a
     ``present`` mask tracks membership.  No synthetic fill values.
 
     Parameters
     ----------
     atlas:
         The atlas to read from.
-    cells_pl:
-        Polars DataFrame of cell records (from a query). Must include
+    obs_pl:
+        Polars DataFrame of row records (from a query). Must include
         ``_rowid`` column.
     field_names:
         Ordered list of pointer-field attribute names.
@@ -998,7 +998,7 @@ class MultimodalHoxDataset(_AsyncDataset):
     def __init__(
         self,
         atlas: "RaggedAtlas",
-        cells_pl: pl.DataFrame,
+        obs_pl: pl.DataFrame,
         field_names: list[str],
         # TODO: layers should be dict[str, str | None]
         layers: dict[str, str],
@@ -1007,7 +1007,7 @@ class MultimodalHoxDataset(_AsyncDataset):
         stack_dense: bool | dict[str, bool] = True,
     ) -> None:
         self._field_names = field_names
-        self._n_cells = cells_pl.height
+        self._n_rows = obs_pl.height
         self._metadata_columns = metadata_columns
 
         # Store lance info for lazy table reconstruction in workers
@@ -1019,14 +1019,14 @@ class MultimodalHoxDataset(_AsyncDataset):
         )
 
         # Store row IDs for lazy loading
-        self._row_ids = cells_pl["_rowid"].to_numpy().astype(np.uint64)
+        self._row_ids = obs_pl["_rowid"].to_numpy().astype(np.uint64)
 
         # Map field_name -> pointer field name (identical here, kept for parity
         # with lance take() call shape).
         self._pointer_fields: dict[str, str] = {}
 
         # Attach row indices so we can track original positions after per-modality filters
-        cells_indexed = cells_pl.with_row_index("_orig_idx")
+        rows_indexed = obs_pl.with_row_index("_orig_idx")
 
         modality_data: dict[str, _ModalityData] = {}
 
@@ -1039,7 +1039,7 @@ class MultimodalHoxDataset(_AsyncDataset):
             if spec.pointer_kind is PointerKind.SPARSE:
                 wg = wanted_globals.get(fn) if wanted_globals is not None else None
                 _, modality_data[fn] = _build_sparse_modality_data(
-                    atlas, cells_indexed, pf, spec, layer, wg, self._n_cells
+                    atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
                 )
             else:
                 stack_dense_for_field = (
@@ -1047,11 +1047,11 @@ class MultimodalHoxDataset(_AsyncDataset):
                 )
                 _, modality_data[fn] = _build_dense_modality_data(
                     atlas,
-                    cells_indexed,
+                    rows_indexed,
                     pf,
                     spec,
                     layer,
-                    self._n_cells,
+                    self._n_rows,
                     stack_dense=stack_dense_for_field,
                 )
 
@@ -1064,8 +1064,8 @@ class MultimodalHoxDataset(_AsyncDataset):
         self._obs_table: lancedb.table.Table | None = None
 
     @property
-    def n_cells(self) -> int:
-        return self._n_cells
+    def n_rows(self) -> int:
+        return self._n_rows
 
     @property
     def n_features(self) -> dict[str, int]:
@@ -1073,12 +1073,12 @@ class MultimodalHoxDataset(_AsyncDataset):
         return self._n_features
 
     def __len__(self) -> int:
-        return self._n_cells
+        return self._n_rows
 
-    def __getitems__(self, cell_indices: list[int]) -> MultimodalBatch:
-        """Fetch a multimodal batch of cells by index."""
+    def __getitems__(self, row_indices: list[int]) -> MultimodalBatch:
+        """Fetch a multimodal batch of rows by index."""
         self._ensure_initialized()
-        indices_arr = np.array(cell_indices, dtype=np.int64)
+        indices_arr = np.array(row_indices, dtype=np.int64)
 
         # Single lance take: all pointer columns + metadata
         batch_row_ids = self._row_ids[indices_arr]
@@ -1155,12 +1155,12 @@ def sparse_to_csr_collate(batch: SparseBatch) -> dict:
     """
     import torch
 
-    n_cells = len(batch.offsets) - 1
+    n_rows = len(batch.offsets) - 1
     X = torch.sparse_csr_tensor(
         crow_indices=torch.from_numpy(batch.offsets),
         col_indices=torch.from_numpy(batch.indices.astype(np.int64)),
         values=torch.from_numpy(batch.values.astype(np.float32)),
-        size=(n_cells, batch.n_features),
+        size=(n_rows, batch.n_features),
     )
 
     result: dict = {"X": X}
@@ -1269,7 +1269,7 @@ def make_loader(
     batch_size:
         Cells per batch.
     shuffle:
-        Whether to shuffle cells each epoch (requires ``__len__`` on
+        Whether to shuffle rows each epoch (requires ``__len__`` on
         the dataset).
     drop_last:
         Drop the trailing incomplete batch.
