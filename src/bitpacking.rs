@@ -335,12 +335,12 @@ mod tests {
 
     #[test]
     fn round_trip_delta_zigzag() {
-        // Cell IDs sorted within features but resetting across features
+        // Row IDs sorted within features but resetting across features
         // Simulates CSC intermediate block data
         let mut data = Vec::new();
         for _feature in 0..10 {
-            let mut cells: Vec<u32> = (0..50).collect();
-            data.append(&mut cells);
+            let mut rows: Vec<u32> = (0..50).collect();
+            data.append(&mut rows);
         }
         let encoded = encode(&data, Transform::DeltaZigzag);
         let decoded = decode(&encoded).unwrap();
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn round_trip_delta_zigzag_resets() {
-        // Ascending then dropping back to 0 (like sorted cell_ids across feature boundaries)
+        // Ascending then dropping back to 0 (like sorted row_ids across feature boundaries)
         let data: Vec<u32> = vec![0, 1, 2, 3, 100, 0, 1, 2, 50, 0, 5, 10];
         let encoded = encode(&data, Transform::DeltaZigzag);
         let decoded = decode(&encoded).unwrap();
