@@ -27,12 +27,12 @@ class MultimodalResult:
     Parameters
     ----------
     obs
-        Shared cell metadata aligned to ALL queried cells, indexed by uid.
+        Shared obs metadata aligned to ALL queried rows, indexed by uid.
     mod
         Per-modality data keyed by pointer-field attribute name (``field_name``).
-        Each value contains only the cells where ``present[field_name]`` is True.
+        Each value contains only the rows where ``present[field_name]`` is True.
     present
-        Boolean masks of shape ``(n_cells,)`` indicating which cells have
+        Boolean masks of shape ``(n_rows,)`` indicating which rows have
         each modality, keyed by ``field_name``.
     """
 
@@ -41,8 +41,8 @@ class MultimodalResult:
     present: dict[str, np.ndarray] = field(default_factory=dict)
 
     @property
-    def n_cells(self) -> int:
-        """Total number of cells across all modalities."""
+    def n_rows(self) -> int:
+        """Total number of rows across all modalities."""
         return len(self.obs)
 
     def __getitem__(self, field_name: str) -> "ad.AnnData | FragmentResult | np.ndarray":
@@ -56,7 +56,7 @@ class MultimodalResult:
 
         from homeobox.fragments.reconstruction import FragmentResult
 
-        lines = [f"MultimodalResult with {self.n_cells} cells, {len(self.mod)} modalities:"]
+        lines = [f"MultimodalResult with {self.n_rows} rows, {len(self.mod)} modalities:"]
         for fs, data in self.mod.items():
             n_present = int(self.present[fs].sum())
             if isinstance(data, ad.AnnData):
@@ -64,7 +64,7 @@ class MultimodalResult:
                 type_str = "AnnData"
             elif isinstance(data, FragmentResult):
                 n_frags = int(data.offsets[-1]) if len(data.offsets) > 0 else 0
-                shape_str = f"{n_present} cells, {n_frags:,} fragments"
+                shape_str = f"{n_present} rows, {n_frags:,} fragments"
                 type_str = "FragmentResult"
             elif isinstance(data, np.ndarray):
                 shape_str = " x ".join(str(d) for d in data.shape)
@@ -73,7 +73,7 @@ class MultimodalResult:
                 shape_str = str(type(data).__name__)
                 type_str = type(data).__name__
             lines.append(
-                f"  {fs}: {type_str} ({shape_str}), {n_present}/{self.n_cells} cells present"
+                f"  {fs}: {type_str} ({shape_str}), {n_present}/{self.n_rows} rows present"
             )
         return "\n".join(lines)
 

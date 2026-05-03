@@ -233,7 +233,7 @@ class FeatureSpaceSpec(BaseModel):
 
     Pairs a feature space name + reconstructor with the zarr layout(s)
     that materialise it on disk. ``zarr_group_spec`` describes the
-    primary (cell-oriented) layout; the optional ``feature_oriented``
+    primary (obs-oriented) layout; the optional ``feature_oriented``
     spec describes a parallel feature-oriented copy (e.g. CSC alongside
     CSR) used to accelerate feature-filtered queries.
     """
