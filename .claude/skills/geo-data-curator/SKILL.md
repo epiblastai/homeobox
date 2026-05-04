@@ -256,7 +256,7 @@ dataset_record = DatasetSchema(
     dataset_uid=dataset_uid,
     zarr_group=dataset_uid,
     feature_space=feature_space,
-    n_cells=adata.n_obs,
+    n_rows=adata.n_obs,
     publication_uid=publication_uid,
     accession_database="GEO",
     accession_id=accession,
@@ -286,7 +286,7 @@ obs_df = pd.read_parquet(validated_obs_parquet_path)
 var_df = pl.read_csv(exp_dir / f"{feature_space}_standardized_var.csv")
 
 # Get matrix dimensions from annotation files
-n_cells = len(obs_df)
+n_rows = len(obs_df)
 n_features = len(var_df)
 
 dataset_uid = make_uid()
@@ -294,7 +294,7 @@ dataset_record = DatasetSchema(
     dataset_uid=dataset_uid,
     zarr_group=dataset_uid,
     feature_space=feature_space,
-    n_cells=n_cells,
+    n_rows=n_rows,
     publication_uid=publication_uid,
     accession_database="GEO",
     accession_id=accession,
@@ -313,7 +313,7 @@ n_ingested = add_coo_batch(
     feature_space=feature_space,
     zarr_layer="counts",
     dataset_record=dataset_record,
-    n_cells=n_cells,
+    n_rows=n_rows,
     n_features=n_features,
     # Optional: customize COO format (defaults match sciPlex: gene\tcell\tcount, 1-indexed)
     # separator="\t", gene_col=0, cell_col=1, value_col=2, one_indexed=True,
