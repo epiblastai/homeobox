@@ -63,8 +63,12 @@ class BatchAsyncArray(AsyncArray):
         return np.frombuffer(raw_bytes, dtype=self._native_dtype), lengths
 
     async def read_boxes(
-        self, min_corners: np.ndarray, max_corners: np.ndarray
-    ) -> list[np.ndarray]:
+        self,
+        min_corners: np.ndarray,
+        max_corners: np.ndarray,
+        *,
+        stack_uniform: bool = False,
+    ) -> list[np.ndarray] | np.ndarray:
         """Read a batch of N-D bounding boxes.
 
         Parameters
@@ -72,11 +76,14 @@ class BatchAsyncArray(AsyncArray):
         min_corners, max_corners : 2-D int64 arrays of shape ``(B, k)`` with
             ``1 <= k <= ndim``. Boxes may have different shapes. Trailing axes
             ``k..ndim-1`` are fully included.
+        stack_uniform
+            If True, require all crops to have the same full shape and return a
+            single stacked ndarray of shape ``(B, *crop_shape)``.
 
         Returns
         -------
-        List of ndarrays, one per box, each shaped as
-        ``(*box_shape_for_box, *trailing_shape)``.
+        A list of ndarrays, one per box, unless ``stack_uniform=True``. In that
+        case, returns a single stacked ndarray.
         """
         loop = asyncio.get_running_loop()
         raw_bytes, lengths, shapes = await loop.run_in_executor(
@@ -84,10 +91,16 @@ class BatchAsyncArray(AsyncArray):
             self._rust_reader.read_boxes,
             np.ascontiguousarray(min_corners, dtype=np.int64),
             np.ascontiguousarray(max_corners, dtype=np.int64),
+            stack_uniform,
         )
         flat = np.frombuffer(raw_bytes, dtype=self._native_dtype)
         lengths = np.asarray(lengths, dtype=np.intp)
         shapes = np.asarray(shapes, dtype=np.intp)
+
+        if stack_uniform:
+            if len(shapes) == 0:
+                return flat.reshape(0)
+            return flat.reshape((len(shapes), *tuple(int(d) for d in shapes[0])))
 
         crops = []
         offset = 0
@@ -133,6 +146,18 @@ class BatchArray(Array):
         """
         return sync(self._async_array.read_ranges(starts, ends))
 
-    def read_boxes(self, min_corners: np.ndarray, max_corners: np.ndarray) -> list[np.ndarray]:
+    def read_boxes(
+        self,
+        min_corners: np.ndarray,
+        max_corners: np.ndarray,
+        *,
+        stack_uniform: bool = False,
+    ) -> list[np.ndarray] | np.ndarray:
         """Synchronous wrapper around :meth:`BatchAsyncArray.read_boxes`."""
-        return sync(self._async_array.read_boxes(min_corners, max_corners))
+        return sync(
+            self._async_array.read_boxes(
+                min_corners,
+                max_corners,
+                stack_uniform=stack_uniform,
+            )
+        )

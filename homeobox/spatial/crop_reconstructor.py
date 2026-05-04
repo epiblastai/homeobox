@@ -72,7 +72,9 @@ class CropReconstructor:
         self,
         min_corners: np.ndarray,
         max_corners: np.ndarray,
-    ) -> list[np.ndarray]:
+        *,
+        stack_uniform: bool = False,
+    ) -> list[np.ndarray] | np.ndarray:
         min_corners = np.asarray(min_corners, dtype=np.int64)
         max_corners = np.asarray(max_corners, dtype=np.int64)
 
@@ -110,6 +112,14 @@ class CropReconstructor:
 
         b = int(min_corners.shape[0])
         if b == 0:
+            if stack_uniform and self._box_shape is not None:
+                return np.empty((0, *self._box_shape, *self._trailing_shape), dtype=self._dtype)
+            if stack_uniform:
+                return np.empty((0,), dtype=self._dtype)
             return []
 
-        return self._array.read_boxes(min_corners, max_corners)
+        return self._array.read_boxes(
+            min_corners,
+            max_corners,
+            stack_uniform=stack_uniform,
+        )

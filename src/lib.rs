@@ -421,6 +421,7 @@ impl RustBatchReader {
         min_corners: &[i64],
         max_corners: &[i64],
         k: usize,
+        stack_uniform: bool,
     ) -> Result<
         (
             Vec<StripRef>,
@@ -519,7 +520,29 @@ impl RustBatchReader {
             lengths.push(box_len);
         }
 
+        if stack_uniform {
+            let first_shape = &output_shapes[0];
+            for (b, out_shape) in output_shapes.iter().enumerate().skip(1) {
+                if out_shape != first_shape {
+                    return Err(format!(
+                        "stack_uniform=True requires identical crop shapes; box 0 shape {:?}, box {b} shape {:?}",
+                        output_shape_rows[0], output_shape_rows[b]
+                    ));
+                }
+            }
+        }
+
         let sc_strides = c_order_strides(subchunk_shape);
+        let uniform_out_strides = if stack_uniform {
+            Some(c_order_strides(&output_shapes[0]))
+        } else {
+            None
+        };
+        let uniform_box_bytes = if stack_uniform {
+            Some((lengths[0] as usize) * dtype_size)
+        } else {
+            None
+        };
 
         let mut strip_refs: Vec<StripRef> = Vec::new();
         let mut shard_subchunks: HashMap<Vec<u64>, Vec<usize>> = HashMap::new();
@@ -543,8 +566,18 @@ impl RustBatchReader {
             if lengths[b] == 0 {
                 continue;
             }
-            let out_strides = c_order_strides(out_shape);
-            let box_out_byte_base = output_byte_offsets[b];
+            let ragged_out_strides;
+            let out_strides = if let Some(strides) = uniform_out_strides.as_ref() {
+                strides
+            } else {
+                ragged_out_strides = c_order_strides(out_shape);
+                &ragged_out_strides
+            };
+            let box_out_byte_base = if let Some(box_bytes) = uniform_box_bytes {
+                b * box_bytes
+            } else {
+                output_byte_offsets[b]
+            };
             for a in 0..k {
                 box_lo[a] = min_corners[b * k + a] as u64;
                 box_hi[a] = max_corners[b * k + a] as u64;
@@ -1007,11 +1040,13 @@ impl RustBatchReader {
     /// ``(flat_data, lengths, shapes)`` where ``flat_data`` is the concatenated
     /// raw bytes for all crops in input order, ``lengths[b]`` is crop ``b``'s
     /// element count, and ``shapes[b]`` is crop ``b``'s full output shape.
+    #[pyo3(signature = (min_corners, max_corners, stack_uniform=false))]
     fn read_boxes<'py>(
         &self,
         py: Python<'py>,
         min_corners: &Bound<'py, PyArray2<i64>>,
         max_corners: &Bound<'py, PyArray2<i64>>,
+        stack_uniform: bool,
     ) -> PyResult<(Py<PyArray1<u8>>, Py<PyArray1<i64>>, Py<PyArray2<i64>>)> {
         let min_shape = min_corners.shape();
         let max_shape = max_corners.shape();
@@ -1032,7 +1067,7 @@ impl RustBatchReader {
             .map_err(|e| PyRuntimeError::new_err(format!("max_corners not contiguous: {e}")))?;
 
         let (strip_refs, shard_subchunks, total_bytes, lengths_vec, shapes_vec) = self
-            .map_boxes_to_subchunks(min_slice, max_slice, k)
+            .map_boxes_to_subchunks(min_slice, max_slice, k, stack_uniform)
             .map_err(PyRuntimeError::new_err)?;
 
         let runtime = self.runtime.clone();
