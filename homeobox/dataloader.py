@@ -32,7 +32,7 @@ import polars as pl
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
 from homeobox.batch_array import BatchAsyncArray
-from homeobox.group_reader import GroupReader
+from homeobox.group_reader import GroupReader, LayoutReader
 from homeobox.group_specs import PointerKind, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
@@ -81,18 +81,29 @@ def _build_sparse_group_readers(
     Resolves each group's remap and applies the optional feature filter.
     """
     group_readers: dict[str, GroupReader] = {}
+    layout_readers: dict[str, LayoutReader] = {}
     for zg in groups:
-        raw_remap = atlas.get_group_reader(zg, feature_space).get_remap()
-        effective_remap = (
-            _apply_wanted_globals_remap(raw_remap, wanted_globals_for_fs)
-            if wanted_globals_for_fs is not None
-            else raw_remap
-        )
+        atlas_group_reader = atlas.get_group_reader(zg, feature_space)
+        raw_layout_reader = atlas_group_reader.layout_reader
+        layout_uid = raw_layout_reader.layout_uid if raw_layout_reader is not None else None
+
+        layout_reader = layout_readers.get(layout_uid) if layout_uid is not None else None
+        if layout_reader is None:
+            raw_remap = atlas_group_reader.get_remap()
+            effective_remap = (
+                _apply_wanted_globals_remap(raw_remap, wanted_globals_for_fs)
+                if wanted_globals_for_fs is not None
+                else raw_remap
+            )
+            layout_reader = LayoutReader.from_remap(layout_uid=layout_uid, remap=effective_remap)
+            if layout_uid is not None:
+                layout_readers[layout_uid] = layout_reader
+
         group_readers[zg] = GroupReader.for_worker(
             zarr_group=zg,
             feature_space=feature_space,
             store=atlas.store,
-            remap=effective_remap,
+            layout_reader=layout_reader,
         )
     return group_readers
 
@@ -178,12 +189,14 @@ def _build_dense_modality_data(
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
+    # TODO: This is setup for image tiles, which have no var space
+    # If we try to load other dense modalities, like protein abundance
+    # we won't have remapping.
     group_readers: dict[str, GroupReader] = {
         zg: GroupReader.for_worker(
             zarr_group=zg,
             feature_space=fs,
             store=atlas.store,
-            remap=np.array([], dtype=np.int32),
         )
         for zg in groups
     }

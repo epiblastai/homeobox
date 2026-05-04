@@ -358,7 +358,7 @@ class TestReindexRegistry:
 
 class TestGroupReaderRemap:
     def test_cold_cache(self, tmp_path):
-        from homeobox.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader, LayoutReader
 
         uids = ["uid_a", "uid_b", "uid_c"]
         registry = _make_registry(tmp_path, uids)
@@ -378,16 +378,16 @@ class TestGroupReaderRemap:
             zarr_group="my_group",
             feature_space="gene_expression",
             store=store,
-            feature_layouts_table=table,
-            layout_uid=layout_uid,
+            layout_reader=LayoutReader(layout_uid=layout_uid, feature_layouts_table=table),
         )
         remap = gr.get_remap()
         # uid_c=2, uid_a=0, uid_b=1
         np.testing.assert_array_equal(remap, [2, 0, 1])
         assert remap.dtype == np.int32
+        assert not remap.flags.writeable
 
     def test_warm_cache(self, tmp_path):
-        from homeobox.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader, LayoutReader
 
         uids = ["uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids)
@@ -407,17 +407,93 @@ class TestGroupReaderRemap:
             zarr_group="my_group",
             feature_space="gene_expression",
             store=store,
-            feature_layouts_table=table,
-            layout_uid=layout_uid,
+            layout_reader=LayoutReader(layout_uid=layout_uid, feature_layouts_table=table),
         )
         remap1 = gr.get_remap()
         remap2 = gr.get_remap()
         # Same object (warm cache)
         assert remap1 is remap2
+        assert not remap1.flags.writeable
+
+    def test_shared_layout_reader_across_groups(self, tmp_path):
+        from homeobox.group_reader import GroupReader, LayoutReader
+
+        uids = ["uid_a", "uid_b"]
+        registry = _make_registry(tmp_path, uids)
+        table = _make_feature_layouts_table(tmp_path)
+
+        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        layout_uid, df = build_feature_layout_df(var_df, registry)
+        table.add(df)
+
+        import obstore
+
+        store = obstore.store.MemoryStore()
+        zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
+        zarr_root.create_group("group_1")
+        zarr_root.create_group("group_2")
+
+        layout_reader = LayoutReader(layout_uid=layout_uid, feature_layouts_table=table)
+        gr1 = GroupReader.from_atlas_root(
+            "group_1", "gene_expression", store, layout_reader=layout_reader
+        )
+        gr2 = GroupReader.from_atlas_root(
+            "group_2", "gene_expression", store, layout_reader=layout_reader
+        )
+
+        assert gr1.layout_reader is gr2.layout_reader
+        assert gr1.get_remap() is gr2.get_remap()
+        assert gr1.var_df is gr2.var_df
+
+    def test_layout_reader_shares_one_table_read(self, tmp_path):
+        """get_remap() and var_df share a single read of the feature layouts table."""
+        from homeobox.group_reader import LayoutReader
+
+        uids = ["uid_a", "uid_b"]
+        registry = _make_registry(tmp_path, uids)
+        table = _make_feature_layouts_table(tmp_path)
+
+        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        layout_uid, df = build_feature_layout_df(var_df, registry)
+        table.add(df)
+
+        layout_reader = LayoutReader(layout_uid=layout_uid, feature_layouts_table=table)
+        layout_reader.get_remap()
+        rows_after_remap = layout_reader._rows
+        _ = layout_reader.var_df
+        assert layout_reader._rows is rows_after_remap
+
+    def test_pickle_preserves_shared_layout_identity(self, tmp_path):
+        import pickle
+
+        import obstore
+
+        from homeobox.group_reader import GroupReader, LayoutReader
+
+        store_path = tmp_path / "pickle_zarr_store"
+        store_path.mkdir()
+        store = obstore.store.LocalStore(prefix=str(store_path))
+        remap = np.array([0, 1, 2], dtype=np.int32)
+        layout_reader = LayoutReader.from_remap("layout_1", remap)
+        readers = [
+            GroupReader.for_worker(
+                "group_1", "gene_expression", store, layout_reader=layout_reader
+            ),
+            GroupReader.for_worker(
+                "group_2", "gene_expression", store, layout_reader=layout_reader
+            ),
+        ]
+
+        loaded = pickle.loads(pickle.dumps(readers))
+
+        assert loaded[0].layout_reader is loaded[1].layout_reader
+        assert loaded[0].get_remap() is loaded[1].get_remap()
+        np.testing.assert_array_equal(loaded[0].get_remap(), remap)
+        assert not loaded[0].get_remap().flags.writeable
 
     def test_remap_load_once_ignores_table_mutations(self, tmp_path):
         """get_remap() is load-once: mutations to the table after first load are not seen."""
-        from homeobox.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader, LayoutReader
 
         uids = ["uid_a", "uid_b"]
         registry = _make_registry(tmp_path, uids)
@@ -437,8 +513,7 @@ class TestGroupReaderRemap:
             zarr_group="my_group",
             feature_space="gene_expression",
             store=store,
-            feature_layouts_table=table,
-            layout_uid=layout_uid,
+            layout_reader=LayoutReader(layout_uid=layout_uid, feature_layouts_table=table),
         )
         remap1 = gr.get_remap()
         np.testing.assert_array_equal(remap1, [0, 1])
@@ -460,15 +535,21 @@ class TestGroupReaderRemap:
     def test_worker_path_returns_frozen_remap(self, tmp_path):
         import obstore
 
-        from homeobox.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader, LayoutReader
 
         store = obstore.store.MemoryStore()
         remap = np.array([3, 1, 2], dtype=np.int32)
-        gr = GroupReader.for_worker("my_group", "gene_expression", store, remap)
+        gr = GroupReader.for_worker(
+            "my_group",
+            "gene_expression",
+            store,
+            layout_reader=LayoutReader.from_remap(None, remap),
+        )
 
         result = gr.get_remap()
         np.testing.assert_array_equal(result, remap)
         assert result is remap  # frozen — same object
+        assert not result.flags.writeable
 
     def test_has_csc_via_zarr(self, tmp_path):
         """has_csc validates the CSC subgroup against the spec's feature_oriented layout."""
@@ -480,17 +561,13 @@ class TestGroupReaderRemap:
         zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
         grp = zarr_root.create_group("my_group")
 
-        gr = GroupReader.for_worker(
-            "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
-        )
+        gr = GroupReader.for_worker("my_group", "gene_expression", store)
         assert not gr.has_csc
 
         # A partial CSC group (indptr only) does not satisfy the spec — still False.
         csc = grp.create_group("csc")
         csc.create_array("indptr", shape=(3,), dtype=np.int64)
-        gr_partial = GroupReader.for_worker(
-            "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
-        )
+        gr_partial = GroupReader.for_worker("my_group", "gene_expression", store)
         assert not gr_partial.has_csc
 
         # Populate the rest of the CSC layout: indices + layers/counts.
@@ -498,9 +575,7 @@ class TestGroupReaderRemap:
         layers_grp = csc.create_group("layers")
         layers_grp.create_array("counts", shape=(0,), dtype=np.uint32)
 
-        gr2 = GroupReader.for_worker(
-            "my_group", "gene_expression", store, np.array([0], dtype=np.int32)
-        )
+        gr2 = GroupReader.for_worker("my_group", "gene_expression", store)
         assert gr2.has_csc
 
     def test_get_csc_indptr(self, tmp_path):
@@ -516,9 +591,7 @@ class TestGroupReaderRemap:
         expected_indptr = np.array([0, 3, 7, 10], dtype=np.int64)
         csc.create_array("indptr", data=expected_indptr)
 
-        gr = GroupReader.for_worker(
-            "my_group", "gene_expression", store, np.array([0, 1, 2], dtype=np.int32)
-        )
+        gr = GroupReader.for_worker("my_group", "gene_expression", store)
         indptr = gr.get_csc_indptr()
         np.testing.assert_array_equal(indptr, expected_indptr)
         # Cached
