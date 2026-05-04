@@ -51,8 +51,8 @@ store = obstore.store.S3Store("s3://my-bucket/my-atlas/zarr")
 
 atlas = RaggedAtlas.create(
     db_uri="s3://my-bucket/my-atlas/lancedb",
-    cell_table_name="cells",
-    cell_schema=MyCellSchema,
+    obs_table_name="cells",
+    obs_schema=MyCellSchema,
     dataset_table_name="datasets",
     dataset_schema=DatasetSchema,
     store=store,
@@ -83,8 +83,8 @@ Any process that wants to add datasets calls `RaggedAtlas.open()`, which connect
 ```python
 atlas = RaggedAtlas.open(
     db_uri="s3://my-bucket/my-atlas/lancedb",
-    cell_table_name="cells",
-    cell_schema=MyCellSchema,
+    obs_table_name="cells",
+    obs_schema=MyCellSchema,
     dataset_table_name="datasets",
     store=store,
     registry_tables={"gene_expression": "gene_expression_registry"},
@@ -159,7 +159,7 @@ Under the hood, a snapshot record looks like this:
 ```python
 AtlasVersionRecord(
     version=0,
-    cell_table_name="cells",
+    obs_table_name="cells",
     cell_table_version=4,           # Lance version at time of snapshot
     dataset_table_name="datasets",
     dataset_table_version=2,
@@ -196,14 +196,14 @@ ValueError: Atlas validation failed — fix errors before snapshotting:
 atlas_v0 = RaggedAtlas.checkout(
     db_uri="s3://my-bucket/my-atlas/lancedb",
     version=0,
-    cell_schema=MyCellSchema,
+    obs_schema=MyCellSchema,
     store=store,
 )
 
 # Or just grab the latest snapshot
 atlas_latest = RaggedAtlas.checkout_latest(
     db_uri="s3://my-bucket/my-atlas/lancedb",
-    cell_schema=MyCellSchema,
+    obs_schema=MyCellSchema,
     store=store,
 )
 ```

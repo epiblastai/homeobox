@@ -121,8 +121,8 @@ store = obstore.store.LocalStore("/tmp/pbmc_atlas/arrays")
 
 atlas = RaggedAtlas.create(
     db_uri="/tmp/pbmc_atlas/db",
-    cell_table_name="cells",
-    cell_schema=CellSchema,
+    obs_table_name="cells",
+    obs_schema=CellSchema,
     dataset_table_name="datasets",
     dataset_schema=DatasetSchema,    # use a subclass to add provenance fields
     store=store,
@@ -206,7 +206,7 @@ print(f"snapshot v{v0}")  # snapshot v0
 atlas_r = RaggedAtlas.checkout_latest("/tmp/pbmc_atlas/db")
 ```
 
-Both `cell_schema` and `store` are optional — pointer fields are inferred from the cell table's Arrow schema and the store is reconstructed from the URI recorded at snapshot time. Pass them explicitly only when you need to override the defaults.
+Both `obs_schema` and `store` are optional — pointer fields are inferred from the cell table's Arrow schema and the store is reconstructed from the URI recorded at snapshot time. Pass them explicitly only when you need to override the defaults.
 
 Queries use a fluent builder. The `where` clause accepts any LanceDB SQL predicate against the cell table columns.
 
@@ -321,8 +321,8 @@ Use `RaggedAtlas.open()` when you want to continue ingesting into an atlas that 
 ```python
 atlas = RaggedAtlas.open(
     db_uri="/tmp/pbmc_atlas/db",
-    cell_table_name="cells",
-    cell_schema=CellSchema,
+    obs_table_name="cells",
+    obs_schema=CellSchema,
     dataset_table_name="datasets",
     store=store,
     # maps feature space name -> LanceDB table name (default: "{space}_registry")

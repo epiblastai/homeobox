@@ -2,11 +2,11 @@ import homeobox.builtins  # noqa: F401  # register built-in specs
 import homeobox.codecs.bitpacking  # noqa: F401  # register bitpacking codec
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
-    CellDataset,
     DenseBatch,
     MultimodalBatch,
-    MultimodalCellDataset,
+    MultimodalHoxDataset,
     SparseBatch,
+    UnimodalHoxDataset,
     dense_to_tensor_collate,
     make_loader,
     sparse_to_dense_collate,
@@ -32,8 +32,8 @@ __all__ = [
     "RaggedAtlas",
     "create_or_open_atlas",
     "AtlasQuery",
-    "CellDataset",
-    "MultimodalCellDataset",
+    "UnimodalHoxDataset",
+    "MultimodalHoxDataset",
     "SparseBatch",
     "DenseBatch",
     "MultimodalBatch",

@@ -129,15 +129,15 @@ def _derive_store_from_db_uri(db_uri: str, **store_kwargs) -> obstore.store.Obje
 class RaggedAtlas:
     """Main entry point for reading and writing homeobox atlases.
 
-    The atlas is backed by a LanceDB database (cell table + feature registries)
+    The atlas is backed by a LanceDB database (obs table + feature registries)
     and a zarr-compatible object store for array data.
     """
 
     def __init__(
         self,
         db: lancedb.DBConnection,
-        cell_table: lancedb.table.Table,
-        cell_schema: type[HoxBaseSchema] | None,
+        obs_table: lancedb.table.Table,
+        obs_schema: type[HoxBaseSchema] | None,
         root: zarr.Group,
         registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
@@ -149,8 +149,8 @@ class RaggedAtlas:
         # directly, use create, open or checkout classmethods instead.
         self.db = db
         self._db_uri = db.uri
-        self.cell_table = cell_table
-        self._cell_schema = cell_schema
+        self.obs_table = obs_table
+        self._obs_schema = obs_schema
         self._root = root
         self._store = root.store.store
         # Pointer fields are keyed by the Python attribute name on the schema
@@ -158,10 +158,10 @@ class RaggedAtlas:
         # share the same ``feature_space`` when a schema declares several
         # columns in the same modality.
         self._pointer_fields: dict[str, PointerField]
-        if cell_schema is not None:
-            self._pointer_fields = _extract_pointer_fields(cell_schema)
+        if obs_schema is not None:
+            self._pointer_fields = _extract_pointer_fields(obs_schema)
         else:
-            self._pointer_fields = _infer_pointer_fields_from_arrow(cell_table.schema)
+            self._pointer_fields = _infer_pointer_fields_from_arrow(obs_table.schema)
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
@@ -180,8 +180,8 @@ class RaggedAtlas:
     def create(
         cls,
         db_uri: str,
-        cell_table_name: str,
-        cell_schema: type[HoxBaseSchema],
+        obs_table_name: str,
+        obs_schema: type[HoxBaseSchema],
         dataset_table_name: str,
         dataset_schema: type[DatasetSchema],
         *,
@@ -196,9 +196,9 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI (local path or remote).
-        cell_table_name:
-            Name for the cell table.
-        cell_schema:
+        obs_table_name:
+            Name for the obs table.
+        obs_schema:
             A :class:`HoxBaseSchema` subclass declaring the pointer fields.
         dataset_table_name:
             Name for the dataset metadata table.
@@ -217,7 +217,7 @@ class RaggedAtlas:
         """
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
-        cell_table = db.create_table(cell_table_name, schema=cell_schema)
+        obs_table = db.create_table(obs_table_name, schema=obs_schema)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
         registry_tables: dict[str, lancedb.table.Table] = {}
@@ -235,8 +235,8 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            cell_table=cell_table,
-            cell_schema=cell_schema,
+            obs_table=obs_table,
+            obs_schema=obs_schema,
             root=root,
             registry_tables=registry_tables,
             dataset_table=dataset_table,
@@ -248,8 +248,8 @@ class RaggedAtlas:
     def open(
         cls,
         db_uri: str,
-        cell_table_name: str,
-        cell_schema: type[HoxBaseSchema] | None = None,
+        obs_table_name: str,
+        obs_schema: type[HoxBaseSchema] | None = None,
         dataset_table_name: str = "datasets",
         *,
         store: obstore.store.ObjectStore,
@@ -263,11 +263,11 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI.
-        cell_table_name:
-            Name of the cell table.
-        cell_schema:
+        obs_table_name:
+            Name of the obs table.
+        obs_schema:
             The schema class.  If ``None``, pointer fields are inferred
-            from the cell table's Arrow schema (sufficient for read-only use).
+            from the obs table's Arrow schema (sufficient for read-only use).
         dataset_table_name:
             Name of the dataset metadata table.
         store:
@@ -284,7 +284,7 @@ class RaggedAtlas:
         """
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
-        cell_table = db.open_table(cell_table_name)
+        obs_table = db.open_table(obs_table_name)
         dataset_table = db.open_table(dataset_table_name)
 
         if registry_tables is None:
@@ -312,8 +312,8 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            cell_table=cell_table,
-            cell_schema=cell_schema,
+            obs_table=obs_table,
+            obs_schema=obs_schema,
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
@@ -385,7 +385,7 @@ class RaggedAtlas:
                 lines.append(f"    {field.name}: {field.type}")
 
         lines.append("Atlas tables:")
-        _fmt_table("Cell table", self.cell_table)
+        _fmt_table("Obs table", self.obs_table)
         _fmt_table("Dataset table", self._dataset_table)
         for fs, reg_table in sorted(self._registry_tables.items()):
             _fmt_table(f"Registry [{fs}]", reg_table)
@@ -397,13 +397,13 @@ class RaggedAtlas:
     # -- Public accessors ---------------------------------------------------
 
     @property
-    def cell_schema(self) -> type[HoxBaseSchema] | None:
-        """Cell schema class, or ``None`` if the atlas was opened without one."""
-        return self._cell_schema
+    def obs_schema(self) -> type[HoxBaseSchema] | None:
+        """Obs schema class, or ``None`` if the atlas was opened without one."""
+        return self._obs_schema
 
     @property
     def pointer_fields(self) -> dict[str, PointerField]:
-        """Pointer fields declared on the cell schema, keyed by field name."""
+        """Pointer fields declared on the obs schema, keyed by field name."""
         return self._pointer_fields
 
     @property
@@ -594,14 +594,14 @@ class RaggedAtlas:
     def optimize(self) -> None:
         """Compact tables and reindex feature registries.
 
-        Calls ``table.optimize()`` on the cell, dataset, and registry tables
+        Calls ``table.optimize()`` on the obs, dataset, and registry tables
         to compact small Lance fragments, then assigns ``global_index`` to any
         unindexed registry features via
         :func:`~homeobox.feature_layouts.reindex_registry`, and propagates
         updated indices to ``_feature_layouts`` via
         :func:`~homeobox.feature_layouts.sync_layouts_global_index`.
         """
-        self.cell_table.optimize()
+        self.obs_table.optimize()
         self._dataset_table.optimize()
         self._deduplicate_new_rows(
             self._feature_layouts_table, subset=["layout_uid", "feature_uid"]
@@ -907,14 +907,14 @@ class RaggedAtlas:
 
         record = AtlasVersionRecord(
             version=next_version,
-            cell_table_name=self.cell_table.name,
-            cell_table_version=self.cell_table.version,
+            obs_table_name=self.obs_table.name,
+            obs_table_version=self.obs_table.version,
             dataset_table_name=self._dataset_table.name,
             dataset_table_version=self._dataset_table.version,
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
             feature_layouts_table_version=self._feature_layouts_table.version,
-            total_cells=self.cell_table.count_rows(),
+            total_rows=self.obs_table.count_rows(),
         )
         self._version_table.add([record])
         return next_version
@@ -950,7 +950,7 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         version: int,
-        cell_schema: type[HoxBaseSchema] | None = None,
+        obs_schema: type[HoxBaseSchema] | None = None,
         store: obstore.store.ObjectStore | None = None,
         *,
         store_kwargs: dict | None = None,
@@ -964,9 +964,9 @@ class RaggedAtlas:
             LanceDB connection URI.
         version:
             Atlas version number (as returned by :meth:`snapshot`).
-        cell_schema:
+        obs_schema:
             The schema class used when the atlas was created.  If ``None``,
-            pointer fields are inferred from the cell table's Arrow schema.
+            pointer fields are inferred from the obs table's Arrow schema.
         store:
             An obstore ObjectStore for zarr I/O.  If ``None``, constructed
             from ``db_uri`` using the ``{atlas_root}/zarr_store`` convention.
@@ -993,8 +993,8 @@ class RaggedAtlas:
         if store is None:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
-        cell_table = db.open_table(row["cell_table_name"])
-        cell_table.checkout(row["cell_table_version"])
+        obs_table = db.open_table(row["obs_table_name"])
+        obs_table.checkout(row["obs_table_version"])
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1014,8 +1014,8 @@ class RaggedAtlas:
 
         atlas = cls(
             db=db,
-            cell_table=cell_table,
-            cell_schema=cell_schema,
+            obs_table=obs_table,
+            obs_schema=obs_schema,
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
@@ -1030,7 +1030,7 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         version: int,
-        cell_schema: type[HoxBaseSchema] | None = None,
+        obs_schema: type[HoxBaseSchema] | None = None,
         store: obstore.store.ObjectStore | None = None,
         *,
         store_kwargs: dict | None = None,
@@ -1038,7 +1038,7 @@ class RaggedAtlas:
     ) -> "RaggedAtlas":
         """Restore all tables to a previous snapshot and return a writable atlas.
 
-        Each managed table (cells, datasets, registries, feature layouts) is
+        Each managed table (obs, datasets, registries, feature layouts) is
         restored to its version at the given snapshot. This creates new Lance
         table versions whose data matches the snapshot — no data is deleted,
         but subsequent reads see only the restored state.
@@ -1052,9 +1052,9 @@ class RaggedAtlas:
             LanceDB connection URI.
         version:
             Atlas version number to restore to (as returned by :meth:`snapshot`).
-        cell_schema:
+        obs_schema:
             The schema class used when the atlas was created.  If ``None``,
-            pointer fields are inferred from the cell table's Arrow schema.
+            pointer fields are inferred from the obs table's Arrow schema.
         store:
             An obstore ObjectStore for zarr I/O.  If ``None``, constructed
             from ``db_uri`` using the ``{atlas_root}/zarr_store`` convention.
@@ -1081,9 +1081,9 @@ class RaggedAtlas:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
         # Restore each table to its snapshot version
-        cell_table = db.open_table(row["cell_table_name"])
-        cell_table.checkout(row["cell_table_version"])
-        cell_table.restore()
+        obs_table = db.open_table(row["obs_table_name"])
+        obs_table.checkout(row["obs_table_version"])
+        obs_table.restore()
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1106,8 +1106,8 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            cell_table=cell_table,
-            cell_schema=cell_schema,
+            obs_table=obs_table,
+            obs_schema=obs_schema,
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
@@ -1119,7 +1119,7 @@ class RaggedAtlas:
     def checkout_latest(
         cls,
         db_uri: str,
-        cell_schema: type[HoxBaseSchema] | None = None,
+        obs_schema: type[HoxBaseSchema] | None = None,
         store: obstore.store.ObjectStore | None = None,
         *,
         store_kwargs: dict | None = None,
@@ -1134,9 +1134,9 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI.
-        cell_schema:
+        obs_schema:
             The schema class used when the atlas was created.  If ``None``,
-            pointer fields are inferred from the cell table's Arrow schema.
+            pointer fields are inferred from the obs table's Arrow schema.
         store:
             An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
             from the version record or inferred from ``db_uri``.
@@ -1159,7 +1159,7 @@ class RaggedAtlas:
         return cls.checkout(
             db_uri,
             version=latest_version,
-            cell_schema=cell_schema,
+            obs_schema=obs_schema,
             store=store,
             store_kwargs=store_kwargs,
             version_table_name=version_table_name,
@@ -1173,8 +1173,8 @@ class RaggedAtlas:
 
 def create_or_open_atlas(
     atlas_path: str,
-    cell_table_name: str,
-    cell_schema: type[HoxBaseSchema],
+    obs_table_name: str,
+    obs_schema: type[HoxBaseSchema],
     dataset_table_name: str,
     dataset_schema: type[DatasetSchema],
     *,
@@ -1196,9 +1196,9 @@ def create_or_open_atlas(
     atlas_path:
         Root directory or URI for the atlas.  Local paths and ``s3://``
         URIs are both supported.
-    cell_table_name:
-        Name for the cell table.
-    cell_schema:
+    obs_table_name:
+        Name for the obs table.
+    obs_schema:
         A :class:`HoxBaseSchema` subclass declaring the pointer fields.
     dataset_table_name:
         Name for the dataset metadata table.
@@ -1229,7 +1229,7 @@ def create_or_open_atlas(
     db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
     existing_tables = set(db.list_tables().tables)
 
-    if cell_table_name in existing_tables:
+    if obs_table_name in existing_tables:
         # Explicitly pass registry table names so open() doesn't rely on
         # the datasets table (which may be empty for a freshly-initialised atlas).
         registry_tables = {
@@ -1237,8 +1237,8 @@ def create_or_open_atlas(
         }
         return RaggedAtlas.open(
             db_uri=db_uri,
-            cell_table_name=cell_table_name,
-            cell_schema=cell_schema,
+            obs_table_name=obs_table_name,
+            obs_schema=obs_schema,
             dataset_table_name=dataset_table_name,
             store=store,
             registry_tables=registry_tables,
@@ -1248,8 +1248,8 @@ def create_or_open_atlas(
     else:
         return RaggedAtlas.create(
             db_uri=db_uri,
-            cell_table_name=cell_table_name,
-            cell_schema=cell_schema,
+            obs_table_name=obs_table_name,
+            obs_schema=obs_schema,
             dataset_table_name=dataset_table_name,
             dataset_schema=dataset_schema,
             store=store,

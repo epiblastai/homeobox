@@ -96,8 +96,8 @@ def _build_cell_arrow_table(
     the dict are zero-filled.
     """
     n_cells = len(obs_df)
-    arrow_schema = atlas.cell_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas.cell_schema)
+    arrow_schema = atlas.obs_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(atlas.obs_schema)
 
     columns: dict[str, pa.Array] = {
         "uid": pa.array([make_uid() for _ in range(n_cells)], type=pa.string()),
@@ -189,7 +189,7 @@ def add_multimodal_batch(
     int
         Number of cells ingested.
     """
-    if atlas.cell_schema is None:
+    if atlas.obs_schema is None:
         raise ValueError("Cannot ingest data into an atlas opened without a cell schema.")
 
     if set(modalities.keys()) != set(dataset_records.keys()):
@@ -211,7 +211,7 @@ def add_multimodal_batch(
         if adata.n_obs != n_cells:
             raise ValueError(f"Modality '{field_name}' has {adata.n_obs} cells, expected {n_cells}")
 
-    obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
+    obs_errors = validate_obs_columns(obs_df, atlas.obs_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
@@ -324,7 +324,7 @@ def add_fragment_batch(
     if (bed_path is None) == (fragments is None):
         raise ValueError("Exactly one of bed_path or fragments must be provided.")
 
-    if atlas.cell_schema is None:
+    if atlas.obs_schema is None:
         raise ValueError("Cannot ingest data into an atlas opened without a cell schema.")
 
     if field_name not in atlas.pointer_fields:
@@ -366,7 +366,7 @@ def add_fragment_batch(
     obs_df = obs_df.loc[cell_ids]
     n_cells = len(cell_ids)
 
-    obs_errors = validate_obs_columns(obs_df, atlas.cell_schema)
+    obs_errors = validate_obs_columns(obs_df, atlas.obs_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 

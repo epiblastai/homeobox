@@ -1,7 +1,7 @@
 # homeobox
 Designed for building heterogeneous biomedical data atlases for interactive analysis and ML training.
 
-Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
+Metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
 
 - **[Documentation](https://epiblastai.github.io/homeobox/)**
 
@@ -35,7 +35,7 @@ maturin develop --release
 
 Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
-Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group.
+Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every row carries a pointer into its group.
 
 ```
 Cell table (shared)                Zarr (per-dataset)
@@ -71,8 +71,8 @@ atlas_dir = "./hox_example_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    cell_table_name="cells",
-    cell_schema=CellSchema,
+    obs_table_name="cells",
+    obs_schema=CellSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
@@ -100,7 +100,7 @@ atlas.optimize()
 atlas.snapshot()
 
 # 6. Open the atlas and query
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=CellSchema)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=CellSchema)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
@@ -129,8 +129,8 @@ atlas_dir = "./hox_tile_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    cell_table_name="cells",
-    cell_schema=TileSchema,
+    obs_table_name="cells",
+    obs_schema=TileSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
     registry_schemas={},
@@ -164,13 +164,13 @@ rows = [
     )
     for i in range(n_cells)
 ]
-atlas.cell_table.add(rows)
+atlas.obs_table.add(rows)
 
 atlas.optimize()
 atlas.snapshot()
 
 # 6. Query tiles back as a raw 4D array + obs DataFrame.
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=TileSchema)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=TileSchema)
 tile_array, obs = atlas_r.query().to_array("image_tiles")
 print(tile_array.shape, tile_array.dtype)  # (128, 5, 96, 96) uint8
 ```
@@ -233,7 +233,7 @@ Benchmarked against TileDB-SOMA on a ~44M cell mouse atlas (CellxGene Census), r
 
 ### ML dataloader throughput
 
-`CellDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
+`UnimodalHoxDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
 
 ![Dataloader throughput: homeobox vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
 
@@ -294,7 +294,7 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 - **[Building an Atlas](docs/atlas.md)**: end-to-end walkthrough with two heterogeneous datasets.
 - **[Array Storage](docs/array_storage.md)**: `add_from_anndata` internals, BP-128 bitpacking, CSC column index for fast feature-filtered reads.
 - **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
-- **[PyTorch Data Loading](docs/dataloader.md)**: `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
+- **[PyTorch Data Loading](docs/dataloader.md)**: `UnimodalHoxDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
 - **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
 - **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetSchema`.
 - **[Full docs site](https://epiblastai.github.io/homeobox/)**

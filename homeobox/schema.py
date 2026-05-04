@@ -18,7 +18,7 @@ class SparseZarrPointer(LanceModel):
     zarr_group: str | None = None
     start: int | None = None
     end: int | None = None
-    zarr_row: int | None = None  # cell's 0-indexed position within this zarr group (for CSC lookup)
+    zarr_row: int | None = None  # 0-indexed position within this zarr group (for CSC lookup)
 
 
 class DenseZarrPointer(LanceModel):
@@ -65,7 +65,7 @@ def _stable_uid_identity_str(value: Any) -> str:
 class PointerField:
     """Runtime metadata for a single pointer field on a HoxBaseSchema subclass.
 
-    Decouples the cell-table column name from the feature_space it references,
+    Decouples the HoxBaseSchema table column name from the feature_space it references,
     so a schema can declare multiple columns in the same feature space (e.g.
     ``cycle1_image_tiles`` and ``cycle2_image_tiles``, both with
     ``feature_space="image_tiles"``).
@@ -337,7 +337,7 @@ class DatasetSchema(LanceModel):
     """Metadata for a single ingested dataset.
 
     ``zarr_group`` is the per-row primary key (unique per modality write).
-    ``dataset_uid`` is the logical dataset identifier referenced by ``CellIndex.dataset_uid``;
+    ``dataset_uid`` is the logical dataset identifier referenced by ``HoxBaseSchema.dataset_uid``;
     it is shared across rows that belong to the same multimodal batch (one row per
     feature space).
     """
@@ -345,7 +345,7 @@ class DatasetSchema(LanceModel):
     dataset_uid: str = Field(default_factory=make_uid)
     zarr_group: str
     feature_space: str  # FeatureSpace value
-    n_cells: int
+    n_rows: int
     # TODO: Layout UID is updated automatically by add_or_reuse_layout. If a user forgets
     # to call that method during ingestion, this will break. add_or_reuse_layout should
     # probably be called automatically somewhere to avoid mistakes.
@@ -394,10 +394,10 @@ class AtlasVersionRecord(LanceModel):
     ----------
     version:
         Monotonically increasing snapshot version number.
-    cell_table_name:
-        Name of the cells Lance table.
-    cell_table_version:
-        Lance version of the cells table at snapshot time.
+    obs_table_name:
+        Name of the HoxBaseSchema Lance table.
+    obs_table_version:
+        Lance version of the HoxBaseSchema table at snapshot time.
     dataset_table_name:
         Name of the datasets Lance table.
     dataset_table_version:
@@ -408,21 +408,21 @@ class AtlasVersionRecord(LanceModel):
         JSON-encoded mapping of ``{feature_space: version_int}`` for feature registries.
     feature_layouts_table_version:
         Lance version of the ``_feature_layouts`` table at snapshot time.
-    total_cells:
-        Total number of cells across all datasets at snapshot time.
+    total_rows:
+        Total number of rows across all datasets at snapshot time.
     created_at:
         ISO-8601 UTC timestamp of when the snapshot was created.
     """
 
     version: int
-    cell_table_name: str
-    cell_table_version: int
+    obs_table_name: str
+    obs_table_version: int
     dataset_table_name: str
     dataset_table_version: int
     registry_table_names: str
     registry_table_versions: str
     feature_layouts_table_version: int
-    total_cells: int
+    total_rows: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )
