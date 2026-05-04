@@ -20,7 +20,6 @@ from homeobox.schema import (
     StableUIDField,
     make_uid,
 )
-from homeobox.standardization.perturbations import GeneticPerturbationType
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -34,6 +33,19 @@ class FeatureType(str, Enum):
     TRANSCRIPT = "transcript"
     EXON = "exon"
     PROBE = "probe"
+    OTHER = "other"
+
+
+class GeneticPerturbationType(str, Enum):
+    """The class of genetic perturbation reagent."""
+
+    CRISPR_KO = "CRISPRko"
+    CRISPR_I = "CRISPRi"
+    CRISPR_A = "CRISPRa"
+    SI_RNA = "siRNA"
+    SH_RNA = "shRNA"
+    ASO = "ASO"
+    OVEREXPRESSION = "overexpression"
     OTHER = "other"
 
 
