@@ -654,6 +654,16 @@ async def _take_group_dense(
     return out if out.dtype == dtype else out.astype(dtype)
 
 
+# TODO: Consolidate with _take_discrete_spatial_from_pointers. Both paths now
+# route through read_boxes; dense is a strict subset (rank-1 box per row,
+# stack_uniform=True). Wrinkles to resolve before merging:
+#   - stack_dense=False here means "per-group uniform, cross-group ragged"
+#     (one shape per group); for discrete-spatial it means "per-row ragged".
+#     A unified path treats the dense case as a degenerate ragged case.
+#   - Empty-batch shape: dense knows per_row_shape and returns a (0, *shape)
+#     ndarray; discrete-spatial returns []. Pick one contract.
+#   - Drop the legacy float32 cast for the 2-D dense (per_row_shape is None)
+#     sub-case, or push it to the caller.
 async def _take_dense_from_pointers(
     groups_np: np.ndarray,
     starts: np.ndarray,
