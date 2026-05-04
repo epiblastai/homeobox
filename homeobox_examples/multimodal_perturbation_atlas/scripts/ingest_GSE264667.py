@@ -63,8 +63,8 @@ store = obstore.store.LocalStore(str(zarr_path))
 
 atlas = RaggedAtlas.create(
     db_uri=db_uri,
-    cell_table_name="cells",
-    cell_schema=CellIndex,
+    obs_table_name="cells",
+    obs_schema=CellIndex,
     dataset_table_name="datasets",
     dataset_schema=DatasetSchema,
     store=store,

@@ -38,8 +38,7 @@ def _(mo):
     3. Working with **ragged feature spaces** (union vs. intersection joins)
     4. Feature selection via registry lookup
     5. AnnData / batch reconstruction
-    6. ML training with `CellDataset` + `CellSampler`
-    7. Differential expression with `dex`
+    6. ML training with `CellDataset`
     """)
     return
 
@@ -66,31 +65,34 @@ def _():
     from homeobox.atlas import RaggedAtlas
     from homeobox.group_specs import (
         ArraySpec,
+        FeatureSpaceSpec,
         LayersSpec,
         PointerKind,
         ZarrGroupSpec,
         register_spec,
     )
-    from homeobox.reconstruction import SparseCSRReconstructor
+    from homeobox.reconstruction import SparseGeneExpressionReconstructor
 
-    GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
+    GENEFULL_EXPRESSION_SPEC = FeatureSpaceSpec(
         feature_space="genefull_expression",
         pointer_kind=PointerKind.SPARSE,
         has_var_df=True,
-        required_arrays=[
-            ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
-        ],
-        layers=LayersSpec(
-            prefix="csr",
-            match_shape_of="csr/indices",
-            required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32])],
-            allowed=[
-                ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32]),
-                ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.int32]),
-                ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.int32]),
+        reconstructor=SparseGeneExpressionReconstructor(),
+        zarr_group_spec=ZarrGroupSpec(
+            required_arrays=[
+                ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
             ],
+            layers=LayersSpec(
+                prefix="csr",
+                match_shape_of="csr/indices",
+                required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32])],
+                allowed=[
+                    ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.int32]),
+                    ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.int32]),
+                    ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.int32]),
+                ],
+            ),
         ),
-        reconstructor=SparseCSRReconstructor(),
     )
     register_spec(GENEFULL_EXPRESSION_SPEC)
     return RaggedAtlas, pl, tqdm
@@ -440,25 +442,23 @@ def _(atlas, sample_srx):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ## 6. ML training with `CellDataset` + `CellSampler`
+    ## 6. ML training with `CellDataset`
 
     homeobox provides a purpose-built dataloader pipeline for training on
     sparse single-cell data:
 
     ```
-    AtlasQuery → CellDataset + CellSampler → DataLoader → SparseBatch → collate_fn → GPU
+    AtlasQuery → CellDataset → DataLoader → SparseBatch → collate_fn → GPU
     ```
 
-    - **`CellDataset`** — a `torch.utils.data.Dataset` that maps cell
-      indices to sparse zarr reads. It owns no batching logic.
-    - **`CellSampler`** — a `torch.utils.data.Sampler` that plans which
-      cells go in each batch. It groups cells by zarr group for I/O
-      locality and bin-packs groups across DataLoader workers so each
-      worker warms a small, stable reader cache.
-    - **`make_loader`** — a convenience function that wires a dataset and
-      sampler into a standard `DataLoader` with the right collation.
-    - **`sparse_to_dense_collate`** — converts the list of `SparseBatch`
-      objects from the loader into a dense `(batch_size, n_features)` tensor.
+    - **`CellDataset`** — a map-style `torch.utils.data.Dataset` that
+      maps cell indices to sparse zarr reads. Exposes `__len__` so
+      PyTorch's built-in samplers can drive it.
+    - **`make_loader`** — wraps `torch.utils.data.DataLoader` with the
+      right defaults (`shuffle`, `batch_size`, `num_workers`,
+      identity collate, `multiprocessing_context="spawn"`).
+    - **`sparse_to_dense_collate`** — converts a `SparseBatch` from the
+      loader into a dense `(batch_size, n_features)` tensor.
     """)
     return
 
@@ -468,9 +468,8 @@ def _():
     import torch
 
     from homeobox.dataloader import make_loader, sparse_to_dense_collate
-    from homeobox.sampler import CellSampler
 
-    return CellSampler, make_loader, sparse_to_dense_collate, torch
+    return make_loader, sparse_to_dense_collate, torch
 
 
 @app.cell(hide_code=True)
@@ -504,59 +503,32 @@ def _(atlas):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md("""
-    ### Configure the `CellSampler`
+    ### Run one epoch
 
-    The sampler takes `dataset.groups_np` — an integer array that maps
-    each cell to its zarr group. At construction it bin-packs groups
-    across workers (largest-first greedy) so each worker touches a
-    minimal subset of zarr groups, keeping reader caches warm.
+    `make_loader` wraps the dataset in a standard
+    `torch.utils.data.DataLoader`. Pass `shuffle=True` for random
+    sampling each epoch (PyTorch's built-in `RandomSampler` does the
+    work). `drop_last=True` discards the trailing incomplete batch so
+    every batch has exactly `batch_size` cells.
 
-    `drop_last=True` discards the trailing incomplete batch so every
-    batch has exactly `batch_size` cells — convenient for fixed-size
-    GPU kernels.
+    Each iteration yields a `SparseBatch` which `sparse_to_dense_collate`
+    converts into a dense `(batch_size, n_features)` float32 tensor.
     """)
     return
 
 
 @app.cell
-def _(CellSampler, dataset):
+def _(dataset, make_loader, sparse_to_dense_collate, torch, tqdm):
     BATCH_SIZE = 1024
     NUM_WORKERS = 4  # 0 for in-process (notebook-friendly); use 4+ in real training
 
-    sampler = CellSampler(
-        dataset.groups_np,
+    loader = make_loader(
+        dataset,
         batch_size=BATCH_SIZE,
         shuffle=True,
-        seed=42,
-        num_workers=NUM_WORKERS,
         drop_last=True,
+        num_workers=NUM_WORKERS,
     )
-    print(f"Sampler: {len(sampler)} batches per epoch")
-    return (sampler,)
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ### Run one epoch
-
-    `make_loader` wires the dataset and sampler into a standard
-    `torch.utils.data.DataLoader`. Each iteration yields a list of
-    `SparseBatch` objects (one per cell in the batch), which
-    `sparse_to_dense_collate` stacks into a dense
-    `(batch_size, n_features)` float32 tensor.
-
-    Call `sampler.set_epoch(epoch)` before each epoch to get a fresh
-    shuffle while keeping reproducibility (the RNG seed is
-    `seed + epoch`).
-    """)
-    return
-
-
-@app.cell
-def _(dataset, make_loader, sampler, sparse_to_dense_collate, torch, tqdm):
-    sampler.set_epoch(0)
-    loader = make_loader(dataset, sampler)
 
     for batch_idx, batch in tqdm(enumerate(loader), total=len(loader)):
         result = sparse_to_dense_collate(batch)
@@ -586,135 +558,7 @@ def _(mo):
 
     That's the core training loop. In a real training script you'd wrap
     this in an epoch loop and feed `X` into your model.
-
-    homeobox also provides a `BalancedCellSampler` that draws equal cells
-    per category (e.g. cell type or dataset) each epoch — useful when
-    dataset sizes span orders of magnitude and you want more equal
-    representation during training.
     """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ## 7. Differential expression with `dex`
-
-    homeobox includes a built-in differential expression module that
-    compares two groups of cells directly from the atlas. It auto-dispatches
-    **Mann-Whitney U** or **Welch's t-test** on any feature space.
-
-    `dex()` follows the scanpy `rank_genes_groups` pattern: specify a
-    `groupby` column, a list of `target` group values, and a `control`
-    group value. It handles per-group loading, feature alignment,
-    normalization, and multiple-testing correction internally.
-    """)
-    return
-
-
-@app.cell
-def _():
-    from homeobox.dex import dex
-
-    return (dex,)
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ### Discover comparison groups
-
-    We look up datasets by tissue and pick one `dataset_uid` per tissue.
-    The cell table stores `dataset_uid`, so that's the column we group by.
-    """)
-    return
-
-
-@app.cell
-def _(datasets, pl):
-    tissue_datasets = (
-        datasets
-        .filter(pl.col("tissue").is_not_null())
-        .group_by("tissue")
-        .agg(
-            pl.col("uid").first().alias("dataset_uid"),
-            pl.col("n_cells").first().alias("n_cells"),
-        )
-        .sort("n_cells", descending=True)
-    )
-    tissue_datasets
-    return (tissue_datasets,)
-
-
-@app.cell
-def _(tissue_datasets):
-    target_uid = tissue_datasets["dataset_uid"][0]
-    control_uid = tissue_datasets["dataset_uid"][2]
-    target_tissue = tissue_datasets["tissue"][0]
-    control_tissue = tissue_datasets["tissue"][2]
-
-    print(f"Target:  {target_tissue} (dataset_uid={target_uid})")
-    print(f"Control: {control_tissue} (dataset_uid={control_uid})")
-    return control_tissue, control_uid, target_tissue, target_uid
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ### Run `dex()`
-
-    We compare cells from two datasets (one per tissue), grouping by
-    `dataset_uid` and limiting each side to 1 000 cells with
-    `max_records` so the demo runs quickly.
-    """)
-    return
-
-
-@app.cell
-def _(atlas, control_uid, dex, target_uid):
-    dex_result = dex(
-        atlas,
-        groupby="dataset_uid",
-        target=[target_uid],
-        control=control_uid,
-        feature_space="genefull_expression",
-        test="mwu",
-        max_records=1_000,
-    )
-    dex_result.sort("fdr")
-    return (dex_result,)
-
-
-@app.cell(hide_code=True)
-def _(control_tissue, dex_result, mo, pl, target_tissue):
-    _sig = dex_result.filter(pl.col("fdr") < 0.05).height
-    mo.md(f"""
-    **{target_tissue}** vs **{control_tissue}**: **{_sig:,}** significant
-    genes (FDR < 0.05) out of **{dex_result.height:,}** tested.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md("""
-    ### Top differentially expressed genes
-
-    The `feature` column contains internal UIDs. Use
-    `atlas.join_feature_metadata()` to bring in human-readable
-    gene names and Ensembl IDs from the feature registry.
-    """)
-    return
-
-
-@app.cell
-def _(atlas, dex_result):
-    dex_annotated = atlas.join_feature_metadata(
-        dex_result,
-        feature_space="genefull_expression",
-        columns=["gene_name", "gene_id"],
-    )
-    dex_annotated.sort("fdr").head(20)
     return
 
 

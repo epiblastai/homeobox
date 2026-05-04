@@ -36,7 +36,7 @@
 # 4. **Perturbation-aware queries** — gene targets, compounds, controls
 # 5. **Feature-oriented queries** — selecting specific genes or feature spaces
 # 6. **Reconstruction** — AnnData, MuData, and multimodal output
-# 7. **ML training** with `CellDataset` + `CellSampler`
+# 7. **ML training** with `CellDataset`
 # 8. **Chromatin accessibility** — ATAC-seq fragments and peak matrices
 # 9. **Cell Painting** — image tiles and dense feature arrays
 #
@@ -497,19 +497,18 @@ print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
 
 # %% [markdown]
 # ---
-# ## 7. ML training with `CellDataset` + `CellSampler`
+# ## 7. ML training with `CellDataset`
 #
 # homeobox provides a purpose-built PyTorch dataloader pipeline:
 #
 # ```
-# AtlasQuery -> CellDataset + CellSampler -> DataLoader -> SparseBatch -> collate_fn -> GPU
+# AtlasQuery -> CellDataset -> DataLoader -> SparseBatch -> collate_fn -> GPU
 # ```
 #
 # - **`CellDataset`** — map-style PyTorch dataset backed by zarr reads
-# - **`CellSampler`** — groups cells by zarr group for I/O locality,
-#   bin-packs groups across workers using greedy largest-first
-# - **`make_loader`** — wires them into a standard `DataLoader` with
-#   spawn multiprocessing
+# - **`make_loader`** — wraps it in a standard `DataLoader` with the
+#   right defaults (`shuffle`, `batch_size`, `num_workers`, spawn
+#   multiprocessing)
 # - **`sparse_to_dense_collate`** — converts sparse batches to dense
 #   float32 tensors
 
@@ -526,22 +525,19 @@ dataset = (
 print(f"CellDataset: {dataset.n_cells:,} cells, {dataset.n_features:,} features")
 
 # %%
+import torch  # noqa: E402
+
 BATCH_SIZE = 1024
 NUM_WORKERS = 0
 
-sampler = hox.CellSampler(
-    dataset.groups_np,
+loader = hox.make_loader(
+    dataset,
     batch_size=BATCH_SIZE,
     shuffle=True,
-    seed=42,
-    num_workers=NUM_WORKERS,
     drop_last=True,
+    num_workers=NUM_WORKERS,
+    generator=torch.Generator().manual_seed(42),
 )
-print(f"Sampler: {len(sampler)} batches per epoch")
-
-# %%
-sampler.set_epoch(0)
-loader = hox.make_loader(dataset, sampler)
 
 batch_idx = 0
 for batch in tqdm(loader):
@@ -732,20 +728,18 @@ tile_dataset = (
 )
 print(
     f"TileDataset: {tile_dataset.n_cells:,} cells, "
-    f"per_cell_shape={tile_dataset.per_cell_shape}"
+    f"per_row_shape={tile_dataset.per_row_shape}"
 )
 
 # %%
-tile_sampler = hox.CellSampler(
-    tile_dataset.groups_np,
+tile_loader = hox.make_loader(
+    tile_dataset,
     batch_size=64,
     shuffle=True,
-    seed=42,
-    num_workers=0,
     drop_last=True,
+    num_workers=0,
+    generator=torch.Generator().manual_seed(42),
 )
-tile_sampler.set_epoch(0)
-tile_loader = hox.make_loader(tile_dataset, tile_sampler)
 
 for batch in tqdm(tile_loader):
     print(f"DenseBatch: data.shape={batch.data.shape}, dtype={batch.data.dtype}")
@@ -781,10 +775,10 @@ print(f"Torch tensor: shape={result['X'].shape}, dtype={result['X'].dtype}")
 # | Single modality | `.to_anndata()` |
 # | Multiple modalities | `.to_mudata()` or `.to_multimodal()` |
 # | Streaming batches | `.to_batches(batch_size=2048)` |
-# | PyTorch training | `.to_cell_dataset(...)` + `CellSampler` |
+# | PyTorch training | `.to_cell_dataset(...)` + `make_loader(...)` |
 # | ATAC-seq fragments | `.to_fragments()` |
 # | Dense arrays (images) | `.to_array(feature_space="image_tiles")` |
-# | Image tile training | `.to_cell_dataset("image_tiles")` + `CellSampler` |
+# | Image tile training | `.to_cell_dataset("image_tiles")` + `make_loader(...)` |
 #
 # For more details, see the [homeobox documentation](https://epiblastai.github.io/homeobox/).
 

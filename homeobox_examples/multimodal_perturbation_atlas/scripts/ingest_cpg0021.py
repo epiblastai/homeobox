@@ -90,8 +90,8 @@ del db_init
 
 atlas = RaggedAtlas.open(
     db_uri=db_uri,
-    cell_table_name="cells",
-    cell_schema=CellIndex,
+    obs_table_name="cells",
+    obs_schema=CellIndex,
     store=store,
     registry_tables={
         "gene_expression": "gene_expression_registry",

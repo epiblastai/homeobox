@@ -83,39 +83,6 @@ A cell that is absent for a modality still occupies a row in that modality's dat
 
 ---
 
-## Samplers
-
-Samplers control the order in which cells are batched. Both samplers implement PyTorch's `BatchSampler` interface, so they slot directly into `DataLoader` as `batch_sampler`. They also carry `num_workers`, which `make_loader` reads to configure the `DataLoader`.
-
-### `CellSampler`
-
-The default sampler. Cells in a homeobox atlas are stored in zarr arrays grouped by dataset of origin. Fetching cells that span many groups in a single batch forces the zarr reader to open many array handles and load many chunks, most of which will not be reused. `CellSampler` addresses this by bin-packing groups across workers using a greedy largest-first strategy, then interleaving batches so that consecutive batches assigned to the same worker draw from the same group. This maximises zarr chunk cache locality and reduces redundant reads.
-
-```python
-from homeobox.sampler import CellSampler
-
-sampler = CellSampler(
-    groups_np=dataset.groups_np,   # integer group ID per cell, from the dataset
-    batch_size=1024,
-    shuffle=True,
-    seed=42,
-    num_workers=4,
-)
-```
-
-`groups_np` is exposed directly by `CellDataset` and `MultimodalCellDataset` — you do not need to construct it manually.
-
-For epoch-reproducible shuffling, call `set_epoch` at the start of each epoch. The sampler derives its shuffle from `seed + epoch`, so the sequence is deterministic given the same seed but varies across epochs:
-
-```python
-for epoch in range(num_epochs):
-    sampler.set_epoch(epoch)
-    for batch in loader:
-        ...
-```
-
----
-
 ## Building the DataLoader
 
 `make_loader` wraps `torch.utils.data.DataLoader` with sensible defaults for homeobox datasets:
@@ -125,12 +92,22 @@ from homeobox.dataloader import make_loader, sparse_to_dense_collate
 
 loader = make_loader(
     dataset,
-    sampler,
+    batch_size=1024,
+    shuffle=True,
+    num_workers=4,
     collate_fn=sparse_to_dense_collate,
 )
 ```
 
-`make_loader` sets `num_workers` from `sampler.num_workers`, passes `sampler` as `batch_sampler`, sets `multiprocessing_context="spawn"`, and uses an identity collate function by default (since `__getitems__` already returns an assembled batch object). Pass `collate_fn` to override the collation step. Any additional keyword arguments are forwarded to `DataLoader`.
+By default, `make_loader` uses PyTorch's automatic `BatchSampler` driven by `shuffle` + `batch_size`, so each call to `dataset.__getitems__(indices)` yields one batch. When `num_workers > 0`, `multiprocessing_context="spawn"` is set automatically. The default collate function is identity (since `__getitems__` already returns an assembled batch object); pass `collate_fn` to override. Any additional keyword arguments are forwarded to `DataLoader`.
+
+For full control over batch composition (custom balancing, group-locality, or curriculum schedules), pass a `batch_sampler` keyword:
+
+```python
+loader = make_loader(dataset, batch_sampler=my_custom_sampler, num_workers=4)
+```
+
+`shuffle`, `batch_size`, and `drop_last` are ignored when `batch_sampler` is set (PyTorch's requirement).
 
 ---
 
@@ -145,7 +122,8 @@ Scatters CSR sparse data into a dense `float32` tensor. This is the right defaul
 ```python
 from homeobox.dataloader import sparse_to_dense_collate
 
-loader = make_loader(dataset, sampler, collate_fn=sparse_to_dense_collate)
+loader = make_loader(dataset, batch_size=1024, shuffle=True,
+                    num_workers=4, collate_fn=sparse_to_dense_collate)
 
 for batch in loader:
     X = batch["X"]          # torch.Tensor, shape (batch_size, n_features), float32
@@ -159,7 +137,8 @@ Returns a sparse CSR tensor rather than a dense one. Use this for models that na
 ```python
 from homeobox.dataloader import sparse_to_csr_collate
 
-loader = make_loader(dataset, sampler, collate_fn=sparse_to_csr_collate)
+loader = make_loader(dataset, batch_size=1024, shuffle=True,
+                    num_workers=4, collate_fn=sparse_to_csr_collate)
 
 for batch in loader:
     X = batch["X"]  # torch.sparse_csr_tensor, shape (batch_size, n_features)
@@ -172,7 +151,8 @@ Converts a `MultimodalBatch` to a nested dictionary of dense tensors plus presen
 ```python
 from homeobox.dataloader import multimodal_to_dense_collate
 
-loader = make_loader(multimodal_dataset, sampler, collate_fn=multimodal_to_dense_collate)
+loader = make_loader(multimodal_dataset, batch_size=1024, shuffle=True,
+                    num_workers=4, collate_fn=multimodal_to_dense_collate)
 
 for batch in loader:
     rna = batch["gene_expression"]["X"]        # (n_cells, n_rna_features), float32
@@ -188,7 +168,6 @@ for batch in loader:
 ```python
 import torch
 from homeobox.atlas import RaggedAtlas
-from homeobox.sampler import CellSampler
 from homeobox.dataloader import make_loader, sparse_to_dense_collate
 
 # Open a checked-out atlas
@@ -205,23 +184,19 @@ dataset = (
     )
 )
 
-# Construct the sampler
-sampler = CellSampler(
-    groups_np=dataset.groups_np,
+# Build the DataLoader
+loader = make_loader(
+    dataset,
     batch_size=1024,
     shuffle=True,
-    seed=0,
     num_workers=4,
+    collate_fn=sparse_to_dense_collate,
 )
-
-# Build the DataLoader
-loader = make_loader(dataset, sampler, collate_fn=sparse_to_dense_collate)
 
 model = MyModel(n_features=dataset.n_features)
 optimizer = torch.optim.Adam(model.parameters())
 
 for epoch in range(10):
-    sampler.set_epoch(epoch)
     for batch in loader:
         X = batch["X"].to("cuda")
         loss = model(X)
@@ -246,5 +221,4 @@ from homeobox.dataloader import (
     multimodal_to_dense_collate,
     make_loader,
 )
-from homeobox.sampler import CellSampler
 ```

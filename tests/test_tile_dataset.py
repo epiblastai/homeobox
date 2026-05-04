@@ -1,4 +1,4 @@
-"""Tests for CellDataset with image_tiles (dense N-D arrays)."""
+"""Tests for UnimodalHoxDataset with image_tiles (dense N-D arrays)."""
 
 import os
 
@@ -12,10 +12,10 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.dataloader import (
     DenseBatch,
     dense_to_tensor_collate,
+    multimodal_to_dense_collate,
 )
-from homeobox.sampler import CellSampler
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     HoxBaseSchema,
     PointerField,
@@ -45,7 +45,14 @@ def _write_image_tiles_zarr(group: zarr.Group, tiles: np.ndarray) -> None:
     group.create_array("data", data=tiles, chunks=chunk_shape, shards=shard_shape)
 
 
-def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, w=8):
+def _make_tile_atlas(
+    tmp_path,
+    n_cells_per_group: list[int],
+    n_channels=3,
+    h=8,
+    w=8,
+    tile_shapes: list[tuple[int, int, int]] | None = None,
+):
     """Create an atlas with image_tiles data across multiple zarr groups."""
     atlas_dir = str(tmp_path / "atlas")
     os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
@@ -53,12 +60,12 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
 
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        cell_table_name="cells",
-        cell_schema=TileCellSchema,
+        obs_table_name="cells",
+        obs_schema=TileCellSchema,
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
 
     rng = np.random.default_rng(42)
@@ -67,9 +74,17 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
 
     for group_idx, n_cells in enumerate(n_cells_per_group):
         group_uid = f"ds{group_idx}/image_tiles"
+        group_n_channels, group_h, group_w = (
+            tile_shapes[group_idx] if tile_shapes is not None else (n_channels, h, w)
+        )
 
         # Generate random tile data
-        tiles = rng.integers(0, 65535, size=(n_cells, n_channels, h, w), dtype=np.uint16)
+        tiles = rng.integers(
+            0,
+            65535,
+            size=(n_cells, group_n_channels, group_h, group_w),
+            dtype=np.uint16,
+        )
         all_tiles.append((group_uid, tiles))
 
         # Write zarr
@@ -78,12 +93,12 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
 
         # Write dataset record
         ds_uid = make_uid()
-        ds = DatasetRecord(
+        ds = DatasetSchema(
             zarr_group=group_uid,
             feature_space="image_tiles",
-            n_cells=n_cells,
+            n_rows=n_cells,
         )
-        ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetRecord.to_arrow_schema())
+        ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
         atlas._dataset_table.add(ds_arrow)
 
         # Build cell records with tile pointers
@@ -104,7 +119,7 @@ def _make_tile_atlas(tmp_path, n_cells_per_group: list[int], n_channels=3, h=8, 
         }
 
         table = pa.table(columns, schema=arrow_schema)
-        atlas.cell_table.add(table)
+        atlas.obs_table.add(table)
 
     atlas.snapshot()
     atlas = RaggedAtlas.checkout_latest(atlas_dir, TileCellSchema, store=store)
@@ -130,56 +145,70 @@ def two_group_tile_atlas(tmp_path):
     return atlas, all_tiles
 
 
+@pytest.fixture
+def variable_shape_tile_atlas(tmp_path):
+    """Atlas with two zarr groups whose tiles have different H/W."""
+    atlas, all_tiles = _make_tile_atlas(
+        tmp_path,
+        [4, 3],
+        tile_shapes=[(3, 8, 8), (3, 10, 6)],
+    )
+    return atlas, all_tiles
+
+
 # ---------------------------------------------------------------------------
-# Tests: CellDataset with tiles
+# Tests: UnimodalHoxDataset with tiles
 # ---------------------------------------------------------------------------
 
 
 def test_tile_dataset_shapes(single_group_tile_atlas):
-    """CellDataset returns DenseBatch with correct 4D shape for image_tiles."""
+    """UnimodalHoxDataset returns DenseBatch with correct 4D shape for image_tiles."""
     atlas, _ = single_group_tile_atlas
 
-    ds = atlas.query().to_cell_dataset("image_tiles")
+    ds = atlas.query().to_unimodal_dataset("image_tiles")
 
-    assert ds.n_cells == 10
-    assert ds.per_cell_shape == (3, 8, 8)
-    assert ds.n_features == 3 * 8 * 8  # product of per_cell_shape
+    assert ds.n_rows == 10
+    assert ds.per_row_shape == (3, 8, 8)
+    assert ds.n_features == 3 * 8 * 8  # product of per_row_shape
 
     batch = ds.__getitems__(list(range(10)))
     assert isinstance(batch, DenseBatch)
     assert batch.data.shape == (10, 3, 8, 8)
     assert batch.data.dtype == np.uint16
-    assert batch.per_cell_shape == (3, 8, 8)
+    assert batch.per_row_shape == (3, 8, 8)
     assert batch.n_features == 3 * 8 * 8
 
 
-def test_tile_dataset_with_sampler(two_group_tile_atlas):
-    """CellDataset + CellSampler works for tile data across multiple groups."""
+def test_tile_dataset_multi_group(two_group_tile_atlas):
+    """UnimodalHoxDataset yields DenseBatch for tile data across multiple groups."""
     atlas, _ = two_group_tile_atlas
 
-    ds = atlas.query().to_cell_dataset("image_tiles")
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
+    ds = atlas.query().to_unimodal_dataset("image_tiles")
 
-    assert ds.n_cells == 35
-    assert len(sampler) == 4  # ceil(35/10)
+    assert ds.n_rows == 35
+    assert len(ds) == 35
 
     total_cells = 0
-    for indices in sampler:
+    n_batches = 0
+    for start in range(0, ds.n_rows, 10):
+        indices = list(range(start, min(start + 10, ds.n_rows)))
         batch = ds.__getitems__(indices)
         assert isinstance(batch, DenseBatch)
         assert batch.data.ndim == 4
         assert batch.data.shape[1:] == (3, 8, 8)
         assert batch.data.dtype == np.uint16
         total_cells += batch.data.shape[0]
+        n_batches += 1
 
     assert total_cells == 35
+    assert n_batches == 4  # ceil(35/10)
 
 
 def test_tile_dataset_metadata(single_group_tile_atlas):
-    """CellDataset loads metadata alongside tile data."""
+    """UnimodalHoxDataset loads metadata alongside tile data."""
     atlas, _ = single_group_tile_atlas
 
-    ds = atlas.query().to_cell_dataset("image_tiles", metadata_columns=["cell_type"])
+    ds = atlas.query().to_unimodal_dataset("image_tiles", metadata_columns=["cell_type"])
     batch = ds.__getitems__(list(range(5)))
 
     assert isinstance(batch, DenseBatch)
@@ -189,12 +218,12 @@ def test_tile_dataset_metadata(single_group_tile_atlas):
 
 
 def test_tile_dataset_round_trip(single_group_tile_atlas):
-    """Data from CellDataset matches the original zarr data."""
+    """Data from UnimodalHoxDataset matches the original zarr data."""
     atlas, all_tiles = single_group_tile_atlas
     group_uid, original_tiles = all_tiles[0]
 
-    # Get tiles via CellDataset
-    ds = atlas.query().to_cell_dataset("image_tiles", metadata_columns=["uid"])
+    # Get tiles via UnimodalHoxDataset
+    ds = atlas.query().to_unimodal_dataset("image_tiles", metadata_columns=["uid"])
     batch = ds.__getitems__(list(range(10)))
 
     # Get tiles via query.to_array for comparison
@@ -204,7 +233,7 @@ def test_tile_dataset_round_trip(single_group_tile_atlas):
     assert tiles_ref.shape == original_tiles.shape
     np.testing.assert_array_equal(tiles_ref, original_tiles)
 
-    # CellDataset batch should match (order may differ due to lance ordering)
+    # UnimodalHoxDataset batch should match (order may differ due to lance ordering)
     assert batch.data.shape == original_tiles.shape
     # Compare sets of tiles (order-independent)
     batch_set = {tuple(batch.data[i].ravel()) for i in range(batch.data.shape[0])}
@@ -219,9 +248,8 @@ def test_tile_dataset_two_groups_round_trip(two_group_tile_atlas):
     # Collect all original tiles
     all_original = np.concatenate([tiles for _, tiles in all_tiles], axis=0)
 
-    ds = atlas.query().to_cell_dataset("image_tiles")
-    sampler = CellSampler(ds.groups_np, batch_size=100, shuffle=False, num_workers=1)
-    batch = ds.__getitems__(next(iter(sampler)))
+    ds = atlas.query().to_unimodal_dataset("image_tiles")
+    batch = ds.__getitems__(list(range(ds.n_rows)))
 
     assert batch.data.shape[0] == 35
     # Compare sets of tiles
@@ -230,12 +258,86 @@ def test_tile_dataset_two_groups_round_trip(two_group_tile_atlas):
     assert batch_set == ref_set
 
 
+def test_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas):
+    """List mode returns per-cell arrays when zarr groups have different tile shapes."""
+    atlas, all_tiles = variable_shape_tile_atlas
+
+    ds = atlas.query().to_unimodal_dataset("image_tiles", stack_dense=False)
+    batch = ds.__getitems__(list(range(7)))
+
+    assert isinstance(batch, DenseBatch)
+    assert isinstance(batch.data, list)
+    assert len(batch.data) == 7
+    assert {tile.shape for tile in batch.data} == {(3, 8, 8), (3, 10, 6)}
+    assert all(tile.dtype == np.uint16 for tile in batch.data)
+
+    batch_set = {tuple(tile.ravel()) for tile in batch.data}
+    ref_set = {tuple(tile.ravel()) for _, tiles in all_tiles for tile in tiles}
+    assert batch_set == ref_set
+
+
+def test_tile_dataset_variable_group_shapes_stacked_mode_raises(variable_shape_tile_atlas):
+    """Default stacked mode fails when a batch spans incompatible tile shapes."""
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_unimodal_dataset("image_tiles")
+
+    with pytest.raises(ValueError):
+        ds.__getitems__(list(range(7)))
+
+
+def test_dense_to_tensor_collate_handles_list_tiles(variable_shape_tile_atlas):
+    """dense_to_tensor_collate returns one tensor per cell for list-backed tiles."""
+    torch = pytest.importorskip("torch")
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_unimodal_dataset("image_tiles", stack_dense=False)
+    batch = ds.__getitems__(list(range(2)))
+
+    result = dense_to_tensor_collate(batch)
+    assert len(result["X"]) == 2
+    assert all(isinstance(tile, torch.Tensor) for tile in result["X"])
+    assert [tuple(tile.shape) for tile in result["X"]] == [(3, 8, 8), (3, 8, 8)]
+
+
+def test_multimodal_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas):
+    """Multimodal datasets can opt into list-backed variable-size tile batches."""
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_multimodal_dataset(["image_tiles"], stack_dense=False)
+    batch = ds.__getitems__(list(range(7)))
+    tile_batch = batch.modalities["image_tiles"]
+
+    assert isinstance(tile_batch, DenseBatch)
+    assert isinstance(tile_batch.data, list)
+    assert len(tile_batch.data) == 7
+    assert {tile.shape for tile in tile_batch.data} == {(3, 8, 8), (3, 10, 6)}
+
+
+def test_multimodal_to_dense_collate_handles_list_tiles(variable_shape_tile_atlas):
+    """multimodal_to_dense_collate returns one tensor per cell for list-backed tiles."""
+    torch = pytest.importorskip("torch")
+    atlas, _ = variable_shape_tile_atlas
+
+    ds = atlas.query().to_multimodal_dataset(
+        ["image_tiles"],
+        stack_dense={"image_tiles": False},
+    )
+    batch = ds.__getitems__(list(range(2)))
+
+    result = multimodal_to_dense_collate(batch)
+    tensors = result["image_tiles"]["X"]
+    assert len(tensors) == 2
+    assert all(isinstance(tile, torch.Tensor) for tile in tensors)
+    assert [tuple(tile.shape) for tile in tensors] == [(3, 8, 8), (3, 8, 8)]
+
+
 def test_dense_to_tensor_collate(single_group_tile_atlas):
     """dense_to_tensor_collate produces correct torch tensor."""
     torch = pytest.importorskip("torch")
     atlas, _ = single_group_tile_atlas
 
-    ds = atlas.query().to_cell_dataset("image_tiles", metadata_columns=["cell_type"])
+    ds = atlas.query().to_unimodal_dataset("image_tiles", metadata_columns=["cell_type"])
     batch = ds.__getitems__(list(range(5)))
 
     result = dense_to_tensor_collate(batch)
@@ -245,11 +347,34 @@ def test_dense_to_tensor_collate(single_group_tile_atlas):
 
 
 def test_tile_dataset_empty_query(single_group_tile_atlas):
-    """CellDataset handles empty query results for tiles."""
+    """UnimodalHoxDataset handles empty query results for tiles."""
     atlas, _ = single_group_tile_atlas
 
-    ds = atlas.query().where("cell_type = 'nonexistent'").to_cell_dataset("image_tiles")
-    assert ds.n_cells == 0
+    ds = atlas.query().where("cell_type = 'nonexistent'").to_unimodal_dataset("image_tiles")
+    assert ds.n_rows == 0
+    assert len(ds) == 0
 
-    sampler = CellSampler(ds.groups_np, batch_size=10, shuffle=False, num_workers=1)
-    assert len(sampler) == 0
+
+def test_tile_to_anndata_raises_with_endpoint_hint(single_group_tile_atlas):
+    """Calling to_anndata on image_tiles surfaces a helpful endpoint error."""
+    atlas, _ = single_group_tile_atlas
+
+    with pytest.raises(TypeError) as exc:
+        atlas.query().to_anndata()
+
+    msg = str(exc.value)
+    assert "image_tiles" in msg
+    assert "as_anndata" in msg
+    assert "as_array" in msg
+
+
+def test_tile_to_fragments_raises_with_endpoint_hint(single_group_tile_atlas):
+    """Calling to_fragments on image_tiles surfaces a helpful endpoint error."""
+    atlas, _ = single_group_tile_atlas
+
+    with pytest.raises(TypeError) as exc:
+        atlas.query().to_fragments(field_name="image_tiles")
+
+    msg = str(exc.value)
+    assert "as_fragments" in msg
+    assert "as_array" in msg

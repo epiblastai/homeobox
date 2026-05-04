@@ -3,12 +3,12 @@ import homeobox.codecs.bitpacking  # noqa: F401  # register bitpacking codec
 from homeobox import spatial
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
-    CellDataset,
     DenseBatch,
     DiscreteSpatialBatch,
     MultimodalBatch,
-    MultimodalCellDataset,
+    MultimodalHoxDataset,
     SparseBatch,
+    UnimodalHoxDataset,
     dense_to_tensor_collate,
     make_loader,
     sparse_to_dense_collate,
@@ -19,23 +19,24 @@ from homeobox.fragments.reconstruction import FragmentResult, IntervalReconstruc
 from homeobox.ingestion import add_anndata_batch, add_csc, add_from_anndata
 from homeobox.multimodal import MultimodalResult
 from homeobox.query import AtlasQuery
-from homeobox.sampler import CellSampler
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     DiscreteSpatialPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
     SparseZarrPointer,
+    StableUIDBaseSchema,
+    StableUIDField,
 )
 
 __all__ = [
     "RaggedAtlas",
     "create_or_open_atlas",
     "AtlasQuery",
-    "CellDataset",
-    "MultimodalCellDataset",
+    "UnimodalHoxDataset",
+    "MultimodalHoxDataset",
     "SparseBatch",
     "DenseBatch",
     "DiscreteSpatialBatch",
@@ -43,14 +44,15 @@ __all__ = [
     "make_loader",
     "sparse_to_dense_collate",
     "dense_to_tensor_collate",
-    "CellSampler",
     "add_from_anndata",
     "add_anndata_batch",
     "add_csc",
     "HoxBaseSchema",
     "FeatureBaseSchema",
-    "DatasetRecord",
+    "DatasetSchema",
     "PointerField",
+    "StableUIDBaseSchema",
+    "StableUIDField",
     "SparseZarrPointer",
     "DenseZarrPointer",
     "DiscreteSpatialPointer",

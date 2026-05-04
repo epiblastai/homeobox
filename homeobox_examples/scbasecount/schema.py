@@ -3,7 +3,7 @@
 Defines:
 - GENEFULL_EXPRESSION_SPEC: custom zarr group spec for Unique/EM/Uniform layers
 - GeneFeatureSpace: feature registry schema for genes (var metadata)
-- ScBasecountDatasetRecord: dataset-level metadata with scBaseCount provenance
+- ScBasecountDatasetSchema: dataset-level metadata with scBaseCount provenance
 - CellObs: cell-level observation schema with genefull_expression pointer
 """
 
@@ -11,14 +11,15 @@ import numpy as np
 
 from homeobox.group_specs import (
     ArraySpec,
+    FeatureSpaceSpec,
     LayersSpec,
     PointerKind,
     ZarrGroupSpec,
     register_spec,
 )
-from homeobox.reconstruction import SparseCSRReconstructor
+from homeobox.reconstruction import SparseGeneExpressionReconstructor
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -29,24 +30,26 @@ from homeobox.schema import (
 # Custom feature space spec for GeneFull_Ex50pAS layers
 # ---------------------------------------------------------------------------
 
-GENEFULL_EXPRESSION_SPEC = ZarrGroupSpec(
+GENEFULL_EXPRESSION_SPEC = FeatureSpaceSpec(
     feature_space="genefull_expression",
     pointer_kind=PointerKind.SPARSE,
     has_var_df=True,
-    required_arrays=[
-        ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
-    ],
-    layers=LayersSpec(
-        prefix="csr",
-        match_shape_of="csr/indices",
-        required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32])],
-        allowed=[
-            ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32]),
-            ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.uint32]),
-            ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.uint32]),
+    reconstructor=SparseGeneExpressionReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32]),
         ],
+        layers=LayersSpec(
+            prefix="csr",
+            match_shape_of="csr/indices",
+            required=[ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32])],
+            allowed=[
+                ArraySpec(array_name="Unique", ndim=1, allowed_dtypes=[np.uint32]),
+                ArraySpec(array_name="UniqueAndMult-EM", ndim=1, allowed_dtypes=[np.uint32]),
+                ArraySpec(array_name="UniqueAndMult-Uniform", ndim=1, allowed_dtypes=[np.uint32]),
+            ],
+        ),
     ),
-    reconstructor=SparseCSRReconstructor(),
 )
 register_spec(GENEFULL_EXPRESSION_SPEC)
 
@@ -69,7 +72,7 @@ class GeneFeatureSpace(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class ScBasecountDatasetRecord(DatasetRecord):
+class ScBasecountDatasetSchema(DatasetSchema):
     """Dataset record with scBaseCount provenance."""
 
     srx_accession: str

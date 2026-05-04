@@ -14,7 +14,7 @@ from homeobox.feature_layouts import read_feature_layout, reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -41,10 +41,8 @@ class TestCellSchema(HoxBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetRecord:
-    return DatasetRecord(
-        zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs
-    )
+def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
+    return DatasetSchema(zarr_group=zarr_group, feature_space="gene_expression", n_rows=adata.n_obs)
 
 
 def _make_sparse_adata(n_obs: int, n_vars: int, feature_uids: list[str]) -> ad.AnnData:
@@ -60,12 +58,12 @@ def _make_atlas(tmp_path) -> RaggedAtlas:
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        cell_table_name="cells",
-        cell_schema=TestCellSchema,
+        obs_table_name="cells",
+        obs_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
-        dataset_schema=DatasetRecord,
+        dataset_schema=DatasetSchema,
     )
     gene_uids = [f"gene_{i}" for i in range(10)]
     atlas.register_features(
@@ -121,7 +119,7 @@ class TestSnapshot:
         v1 = atlas.snapshot()
         assert v1 == 1
 
-    def test_snapshot_records_total_cells(self, tmp_path):
+    def test_snapshot_records_total_rows(self, tmp_path):
         atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
 
         adata = align_obs_to_schema(_make_sparse_adata(20, 10, gene_uids), TestCellSchema)
@@ -145,7 +143,7 @@ class TestSnapshot:
         atlas.snapshot()
 
         versions = RaggedAtlas.list_versions(atlas_dir)
-        assert versions["total_cells"].to_list() == [20, 35]
+        assert versions["total_rows"].to_list() == [20, 35]
 
     def test_snapshot_raises_without_version_table(self, tmp_path):
         atlas_dir = str(tmp_path / "atlas")
@@ -154,19 +152,19 @@ class TestSnapshot:
         # Create a valid atlas first so the cell table exists.
         RaggedAtlas.create(
             db_uri=atlas_dir,
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
+            obs_table_name="cells",
+            obs_schema=TestCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
         # Opening with a non-existent version table name raises immediately.
         with pytest.raises(ValueError, match="not found"):
             RaggedAtlas.open(
                 db_uri=atlas_dir,
-                cell_table_name="cells",
-                cell_schema=TestCellSchema,
+                obs_table_name="cells",
+                obs_schema=TestCellSchema,
                 dataset_table_name="datasets",
                 store=store,
                 registry_tables={"gene_expression": "gene_expression_registry"},
@@ -180,12 +178,12 @@ class TestSnapshot:
         store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
         atlas = RaggedAtlas.create(
             db_uri=atlas_dir,
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
+            obs_table_name="cells",
+            obs_schema=TestCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
         # Register features but deliberately skip reindex_registry
         atlas.register_features(
@@ -268,10 +266,10 @@ class TestCheckout:
         old = RaggedAtlas.checkout(
             db_uri=atlas_dir,
             version=0,
-            cell_schema=TestCellSchema,
+            obs_schema=TestCellSchema,
             store=store,
         )
-        assert old.cell_table.count_rows() == 20
+        assert old.obs_table.count_rows() == 20
 
     def test_checkout_v1_sees_both_batches(self, tmp_path):
         atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
@@ -299,10 +297,10 @@ class TestCheckout:
         new = RaggedAtlas.checkout(
             db_uri=atlas_dir,
             version=1,
-            cell_schema=TestCellSchema,
+            obs_schema=TestCellSchema,
             store=store,
         )
-        assert new.cell_table.count_rows() == 35
+        assert new.obs_table.count_rows() == 35
 
     def test_checkout_invalid_version_raises(self, tmp_path):
         atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
@@ -321,7 +319,7 @@ class TestCheckout:
             RaggedAtlas.checkout(
                 db_uri=atlas_dir,
                 version=99,
-                cell_schema=TestCellSchema,
+                obs_schema=TestCellSchema,
                 store=store,
             )
 
@@ -360,7 +358,7 @@ class TestCheckout:
         pinned = RaggedAtlas.checkout(
             db_uri=atlas_dir,
             version=0,
-            cell_schema=TestCellSchema,
+            obs_schema=TestCellSchema,
             store=store,
         )
         gr = pinned.get_group_reader("ds1/gene_expression", "gene_expression")
@@ -368,7 +366,7 @@ class TestCheckout:
 
 
 class TestSchemalessCheckout:
-    """Checkout without providing cell_schema — pointer fields inferred from Arrow."""
+    """Checkout without providing obs_schema — pointer fields inferred from Arrow."""
 
     def _make_snapshotted_atlas(self, tmp_path):
         atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
@@ -390,9 +388,9 @@ class TestSchemalessCheckout:
             version=0,
             store=store,
         )
-        assert checked.cell_table.count_rows() == 20
+        assert checked.obs_table.count_rows() == 20
         assert "gene_expression" in checked._pointer_fields
-        assert checked._cell_schema is None
+        assert checked._obs_schema is None
 
     def test_checkout_latest_without_schema(self, tmp_path):
         atlas_dir, store = self._make_snapshotted_atlas(tmp_path)
@@ -400,7 +398,7 @@ class TestSchemalessCheckout:
             db_uri=atlas_dir,
             store=store,
         )
-        assert checked.cell_table.count_rows() == 20
+        assert checked.obs_table.count_rows() == 20
         assert "gene_expression" in checked._pointer_fields
 
     def test_query_works_without_schema(self, tmp_path):
@@ -433,7 +431,7 @@ class TestStorelessCheckout:
             db_uri=atlas_dir,
             version=0,
         )
-        assert checked.cell_table.count_rows() == 20
+        assert checked.obs_table.count_rows() == 20
 
     def test_checkout_latest_without_store(self, tmp_path):
         atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
@@ -450,7 +448,7 @@ class TestStorelessCheckout:
         checked = RaggedAtlas.checkout_latest(
             db_uri=atlas_dir,
         )
-        assert checked.cell_table.count_rows() == 20
+        assert checked.obs_table.count_rows() == 20
 
     def test_zarr_uri_derived_from_db_uri(self, tmp_path):
         from homeobox.atlas import _zarr_uri_from_db_uri
@@ -482,7 +480,7 @@ class TestIngestionGuard:
             store=store,
         )
         adata2 = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
-        with pytest.raises(ValueError, match="without a cell schema"):
+        with pytest.raises(ValueError, match="without an obs schema"):
             add_from_anndata(
                 checked,
                 adata2,
@@ -508,10 +506,10 @@ class TestOpenDefaults:
 
         reopened = RaggedAtlas.open(
             db_uri=atlas_dir,
-            cell_table_name="cells",
+            obs_table_name="cells",
             store=store,
         )
-        assert reopened.cell_table.count_rows() == 5
+        assert reopened.obs_table.count_rows() == 5
         assert "gene_expression" in reopened._pointer_fields
         assert "gene_expression" in reopened._registry_tables
 
@@ -533,8 +531,8 @@ class TestBackwardCompat:
         with pytest.raises(ValueError, match="not found"):
             RaggedAtlas.open(
                 db_uri=atlas_dir,
-                cell_table_name="cells",
-                cell_schema=TestCellSchema,
+                obs_table_name="cells",
+                obs_schema=TestCellSchema,
                 dataset_table_name="datasets",
                 store=store,
                 registry_tables={"gene_expression": "gene_expression_registry"},

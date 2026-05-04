@@ -15,15 +15,15 @@ from homeobox.group_specs import PointerKind, get_spec
 
 
 class SparseZarrPointer(LanceModel):
-    zarr_group: str
-    start: int
-    end: int
-    zarr_row: int  # cell's 0-indexed position within this zarr group (for CSC lookup)
+    zarr_group: str | None = None
+    start: int | None = None
+    end: int | None = None
+    zarr_row: int | None = None  # 0-indexed position within this zarr group (for CSC lookup)
 
 
 class DenseZarrPointer(LanceModel):
-    zarr_group: str
-    position: int
+    zarr_group: str | None = None
+    position: int | None = None
 
 
 class DiscreteSpatialPointer(LanceModel):
@@ -61,6 +61,9 @@ ZarrPointer = SparseZarrPointer | DenseZarrPointer | DiscreteSpatialPointer
 # _infer_pointer_fields_from_arrow() when a schema class is not available.
 POINTER_FEATURE_SPACE_METADATA_KEY: bytes = b"homeobox.feature_space"
 
+# Arrow field metadata key used to persist which column drives stable UID generation.
+STABLE_UID_METADATA_KEY: bytes = b"homeobox.stable_uid"
+
 
 def make_uid() -> str:
     """Generate a random 16-character hex uid."""
@@ -79,11 +82,17 @@ def make_stable_uid(*identity_values: str) -> str:
     return uuid.uuid5(_HOX_NS, "|".join(identity_values)).hex[:16]
 
 
+def _stable_uid_identity_str(value: Any) -> str:
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
 @dataclasses.dataclass(frozen=True)
 class PointerField:
     """Runtime metadata for a single pointer field on a HoxBaseSchema subclass.
 
-    Decouples the cell-table column name from the feature_space it references,
+    Decouples the HoxBaseSchema table column name from the feature_space it references,
     so a schema can declare multiple columns in the same feature space (e.g.
     ``cycle1_image_tiles`` and ``cycle2_image_tiles``, both with
     ``feature_space="image_tiles"``).
@@ -116,8 +125,20 @@ class PointerField:
         )
 
 
-def _read_pointer_json_schema_extra(cls: type, name: str) -> dict | None:
-    """Read the ``json_schema_extra`` dict for a pointer field on *cls*.
+@dataclasses.dataclass(frozen=True)
+class StableUIDField:
+    """Marker for a schema field that defines a deterministic ``uid`` value."""
+
+    @staticmethod
+    def declare(*, default: Any = None, **kwargs: Any) -> Any:
+        """Factory used in schema class bodies to mark a stable UID field."""
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["stable_uid"] = True
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
+def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
+    """Read the ``json_schema_extra`` dict for a field on *cls*.
 
     Works both at ``__init_subclass__`` time (when pydantic has not yet
     populated ``model_fields``) by inspecting the ``FieldInfo`` object
@@ -155,6 +176,81 @@ def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
                 result.append((name, t))
                 break
     return result
+
+
+class StableUIDBaseSchema(LanceModel):
+    """Base schema for tables whose ``uid`` may be derived from one stable field."""
+
+    uid: str = Field(default_factory=make_uid)
+
+    @classmethod
+    def stable_uid_field_names(cls) -> list[str]:
+        """Return fields marked with :meth:`StableUIDField.declare`."""
+        return [
+            name
+            for name in getattr(cls, "model_fields", {})
+            if (_read_field_json_schema_extra(cls, name) or {}).get("stable_uid")
+        ]
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        stable_uid_fields = cls.stable_uid_field_names()
+        if len(stable_uid_fields) > 1:
+            fields = ", ".join(stable_uid_fields)
+            raise TypeError(
+                f"{cls.__name__} may declare at most one StableUIDField; found {fields}"
+            )
+
+    @classmethod
+    def compute_stable_uids(cls, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Populate deterministic ``uid`` values for rows with a stable UID value."""
+        stable_uid_fields = cls.stable_uid_field_names()
+        if not stable_uid_fields:
+            return df
+
+        field_name = stable_uid_fields[0]
+        if field_name not in df.columns:
+            raise KeyError(f"{cls.__name__}.compute_stable_uids requires column '{field_name}'")
+        if "uid" not in df.columns:
+            df["uid"] = [make_uid() for _ in range(len(df))]
+
+        mask = df[field_name].notna()
+        df.loc[mask, "uid"] = df.loc[mask, field_name].map(
+            lambda value: make_stable_uid(_stable_uid_identity_str(value))
+        )
+        return df
+
+    @model_validator(mode="after")
+    def _validate_stable_uid(self):
+        stable_uid_fields = type(self).stable_uid_field_names()
+        if not stable_uid_fields:
+            return self
+
+        field_name = stable_uid_fields[0]
+        stable_value = getattr(self, field_name)
+        if stable_value is None:
+            return self
+
+        expected_uid = make_stable_uid(_stable_uid_identity_str(stable_value))
+        if self.uid != expected_uid:
+            raise ValueError(
+                f"{type(self).__name__}.uid must equal make_stable_uid(str({field_name})) "
+                f"when {field_name} is not None"
+            )
+        return self
+
+    @classmethod
+    def to_arrow_schema(cls) -> pa.Schema:
+        """Return the Arrow schema with stable UID field metadata stamped."""
+        schema: pa.Schema = super().to_arrow_schema()
+        for name in cls.stable_uid_field_names():
+            idx = schema.get_field_index(name)
+            field = schema.field(idx)
+            new_metadata = dict(field.metadata or {})
+            new_metadata[STABLE_UID_METADATA_KEY] = b"true"
+            schema = schema.set(idx, field.with_metadata(new_metadata))
+        return schema
 
 
 class HoxBaseSchema(LanceModel):
@@ -195,7 +291,7 @@ class HoxBaseSchema(LanceModel):
                 f"PointerField.declare(...)"
             )
         for name, pointer_type in pointer_annotations:
-            extra = _read_pointer_json_schema_extra(cls, name)
+            extra = _read_field_json_schema_extra(cls, name)
             if extra is None or not extra.get("is_pointer"):
                 raise TypeError(
                     f"{cls.__name__}.{name}: pointer-typed fields must be declared via "
@@ -246,7 +342,7 @@ class HoxBaseSchema(LanceModel):
         """
         schema: pa.Schema = super().to_arrow_schema()
         for name, _ in _iter_pointer_annotations(cls):
-            feature_space = _read_pointer_json_schema_extra(cls, name)["feature_space"]
+            feature_space = _read_field_json_schema_extra(cls, name)["feature_space"]
             idx = schema.get_field_index(name)
             field = schema.field(idx)
             new_metadata = dict(field.metadata or {})
@@ -259,7 +355,7 @@ class HoxBaseSchema(LanceModel):
 AUTO_FIELDS: frozenset[str] = frozenset(HoxBaseSchema.model_fields)
 
 
-class FeatureBaseSchema(LanceModel):
+class FeatureBaseSchema(StableUIDBaseSchema):
     """
     Minimal schema for a global feature registry entry.
 
@@ -273,15 +369,14 @@ class FeatureBaseSchema(LanceModel):
             reassigned once set — use uid for durable references.
     """
 
-    uid: str = Field(default_factory=make_uid)
     global_index: int | None = None
 
 
-class DatasetRecord(LanceModel):
+class DatasetSchema(LanceModel):
     """Metadata for a single ingested dataset.
 
     ``zarr_group`` is the per-row primary key (unique per modality write).
-    ``dataset_uid`` is the logical dataset identifier referenced by ``CellIndex.dataset_uid``;
+    ``dataset_uid`` is the logical dataset identifier referenced by ``HoxBaseSchema.dataset_uid``;
     it is shared across rows that belong to the same multimodal batch (one row per
     feature space).
     """
@@ -289,7 +384,7 @@ class DatasetRecord(LanceModel):
     dataset_uid: str = Field(default_factory=make_uid)
     zarr_group: str
     feature_space: str  # FeatureSpace value
-    n_cells: int
+    n_rows: int
     # TODO: Layout UID is updated automatically by add_or_reuse_layout. If a user forgets
     # to call that method during ingestion, this will break. add_or_reuse_layout should
     # probably be called automatically somewhere to avoid mistakes.
@@ -338,10 +433,10 @@ class AtlasVersionRecord(LanceModel):
     ----------
     version:
         Monotonically increasing snapshot version number.
-    cell_table_name:
-        Name of the cells Lance table.
-    cell_table_version:
-        Lance version of the cells table at snapshot time.
+    obs_table_name:
+        Name of the HoxBaseSchema Lance table.
+    obs_table_version:
+        Lance version of the HoxBaseSchema table at snapshot time.
     dataset_table_name:
         Name of the datasets Lance table.
     dataset_table_version:
@@ -352,21 +447,21 @@ class AtlasVersionRecord(LanceModel):
         JSON-encoded mapping of ``{feature_space: version_int}`` for feature registries.
     feature_layouts_table_version:
         Lance version of the ``_feature_layouts`` table at snapshot time.
-    total_cells:
-        Total number of cells across all datasets at snapshot time.
+    total_rows:
+        Total number of rows across all datasets at snapshot time.
     created_at:
         ISO-8601 UTC timestamp of when the snapshot was created.
     """
 
     version: int
-    cell_table_name: str
-    cell_table_version: int
+    obs_table_name: str
+    obs_table_version: int
     dataset_table_name: str
     dataset_table_version: int
     registry_table_names: str
     registry_table_versions: str
     feature_layouts_table_version: int
-    total_cells: int
+    total_rows: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
     )

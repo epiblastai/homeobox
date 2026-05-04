@@ -1,6 +1,6 @@
 site_name: homeobox
 site_url: https://epiblastai.github.io/homeobox/
-site_description: Multimodal cell database built on LanceDB and Zarr
+site_description: Multimodal biomedical databases built on LanceDB and Zarr
 repo_url: https://github.com/epiblastai/homeobox
 repo_name: epiblastai/homeobox
 
@@ -48,7 +48,6 @@ nav:
     - Reconstructors: reconstructors.md
     - Array Storage: array_storage.md
     - PyTorch Data Loading: dataloader.md
-    - Differential Expression: dex.md
 
 markdown_extensions:
   - admonition

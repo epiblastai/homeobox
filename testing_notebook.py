@@ -21,7 +21,7 @@ from homeobox.atlas import (
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
@@ -132,15 +132,15 @@ def test_full_workflow():
         # Create atlas
         atlas = RaggedAtlas.create(
             db_uri=str(Path(tmp_dir) / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
+            obs_table_name="cells",
+            obs_schema=TestCellSchema,
             store=store,
             registry_schemas={
                 "gene_expression": GeneFeatureSchema,
                 "protein_abundance": FeatureBaseSchema,
             },
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
 
         # 1. Register features
@@ -256,12 +256,12 @@ def test_layer_name_required_for_sparse():
         store = obstore.store.LocalStore(prefix=tmp_dir)
         atlas = RaggedAtlas.create(
             db_uri=str(Path(tmp_dir) / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
+            obs_table_name="cells",
+            obs_schema=TestCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
 
         gene_uids = ["g1", "g2", "g3"]
@@ -304,12 +304,12 @@ def test_obs_validation_before_write():
         store = obstore.store.LocalStore(prefix=tmp_dir)
         atlas = RaggedAtlas.create(
             db_uri=str(Path(tmp_dir) / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=StrictCellSchema,
+            obs_table_name="cells",
+            obs_schema=StrictCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
-            dataset_schema=DatasetRecord,
+            dataset_schema=DatasetSchema,
         )
 
         gene_uids = ["g1", "g2"]

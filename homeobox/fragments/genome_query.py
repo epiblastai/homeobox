@@ -7,6 +7,9 @@ import numpy as np
 import zarr
 
 from homeobox.batch_array import BatchArray
+from homeobox.group_specs import get_spec
+
+_FEATURE_SPACE = "chromatin_accessibility"
 
 _END_MAX_BLOCK_SIZE = 128
 
@@ -127,12 +130,23 @@ class GenomeSortedReader:
     """
 
     def __init__(self, group: zarr.Group, chrom_names: list[str]) -> None:
-        gs = group["genome_sorted"]
-        self._gs = gs
+        spec = get_spec(_FEATURE_SPACE).feature_oriented
+        if spec is None:
+            raise ValueError(
+                f"Feature space '{_FEATURE_SPACE}' has no feature_oriented spec; "
+                "cannot read genome-sorted fragments."
+            )
+        # Mirrors the CSC convention: every required array is named
+        # "<subgroup>/<leaf>" (e.g. "genome_sorted/cell_ids"), so the leaf
+        # after the first slash is a stable lookup key for callers.
+        self._paths = {
+            name.split("/", 1)[1]: name for name in (a.array_name for a in spec.required_arrays)
+        }
+        self._group = group
         self._chrom_names = list(chrom_names)
         self._chrom_to_idx = {name: i for i, name in enumerate(chrom_names)}
-        self._chrom_offsets: np.ndarray = gs["chrom_offsets"][:]
-        self._end_max: np.ndarray = gs["end_max"][:]
+        self._chrom_offsets: np.ndarray = group[self._paths["chrom_offsets"]][:]
+        self._end_max: np.ndarray = group[self._paths["end_max"]][:]
 
         # Lazy readers
         self._reader_cell_ids: _RangeReader | None = None
@@ -150,9 +164,9 @@ class GenomeSortedReader:
 
     def _ensure_readers(self) -> tuple[_RangeReader, _RangeReader, _RangeReader]:
         if self._reader_cell_ids is None:
-            self._reader_cell_ids = self._make_reader(self._gs["cell_ids"])
-            self._reader_starts = self._make_reader(self._gs["starts"])
-            self._reader_lengths = self._make_reader(self._gs["lengths"])
+            self._reader_cell_ids = self._make_reader(self._group[self._paths["cell_ids"]])
+            self._reader_starts = self._make_reader(self._group[self._paths["starts"]])
+            self._reader_lengths = self._make_reader(self._group[self._paths["lengths"]])
         return self._reader_cell_ids, self._reader_starts, self._reader_lengths
 
     @property

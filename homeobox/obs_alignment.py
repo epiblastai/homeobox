@@ -18,7 +18,7 @@ from homeobox.schema import (
     PointerField,
     SparseZarrPointer,
     _iter_pointer_annotations,
-    _read_pointer_json_schema_extra,
+    _read_field_json_schema_extra,
 )
 
 
@@ -37,7 +37,7 @@ def _extract_pointer_fields(
     """
     result: dict[str, PointerField] = {}
     for name, pointer_type in _iter_pointer_annotations(schema_cls):
-        extra = _read_pointer_json_schema_extra(schema_cls, name) or {}
+        extra = _read_field_json_schema_extra(schema_cls, name) or {}
         feature_space = extra.get("feature_space")
         if not feature_space:
             raise TypeError(
@@ -79,7 +79,7 @@ _DISCRETE_SPATIAL_SUBFIELDS = {"zarr_group", "min_corner", "max_corner"}
 def _infer_pointer_fields_from_arrow(
     arrow_schema: pa.Schema,
 ) -> dict[str, PointerField]:
-    """Infer pointer fields from a cell table's Arrow schema.
+    """Infer pointer fields from a obs table's Arrow schema.
 
     Detects struct columns whose sub-field names match the signatures of
     ``SparseZarrPointer``, ``DenseZarrPointer``, or ``DiscreteSpatialPointer``,
@@ -119,7 +119,7 @@ def _infer_pointer_fields_from_arrow(
                 f"Arrow field '{field.name}' looks like a {pointer_kind.value} pointer "
                 f"but is missing the '{POINTER_FEATURE_SPACE_METADATA_KEY.decode()}' "
                 f"metadata key, and its name does not match any registered feature "
-                f"space. Open with an explicit cell_schema or re-create the atlas with "
+                f"space. Open with an explicit obs_schema or re-create the atlas with "
                 f"a schema that uses PointerField.declare(feature_space=...)."
             )
         spec = get_spec(feature_space)
@@ -143,15 +143,15 @@ def _infer_pointer_fields_from_arrow(
 
 
 def _schema_obs_fields(
-    cell_schema: type[HoxBaseSchema],
+    obs_schema: type[HoxBaseSchema],
 ) -> dict[str, bool]:
     """Return {field_name: required} for user-supplied obs fields.
 
     Excludes auto-generated fields (uid, dataset_uid) and pointer fields.
     """
-    pointer_fields = _extract_pointer_fields(cell_schema)
+    pointer_fields = _extract_pointer_fields(obs_schema)
     result: dict[str, bool] = {}
-    for name, field_info in cell_schema.model_fields.items():
+    for name, field_info in obs_schema.model_fields.items():
         if name in AUTO_FIELDS or name in pointer_fields:
             continue
         required = field_info.is_required()
@@ -161,16 +161,16 @@ def _schema_obs_fields(
 
 def validate_obs_columns(
     obs: pd.DataFrame,
-    cell_schema: type[HoxBaseSchema],
+    obs_schema: type[HoxBaseSchema],
     obs_to_schema: dict[str, str] | None = None,
 ) -> list[str]:
-    """Validate that obs columns match the cell schema.
+    """Validate that obs columns match the obs schema.
 
     Parameters
     ----------
     obs:
         The obs DataFrame from an AnnData.
-    cell_schema:
+    obs_schema:
         The schema class to validate against.
     obs_to_schema:
         Optional mapping from obs column names to schema field names.
@@ -183,7 +183,7 @@ def validate_obs_columns(
         List of error strings. Empty list means valid.
     """
     errors: list[str] = []
-    schema_fields = _schema_obs_fields(cell_schema)
+    schema_fields = _schema_obs_fields(obs_schema)
     obs_to_schema = obs_to_schema or {}
 
     # Build the set of schema field names reachable from obs columns
@@ -202,12 +202,12 @@ def validate_obs_columns(
 
 def align_obs_to_schema(
     adata: ad.AnnData,
-    cell_schema: type[HoxBaseSchema],
+    obs_schema: type[HoxBaseSchema],
     *,
     obs_to_schema: dict[str, str] | None = None,
     inplace: bool = False,
 ) -> ad.AnnData:
-    """Align an AnnData's obs to match a cell schema.
+    """Align an AnnData's obs to match a obs schema.
 
     - Renames columns according to ``obs_to_schema``.
     - Raises if required fields are missing (after renaming).
@@ -218,7 +218,7 @@ def align_obs_to_schema(
     ----------
     adata:
         The AnnData to align.
-    cell_schema:
+    obs_schema:
         The schema class to align to.
     obs_to_schema:
         Optional mapping from obs column names to schema field names.
@@ -232,7 +232,7 @@ def align_obs_to_schema(
     ad.AnnData
         The aligned AnnData.
     """
-    errors = validate_obs_columns(adata.obs, cell_schema, obs_to_schema)
+    errors = validate_obs_columns(adata.obs, obs_schema, obs_to_schema)
     if errors:
         raise ValueError(f"Cannot align obs to schema: {errors}")
 
@@ -243,7 +243,7 @@ def align_obs_to_schema(
     if obs_to_schema:
         adata.obs = adata.obs.rename(columns=obs_to_schema)
 
-    schema_fields = _schema_obs_fields(cell_schema)
+    schema_fields = _schema_obs_fields(obs_schema)
     obs_cols = set(adata.obs.columns)
 
     # Add None columns for optional fields not present

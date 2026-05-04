@@ -27,7 +27,7 @@ from homeobox.schema import make_uid
 from homeobox_examples.scbasecount.schema import (
     CellObs,
     GeneFeatureSpace,
-    ScBasecountDatasetRecord,
+    ScBasecountDatasetSchema,
 )
 
 FEATURE_SPACE = "genefull_expression"
@@ -83,10 +83,10 @@ def create_atlas(atlas_dir: str) -> RaggedAtlas:
     store = make_store(atlas_dir)
     return RaggedAtlas.create(
         db_uri=db_uri_for(atlas_dir),
-        cell_table_name="cells",
-        cell_schema=CellObs,
+        obs_table_name="cells",
+        obs_schema=CellObs,
         dataset_table_name="datasets",
-        dataset_schema=ScBasecountDatasetRecord,
+        dataset_schema=ScBasecountDatasetSchema,
         store=store,
         registry_schemas={FEATURE_SPACE: GeneFeatureSpace},
     )
@@ -97,8 +97,8 @@ def open_atlas(atlas_dir: str) -> RaggedAtlas:
     store = make_store(atlas_dir)
     return RaggedAtlas.open(
         db_uri=db_uri_for(atlas_dir),
-        cell_table_name="cells",
-        cell_schema=CellObs,
+        obs_table_name="cells",
+        obs_schema=CellObs,
         dataset_table_name="datasets",
         store=store,
         registry_tables={FEATURE_SPACE: "genefull_expression_registry"},
@@ -267,13 +267,13 @@ def ingest_genefull(
     spec = get_spec(FEATURE_SPACE)
     group = atlas._root.create_group(zarr_group)
 
-    zarr_indices = spec.create_array(
+    zarr_indices = spec.zarr_group_spec.create_array(
         group, "csr/indices", (nnz,), chunks=chunk_shape, shards=shard_shape
     )
 
     layer_names = ["Unique", "UniqueAndMult-EM", "UniqueAndMult-Uniform"]
     for k, layer_name in enumerate(layer_names):
-        zarr_layer = spec.create_array(
+        zarr_layer = spec.zarr_group_spec.create_array(
             group,
             layer_name,
             (nnz,),
@@ -326,10 +326,10 @@ def ingest_genefull(
         if field in sample_row:
             dataset_kwargs[field] = sample_row[field]
 
-    dataset_record = ScBasecountDatasetRecord(**dataset_kwargs)
+    dataset_record = ScBasecountDatasetSchema(**dataset_kwargs)
     dataset_arrow = pa.Table.from_pylist(
         [dataset_record.model_dump()],
-        schema=ScBasecountDatasetRecord.to_arrow_schema(),
+        schema=ScBasecountDatasetSchema.to_arrow_schema(),
     )
     atlas._dataset_table.add(dataset_arrow)
 

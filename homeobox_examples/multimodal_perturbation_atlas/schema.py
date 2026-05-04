@@ -10,12 +10,14 @@ from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
 from homeobox.schema import (
-    DatasetRecord,
+    DatasetSchema,
     DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
     SparseZarrPointer,
+    StableUIDBaseSchema,
+    StableUIDField,
     make_uid,
 )
 from homeobox.standardization.perturbations import GeneticPerturbationType
@@ -101,14 +103,11 @@ def _build_perturbation_search_string(uids: list[str] | None, types: list[str] |
 # ---------------------------------------------------------------------------
 
 
-class PublicationSchema(LanceModel):
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
-
+class PublicationSchema(StableUIDBaseSchema):
     # The doi for the paper, there is almost always one
     doi: str
     # PubMed id for the paper, there is almost always one
-    pmid: int | None
+    pmid: int | None = StableUIDField.declare(default=...)
     # The title of the paper
     title: str
     # The journal that the paper was published in, if applicable
@@ -133,7 +132,7 @@ class PublicationSectionSchema(LanceModel):
 # ---------------------------------------------------------------------------
 
 
-class DatasetSchema(DatasetRecord):
+class DatasetSchema(DatasetSchema):
     # Foreign key: The uid for an associated publication
     publication_uid: str | None
     # Database from which the dataset was downloaded, if applicable
@@ -242,7 +241,7 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
 
     # Unambiguous accession — stable across naming conventions
     # (e.g. "CM000663.2" for chr1 in GRCh38)
-    genbank_accession: str | None = None
+    genbank_accession: str | None = StableUIDField.declare(default=None)
     refseq_accession: str | None = None
 
     # Whether this sequence is part of the primary assembly,
@@ -258,7 +257,7 @@ class ReferenceSequenceSchema(FeatureBaseSchema):
 
 class ProteinSchema(FeatureBaseSchema):
     # The UniProt accession ID, e.g., "P04637"
-    uniprot_id: str | None
+    uniprot_id: str | None = StableUIDField.declare(default=...)
     # The recommended protein name from UniProt, e.g., "Cellular tumor antigen p53"
     protein_name: str | None
     # The primary gene name encoding this protein, e.g., "TP53"
@@ -275,7 +274,7 @@ class ProteinSchema(FeatureBaseSchema):
 
 class ImageFeatureSchema(FeatureBaseSchema):
     # The name of the image feature, e.g., "mean_intensity_DAPI", "texture_feature_1", etc.
-    feature_name: str
+    feature_name: str = StableUIDField.declare(default=...)
     # A description of the image feature and how it was calculated, if available
     description: str | None
 
@@ -285,16 +284,13 @@ class ImageFeatureSchema(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class SmallMoleculeSchema(LanceModel):
+class SmallMoleculeSchema(StableUIDBaseSchema):
     """Small molecule data, either perturbations or features in themselves."""
-
-    # Primary key
-    uid: str = Field(default_factory=make_uid)
 
     # The smiles string for the molecule
     smiles: str | None
     # PubChem CID for the molecule
-    pubchem_cid: int | None
+    pubchem_cid: int | None = StableUIDField.declare(default=None)
     # Standard name for the molecule
     iupac_name: str | None
     inchi_key: str | None
@@ -315,7 +311,7 @@ class SmallMoleculeSchema(LanceModel):
         return self
 
 
-class GeneticPerturbationSchema(LanceModel):
+class GeneticPerturbationSchema(StableUIDBaseSchema):
     """A single genetic perturbation reagent and its genomic target.
 
     Perturbations are anchored to genomic coordinates rather than gene
@@ -330,13 +326,11 @@ class GeneticPerturbationSchema(LanceModel):
     relationship and should not be stored here.
     """
 
-    uid: str = Field(default_factory=make_uid)
-
     # Reagent type
     perturbation_type: str  # one of GeneticPerturbationType
 
     # The actual reagent sequence, e.g. the 20bp guide or siRNA duplex
-    guide_sequence: str | None = None
+    guide_sequence: str | None = StableUIDField.declare(default=None)
 
     # genbank_accession code for the chromosome where the guide is targeting,
     # e.g. "CM000663.2" for chr1 in GRCh38

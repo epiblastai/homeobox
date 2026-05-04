@@ -5,7 +5,7 @@ import numpy as np
 import zarr
 from pydantic import BaseModel, field_validator
 
-from homeobox.protocols import Reconstructor
+from homeobox.reconstructor_base import Reconstructor
 
 
 class PointerKind(str, Enum):
@@ -70,15 +70,13 @@ class LayersSpec(BaseModel):
 
 
 class ZarrGroupSpec(BaseModel):
-    """Declarative spec for the expected layout of a zarr group."""
+    """Pure layout description for one zarr group.
 
-    # Needed so Pydantic accepts the Reconstructor protocol type.
-    model_config = {"arbitrary_types_allowed": True}
+    Describes the required arrays and layer subgroup of a single zarr
+    group on disk. Does not carry user-facing concerns like the feature
+    space name or reconstructor — those live on :class:`FeatureSpaceSpec`.
+    """
 
-    feature_space: str
-    pointer_kind: PointerKind
-    reconstructor: Reconstructor
-    has_var_df: bool = False
     required_arrays: list[ArraySpec] = []
     layers: LayersSpec = LayersSpec()
 
@@ -226,9 +224,54 @@ class ZarrGroupSpec(BaseModel):
         known_top = [a.array_name for a in self.required_arrays]
         known_layers = self.layers.allowed_names or self.layers.required_names
         raise KeyError(
-            f"No ArraySpec named '{name}' in feature_space='{self.feature_space}'. "
+            f"No ArraySpec named '{name}'. "
             f"Known top-level arrays: {known_top}; known layers: {known_layers}"
         )
+
+
+class FeatureSpaceSpec(BaseModel):
+    """User-facing spec for a feature space.
+
+    Pairs a feature space name + reconstructor with the zarr layout(s)
+    that materialise it on disk. ``zarr_group_spec`` describes the
+    primary (obs-oriented) layout; the optional ``feature_oriented``
+    spec describes a parallel feature-oriented copy (e.g. CSC alongside
+    CSR) used to accelerate feature-filtered queries.
+    """
+
+    # Needed so Pydantic accepts the Reconstructor base class.
+    model_config = {"arbitrary_types_allowed": True}
+
+    feature_space: str
+    pointer_kind: PointerKind
+    has_var_df: bool = False
+    reconstructor: Reconstructor
+    zarr_group_spec: ZarrGroupSpec
+    feature_oriented: ZarrGroupSpec | None = None
+
+    def valid_endpoints(self) -> list[str]:
+        """Endpoints that are meaningful for this feature space.
+
+        Starts from the reconstructor's declared endpoints and removes
+        those that would not produce useful output for this spec — for
+        example, ``as_anndata`` is dropped when ``has_var_df`` is False
+        because there's no feature registry to populate ``var``.
+        """
+        endpoints = self.reconstructor.endpoints()
+        if not self.has_var_df and "as_anndata" in endpoints:
+            endpoints = [e for e in endpoints if e != "as_anndata"]
+        return endpoints
+
+    def has_feature_oriented_copy(self, group: zarr.Group) -> bool:
+        """Return True if ``group`` validates against ``feature_oriented``.
+
+        The feature-oriented spec's array names carry their own subgroup
+        prefix (e.g. ``csc/indices``), so validation runs against the
+        top-level group directly.
+        """
+        if self.feature_oriented is None:
+            return False
+        return self.feature_oriented.validate_group(group) == []
 
 
 def _create_from_spec(
@@ -267,17 +310,17 @@ def _create_from_spec(
 # Spec registry
 # ---------------------------------------------------------------------------
 
-_SPEC_REGISTRY: dict[str, ZarrGroupSpec] = {}
+_SPEC_REGISTRY: dict[str, FeatureSpaceSpec] = {}
 
 
-def register_spec(spec: ZarrGroupSpec) -> None:
-    """Register a new ZarrGroupSpec. Raises if already registered."""
+def register_spec(spec: FeatureSpaceSpec) -> None:
+    """Register a new FeatureSpaceSpec. Raises if already registered."""
     if spec.feature_space in _SPEC_REGISTRY:
         raise ValueError(f"Feature space '{spec.feature_space}' is already registered")
     _SPEC_REGISTRY[spec.feature_space] = spec
 
 
-def get_spec(feature_space: str) -> ZarrGroupSpec:
+def get_spec(feature_space: str) -> FeatureSpaceSpec:
     """Look up a spec by feature space name."""
     if feature_space not in _SPEC_REGISTRY:
         raise KeyError(

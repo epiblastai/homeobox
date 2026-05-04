@@ -1,4 +1,4 @@
-"""Zarr group read primitives and cell preparation helpers."""
+"""Zarr group read primitives and obs preparation helpers."""
 
 import asyncio
 
@@ -10,8 +10,8 @@ from homeobox.batch_array import BatchAsyncArray
 from homeobox.schema import PointerField
 
 
-def _prepare_sparse_cells(
-    cells_pl: pl.DataFrame,
+def _prepare_sparse_obs(
+    obs_pl: pl.DataFrame,
     pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Unnest sparse pointer struct, filter empty, return (filtered_df, unique_groups).
@@ -19,20 +19,20 @@ def _prepare_sparse_cells(
     Adds internal columns ``_zg``, ``_start``, ``_end``, ``_zarr_row``.
     """
     col = pf.field_name
-    struct_df = cells_pl[col].struct.unnest()
-    cells_pl = cells_pl.with_columns(
+    struct_df = obs_pl[col].struct.unnest()
+    obs_pl = obs_pl.with_columns(
         struct_df["zarr_group"].alias("_zg"),
         struct_df["start"].alias("_start"),
         struct_df["end"].alias("_end"),
         struct_df["zarr_row"].alias("_zarr_row"),
     )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
-    groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
-    return cells_pl, groups
+    obs_pl = obs_pl.filter(pl.col("_zg").is_not_null())
+    groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
+    return obs_pl, groups
 
 
-def _prepare_dense_cells(
-    cells_pl: pl.DataFrame,
+def _prepare_dense_obs(
+    obs_pl: pl.DataFrame,
     pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Unnest dense pointer struct, filter empty, return (filtered_df, unique_groups).
@@ -40,18 +40,18 @@ def _prepare_dense_cells(
     Adds internal columns ``_zg``, ``_pos``.
     """
     col = pf.field_name
-    struct_df = cells_pl[col].struct.unnest()
-    cells_pl = cells_pl.with_columns(
+    struct_df = obs_pl[col].struct.unnest()
+    obs_pl = obs_pl.with_columns(
         struct_df["zarr_group"].alias("_zg"),
         struct_df["position"].alias("_pos"),
     )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
-    groups = cells_pl["_zg"].unique().to_list() if not cells_pl.is_empty() else []
-    return cells_pl, groups
+    obs_pl = obs_pl.filter(pl.col("_zg").is_not_null())
+    groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
+    return obs_pl, groups
 
 
-def _prepare_discrete_spatial_cells(
-    cells_pl: pl.DataFrame,
+def _prepare_discrete_spatial_obs(
+    obs_pl: pl.DataFrame,
     pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
     """Unnest rank-1 DiscreteSpatial pointer struct, filter empty, return (filtered_df, unique_groups).
@@ -61,32 +61,32 @@ def _prepare_discrete_spatial_cells(
     ``[min_corner[0], max_corner[0])`` along axis 0 of a 2-D zarr array.
     """
     col = pf.field_name
-    struct_df = cells_pl[col].struct.unnest()
-    cells_pl = cells_pl.with_columns(
+    struct_df = obs_pl[col].struct.unnest()
+    obs_pl = obs_pl.with_columns(
         struct_df["zarr_group"].alias("_zg"),
         struct_df["min_corner"].alias("_min_corner"),
         struct_df["max_corner"].alias("_max_corner"),
     )
-    cells_pl = cells_pl.filter(pl.col("_zg") != "")
-    if cells_pl.is_empty():
-        return cells_pl.drop(["_min_corner", "_max_corner"]).with_columns(
+    obs_pl = obs_pl.filter(pl.col("_zg") != "")
+    if obs_pl.is_empty():
+        return obs_pl.drop(["_min_corner", "_max_corner"]).with_columns(
             pl.lit(0, dtype=pl.Int64).alias("_start"),
             pl.lit(0, dtype=pl.Int64).alias("_end"),
         ), []
 
-    min_lens = cells_pl["_min_corner"].list.len().unique().to_list()
-    max_lens = cells_pl["_max_corner"].list.len().unique().to_list()
+    min_lens = obs_pl["_min_corner"].list.len().unique().to_list()
+    max_lens = obs_pl["_max_corner"].list.len().unique().to_list()
     if min_lens != [1] or max_lens != [1]:
         raise ValueError(
             f"DiscreteSpatial modality requires rank-1 boxes, got "
             f"min_corner lengths {min_lens}, max_corner lengths {max_lens}"
         )
-    cells_pl = cells_pl.with_columns(
+    obs_pl = obs_pl.with_columns(
         pl.col("_min_corner").list.first().alias("_start"),
         pl.col("_max_corner").list.first().alias("_end"),
     ).drop(["_min_corner", "_max_corner"])
-    groups = cells_pl["_zg"].unique().to_list()
-    return cells_pl, groups
+    groups = obs_pl["_zg"].unique().to_list()
+    return obs_pl, groups
 
 
 def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -> np.ndarray:

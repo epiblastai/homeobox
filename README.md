@@ -1,7 +1,7 @@
 # homeobox
 Designed for building heterogeneous biomedical data atlases for interactive analysis and ML training.
 
-Cell metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
+Metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
 
 - **[Documentation](https://epiblastai.github.io/homeobox/)**
 
@@ -35,7 +35,7 @@ maturin develop --release
 
 Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
-Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every cell carries a pointer into its group.
+Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every row carries a pointer into its group.
 
 ```
 Cell table (shared)                Zarr (per-dataset)
@@ -51,8 +51,8 @@ At query time, the reconstruction layer joins the feature spaces: it computes th
 
 ```python
 import os
+import numpy as np
 import scanpy as sc
-import obstore.store
 import homeobox as hox
 
 # 1. Define schemas: one for gene features, one for cell metadata.
@@ -71,22 +71,23 @@ atlas_dir = "./hox_example_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    cell_table_name="cells",
-    cell_schema=CellSchema,
+    obs_table_name="cells",
+    obs_schema=CellSchema,
     dataset_table_name="datasets",
-    dataset_schema=hox.DatasetRecord,
+    dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
 # 3. Load a dataset and register its genes
 adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
+adata.X = adata.X.astype(np.uint32)  # the counts layer must be np.uint32
 features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
 atlas.register_features("gene_expression", features)
 
 # 4. Prepare var and ingest. `field_name` selects the cell-schema column
 #    to populate; its feature_space is resolved from PointerField.declare.
 adata.var["global_feature_uid"] = adata.var_names
-record = hox.DatasetRecord(
+record = hox.DatasetSchema(
     zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
 )
 hox.add_from_anndata(
@@ -99,9 +100,79 @@ atlas.optimize()
 atlas.snapshot()
 
 # 6. Open the atlas and query
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=CellSchema)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=CellSchema)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
+```
+
+### Ingesting image tiles
+
+Not every modality fits in an AnnData. The built-in ``image_tiles`` feature
+space stores a single 4D ``(n_cells, n_channels, H, W)`` array per dataset
+with no feature registry. Ingestion is a few lines on top of
+``atlas.create_zarr_group`` and the spec's ``create_array`` helper.
+
+```python
+import os
+import numpy as np
+import homeobox as hox
+from homeobox.group_specs import get_spec
+
+# 1. Schema with a single dense pointer into image_tiles.
+class TileSchema(hox.HoxBaseSchema):
+    image_tiles: hox.DenseZarrPointer | None = hox.PointerField.declare(
+        feature_space="image_tiles"
+    )
+
+# 2. image_tiles has no feature registry, so registry_schemas is empty.
+atlas_dir = "./hox_tile_atlas/"
+os.makedirs(atlas_dir, exist_ok=True)
+atlas = hox.create_or_open_atlas(
+    atlas_path=atlas_dir,
+    obs_table_name="cells",
+    obs_schema=TileSchema,
+    dataset_table_name="datasets",
+    dataset_schema=hox.DatasetSchema,
+    registry_schemas={},
+)
+
+# 3. Fabricate 128 random 5-channel, 96×96 uint8 tiles.
+n_cells, n_channels, h, w = 128, 5, 96, 96
+tiles = np.random.randint(0, 256, (n_cells, n_channels, h, w), dtype=np.uint8)
+
+# 4. Register the dataset, create the zarr group, and write the 4D array.
+#    The spec's create_array enforces ndim=4 and the allowed dtype set.
+record = hox.DatasetSchema(
+    zarr_group="random_tiles", feature_space="image_tiles", n_cells=n_cells,
+)
+atlas.register_dataset(record)
+group = atlas.create_zarr_group(record.zarr_group)
+
+spec = get_spec("image_tiles")
+arr = spec.create_array(
+    group, "data", shape=tiles.shape, dtype=np.uint8,
+    chunks=(1, n_channels, h, w),
+    shards=(64, n_channels, h, w),
+)
+arr[:] = tiles
+
+# 5. Insert one cell row per tile with a DenseZarrPointer at that position.
+rows = [
+    TileSchema(
+        dataset_uid=record.dataset_uid,
+        image_tiles=hox.DenseZarrPointer(zarr_group=record.zarr_group, position=i),
+    )
+    for i in range(n_cells)
+]
+atlas.obs_table.add(rows)
+
+atlas.optimize()
+atlas.snapshot()
+
+# 6. Query tiles back as a raw 4D array + obs DataFrame.
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=TileSchema)
+tile_array, obs = atlas_r.query().to_array("image_tiles")
+print(tile_array.shape, tile_array.dtype)  # (128, 5, 96, 96) uint8
 ```
 
 ### Opening a public atlas
@@ -162,7 +233,7 @@ Benchmarked against TileDB-SOMA on a ~44M cell mouse atlas (CellxGene Census), r
 
 ### ML dataloader throughput
 
-`CellDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
+`UnimodalHoxDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
 
 ![Dataloader throughput: homeobox vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
 
@@ -223,9 +294,9 @@ Queries and training runs execute against a frozen, reproducible view of the atl
 - **[Building an Atlas](docs/atlas.md)**: end-to-end walkthrough with two heterogeneous datasets.
 - **[Array Storage](docs/array_storage.md)**: `add_from_anndata` internals, BP-128 bitpacking, CSC column index for fast feature-filtered reads.
 - **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
-- **[PyTorch Data Loading](docs/dataloader.md)**: `CellDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
+- **[PyTorch Data Loading](docs/dataloader.md)**: `UnimodalHoxDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
 - **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
-- **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetRecord`.
+- **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetSchema`.
 - **[Full docs site](https://epiblastai.github.io/homeobox/)**
 
 ---

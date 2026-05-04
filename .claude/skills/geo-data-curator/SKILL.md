@@ -24,7 +24,7 @@ This skill consumes outputs from the `geo-data-preparer` skill. Before starting,
 
 - **Fragment CSVs** per experiment: `{fs}_fragment_*_obs.csv`, `{fs}_raw_obs.csv`, `{fs}_raw_var.csv` — produced by the preparer and its resolver subagents
 - **Finalized global tables**: `{SchemaClassName}.parquet` (e.g., `GenomicFeatureSchema.parquet`, `GeneticPerturbationSchema.parquet`, `PublicationSchema.parquet`) — these are the type-coerced parquet outputs from the resolvers, NOT the `_resolved.csv` files
-- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetRecord`, and foreign key schema classes
+- **Schema file path** — the Python file with `HoxBaseSchema`, `FeatureBaseSchema`, `DatasetSchema`, and foreign key schema classes
 - **Atlas path** — directory for the atlas (new or existing), containing `lance_db/` and `zarr_store/`
 - **Data files** — the h5ad, mtx bundles, COO triplet files, or other matrix files for each experiment
 - **metadata.json** — GEO series/sample metadata (written by `geo-data-preparer`)
@@ -60,7 +60,7 @@ Check that all expected files exist before writing any ingestion code:
 - Data files (h5ad, COO triplet matrices, mtx bundles, etc.) for each experiment
 - `metadata.json` and `publication.json` at the accession level (publication.json includes `publication_uid`)
 
-Read `metadata.json` to extract series/sample metadata needed for `DatasetRecord` fields.
+Read `metadata.json` to extract series/sample metadata needed for `DatasetSchema` fields.
 
 ### 2. Assemble fragment CSVs
 
@@ -101,7 +101,7 @@ The ingestion script reads the parquet directly — no further type coercion nee
 
 Read the schema file to identify:
 - The **obs schema** (`HoxBaseSchema` subclass) — e.g., `CellIndex`
-- The **dataset schema** (`DatasetRecord` subclass) — e.g., `DatasetSchema`
+- The **dataset schema** (`DatasetSchema` subclass) — e.g., `DatasetSchema`
 - **Feature registry schemas** (`FeatureBaseSchema` subclasses) — e.g., `GenomicFeatureSchema`, `ProteinSchema`
 - **Foreign key schemas** (`LanceModel` subclasses that are not feature registries) — e.g., `GeneticPerturbationSchema`, `SmallMoleculeSchema`, `PublicationSchema`
 
@@ -118,8 +118,8 @@ store = obstore.store.LocalStore(str(zarr_path))
 
 atlas = RaggedAtlas.create(
     db_uri=db_uri,
-    cell_table_name="cells",
-    cell_schema=CellIndex,
+    obs_table_name="cells",
+    obs_schema=CellIndex,
     dataset_table_name="datasets",
     dataset_schema=DatasetSchema,
     store=store,
@@ -136,8 +136,8 @@ atlas = RaggedAtlas.create(
 store = obstore.store.LocalStore(str(atlas_dir / "zarr_store"))
 atlas = RaggedAtlas.open(
     db_uri=str(atlas_dir / "lance_db"),
-    cell_table_name="cells",
-    cell_schema=CellIndex,
+    obs_table_name="cells",
+    obs_schema=CellIndex,
     store=store,
 )
 ```
@@ -250,13 +250,13 @@ adata.var["global_feature_uid"] = var_df["global_feature_uid"].values
 # Create dataset record — zarr_group MUST be the auto-generated dataset uid.
 # Do NOT use accession IDs, experiment names, or feature spaces as zarr_group.
 # All dataset metadata (accession, organism, cell_line, etc.) belongs in the
-# DatasetRecord fields — that is what the datasets table is for.
+# DatasetSchema fields — that is what the datasets table is for.
 dataset_uid = make_uid()
 dataset_record = DatasetSchema(
     dataset_uid=dataset_uid,
     zarr_group=dataset_uid,
     feature_space=feature_space,
-    n_cells=adata.n_obs,
+    n_rows=adata.n_obs,
     publication_uid=publication_uid,
     accession_database="GEO",
     accession_id=accession,
@@ -286,7 +286,7 @@ obs_df = pd.read_parquet(validated_obs_parquet_path)
 var_df = pl.read_csv(exp_dir / f"{feature_space}_standardized_var.csv")
 
 # Get matrix dimensions from annotation files
-n_cells = len(obs_df)
+n_rows = len(obs_df)
 n_features = len(var_df)
 
 dataset_uid = make_uid()
@@ -294,7 +294,7 @@ dataset_record = DatasetSchema(
     dataset_uid=dataset_uid,
     zarr_group=dataset_uid,
     feature_space=feature_space,
-    n_cells=n_cells,
+    n_rows=n_rows,
     publication_uid=publication_uid,
     accession_database="GEO",
     accession_id=accession,
@@ -313,7 +313,7 @@ n_ingested = add_coo_batch(
     feature_space=feature_space,
     zarr_layer="counts",
     dataset_record=dataset_record,
-    n_cells=n_cells,
+    n_rows=n_rows,
     n_features=n_features,
     # Optional: customize COO format (defaults match sciPlex: gene\tcell\tcount, 1-indexed)
     # separator="\t", gene_col=0, cell_col=1, value_col=2, one_indexed=True,
@@ -371,7 +371,7 @@ import polars as pl
 import pyarrow as pa
 from homeobox.atlas import RaggedAtlas
 from homeobox.ingestion import add_anndata_batch, add_coo_batch
-from homeobox.schema import make_uid, DatasetRecord, FeatureBaseSchema, HoxBaseSchema
+from homeobox.schema import make_uid, DatasetSchema, FeatureBaseSchema, HoxBaseSchema
 ```
 
 ## Directory Layout (Expected Input)
