@@ -84,6 +84,12 @@ class LayoutReader:
         )
         return self._var_df
 
+    def __setstate__(self, state: dict) -> None:
+        # numpy's pickle does not preserve the writeable flag — re-freeze.
+        self.__dict__.update(state)
+        if self._remap is not None:
+            self._remap.flags.writeable = False
+
 
 _EMPTY_VAR_DF = pl.DataFrame(schema={"global_feature_uid": pl.Utf8})
 
