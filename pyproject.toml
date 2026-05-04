@@ -18,7 +18,7 @@ dependencies = [
     "pylance>=2.0.0",
     "scipy",
     "numba",
-    "zarr",
+    "zarr>=3.1.0",
 ]
 
 [tool.uv.workspace]
@@ -42,14 +42,6 @@ torchvision = [
 ml = [
     "torch",
 ]
-bio = [
-    "biopython",
-    "GEOparse",
-    "gget",
-    "pronto",
-    "pubmed-parser",
-    "scanpy",
-]
 viz = [
     "marimo",
     "matplotlib",
@@ -58,21 +50,14 @@ io = [
     "boto3",
     "gcsfs",
     "s3fs",
-    "opencv-python",
-    "tifffile>=2026.3.3",
-    "imagecodecs>=2026.1.14",
 ]
 ai = [
     "anthropic",
     "pydantic-ai-slim",
 ]
 all = [
-    "homeobox[ml,bio,viz,io,ai]",
-    "datasets",
+    "homeobox[ml,viz,io,ai]",
     "duckdb",
-    "openpyxl",
-    "pandas",
-    "scikit-learn",
 ]
 examples = [
     "homeobox-examples",

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import polars as pl
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.standardization.assemblies import get_assembly_report
+from homeobox_examples.multimodal_perturbation_atlas.assemblies import get_assembly_report
 from homeobox_examples.multimodal_perturbation_atlas.schema import (
     FK_TABLE_SCHEMAS,
     DatasetPerturbationIndex,
