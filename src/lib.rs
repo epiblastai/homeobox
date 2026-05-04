@@ -42,6 +42,37 @@ use zarrs_object_store::object_store::{ObjectStore, ObjectStoreExt};
 use zarrs_object_store::AsyncObjectStore;
 
 // ---------------------------------------------------------------------------
+// Coord / stride helpers
+// ---------------------------------------------------------------------------
+
+/// C-order element strides for `shape`: `strides[-1] = 1`,
+/// `strides[i] = strides[i+1] * shape[i+1]`. Returns an empty vec for ndim 0.
+fn c_order_strides(shape: &[u64]) -> Vec<u64> {
+    let n = shape.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let mut strides = vec![1u64; n];
+    for i in (0..n - 1).rev() {
+        strides[i] = strides[i + 1] * shape[i + 1];
+    }
+    strides
+}
+
+/// Map an N-D subchunk coord to `(shard_coord, raveled sc-in-shard index)`
+/// against the per-shard subchunk grid.
+fn sc_to_shard(sc: &[u64], cps_shape: &[u64], cps_strides: &[u64]) -> (Vec<u64>, usize) {
+    let n = sc.len();
+    let mut shard_coord = vec![0u64; n];
+    let mut sc_flat: u64 = 0;
+    for a in 0..n {
+        shard_coord[a] = sc[a] / cps_shape[a];
+        sc_flat += (sc[a] % cps_shape[a]) * cps_strides[a];
+    }
+    (shard_coord, sc_flat as usize)
+}
+
+// ---------------------------------------------------------------------------
 // Shared sharding metadata extraction
 // ---------------------------------------------------------------------------
 
@@ -106,13 +137,7 @@ pub(crate) fn extract_sharding_meta<T>(
         .map(|d| d.get() as usize)
         .product();
 
-    let mut array_strides = vec![0u64; ndim];
-    if ndim > 0 {
-        array_strides[ndim - 1] = 1;
-        for i in (0..ndim - 1).rev() {
-            array_strides[i] = array_strides[i + 1] * array_shape[i + 1];
-        }
-    }
+    let array_strides = c_order_strides(&array_shape);
 
     let codec_chain = array.codecs();
     let a2b_codec = codec_chain.array_to_bytes_codec();
@@ -206,6 +231,8 @@ struct RustBatchReader {
     index_codecs: Arc<CodecChain>,
     /// Subchunk shape as NonZeroU64 slice (for decode calls)
     subchunk_shape: Vec<NonZeroU64>,
+    /// Subchunk shape as plain u64 (for mapping math).
+    subchunk_shape_u64: Vec<u64>,
     data_type: DataType,
     fill_value: FillValue,
     /// Size in bytes of a single element of the array dtype.
@@ -214,16 +241,18 @@ struct RustBatchReader {
     array_shape: Vec<u64>,
     /// Per-axis subchunk grid within a shard (shard_shape[i] / subchunk_shape[i]).
     chunks_per_shard_shape: Vec<u64>,
+    /// C-order element strides over chunks_per_shard_shape.
+    cps_strides: Vec<u64>,
     /// C-order element strides over array_shape.
     array_strides: Vec<u64>,
     /// Total elements per subchunk.
     subchunk_total_elems: usize,
-    /// Total subchunks per shard: prod(chunks_per_shard_shape).
-    chunks_per_shard: usize,
     /// Number of dimensions.
     ndim: usize,
     /// Encoded size of shard index in bytes.
     index_encoded_size: usize,
+    /// Index footer shape `[chunks_per_shard, 2]`, cached for shard-index decode.
+    index_shape: Vec<NonZeroU64>,
     /// Shard index cache: shard_coord (N-D) -> flat Vec<u64> of [offset, size, ...].
     /// Capped at SHARD_INDEX_CACHE_CAP entries; LRU eviction prevents unbounded growth.
     shard_index_cache: Arc<tokio::sync::Mutex<LruCache<Vec<u64>, Vec<u64>>>>,
@@ -242,12 +271,8 @@ impl RustBatchReader {
         let mut r = raveled;
         for i in 0..self.ndim {
             let stride = self.array_strides[i];
-            if stride == 0 {
-                coord[i] = 0;
-            } else {
-                coord[i] = r / stride;
-                r %= stride;
-            }
+            coord[i] = r / stride;
+            r %= stride;
         }
         coord
     }
@@ -275,27 +300,24 @@ impl RustBatchReader {
         String,
     > {
         let n = self.ndim;
+        if n == 0 {
+            return Err("cannot read ranges from 0-dimensional array".into());
+        }
         let dtype_size = self.dtype_size;
-        let subchunk_shape: Vec<u64> = self.subchunk_shape.iter().map(|d| d.get()).collect();
+        let subchunk_shape = &self.subchunk_shape_u64;
         let cps_shape = &self.chunks_per_shard_shape;
+        let cps_strides = &self.cps_strides;
         let array_shape = &self.array_shape;
 
-        // C-order strides over subchunk_shape (in elements).
-        let mut sc_strides = vec![0u64; n];
-        if n > 0 {
-            sc_strides[n - 1] = 1;
-            for i in (0..n - 1).rev() {
-                sc_strides[i] = sc_strides[i + 1] * subchunk_shape[i + 1];
-            }
-        }
+        let sc_strides = c_order_strides(subchunk_shape);
 
         let mut strip_refs: Vec<StripRef> = Vec::new();
         let mut lengths: Vec<i64> = Vec::with_capacity(starts.len());
         let mut shard_subchunks: HashMap<Vec<u64>, Vec<usize>> = HashMap::new();
         let mut running_bytes: usize = 0;
 
-        let d_last = if n > 0 { array_shape[n - 1] } else { 1 };
-        let q_last = if n > 0 { subchunk_shape[n - 1] } else { 1 };
+        let d_last = array_shape[n - 1];
+        let q_last = subchunk_shape[n - 1];
 
         for i in 0..starts.len() {
             if starts[i] < 0 || ends[i] < 0 {
@@ -315,10 +337,6 @@ impl RustBatchReader {
             let coord = self.unravel(s);
             let strip_len = e - s;
 
-            // Validate last-axis-contiguous: strip fits within a single last-axis row.
-            if n == 0 {
-                return Err("cannot read ranges from 0-dimensional array".into());
-            }
             if coord[n - 1] + strip_len > d_last {
                 return Err(format!(
                     "range {i} [{s}, {e}) crosses last-axis boundary (coord[-1]={}, strip_len={}, D_last={})",
@@ -328,55 +346,33 @@ impl RustBatchReader {
 
             lengths.push(strip_len as i64);
 
-            // Subchunk coords along leading axes (shared by every strip-subchunk).
             let mut sc_leading = vec![0u64; n - 1];
-            for a in 0..n - 1 {
-                sc_leading[a] = coord[a] / subchunk_shape[a];
-            }
-            // Offset (in subchunk-local coords) along leading axes.
             let mut in_sc_leading = vec![0u64; n - 1];
             for a in 0..n - 1 {
+                sc_leading[a] = coord[a] / subchunk_shape[a];
                 in_sc_leading[a] = coord[a] % subchunk_shape[a];
             }
 
             let first_sc_last = coord[n - 1] / q_last;
             let last_sc_last = (coord[n - 1] + strip_len - 1) / q_last;
 
+            let mut sc = Vec::with_capacity(n);
+            sc.extend_from_slice(&sc_leading);
+            sc.push(0);
+
             for sc_last in first_sc_last..=last_sc_last {
-                // Full subchunk coord.
-                let mut sc = Vec::with_capacity(n);
-                sc.extend_from_slice(&sc_leading);
-                sc.push(sc_last);
+                sc[n - 1] = sc_last;
+                let (shard_coord, sc_flat_in_shard) = sc_to_shard(&sc, cps_shape, cps_strides);
 
-                // Shard coord and subchunk-in-shard coord.
-                let mut shard_coord = vec![0u64; n];
-                let mut sc_in_shard = vec![0u64; n];
-                for a in 0..n {
-                    shard_coord[a] = sc[a] / cps_shape[a];
-                    sc_in_shard[a] = sc[a] % cps_shape[a];
-                }
-
-                // Flat index into shard footer (C-order over cps_shape).
-                let mut sc_flat: u64 = 0;
-                let mut cps_stride: u64 = 1;
-                for a in (0..n).rev() {
-                    sc_flat += sc_in_shard[a] * cps_stride;
-                    cps_stride *= cps_shape[a];
-                }
-                let sc_flat_in_shard = sc_flat as usize;
-
-                // Strip bounds along last axis within this subchunk.
                 let sc_last_base = sc_last * q_last;
                 let strip_lo = coord[n - 1].max(sc_last_base) - sc_last_base;
                 let strip_hi =
                     (coord[n - 1] + strip_len).min(sc_last_base + q_last) - sc_last_base;
 
-                // Raveled element offset within the decoded subchunk.
-                let mut in_sc_offset: u64 = 0;
+                let mut in_sc_offset: u64 = strip_lo; // sc_strides[n-1] = 1
                 for a in 0..n - 1 {
                     in_sc_offset += in_sc_leading[a] * sc_strides[a];
                 }
-                in_sc_offset += strip_lo; // sc_strides[n-1] = 1
 
                 let byte_start = (in_sc_offset as usize) * dtype_size;
                 let byte_len = ((strip_hi - strip_lo) as usize) * dtype_size;
@@ -397,7 +393,6 @@ impl RustBatchReader {
             }
         }
 
-        // Deduplicate subchunk lists per shard.
         for subchunks in shard_subchunks.values_mut() {
             subchunks.sort_unstable();
             subchunks.dedup();
@@ -442,39 +437,18 @@ impl RustBatchReader {
             ));
         }
         let num_boxes = min_corners.len() / k;
-
-        let dtype_size = self.dtype_size;
-        let subchunk_shape: Vec<u64> =
-            self.subchunk_shape.iter().map(|d| d.get()).collect();
-        let cps_shape = &self.chunks_per_shard_shape;
-        let array_shape = &self.array_shape;
-
-        // Derive box_shape from box 0 and validate uniformity + bounds for all boxes.
         if num_boxes == 0 {
             return Ok((Vec::new(), HashMap::new(), 0));
         }
+
+        let dtype_size = self.dtype_size;
+        let subchunk_shape = &self.subchunk_shape_u64;
+        let cps_shape = &self.chunks_per_shard_shape;
+        let cps_strides = &self.cps_strides;
+        let array_shape = &self.array_shape;
+
+        // Validate all boxes against array bounds and uniform shape; box 0 sets box_shape.
         let mut box_shape = vec![0u64; k];
-        for a in 0..k {
-            let lo = min_corners[a];
-            let hi = max_corners[a];
-            if lo < 0 {
-                return Err(format!("box 0 axis {a}: negative min_corner {lo}"));
-            }
-            if hi < lo {
-                return Err(format!("box 0 axis {a}: max_corner {hi} < min_corner {lo}"));
-            }
-            let extent = (hi - lo) as u64;
-            if extent == 0 {
-                return Err(format!("box 0 axis {a}: zero extent"));
-            }
-            if extent > array_shape[a] {
-                return Err(format!(
-                    "box 0 axis {a}: extent {extent} exceeds array extent {}",
-                    array_shape[a]
-                ));
-            }
-            box_shape[a] = extent;
-        }
         for b in 0..num_boxes {
             for a in 0..k {
                 let lo = min_corners[b * k + a];
@@ -487,36 +461,34 @@ impl RustBatchReader {
                         "box {b} axis {a}: max_corner {hi} < min_corner {lo}"
                     ));
                 }
-                if (hi - lo) as u64 != box_shape[a] {
-                    return Err(format!(
-                        "non-uniform box shape: box 0 axis {a} = {}, box {b} axis {a} = {}",
-                        box_shape[a],
-                        hi - lo
-                    ));
-                }
                 if (hi as u64) > array_shape[a] {
                     return Err(format!(
                         "box {b} axis {a}: max_corner {hi} exceeds array extent {}",
                         array_shape[a]
                     ));
                 }
+                let extent = (hi - lo) as u64;
+                if b == 0 {
+                    if extent == 0 {
+                        return Err(format!("box 0 axis {a}: zero extent"));
+                    }
+                    box_shape[a] = extent;
+                } else if extent != box_shape[a] {
+                    return Err(format!(
+                        "non-uniform box shape: box 0 axis {a} = {}, box {b} axis {a} = {extent}",
+                        box_shape[a]
+                    ));
+                }
             }
         }
 
-        // Full output shape (per box) = (*box_shape, *trailing_shape).
         let mut out_shape = Vec::with_capacity(n);
         out_shape.extend_from_slice(&box_shape);
         out_shape.extend_from_slice(&array_shape[k..]);
 
-        // C-order strides (in elements).
-        let mut out_strides = vec![0u64; n];
-        let mut sc_strides = vec![0u64; n];
-        out_strides[n - 1] = 1;
-        sc_strides[n - 1] = 1;
-        for a in (0..n - 1).rev() {
-            out_strides[a] = out_strides[a + 1] * out_shape[a + 1];
-            sc_strides[a] = sc_strides[a + 1] * subchunk_shape[a + 1];
-        }
+        let out_strides = c_order_strides(&out_shape);
+        let sc_strides = c_order_strides(subchunk_shape);
+
         let box_elems: u64 = out_shape.iter().product();
         let box_bytes = (box_elems as usize) * dtype_size;
         let total_bytes = box_bytes * num_boxes;
@@ -524,21 +496,16 @@ impl RustBatchReader {
         let mut strip_refs: Vec<StripRef> = Vec::new();
         let mut shard_subchunks: HashMap<Vec<u64>, Vec<usize>> = HashMap::new();
 
-        // Per-box N-D bounds (reused across iterations).
+        // Trailing axes [k..n) are fully included.
         let mut box_lo = vec![0u64; n];
         let mut box_hi = vec![0u64; n];
-        // Trailing axes are fixed: [0, array_shape[a]).
         for a in k..n {
-            box_lo[a] = 0;
             box_hi[a] = array_shape[a];
         }
 
-        // Reused buffers (cleared per subchunk iteration).
         let mut sc_lo = vec![0u64; n];
         let mut sc_hi = vec![0u64; n];
         let mut sc = vec![0u64; n];
-        let mut shard_coord = vec![0u64; n];
-        let mut sc_in_shard = vec![0u64; n];
         let mut inter_lo = vec![0u64; n];
         let mut inter_hi = vec![0u64; n];
         let mut inter_shape = vec![0u64; n];
@@ -550,7 +517,6 @@ impl RustBatchReader {
                 box_hi[a] = max_corners[b * k + a] as u64;
             }
 
-            // Subchunk bounding box (inclusive..exclusive).
             for a in 0..n {
                 sc_lo[a] = box_lo[a] / subchunk_shape[a];
                 sc_hi[a] = (box_hi[a] - 1) / subchunk_shape[a] + 1;
@@ -558,20 +524,8 @@ impl RustBatchReader {
             }
 
             loop {
-                // shard_coord / sc_in_shard / sc_flat_in_shard.
-                for a in 0..n {
-                    shard_coord[a] = sc[a] / cps_shape[a];
-                    sc_in_shard[a] = sc[a] % cps_shape[a];
-                }
-                let mut sc_flat: u64 = 0;
-                let mut cps_stride: u64 = 1;
-                for a in (0..n).rev() {
-                    sc_flat += sc_in_shard[a] * cps_stride;
-                    cps_stride *= cps_shape[a];
-                }
-                let sc_flat_in_shard = sc_flat as usize;
+                let (shard_coord, sc_flat_in_shard) = sc_to_shard(&sc, cps_shape, cps_strides);
 
-                // Intersection of box with this subchunk (global coords).
                 for a in 0..n {
                     let sc_base = sc[a] * subchunk_shape[a];
                     let sc_end = sc_base + subchunk_shape[a];
@@ -580,29 +534,25 @@ impl RustBatchReader {
                     inter_shape[a] = inter_hi[a] - inter_lo[a];
                 }
 
-                // Find pivot: largest prefix of axes 0..pivot that are outer-looped;
-                // axes `pivot+1..n-1` must each fully cover both subchunk and output.
-                // We start at pivot = n - 1 and shrink inward.
+                // Pivot: outermost partial axis. Axes beyond pivot fully cover both
+                // subchunk and output, so they fuse into the strip's contiguous extent.
                 let mut pivot = n - 1;
                 while pivot > 0 {
-                    let a = pivot;
-                    if inter_shape[a] == subchunk_shape[a] && inter_shape[a] == out_shape[a] {
+                    if inter_shape[pivot] == subchunk_shape[pivot]
+                        && inter_shape[pivot] == out_shape[pivot]
+                    {
                         pivot -= 1;
                     } else {
                         break;
                     }
                 }
 
-                // Strip length (elements) = prod(inter_shape[pivot..n]).
                 let mut strip_len_elems: u64 = 1;
                 for a in pivot..n {
                     strip_len_elems *= inter_shape[a];
                 }
                 let strip_byte_len = (strip_len_elems as usize) * dtype_size;
 
-                // Base (element) offsets for the "minimum corner" of the iteration.
-                // Contributions from axes 0..=pivot (axes >pivot contribute 0 since
-                // inter_lo[a] == sc_base[a] == box_lo[a] when inter fully covers).
                 let mut base_in_sc_elems: u64 = 0;
                 let mut base_out_elems: u64 = 0;
                 for a in 0..=pivot {
@@ -611,63 +561,47 @@ impl RustBatchReader {
                     base_out_elems += (inter_lo[a] - box_lo[a]) * out_strides[a];
                 }
 
-                // Register this subchunk once per visit (dedup afterwards).
                 shard_subchunks
                     .entry(shard_coord.clone())
                     .or_default()
                     .push(sc_flat_in_shard);
 
-                if pivot == 0 {
+                // Enumerate coords on axes 0..pivot (empty when pivot == 0 → one strip).
+                let mut coord = vec![0u64; pivot];
+                for a in 0..pivot {
+                    coord[a] = inter_lo[a];
+                }
+                loop {
+                    let mut delta_in_sc: u64 = 0;
+                    let mut delta_out: u64 = 0;
+                    for a in 0..pivot {
+                        let off = coord[a] - inter_lo[a];
+                        delta_in_sc += off * sc_strides[a];
+                        delta_out += off * out_strides[a];
+                    }
                     strip_refs.push(StripRef {
                         shard_coord: shard_coord.clone(),
                         sc_flat_in_shard,
-                        byte_start: (base_in_sc_elems as usize) * dtype_size,
+                        byte_start: ((base_in_sc_elems + delta_in_sc) as usize) * dtype_size,
                         byte_len: strip_byte_len,
                         out_byte_offset: box_out_byte_base
-                            + (base_out_elems as usize) * dtype_size,
+                            + ((base_out_elems + delta_out) as usize) * dtype_size,
                     });
-                } else {
-                    // Enumerate coords on axes 0..pivot. Maintain running element
-                    // offsets to avoid recomputing from scratch per iteration.
-                    let mut coord = vec![0u64; pivot];
-                    for a in 0..pivot {
-                        coord[a] = inter_lo[a];
-                    }
-                    loop {
-                        let mut delta_in_sc: u64 = 0;
-                        let mut delta_out: u64 = 0;
-                        for a in 0..pivot {
-                            let off = coord[a] - inter_lo[a];
-                            delta_in_sc += off * sc_strides[a];
-                            delta_out += off * out_strides[a];
-                        }
-                        strip_refs.push(StripRef {
-                            shard_coord: shard_coord.clone(),
-                            sc_flat_in_shard,
-                            byte_start: ((base_in_sc_elems + delta_in_sc) as usize)
-                                * dtype_size,
-                            byte_len: strip_byte_len,
-                            out_byte_offset: box_out_byte_base
-                                + ((base_out_elems + delta_out) as usize) * dtype_size,
-                        });
 
-                        // Increment coord (last axis fastest).
-                        let mut carry = true;
-                        for a in (0..pivot).rev() {
-                            coord[a] += 1;
-                            if coord[a] < inter_hi[a] {
-                                carry = false;
-                                break;
-                            }
-                            coord[a] = inter_lo[a];
-                        }
-                        if carry {
+                    let mut carry = true;
+                    for a in (0..pivot).rev() {
+                        coord[a] += 1;
+                        if coord[a] < inter_hi[a] {
+                            carry = false;
                             break;
                         }
+                        coord[a] = inter_lo[a];
+                    }
+                    if carry {
+                        break;
                     }
                 }
 
-                // Advance subchunk coord (C-order).
                 let mut carry = true;
                 for a in (0..n).rev() {
                     sc[a] += 1;
@@ -715,7 +649,7 @@ impl RustBatchReader {
                 let cache = self.shard_index_cache.clone();
                 let index_codecs = self.index_codecs.clone();
                 let codec_options = self.codec_options.clone();
-                let chunks_per_shard = self.chunks_per_shard;
+                let index_shape = self.index_shape.clone();
                 let index_encoded_size = self.index_encoded_size;
 
                 tokio::spawn(async move {
@@ -723,7 +657,6 @@ impl RustBatchReader {
                     let path = ObjectPath::from(store_key.to_string());
                     let shard_label = format!("{shard_coord:?}");
 
-                    // Fetch or cache shard index
                     let shard_index = {
                         let mut cache_guard = cache.lock().await;
                         if let Some(idx) = cache_guard.get(&shard_coord) {
@@ -741,10 +674,6 @@ impl RustBatchReader {
                                 .await
                                 .map_err(|e| format!("GET index shard {shard_label}: {e}"))?;
 
-                            let index_shape: Vec<NonZeroU64> = vec![
-                                NonZeroU64::new(chunks_per_shard as u64).unwrap(),
-                                NonZeroU64::new(2).unwrap(),
-                            ];
                             let uint64_dt = zarrs::array::data_type::uint64();
                             let uint64_fv = FillValue::from(u64::MAX);
                             let decoded_index = index_codecs
@@ -814,8 +743,7 @@ impl RustBatchReader {
         for task in shard_tasks {
             let (compressed, fills) = task
                 .await
-                .map_err(|e| format!("shard task join: {e}"))?
-                .map_err(|e| e)?;
+                .map_err(|e| format!("shard task join: {e}"))??;
             all_compressed.extend(compressed);
             all_fills.extend(fills);
         }
@@ -939,22 +867,32 @@ impl RustBatchReader {
 
         let codec_options = CodecOptions::default();
 
+        let subchunk_shape_u64: Vec<u64> =
+            meta.subchunk_shape.iter().map(|d| d.get()).collect();
+        let cps_strides = c_order_strides(&meta.chunks_per_shard_shape);
+        let index_shape: Vec<NonZeroU64> = vec![
+            NonZeroU64::new(meta.chunks_per_shard as u64).unwrap(),
+            NonZeroU64::new(2).unwrap(),
+        ];
+
         Ok(Self {
             array: Arc::new(array),
             store,
             inner_codecs: meta.inner_codecs,
             index_codecs: meta.index_codecs,
             subchunk_shape: meta.subchunk_shape,
+            subchunk_shape_u64,
             data_type: meta.data_type,
             fill_value: meta.fill_value,
             dtype_size: meta.dtype_size,
             array_shape: meta.array_shape,
             chunks_per_shard_shape: meta.chunks_per_shard_shape,
+            cps_strides,
             array_strides: meta.array_strides,
             subchunk_total_elems: meta.subchunk_total_elems,
-            chunks_per_shard: meta.chunks_per_shard,
             ndim: meta.ndim,
             index_encoded_size: meta.index_encoded_size,
+            index_shape,
             shard_index_cache: Arc::new(tokio::sync::Mutex::new(
                 LruCache::new(NonZeroUsize::new(SHARD_INDEX_CACHE_CAP).unwrap()),
             )),

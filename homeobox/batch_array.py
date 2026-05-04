@@ -38,11 +38,15 @@ class BatchAsyncArray(AsyncArray):
     async def read_ranges(
         self, starts: np.ndarray, ends: np.ndarray
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Read element ranges from the sharded array.
+        """Read raveled element ranges from the sharded array.
 
         Parameters
         ----------
-        starts, ends : 1-D int64 arrays of element start/end positions.
+        starts, ends : 1-D int64 arrays of raveled element indices in C-order
+            over the full N-D array shape. For a 1-D array this is identical
+            to axis-0 positions. Each range must be last-axis-contiguous
+            (stay within a single last-axis row) — callers reading an N-D
+            region decompose it into one range per last-axis strip.
 
         Returns
         -------
@@ -57,6 +61,29 @@ class BatchAsyncArray(AsyncArray):
             ends.astype(np.int64),
         )
         return np.frombuffer(raw_bytes, dtype=self._native_dtype), lengths
+
+    async def read_boxes(self, min_corners: np.ndarray, max_corners: np.ndarray) -> np.ndarray:
+        """Read a batch of N-D uniform-shape bounding boxes.
+
+        Parameters
+        ----------
+        min_corners, max_corners : 2-D int64 arrays of shape ``(B, k)`` with
+            ``1 <= k <= ndim``. All boxes must share the same shape. Trailing
+            axes ``k..ndim-1`` are fully included.
+
+        Returns
+        -------
+        Flat 1-D ndarray of the array's native dtype, sized for
+        ``(B, *box_shape, *trailing_shape)`` in C-order. Caller reshapes.
+        """
+        loop = asyncio.get_running_loop()
+        raw_bytes = await loop.run_in_executor(
+            None,
+            self._rust_reader.read_boxes,
+            np.ascontiguousarray(min_corners, dtype=np.int64),
+            np.ascontiguousarray(max_corners, dtype=np.int64),
+        )
+        return np.frombuffer(raw_bytes, dtype=self._native_dtype)
 
 
 class BatchArray(Array):
@@ -77,11 +104,15 @@ class BatchArray(Array):
         return cls(async_array)
 
     def read_ranges(self, starts: np.ndarray, ends: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Read element ranges from the sharded array.
+        """Read raveled element ranges from the sharded array.
 
         Parameters
         ----------
-        starts, ends : 1-D int64 arrays of element start/end positions.
+        starts, ends : 1-D int64 arrays of raveled element indices in C-order
+            over the full N-D array shape. For a 1-D array this is identical
+            to axis-0 positions. Each range must be last-axis-contiguous
+            (stay within a single last-axis row) — callers reading an N-D
+            region decompose it into one range per last-axis strip.
 
         Returns
         -------
@@ -89,3 +120,7 @@ class BatchArray(Array):
         lengths[i] = number of elements in range i.
         """
         return sync(self._async_array.read_ranges(starts, ends))
+
+    def read_boxes(self, min_corners: np.ndarray, max_corners: np.ndarray) -> np.ndarray:
+        """Synchronous wrapper around :meth:`BatchAsyncArray.read_boxes`."""
+        return sync(self._async_array.read_boxes(min_corners, max_corners))
