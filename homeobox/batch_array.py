@@ -62,28 +62,40 @@ class BatchAsyncArray(AsyncArray):
         )
         return np.frombuffer(raw_bytes, dtype=self._native_dtype), lengths
 
-    async def read_boxes(self, min_corners: np.ndarray, max_corners: np.ndarray) -> np.ndarray:
-        """Read a batch of N-D uniform-shape bounding boxes.
+    async def read_boxes(
+        self, min_corners: np.ndarray, max_corners: np.ndarray
+    ) -> list[np.ndarray]:
+        """Read a batch of N-D bounding boxes.
 
         Parameters
         ----------
         min_corners, max_corners : 2-D int64 arrays of shape ``(B, k)`` with
-            ``1 <= k <= ndim``. All boxes must share the same shape. Trailing
-            axes ``k..ndim-1`` are fully included.
+            ``1 <= k <= ndim``. Boxes may have different shapes. Trailing axes
+            ``k..ndim-1`` are fully included.
 
         Returns
         -------
-        Flat 1-D ndarray of the array's native dtype, sized for
-        ``(B, *box_shape, *trailing_shape)`` in C-order. Caller reshapes.
+        List of ndarrays, one per box, each shaped as
+        ``(*box_shape_for_box, *trailing_shape)``.
         """
         loop = asyncio.get_running_loop()
-        raw_bytes = await loop.run_in_executor(
+        raw_bytes, lengths, shapes = await loop.run_in_executor(
             None,
             self._rust_reader.read_boxes,
             np.ascontiguousarray(min_corners, dtype=np.int64),
             np.ascontiguousarray(max_corners, dtype=np.int64),
         )
-        return np.frombuffer(raw_bytes, dtype=self._native_dtype)
+        flat = np.frombuffer(raw_bytes, dtype=self._native_dtype)
+        lengths = np.asarray(lengths, dtype=np.intp)
+        shapes = np.asarray(shapes, dtype=np.intp)
+
+        crops = []
+        offset = 0
+        for length, shape in zip(lengths, shapes, strict=True):
+            end = offset + int(length)
+            crops.append(flat[offset:end].reshape(tuple(int(d) for d in shape)))
+            offset = end
+        return crops
 
 
 class BatchArray(Array):
@@ -121,6 +133,6 @@ class BatchArray(Array):
         """
         return sync(self._async_array.read_ranges(starts, ends))
 
-    def read_boxes(self, min_corners: np.ndarray, max_corners: np.ndarray) -> np.ndarray:
+    def read_boxes(self, min_corners: np.ndarray, max_corners: np.ndarray) -> list[np.ndarray]:
         """Synchronous wrapper around :meth:`BatchAsyncArray.read_boxes`."""
         return sync(self._async_array.read_boxes(min_corners, max_corners))

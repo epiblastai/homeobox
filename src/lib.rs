@@ -12,6 +12,7 @@ use lru::LruCache;
 /// Maximum number of shard indexes cached per RustBatchReader.
 /// Each entry is `chunks_per_shard × 2 × 8` bytes (~16 KB at the default
 /// of 1024 chunks/shard), so 256 entries ≈ 4 MB per array reader.
+/// TODO: Can this read from an environment variable, when present, instead?
 const SHARD_INDEX_CACHE_CAP: usize = 256;
 
 use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
@@ -401,7 +402,7 @@ impl RustBatchReader {
         Ok((strip_refs, lengths, shard_subchunks, running_bytes))
     }
 
-    /// Phase 1 (boxes): Map a batch of uniform-shape N-D boxes to per-subchunk
+    /// Phase 1 (boxes): Map a batch of N-D boxes to per-subchunk
     /// strips. Unlike `map_ranges_to_subchunks`, strips may span multiple
     /// last-axis rows when the inner axes of the intersection are fully
     /// covered on both source (subchunk) and destination (output) sides — a
@@ -410,16 +411,26 @@ impl RustBatchReader {
     ///
     /// `min_corners`/`max_corners` are flat `(B * k)` arrays. The leading `k`
     /// array axes are specified by the box; trailing axes `k..n` are fully
-    /// included. All boxes must share the same shape (validated).
+    /// included. Boxes may have different shapes.
     ///
-    /// Returns `(strip_refs, shard_subchunks, total_bytes)` for a flat output
-    /// of shape `(B, *box_shape, *trailing_shape)` in C-order.
+    /// Returns `(strip_refs, shard_subchunks, total_bytes, lengths, shapes)` for
+    /// a flat output containing each crop concatenated in input order. `lengths`
+    /// are element counts, and `shapes` are the per-crop output shapes.
     fn map_boxes_to_subchunks(
         &self,
         min_corners: &[i64],
         max_corners: &[i64],
         k: usize,
-    ) -> Result<(Vec<StripRef>, HashMap<Vec<u64>, Vec<usize>>, usize), String> {
+    ) -> Result<
+        (
+            Vec<StripRef>,
+            HashMap<Vec<u64>, Vec<usize>>,
+            usize,
+            Vec<i64>,
+            Vec<Vec<i64>>,
+        ),
+        String,
+    > {
         let n = self.ndim;
         if n == 0 {
             return Err("cannot read boxes from 0-dimensional array".into());
@@ -438,7 +449,7 @@ impl RustBatchReader {
         }
         let num_boxes = min_corners.len() / k;
         if num_boxes == 0 {
-            return Ok((Vec::new(), HashMap::new(), 0));
+            return Ok((Vec::new(), HashMap::new(), 0, Vec::new(), Vec::new()));
         }
 
         let dtype_size = self.dtype_size;
@@ -447,9 +458,14 @@ impl RustBatchReader {
         let cps_strides = &self.cps_strides;
         let array_shape = &self.array_shape;
 
-        // Validate all boxes against array bounds and uniform shape; box 0 sets box_shape.
-        let mut box_shape = vec![0u64; k];
+        // Validate all boxes against array bounds and compute per-crop output metadata.
+        let mut output_shapes: Vec<Vec<u64>> = Vec::with_capacity(num_boxes);
+        let mut output_shape_rows: Vec<Vec<i64>> = Vec::with_capacity(num_boxes);
+        let mut lengths: Vec<i64> = Vec::with_capacity(num_boxes);
+        let mut output_byte_offsets: Vec<usize> = Vec::with_capacity(num_boxes);
+        let mut total_bytes: usize = 0;
         for b in 0..num_boxes {
+            let mut out_shape = vec![0u64; n];
             for a in 0..k {
                 let lo = min_corners[b * k + a];
                 let hi = max_corners[b * k + a];
@@ -468,30 +484,42 @@ impl RustBatchReader {
                     ));
                 }
                 let extent = (hi - lo) as u64;
-                if b == 0 {
-                    if extent == 0 {
-                        return Err(format!("box 0 axis {a}: zero extent"));
-                    }
-                    box_shape[a] = extent;
-                } else if extent != box_shape[a] {
-                    return Err(format!(
-                        "non-uniform box shape: box 0 axis {a} = {}, box {b} axis {a} = {extent}",
-                        box_shape[a]
-                    ));
+                if extent == 0 {
+                    return Err(format!("box {b} axis {a}: zero extent"));
                 }
+                out_shape[a] = extent;
             }
+            out_shape[k..n].copy_from_slice(&array_shape[k..n]);
+
+            let box_elems: u64 = out_shape.iter().product();
+            let box_elems_usize = usize::try_from(box_elems).map_err(|_| {
+                format!("box {b}: element count {box_elems} does not fit usize")
+            })?;
+            let box_bytes = box_elems_usize.checked_mul(dtype_size).ok_or_else(|| {
+                format!("box {b}: byte count overflows usize")
+            })?;
+            let box_len = i64::try_from(box_elems).map_err(|_| {
+                format!("box {b}: element count {box_elems} does not fit int64")
+            })?;
+            let shape_row: Vec<i64> = out_shape
+                .iter()
+                .map(|&d| {
+                    i64::try_from(d).map_err(|_| {
+                        format!("box {b}: shape dimension {d} does not fit int64")
+                    })
+                })
+                .collect::<Result<_, _>>()?;
+
+            output_byte_offsets.push(total_bytes);
+            total_bytes = total_bytes.checked_add(box_bytes).ok_or_else(|| {
+                "total read_boxes output byte count overflows usize".to_string()
+            })?;
+            output_shapes.push(out_shape);
+            output_shape_rows.push(shape_row);
+            lengths.push(box_len);
         }
 
-        let mut out_shape = Vec::with_capacity(n);
-        out_shape.extend_from_slice(&box_shape);
-        out_shape.extend_from_slice(&array_shape[k..]);
-
-        let out_strides = c_order_strides(&out_shape);
         let sc_strides = c_order_strides(subchunk_shape);
-
-        let box_elems: u64 = out_shape.iter().product();
-        let box_bytes = (box_elems as usize) * dtype_size;
-        let total_bytes = box_bytes * num_boxes;
 
         let mut strip_refs: Vec<StripRef> = Vec::new();
         let mut shard_subchunks: HashMap<Vec<u64>, Vec<usize>> = HashMap::new();
@@ -511,7 +539,12 @@ impl RustBatchReader {
         let mut inter_shape = vec![0u64; n];
 
         for b in 0..num_boxes {
-            let box_out_byte_base = b * box_bytes;
+            let out_shape = &output_shapes[b];
+            if lengths[b] == 0 {
+                continue;
+            }
+            let out_strides = c_order_strides(out_shape);
+            let box_out_byte_base = output_byte_offsets[b];
             for a in 0..k {
                 box_lo[a] = min_corners[b * k + a] as u64;
                 box_hi[a] = max_corners[b * k + a] as u64;
@@ -622,7 +655,13 @@ impl RustBatchReader {
             subchunks.dedup();
         }
 
-        Ok((strip_refs, shard_subchunks, total_bytes))
+        Ok((
+            strip_refs,
+            shard_subchunks,
+            total_bytes,
+            lengths,
+            output_shape_rows,
+        ))
     }
 
     /// Phase 2: Fetch shard indexes and compressed subchunk data from the store.
@@ -954,26 +993,26 @@ impl RustBatchReader {
         Ok((flat_array, lengths_array))
     }
 
-    /// Read a batch of N-D uniform-shape bounding boxes from the sharded array.
+    /// Read a batch of N-D bounding boxes from the sharded array.
     ///
     /// Parameters
     /// ----------
     /// min_corners, max_corners : 2-D int64 arrays of shape ``(B, k)``
-    ///     where ``1 <= k <= ndim``. The leading ``k`` array axes are
-    ///     specified by the box; trailing axes ``k..ndim-1`` are fully
-    ///     included. All boxes must share the same shape
-    ///     (``max_corners[b] - min_corners[b]``) across ``b``.
+    ///     where ``1 <= k <= ndim``. The leading ``k`` array axes are specified
+    ///     by the box; trailing axes ``k..ndim-1`` are fully included. Boxes may
+    ///     have different shapes.
     ///
     /// Returns
     /// -------
-    /// flat bytes for an array of shape ``(B, *box_shape, *trailing_shape)``
-    /// in C-order. Callers reshape on the Python side.
+    /// ``(flat_data, lengths, shapes)`` where ``flat_data`` is the concatenated
+    /// raw bytes for all crops in input order, ``lengths[b]`` is crop ``b``'s
+    /// element count, and ``shapes[b]`` is crop ``b``'s full output shape.
     fn read_boxes<'py>(
         &self,
         py: Python<'py>,
         min_corners: &Bound<'py, PyArray2<i64>>,
         max_corners: &Bound<'py, PyArray2<i64>>,
-    ) -> PyResult<Py<PyArray1<u8>>> {
+    ) -> PyResult<(Py<PyArray1<u8>>, Py<PyArray1<i64>>, Py<PyArray2<i64>>)> {
         let min_shape = min_corners.shape();
         let max_shape = max_corners.shape();
         if min_shape != max_shape {
@@ -992,7 +1031,7 @@ impl RustBatchReader {
             .as_slice()
             .map_err(|e| PyRuntimeError::new_err(format!("max_corners not contiguous: {e}")))?;
 
-        let (strip_refs, shard_subchunks, total_bytes) = self
+        let (strip_refs, shard_subchunks, total_bytes, lengths_vec, shapes_vec) = self
             .map_boxes_to_subchunks(min_slice, max_slice, k)
             .map_err(PyRuntimeError::new_err)?;
 
@@ -1007,7 +1046,12 @@ impl RustBatchReader {
             })
             .map_err(|e| PyRuntimeError::new_err(e))?;
 
-        Ok(PyArray1::from_vec(py, flat_data).into())
+        let flat_array = PyArray1::from_vec(py, flat_data).into();
+        let lengths_array = PyArray1::from_vec(py, lengths_vec).into();
+        let shapes_array = PyArray2::from_vec2(py, &shapes_vec)
+            .map_err(|e| PyRuntimeError::new_err(format!("read_boxes shapes: {e}")))?
+            .into();
+        Ok((flat_array, lengths_array, shapes_array))
     }
 }
 
