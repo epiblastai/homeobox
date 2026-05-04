@@ -12,6 +12,8 @@ from homeobox.group_specs import PointerKind, get_spec, registered_feature_space
 from homeobox.schema import (
     AUTO_FIELDS,
     POINTER_FEATURE_SPACE_METADATA_KEY,
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
     HoxBaseSchema,
     PointerField,
     SparseZarrPointer,
@@ -42,9 +44,14 @@ def _extract_pointer_fields(
                 f"{schema_cls.__name__}.{name}: pointer field missing feature_space "
                 f"metadata; declare with PointerField.declare(feature_space=...)"
             )
-        pointer_kind = (
-            PointerKind.SPARSE if pointer_type is SparseZarrPointer else PointerKind.DENSE
-        )
+        if pointer_type is SparseZarrPointer:
+            pointer_kind = PointerKind.SPARSE
+        elif pointer_type is DenseZarrPointer:
+            pointer_kind = PointerKind.DENSE
+        elif pointer_type is DiscreteSpatialPointer:
+            pointer_kind = PointerKind.DISCRETE_SPATIAL
+        else:
+            raise TypeError(f"Field '{name}' has unrecognised pointer type {pointer_type.__name__}")
         spec = get_spec(feature_space)
         if pointer_kind is not spec.pointer_kind:
             raise TypeError(
@@ -65,6 +72,7 @@ def _extract_pointer_fields(
 
 _SPARSE_SUBFIELDS = {"zarr_group", "start", "end", "zarr_row"}
 _DENSE_SUBFIELDS = {"zarr_group", "position"}
+_DISCRETE_SPATIAL_SUBFIELDS = {"zarr_group", "min_corner", "max_corner"}
 
 
 # TODO: Move this to `schema.py`?
@@ -74,8 +82,8 @@ def _infer_pointer_fields_from_arrow(
     """Infer pointer fields from a obs table's Arrow schema.
 
     Detects struct columns whose sub-field names match the signatures of
-    ``SparseZarrPointer`` or ``DenseZarrPointer``, then reads the declared
-    feature_space from Arrow field metadata (key
+    ``SparseZarrPointer``, ``DenseZarrPointer``, or ``DiscreteSpatialPointer``,
+    then reads the declared feature_space from Arrow field metadata (key
     :data:`POINTER_FEATURE_SPACE_METADATA_KEY`) stamped by
     :meth:`HoxBaseSchema.to_arrow_schema`.
     """
@@ -91,6 +99,8 @@ def _infer_pointer_fields_from_arrow(
             pointer_kind = PointerKind.SPARSE
         elif _DENSE_SUBFIELDS <= sub_names:
             pointer_kind = PointerKind.DENSE
+        elif _DISCRETE_SPATIAL_SUBFIELDS <= sub_names:
+            pointer_kind = PointerKind.DISCRETE_SPATIAL
         else:
             continue
 

@@ -37,6 +37,7 @@ from homeobox.group_specs import PointerKind, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_obs,
+    _prepare_discrete_spatial_obs,
     _prepare_sparse_obs,
 )
 
@@ -237,6 +238,82 @@ def _build_dense_modality_data(
         unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
+        index_array_name="",
+        layer=layer,
+        layer_dtype=layer_dtype,
+        layers_path=layers_path,
+        present_mask=present_mask,
+        row_positions=row_positions,
+        per_row_shape=per_row_shape,
+        array_name=array_name,
+        stack_dense=stack_dense,
+    )
+    return filtered, mod_data
+
+
+def _build_discrete_spatial_modality_data(
+    atlas: "RaggedAtlas",
+    rows_indexed: pl.DataFrame,
+    pf,
+    spec,
+    layer: str,
+    n_rows: int,
+    *,
+    stack_dense: bool = True,
+) -> "tuple[pl.DataFrame, _ModalityData]":
+    """Build ``_ModalityData`` for a DiscreteSpatial pointer-field modality.
+
+    Crops are read via ``BatchAsyncArray.read_boxes``. ``stack_dense=True``
+    requires uniform crop shapes and yields a stacked ``(B, *crop_shape)``
+    ndarray; ``False`` yields a list of per-row ndarrays.
+    """
+    fs = pf.feature_space
+    filtered, groups, _box_rank = _prepare_discrete_spatial_obs(rows_indexed, pf)
+    groups = sorted(groups)
+
+    present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
+    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
+
+    group_readers: dict[str, GroupReader] = {
+        zg: GroupReader.for_worker(
+            zarr_group=zg,
+            feature_space=fs,
+            store=atlas.store,
+        )
+        for zg in groups
+    }
+
+    has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
+        spec.zarr_group_spec.layers.allowed
+    )
+    per_row_shape: tuple[int, ...] | None = None
+    array_name = ""
+
+    if has_layers:
+        layers_path = spec.zarr_group_spec.find_layers_path()
+        array_path = f"{layers_path}/{layer}"
+    else:
+        layers_path = ""
+        array_name = (
+            spec.zarr_group_spec.required_arrays[0].array_name
+            if spec.zarr_group_spec.required_arrays
+            else "data"
+        )
+        array_path = array_name
+
+    if groups:
+        reader = group_readers[groups[0]].get_array_reader(array_path)
+        layer_dtype = reader._native_dtype
+        trailing = tuple(reader.shape[_box_rank:])
+        per_row_shape = trailing or None
+    else:
+        layer_dtype = np.dtype(np.float32)
+
+    mod_data = _ModalityData(
+        kind=PointerKind.DISCRETE_SPATIAL,
+        unique_groups=groups,
+        group_readers=group_readers,
+        n_features=0,
         index_array_name="",
         layer=layer,
         layer_dtype=layer_dtype,
@@ -556,6 +633,11 @@ async def _take_group_dense(
 ) -> np.ndarray:
     """Read dense data for one zarr group.
 
+    ``starts`` / ``ends`` are positions along axis 0 (one row per pointer).
+    Trailing axes are read in full via ``read_boxes`` (rank-1 boxes), which
+    handles the multi-strip decomposition that ``read_ranges`` cannot
+    express for arrays with rank > 2.
+
     Parameters
     ----------
     row_shape:
@@ -563,13 +645,25 @@ async def _take_group_dense(
     dtype:
         Output dtype.  ``None`` means cast to float32 (legacy 2D behaviour).
     """
-    flat_data, _ = await reader.read_ranges(starts, ends)
-    out = flat_data.reshape(len(starts), *row_shape)
+    min_corners = starts.reshape(-1, 1)
+    max_corners = ends.reshape(-1, 1)
+    out = await reader.read_boxes(min_corners, max_corners, stack_uniform=True)
+    out = out.reshape(len(starts), *row_shape)
     if dtype is None:
         return out.astype(np.float32)
     return out if out.dtype == dtype else out.astype(dtype)
 
 
+# TODO: Consolidate with _take_discrete_spatial_from_pointers. Both paths now
+# route through read_boxes; dense is a strict subset (rank-1 box per row,
+# stack_uniform=True). Wrinkles to resolve before merging:
+#   - stack_dense=False here means "per-group uniform, cross-group ragged"
+#     (one shape per group); for discrete-spatial it means "per-row ragged".
+#     A unified path treats the dense case as a degenerate ragged case.
+#   - Empty-batch shape: dense knows per_row_shape and returns a (0, *shape)
+#     ndarray; discrete-spatial returns []. Pick one contract.
+#   - Drop the legacy float32 cast for the 2-D dense (per_row_shape is None)
+#     sub-case, or push it to the caller.
 async def _take_dense_from_pointers(
     groups_np: np.ndarray,
     starts: np.ndarray,
@@ -644,6 +738,73 @@ async def _take_dense_from_pointers(
     )
 
 
+async def _take_discrete_spatial_from_pointers(
+    groups_np: np.ndarray,
+    min_corners: np.ndarray,
+    max_corners: np.ndarray,
+    mod_data: _ModalityData,
+) -> "DenseBatch":
+    """Fetch a discrete-spatial batch via ``BatchAsyncArray.read_boxes``."""
+    n_present = len(groups_np)
+    if n_present == 0:
+        return DenseBatch(
+            data=[],
+            n_features=mod_data.n_features,
+            per_row_shape=mod_data.per_row_shape,
+        )
+
+    array_path = (
+        mod_data.array_name if mod_data.array_name else f"{mod_data.layers_path}/{mod_data.layer}"
+    )
+
+    sort_order = np.argsort(groups_np, kind="stable")
+    sorted_groups = groups_np[sort_order]
+    sorted_min = min_corners[sort_order]
+    sorted_max = max_corners[sort_order]
+
+    tasks: list = []
+    group_slices: list[tuple[int, int]] = []
+    pos = 0
+    for gid in np.unique(sorted_groups):
+        mask = sorted_groups == gid
+        count = int(mask.sum())
+        zg = mod_data.unique_groups[gid]
+        reader = mod_data.group_readers[zg].get_array_reader(array_path)
+        tasks.append(
+            reader.read_boxes(
+                sorted_min[mask],
+                sorted_max[mask],
+                stack_uniform=mod_data.stack_dense,
+            )
+        )
+        group_slices.append((pos, pos + count))
+        pos += count
+
+    results = await asyncio.gather(*tasks)
+    inv_sort = np.empty_like(sort_order)
+    inv_sort[sort_order] = np.arange(n_present)
+
+    if mod_data.stack_dense:
+        first = results[0]
+        out = np.empty((n_present, *first.shape[1:]), dtype=first.dtype)
+        for (s, e), arr in zip(group_slices, results, strict=True):
+            out[s:e] = arr
+        return DenseBatch(
+            data=out[inv_sort],
+            n_features=mod_data.n_features,
+            per_row_shape=mod_data.per_row_shape,
+        )
+
+    sorted_items: list[np.ndarray] = []
+    for arrs in results:
+        sorted_items.extend(arrs)
+    return DenseBatch(
+        data=[sorted_items[i] for i in inv_sort],
+        n_features=mod_data.n_features,
+        per_row_shape=mod_data.per_row_shape,
+    )
+
+
 async def _fetch_modality_from_pointers(
     groups_np: np.ndarray,
     starts: np.ndarray,
@@ -683,6 +844,25 @@ def _extract_pointers_dense(
     return groups_np, pos_arr, pos_arr + 1
 
 
+def _extract_pointers_discrete_spatial(
+    take_result: pl.DataFrame,
+    pointer_field: str,
+    unique_groups: list[str],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Extract ``(groups_np, min_corners, max_corners)`` for a discrete-spatial pointer field.
+
+    ``min_corners`` and ``max_corners`` are ``(B, k)`` int64 arrays. Box rank
+    ``k`` is uniform across rows in the modality (validated at modality build).
+    """
+    pointer_df = take_result[pointer_field].struct.unnest()
+    zg_series = pointer_df["zarr_group"]
+    groups_np = _build_groups_np(zg_series, unique_groups)
+    k = int(pointer_df["min_corner"].head(1).list.len().item())
+    min_corners = pointer_df["min_corner"].list.to_array(k).to_numpy().astype(np.int64, copy=False)
+    max_corners = pointer_df["max_corner"].list.to_array(k).to_numpy().astype(np.int64, copy=False)
+    return groups_np, min_corners, max_corners
+
+
 async def _take_multimodal(
     take_result: pl.DataFrame,
     modality_data: dict[str, _ModalityData],
@@ -703,7 +883,10 @@ async def _take_multimodal(
         # Extract pointers for ALL batch rows for this modality
         pointer_df = take_result[pf_name].struct.unnest()
         zg_series = pointer_df["zarr_group"]
-        batch_present = zg_series.is_not_null().to_numpy()
+        if mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+            batch_present = (zg_series.is_not_null() & (zg_series != "")).to_numpy()
+        else:
+            batch_present = zg_series.is_not_null().to_numpy()
 
         present_masks[fs] = batch_present
         present_indices = np.where(batch_present)[0]
@@ -715,6 +898,13 @@ async def _take_multimodal(
                     values=np.array([], dtype=mod_data.layer_dtype),
                     offsets=np.zeros(1, dtype=np.int64),
                     n_features=mod_data.n_features,
+                )
+            elif mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+                # Box dims are per-row; with zero rows there is no stacked shape to fall back on.
+                empty_modalities[fs] = DenseBatch(
+                    data=[],
+                    n_features=mod_data.n_features,
+                    per_row_shape=mod_data.per_row_shape,
                 )
             else:
                 if mod_data.per_row_shape is not None:
@@ -734,12 +924,19 @@ async def _take_multimodal(
             groups_np, starts, ends = _extract_pointers_sparse(
                 present_take, pf_name, mod_data.unique_groups
             )
+            tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
+        elif mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+            groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
+                present_take, pf_name, mod_data.unique_groups
+            )
+            tasks.append(
+                _take_discrete_spatial_from_pointers(groups_np, min_corners, max_corners, mod_data)
+            )
         else:
             groups_np, starts, ends = _extract_pointers_dense(
                 present_take, pf_name, mod_data.unique_groups
             )
-
-        tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
+            tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
         task_fs.append(fs)
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
@@ -837,6 +1034,16 @@ class UnimodalHoxDataset(_AsyncDataset):
                 wanted_globals,
                 obs_pl.height,
             )
+        elif spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            filtered, self._mod_data = _build_discrete_spatial_modality_data(
+                atlas,
+                rows_indexed,
+                pf,
+                spec,
+                layer,
+                obs_pl.height,
+                stack_dense=stack_dense,
+            )
         else:
             filtered, self._mod_data = _build_dense_modality_data(
                 atlas,
@@ -920,6 +1127,16 @@ class UnimodalHoxDataset(_AsyncDataset):
             )
             future = asyncio.run_coroutine_threadsafe(
                 _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
+                self._loop,
+            )
+        elif self._pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
+                take_result, self._pointer_field, self._mod_data.unique_groups
+            )
+            future = asyncio.run_coroutine_threadsafe(
+                _take_discrete_spatial_from_pointers(
+                    groups_np, min_corners, max_corners, self._mod_data
+                ),
                 self._loop,
             )
         else:
@@ -1053,6 +1270,19 @@ class MultimodalHoxDataset(_AsyncDataset):
                 wg = wanted_globals.get(fn) if wanted_globals is not None else None
                 _, modality_data[fn] = _build_sparse_modality_data(
                     atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
+                )
+            elif spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+                stack_dense_for_field = (
+                    stack_dense.get(fn, True) if isinstance(stack_dense, dict) else stack_dense
+                )
+                _, modality_data[fn] = _build_discrete_spatial_modality_data(
+                    atlas,
+                    rows_indexed,
+                    pf,
+                    spec,
+                    layer,
+                    self._n_rows,
+                    stack_dense=stack_dense_for_field,
                 )
             else:
                 stack_dense_for_field = (

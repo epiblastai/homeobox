@@ -11,6 +11,7 @@ from homeobox.reconstructor_base import Reconstructor
 class PointerKind(str, Enum):
     SPARSE = "sparse"
     DENSE = "dense"
+    DISCRETE_SPATIAL = "discrete_spatial"
 
 
 class ArraySpec(BaseModel):
