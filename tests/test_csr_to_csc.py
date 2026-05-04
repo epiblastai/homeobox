@@ -48,7 +48,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
     store = obstore.store.LocalStore(prefix=str(tmp_path))
     atlas = RaggedAtlas.create(
         db_uri=db_uri,
-        cell_table_name="cells",
+        obs_table_name="cells",
         cell_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
@@ -76,7 +76,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
         dataset_record=DatasetSchema(
             zarr_group=zarr_group,
             feature_space="gene_expression",
-            n_cells=n_obs,
+            n_rows=n_obs,
         ),
     )
 

@@ -28,9 +28,7 @@ from homeobox.schema import (
 
 
 def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
-    return DatasetSchema(
-        zarr_group=zarr_group, feature_space="gene_expression", n_cells=adata.n_obs
-    )
+    return DatasetSchema(zarr_group=zarr_group, feature_space="gene_expression", n_rows=adata.n_obs)
 
 
 # ---------------------------------------------------------------------------
@@ -76,8 +74,8 @@ def two_group_atlas(tmp_path):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        cell_table_name="cells",
-        cell_schema=TestCellSchema,
+        obs_table_name="cells",
+        obs_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -104,7 +102,7 @@ def two_group_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds1/gene_expression",
             feature_space="gene_expression",
-            n_cells=20,
+            n_rows=20,
         ),
     )
 
@@ -119,7 +117,7 @@ def two_group_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds2/gene_expression",
             feature_space="gene_expression",
-            n_cells=15,
+            n_rows=15,
         ),
     )
 
@@ -135,8 +133,8 @@ def single_group_atlas(tmp_path):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        cell_table_name="cells",
-        cell_schema=TestCellSchema,
+        obs_table_name="cells",
+        obs_schema=TestCellSchema,
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -161,7 +159,7 @@ def single_group_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds/gene_expression",
             feature_space="gene_expression",
-            n_cells=10,
+            n_rows=10,
         ),
     )
 
@@ -170,7 +168,7 @@ def single_group_atlas(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Tests: CellDataset basics
+# Tests: UnimodalHoxDataset basics
 # ---------------------------------------------------------------------------
 
 
@@ -185,21 +183,21 @@ def _iter_indices(n: int, batch_size: int, drop_last: bool = False):
         yield list(range(start, end))
 
 
-def test_cell_dataset_shapes(two_group_atlas):
-    """CellDataset yields SparseBatch with correct shapes."""
+def test_unimodal_dataset_shapes(two_group_atlas):
+    """UnimodalHoxDataset yields SparseBatch with correct shapes."""
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts")
+        .to_unimodal_dataset("gene_expression", "counts")
     )
 
-    assert ds.n_cells == 35
+    assert ds.n_rows == 35
     assert len(ds) == 35
     assert ds.n_features == 10
 
-    total_cells = 0
+    total_rows = 0
     n_batches = 0
-    for indices in _iter_indices(ds.n_cells, batch_size=10):
+    for indices in _iter_indices(ds.n_rows, batch_size=10):
         batch = ds.__getitems__(indices)
         assert isinstance(batch, SparseBatch)
         n = len(batch.offsets) - 1
@@ -210,37 +208,37 @@ def test_cell_dataset_shapes(two_group_atlas):
         if len(batch.indices) > 0:
             assert np.all(batch.indices >= 0)
             assert np.all(batch.indices < batch.n_features)
-        total_cells += n
+        total_rows += n
         n_batches += 1
 
-    assert total_cells == 35
+    assert total_rows == 35
     assert n_batches == 4  # ceil(35/10)
 
 
-def test_cell_dataset_drop_last(two_group_atlas):
+def test_unimodal_dataset_drop_last(two_group_atlas):
     """drop_last=True skips the last incomplete batch."""
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts")
+        .to_unimodal_dataset("gene_expression", "counts")
     )
 
-    batches = [ds.__getitems__(idxs) for idxs in _iter_indices(ds.n_cells, 10, drop_last=True)]
+    batches = [ds.__getitems__(idxs) for idxs in _iter_indices(ds.n_rows, 10, drop_last=True)]
     assert len(batches) == 3  # 35 // 10
     assert all(len(b.offsets) - 1 == 10 for b in batches)
 
 
-def test_cell_dataset_empty(two_group_atlas):
-    """CellDataset handles empty query results."""
+def test_unimodal_dataset_empty(two_group_atlas):
+    """UnimodalHoxDataset handles empty query results."""
     ds = (
         two_group_atlas.query()
         .where("tissue = 'nonexistent'")
-        .to_cell_dataset("gene_expression", "counts")
+        .to_unimodal_dataset("gene_expression", "counts")
     )
 
-    assert ds.n_cells == 0
+    assert ds.n_rows == 0
     assert len(ds) == 0
-    assert list(_iter_indices(ds.n_cells, 10)) == []
+    assert list(_iter_indices(ds.n_rows, 10)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +247,7 @@ def test_cell_dataset_empty(two_group_atlas):
 
 
 def test_round_trip_values(single_group_atlas):
-    """Data from CellDataset matches to_anndata() for a single-group atlas."""
+    """Data from UnimodalHoxDataset matches to_anndata() for a single-group atlas."""
     atlas = single_group_atlas
     q = atlas.query().feature_spaces("gene_expression")
 
@@ -258,18 +256,18 @@ def test_round_trip_values(single_group_atlas):
     ref_dense = adata.X.toarray()
     ref_uids = list(adata.obs.index)
 
-    # CellDataset path (single batch, no shuffle, with uid metadata)
-    ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
-    batch = ds.__getitems__(list(range(ds.n_cells)))
+    # UnimodalHoxDataset path (single batch, no shuffle, with uid metadata)
+    ds = q.to_unimodal_dataset("gene_expression", "counts", metadata_columns=["uid"])
+    batch = ds.__getitems__(list(range(ds.n_rows)))
 
     # Reconstruct dense from SparseBatch
-    n_cells = len(batch.offsets) - 1
-    cd_dense = np.zeros((n_cells, ds.n_features), dtype=np.float32)
-    for i in range(n_cells):
+    n_rows = len(batch.offsets) - 1
+    cd_dense = np.zeros((n_rows, ds.n_features), dtype=np.float32)
+    for i in range(n_rows):
         s, e = batch.offsets[i], batch.offsets[i + 1]
         cd_dense[i, batch.indices[s:e]] = batch.values[s:e]
 
-    # Match rows by uid (order may differ between AnnData and CellDataset)
+    # Match rows by uid (order may differ between AnnData and UnimodalHoxDataset)
     cd_uids = batch.metadata["uid"].tolist()
 
     for cd_idx, uid in enumerate(cd_uids):
@@ -277,12 +275,12 @@ def test_round_trip_values(single_group_atlas):
         np.testing.assert_allclose(
             cd_dense[cd_idx, : ref_dense.shape[1]],
             ref_dense[ref_idx],
-            err_msg=f"Mismatch for cell uid={uid}",
+            err_msg=f"Mismatch for row uid={uid}",
         )
 
 
 def test_round_trip_two_groups(two_group_atlas):
-    """Data from CellDataset matches across two zarr groups."""
+    """Data from UnimodalHoxDataset matches across two zarr groups."""
     atlas = two_group_atlas
     q = atlas.query().feature_spaces("gene_expression")
 
@@ -290,12 +288,12 @@ def test_round_trip_two_groups(two_group_atlas):
     ref_dense = adata.X.toarray()
     ref_uids = list(adata.obs.index)
 
-    ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
-    batch = ds.__getitems__(list(range(ds.n_cells)))
-    n_cells = len(batch.offsets) - 1
+    ds = q.to_unimodal_dataset("gene_expression", "counts", metadata_columns=["uid"])
+    batch = ds.__getitems__(list(range(ds.n_rows)))
+    n_rows = len(batch.offsets) - 1
 
-    cd_dense = np.zeros((n_cells, ds.n_features), dtype=np.float32)
-    for i in range(n_cells):
+    cd_dense = np.zeros((n_rows, ds.n_features), dtype=np.float32)
+    for i in range(n_rows):
         s, e = batch.offsets[i], batch.offsets[i + 1]
         cd_dense[i, batch.indices[s:e]] = batch.values[s:e]
 
@@ -306,7 +304,7 @@ def test_round_trip_two_groups(two_group_atlas):
         np.testing.assert_allclose(
             cd_dense[cd_idx, : ref_dense.shape[1]],
             ref_dense[ref_idx],
-            err_msg=f"Mismatch for cell uid={uid}",
+            err_msg=f"Mismatch for row uid={uid}",
         )
 
 
@@ -316,12 +314,12 @@ def test_round_trip_two_groups(two_group_atlas):
 
 
 def test_shuffle_with_loader(two_group_atlas):
-    """make_loader(shuffle=True) yields all cells in shuffled order."""
+    """make_loader(shuffle=True) yields all rows in shuffled order."""
     pytest.importorskip("torch")
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
+        .to_unimodal_dataset("gene_expression", "counts", metadata_columns=["uid"])
     )
     loader = make_loader(ds, batch_size=10, shuffle=True, num_workers=0)
 
@@ -329,8 +327,8 @@ def test_shuffle_with_loader(two_group_atlas):
     for batch in loader:
         uids.extend(batch.metadata["uid"].tolist())
 
-    assert len(uids) == ds.n_cells
-    assert len(set(uids)) == ds.n_cells
+    assert len(uids) == ds.n_rows
+    assert len(set(uids)) == ds.n_rows
 
 
 def test_shuffle_reproducible(two_group_atlas):
@@ -340,7 +338,7 @@ def test_shuffle_reproducible(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts", metadata_columns=["uid"])
+        .to_unimodal_dataset("gene_expression", "counts", metadata_columns=["uid"])
     )
 
     def collect(seed: int) -> list[str]:
@@ -361,13 +359,13 @@ def test_shuffle_reproducible(two_group_atlas):
 
 
 def test_metadata_columns(two_group_atlas):
-    """Metadata columns are included and aligned with cells."""
+    """Metadata columns are included and aligned with rows."""
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
+        .to_unimodal_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
     )
-    batch = ds.__getitems__(list(range(ds.n_cells)))
+    batch = ds.__getitems__(list(range(ds.n_rows)))
 
     assert batch.metadata is not None
     assert "tissue" in batch.metadata
@@ -381,9 +379,9 @@ def test_no_metadata(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts")
+        .to_unimodal_dataset("gene_expression", "counts")
     )
-    batch = ds.__getitems__(list(range(min(10, ds.n_cells))))
+    batch = ds.__getitems__(list(range(min(10, ds.n_rows))))
     assert batch.metadata is None
 
 
@@ -398,7 +396,7 @@ def test_sparse_to_dense_collate(single_group_atlas):
     ds = (
         single_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts")
+        .to_unimodal_dataset("gene_expression", "counts")
     )
     batch = ds.__getitems__(list(range(10)))
 
@@ -421,7 +419,7 @@ def test_collate_with_metadata(two_group_atlas):
     ds = (
         two_group_atlas.query()
         .feature_spaces("gene_expression")
-        .to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue"])
+        .to_unimodal_dataset("gene_expression", "counts", metadata_columns=["tissue"])
     )
     batch = ds.__getitems__(list(range(10)))
 
@@ -446,11 +444,11 @@ def test_lazy_metadata_round_trip(two_group_atlas):
     ref_uids = set(adata.obs.index.tolist())
 
     # Lazy path: metadata loaded per-batch
-    ds = q.to_cell_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
+    ds = q.to_unimodal_dataset("gene_expression", "counts", metadata_columns=["tissue", "uid"])
 
     all_uids = []
     all_tissues = []
-    for indices in _iter_indices(ds.n_cells, batch_size=100):
+    for indices in _iter_indices(ds.n_rows, batch_size=100):
         batch = ds.__getitems__(indices)
         all_uids.extend(batch.metadata["uid"].tolist())
         all_tissues.extend(batch.metadata["tissue"].tolist())
@@ -458,7 +456,7 @@ def test_lazy_metadata_round_trip(two_group_atlas):
     # All UIDs from AnnData are present in the lazy path
     assert set(all_uids) == ref_uids
 
-    # Tissue values match for each cell
+    # Tissue values match for each row
     ref_tissues = {uid: adata.obs.loc[uid, "tissue"] for uid in adata.obs.index}
     for uid, tissue in zip(all_uids, all_tissues, strict=True):
         assert tissue == ref_tissues[uid], f"Tissue mismatch for {uid}"

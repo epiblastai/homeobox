@@ -139,8 +139,8 @@ def dual_cycle_atlas(tmp_path):
 
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        cell_table_name="cells",
-        cell_schema=DualCycleTileSchema,
+        obs_table_name="cells",
+        obs_schema=DualCycleTileSchema,
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
@@ -164,7 +164,7 @@ def dual_cycle_atlas(tmp_path):
             dataset_uid=dataset_uid,
             zarr_group=zg,
             feature_space="image_tiles",
-            n_cells=n_cells,
+            n_rows=n_cells,
         )
         atlas._dataset_table.add(
             pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
@@ -178,7 +178,7 @@ def dual_cycle_atlas(tmp_path):
         "cycle2_image_tiles": _build_pointer_struct("image_tiles", cycle2_group, n_cells),
         "cell_type": pa.array([f"t{i % 2}" for i in range(n_cells)], type=pa.string()),
     }
-    atlas.cell_table.add(pa.table(columns, schema=arrow_schema))
+    atlas.obs_table.add(pa.table(columns, schema=arrow_schema))
     atlas.snapshot()
 
     atlas = RaggedAtlas.checkout_latest(atlas_dir, DualCycleTileSchema, store=store)
@@ -213,7 +213,7 @@ class TestDualCycleRoundTrip:
         np.testing.assert_array_equal(result.mod["cycle1_image_tiles"], cycle1)
 
     def test_schemaless_open_uses_arrow_metadata(self, tmp_path, dual_cycle_atlas):
-        """Opening an atlas without cell_schema recovers both pointer fields."""
+        """Opening an atlas without obs_schema recovers both pointer fields."""
         atlas, _, _ = dual_cycle_atlas
         db_uri = atlas._db_uri
         store_root = db_uri.rsplit("/lance_db", 1)[0] + "/zarr_store"
@@ -221,8 +221,8 @@ class TestDualCycleRoundTrip:
 
         reopened = RaggedAtlas.open(
             db_uri=db_uri,
-            cell_table_name=atlas.cell_table.name,
-            cell_schema=None,
+            obs_table_name=atlas.obs_table.name,
+            obs_schema=None,
             store=store,
         )
         assert set(reopened._pointer_fields.keys()) == {
