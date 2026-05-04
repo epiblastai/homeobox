@@ -14,8 +14,7 @@ Prebuilt wheels are available on PyPI. Requires Python 3.13.
 ```bash
 pip install homeobox          # core: atlas, querying, ingestion
 pip install homeobox[ml]      # + PyTorch dataloader
-pip install homeobox[bio]     # + scanpy, GEOparse
-pip install homeobox[io]      # + S3/GCS/Azure, image codecs
+pip install homeobox[io]      # + S3/GCS/Azure
 pip install homeobox[viz]     # + marimo, matplotlib
 pip install homeobox[all]     # everything
 ```
