@@ -24,7 +24,7 @@ from homeobox.group_specs import (
 )
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
-from homeobox.reconstructor_base import Reconstructor
+from homeobox.reconstruction import DiscreteSpatialReconstructor
 from homeobox.schema import (
     DatasetSchema,
     DiscreteSpatialPointer,
@@ -39,17 +39,16 @@ from homeobox.schema import (
 # Test feature space registration
 # ---------------------------------------------------------------------------
 
-# Register a discrete-spatial spec for tests. Pointer-kind dispatch in the
-# dataloader requires the feature space to resolve to a registered spec.
-# A no-endpoint Reconstructor() is sufficient: the dataloader builds its own
-# DenseBatch and never calls the reconstructor.
+# Register a discrete-spatial spec for tests. The dataloader delegates per-batch
+# reads to the spec's reconstructor; DiscreteSpatialReconstructor implements the
+# build_modality_data + take_batch_async hooks needed for that.
 if "image_crops" not in registered_feature_spaces():
     register_spec(
         FeatureSpaceSpec(
             feature_space="image_crops",
             pointer_kind=PointerKind.DISCRETE_SPATIAL,
             has_var_df=False,
-            reconstructor=Reconstructor(),
+            reconstructor=DiscreteSpatialReconstructor(),
             zarr_group_spec=ZarrGroupSpec(
                 required_arrays=[
                     ArraySpec(
