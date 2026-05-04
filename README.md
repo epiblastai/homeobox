@@ -72,7 +72,7 @@ os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
     obs_table_name="cells",
-    cell_schema=CellSchema,
+    obs_schema=CellSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
@@ -100,7 +100,7 @@ atlas.optimize()
 atlas.snapshot()
 
 # 6. Open the atlas and query
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=CellSchema)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=CellSchema)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
@@ -130,7 +130,7 @@ os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
     obs_table_name="cells",
-    cell_schema=TileSchema,
+    obs_schema=TileSchema,
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
     registry_schemas={},
@@ -170,7 +170,7 @@ atlas.optimize()
 atlas.snapshot()
 
 # 6. Query tiles back as a raw 4D array + obs DataFrame.
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, cell_schema=TileSchema)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=TileSchema)
 tile_array, obs = atlas_r.query().to_array("image_tiles")
 print(tile_array.shape, tile_array.dtype)  # (128, 5, 96, 96) uint8
 ```

@@ -132,8 +132,8 @@ def test_full_workflow():
         # Create atlas
         atlas = RaggedAtlas.create(
             db_uri=str(Path(tmp_dir) / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
+            obs_table_name="cells",
+            obs_schema=TestCellSchema,
             store=store,
             registry_schemas={
                 "gene_expression": GeneFeatureSchema,
@@ -256,8 +256,8 @@ def test_layer_name_required_for_sparse():
         store = obstore.store.LocalStore(prefix=tmp_dir)
         atlas = RaggedAtlas.create(
             db_uri=str(Path(tmp_dir) / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=TestCellSchema,
+            obs_table_name="cells",
+            obs_schema=TestCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
@@ -304,8 +304,8 @@ def test_obs_validation_before_write():
         store = obstore.store.LocalStore(prefix=tmp_dir)
         atlas = RaggedAtlas.create(
             db_uri=str(Path(tmp_dir) / "atlas.lancedb"),
-            cell_table_name="cells",
-            cell_schema=StrictCellSchema,
+            obs_table_name="cells",
+            obs_schema=StrictCellSchema,
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",

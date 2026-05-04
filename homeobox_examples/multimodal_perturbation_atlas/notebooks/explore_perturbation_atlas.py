@@ -90,8 +90,8 @@ def _():
     # _store = obstore.store.LocalStore(ZARR_PATH)
     # _atlas_rw = RaggedAtlas.open(
     #     db_uri=DB_URI,
-    #     cell_table_name="cells",
-    #     cell_schema=CellIndex,
+    #     obs_table_name="cells",
+    #     obs_schema=CellIndex,
     #     store=_store,
     # )
     # _atlas_rw.optimize()

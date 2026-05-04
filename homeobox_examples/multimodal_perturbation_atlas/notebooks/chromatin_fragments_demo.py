@@ -518,8 +518,8 @@ def _():
     # _store = _obstore_store.LocalStore(prefix=f"{_atlas_dir}/arrays")
     atlas = RaggedAtlas.checkout_latest(
         db_uri=f"{_atlas_dir}/lance_db",
-        # cell_table_name="cells",
-        # cell_schema=_TestCell,
+        # obs_table_name="cells",
+        # obs_schema=_TestCell,
         # dataset_table_name="datasets",
         # store=_store,
         # registry_tables={"chromatin_accessibility": "chromatin_accessibility_registry"},

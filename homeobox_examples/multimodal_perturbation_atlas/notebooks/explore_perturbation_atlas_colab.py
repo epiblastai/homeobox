@@ -728,7 +728,7 @@ tile_dataset = (
 )
 print(
     f"TileDataset: {tile_dataset.n_cells:,} cells, "
-    f"per_cell_shape={tile_dataset.per_cell_shape}"
+    f"per_row_shape={tile_dataset.per_row_shape}"
 )
 
 # %%

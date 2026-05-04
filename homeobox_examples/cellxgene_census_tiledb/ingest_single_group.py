@@ -78,8 +78,8 @@ def create_atlas(atlas_dir: str) -> RaggedAtlas:
     store = make_store(atlas_dir)
     return RaggedAtlas.create(
         db_uri=db_uri_for(atlas_dir),
-        cell_table_name="cells",
-        cell_schema=CellObs,
+        obs_table_name="cells",
+        obs_schema=CellObs,
         dataset_table_name="datasets",
         dataset_schema=CensusDatasetSchema,
         store=store,

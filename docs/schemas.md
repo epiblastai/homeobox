@@ -297,7 +297,7 @@ The `_feature_layouts` table supports two query directions efficiently via an FT
 | Field | Type | Description |
 |---|---|---|
 | `version` | `int` | Monotonically increasing snapshot number. Returned by `snapshot()`. |
-| `cell_table_name` | `str` | Name of the LanceDB cell table at snapshot time. |
+| `obs_table_name` | `str` | Name of the LanceDB cell table at snapshot time. |
 | `cell_table_version` | `int` | Lance internal version number for the cell table. |
 | `dataset_table_name` | `str` | Name of the datasets table. |
 | `dataset_table_version` | `int` | Lance internal version number for the datasets table. |
