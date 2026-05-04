@@ -130,9 +130,26 @@ async def _read_dense_group(
     starts: np.ndarray,
     ends: np.ndarray,
 ) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Read all dense arrays concurrently for one zarr group."""
-    coros = [r.read_ranges(starts, ends) for r in readers]
-    return list(await asyncio.gather(*coros))
+    """Read all dense arrays concurrently for one zarr group.
+
+    ``starts`` / ``ends`` are positions along axis 0; trailing axes are read
+    in full via ``read_boxes`` (rank-1 boxes), so the returned ``flat_data``
+    contains ``len(starts) * prod(trailing_shape)`` elements per reader.
+    Returns ``(flat_data, lengths)`` per reader for compatibility with the
+    sparse-group call shape; ``lengths[i]`` is the per-row element count.
+    """
+    min_corners = starts.reshape(-1, 1)
+    max_corners = ends.reshape(-1, 1)
+    boxes = await asyncio.gather(
+        *(r.read_boxes(min_corners, max_corners, stack_uniform=True) for r in readers)
+    )
+    out: list[tuple[np.ndarray, np.ndarray]] = []
+    n = len(starts)
+    for arr in boxes:
+        per_row = int(np.prod(arr.shape[1:])) if arr.ndim > 1 else 1
+        lengths = np.full(n, per_row, dtype=np.int64)
+        out.append((arr.reshape(-1), lengths))
+    return out
 
 
 # TODO: Why is this private API

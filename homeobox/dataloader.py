@@ -633,6 +633,11 @@ async def _take_group_dense(
 ) -> np.ndarray:
     """Read dense data for one zarr group.
 
+    ``starts`` / ``ends`` are positions along axis 0 (one row per pointer).
+    Trailing axes are read in full via ``read_boxes`` (rank-1 boxes), which
+    handles the multi-strip decomposition that ``read_ranges`` cannot
+    express for arrays with rank > 2.
+
     Parameters
     ----------
     row_shape:
@@ -640,8 +645,10 @@ async def _take_group_dense(
     dtype:
         Output dtype.  ``None`` means cast to float32 (legacy 2D behaviour).
     """
-    flat_data, _ = await reader.read_ranges(starts, ends)
-    out = flat_data.reshape(len(starts), *row_shape)
+    min_corners = starts.reshape(-1, 1)
+    max_corners = ends.reshape(-1, 1)
+    out = await reader.read_boxes(min_corners, max_corners, stack_uniform=True)
+    out = out.reshape(len(starts), *row_shape)
     if dtype is None:
         return out.astype(np.float32)
     return out if out.dtype == dtype else out.astype(dtype)

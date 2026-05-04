@@ -323,7 +323,7 @@ def test_unimodal_ragged_stack_dense_raises(ragged_crop_atlas):
     atlas, _images, _boxes = ragged_crop_atlas
 
     ds = atlas.query().to_unimodal_dataset("image_crops")  # stack_dense=True default
-    with pytest.raises(ValueError):
+    with pytest.raises(RuntimeError, match="stack_uniform"):
         ds.__getitems__(list(range(6)))
 
 
