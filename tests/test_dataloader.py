@@ -167,6 +167,49 @@ def single_group_atlas(tmp_path):
     return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
 
 
+@pytest.fixture
+def shared_layout_atlas(tmp_path):
+    """Atlas with 2 zarr groups that share the same feature layout."""
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
+    atlas = RaggedAtlas.create(
+        db_uri=atlas_dir,
+        obs_table_name="cells",
+        obs_schema=TestCellSchema,
+        store=store,
+        registry_schemas={"gene_expression": GeneFeatureSchema},
+        dataset_table_name="datasets",
+        dataset_schema=DatasetSchema,
+    )
+
+    gene_uids = [f"gene_{i}" for i in range(6)]
+    gene_records = [
+        GeneFeatureSchema(uid=uid, gene_name=f"GENE{i}") for i, uid in enumerate(gene_uids)
+    ]
+    atlas.register_features("gene_expression", gene_records)
+    reindex_registry(atlas._registry_tables["gene_expression"])
+
+    rng = np.random.default_rng(789)
+    for idx, n_obs in enumerate([8, 9], start=1):
+        adata = _make_sparse_adata(n_obs, len(gene_uids), gene_uids, rng)
+        adata = align_obs_to_schema(adata, TestCellSchema)
+        add_from_anndata(
+            atlas,
+            adata,
+            field_name="gene_expression",
+            zarr_layer="counts",
+            dataset_record=DatasetSchema(
+                zarr_group=f"ds{idx}/gene_expression",
+                feature_space="gene_expression",
+                n_rows=n_obs,
+            ),
+        )
+
+    atlas.snapshot()
+    return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
+
+
 # ---------------------------------------------------------------------------
 # Tests: UnimodalHoxDataset basics
 # ---------------------------------------------------------------------------
@@ -239,6 +282,40 @@ def test_unimodal_dataset_empty(two_group_atlas):
     assert ds.n_rows == 0
     assert len(ds) == 0
     assert list(_iter_indices(ds.n_rows, 10)) == []
+
+
+def test_unimodal_dataset_shares_layout_remaps(shared_layout_atlas):
+    """Groups with the same layout share one worker remap object."""
+    ds = (
+        shared_layout_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_unimodal_dataset("gene_expression", "counts")
+    )
+
+    readers = list(ds._mod_data.group_readers.values())
+    assert len(readers) == 2
+    assert readers[0].layout_reader is readers[1].layout_reader
+    assert readers[0].get_remap() is readers[1].get_remap()
+    assert not readers[0].get_remap().flags.writeable
+
+
+def test_unimodal_dataset_shares_filtered_layout_remaps(shared_layout_atlas):
+    """Feature-filtered groups with the same layout share one filtered remap."""
+    ds = (
+        shared_layout_atlas.query()
+        .feature_spaces("gene_expression")
+        .features(["gene_1", "gene_4"], "gene_expression")
+        .to_unimodal_dataset("gene_expression", "counts")
+    )
+
+    readers = list(ds._mod_data.group_readers.values())
+    assert len(readers) == 2
+    assert readers[0].layout_reader is readers[1].layout_reader
+    assert readers[0].get_remap() is readers[1].get_remap()
+    remap = readers[0].get_remap()
+    assert np.count_nonzero(remap >= 0) == 2
+    assert set(remap[remap >= 0].tolist()) == {0, 1}
+    assert not readers[0].get_remap().flags.writeable
 
 
 # ---------------------------------------------------------------------------

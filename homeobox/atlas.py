@@ -6,7 +6,7 @@ from collections import OrderedDict, defaultdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from homeobox.group_reader import GroupReader
+    from homeobox.group_reader import GroupReader, LayoutReader
     from homeobox.query import AtlasQuery
 
 import lancedb
@@ -173,6 +173,12 @@ class RaggedAtlas:
         # Capped at _MAX_GROUP_READERS to prevent unbounded memory growth during
         # long batch-read loops that touch many distinct zarr groups.
         self._group_readers: OrderedDict[tuple[str, str], GroupReader] = OrderedDict()
+        # LayoutReaders are shared across all GroupReaders that reference the
+        # same layout_uid. Bounded by the number of distinct layouts in the
+        # atlas (typically O(few)–O(few hundred)) so no eviction is applied;
+        # entries outlive their GroupReaders so a re-fetched group keeps the
+        # already-materialized remap.
+        self._layout_readers: dict[str, LayoutReader] = {}
 
     # -- Construction -------------------------------------------------------
 
@@ -338,7 +344,7 @@ class RaggedAtlas:
         used GroupReader is evicted when the cap is exceeded, releasing its zarr
         handles and Rust shard-index cache.
         """
-        from homeobox.group_reader import GroupReader
+        from homeobox.group_reader import GroupReader, LayoutReader
 
         key = (zarr_group, feature_space)
         if key in self._group_readers:
@@ -360,12 +366,21 @@ class RaggedAtlas:
             if layout_uid == "":
                 layout_uid = None
 
+        layout_reader = None
+        if layout_uid is not None:
+            layout_reader = self._layout_readers.get(layout_uid)
+            if layout_reader is None:
+                layout_reader = LayoutReader(
+                    layout_uid=layout_uid,
+                    feature_layouts_table=self._feature_layouts_table,
+                )
+                self._layout_readers[layout_uid] = layout_reader
+
         reader = GroupReader.from_atlas_root(
             zarr_group=zarr_group,
             feature_space=feature_space,
             store=self._store,
-            feature_layouts_table=self._feature_layouts_table,
-            layout_uid=layout_uid,
+            layout_reader=layout_reader,
         )
         self._group_readers[key] = reader
         if len(self._group_readers) > _MAX_GROUP_READERS:
