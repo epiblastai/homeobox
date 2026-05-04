@@ -26,7 +26,39 @@ class DenseZarrPointer(LanceModel):
     position: int | None = None
 
 
-ZarrPointer = SparseZarrPointer | DenseZarrPointer
+class DiscreteSpatialPointer(LanceModel):
+    """N-D discrete bounding box into a zarr array.
+
+    ``min_corner`` / ``max_corner`` apply to the leading axes of the referenced
+    zarr array; trailing axes without a corner slice everything. For a ``(H, W)``
+    array with ``min_corner=[0]``, ``max_corner=[10]`` the referenced region is
+    ``array[0:10, :]``.
+    """
+
+    zarr_group: str | None = None
+    min_corner: list[int] | None = None
+    max_corner: list[int] | None = None
+
+    @model_validator(mode="after")
+    def _validate_corners(self):
+        # Pointer doesn't have a group, so there's nothing else to validate
+        if self.zarr_group is None:
+            return self
+
+        # TODO: Improve error message for null corners. Currently will raise NoneType has no length
+        # if corners are None but the Zarr group is not empty
+        if len(self.min_corner) != len(self.max_corner):
+            raise ValueError(
+                f"min_corner and max_corner must have the same length, "
+                f"got {len(self.min_corner)} and {len(self.max_corner)}"
+            )
+        for i, (lo, hi) in enumerate(zip(self.min_corner, self.max_corner, strict=True)):
+            if lo > hi:
+                raise ValueError(f"min_corner[{i}]={lo} exceeds max_corner[{i}]={hi}")
+        return self
+
+
+ZarrPointer = SparseZarrPointer | DenseZarrPointer | DiscreteSpatialPointer
 
 
 # Arrow field metadata key used to persist the feature_space for each pointer column.
@@ -70,12 +102,16 @@ class PointerField:
     ``cycle1_image_tiles`` and ``cycle2_image_tiles``, both with
     ``feature_space="image_tiles"``).
 
-    The concrete pointer type (``SparseZarrPointer`` / ``DenseZarrPointer``)
-    is derivable from ``pointer_kind`` and intentionally not stored here.
+    The concrete pointer type is derivable from ``pointer_kind`` and
+    intentionally not stored here.
     """
 
     field_name: str
     feature_space: str
+    # TODO: Is pointer kind even necessary? As long as a spec is registered with
+    # a reconstructor we know how to parse it's pointer type no? I think maybe the issue
+    # was that pointer type; which would be a better indicator than a string just couldn't
+    # be serialized. Perhaps we can use the same arrow metadata trick to get around it.
     pointer_kind: PointerKind
 
     @staticmethod
@@ -129,7 +165,7 @@ def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
     """Yield ``(field_name, pointer_type)`` for each pointer-typed annotation on *cls*.
 
     Unwraps ``X | None`` and ``Optional[X]`` unions to find the underlying
-    ``SparseZarrPointer`` or ``DenseZarrPointer`` type.
+    pointer type.
     """
     result: list[tuple[str, type]] = []
     for name, annotation in cls.__annotations__.items():
@@ -141,7 +177,7 @@ def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
         else:
             inner_types = (annotation,)
         for t in inner_types:
-            if t is SparseZarrPointer or t is DenseZarrPointer:
+            if t is SparseZarrPointer or t is DenseZarrPointer or t is DiscreteSpatialPointer:
                 result.append((name, t))
                 break
     return result
@@ -248,14 +284,16 @@ class HoxBaseSchema(LanceModel):
         :meth:`PointerField.declare`, which attaches ``is_pointer=True`` and the
         feature_space to the pydantic ``Field``. The declared feature_space must
         be registered, and its ``pointer_kind`` must match the annotation
-        (``SparseZarrPointer`` ↔ sparse spec, ``DenseZarrPointer`` ↔ dense spec).
+        (``SparseZarrPointer`` ↔ sparse spec, ``DenseZarrPointer`` ↔ dense spec,
+        ``DiscreteSpatialPointer`` ↔ discrete_spatial spec).
         """
         super().__init_subclass__(**kwargs)
         pointer_annotations = _iter_pointer_annotations(cls)
         if not pointer_annotations:
             raise TypeError(
-                f"{cls.__name__} must declare at least one SparseZarrPointer or "
-                f"DenseZarrPointer field via PointerField.declare(...)"
+                f"{cls.__name__} must declare at least one SparseZarrPointer, "
+                f"DenseZarrPointer, or DiscreteSpatialPointer field via "
+                f"PointerField.declare(...)"
             )
         for name, pointer_type in pointer_annotations:
             extra = _read_field_json_schema_extra(cls, name)
@@ -271,9 +309,12 @@ class HoxBaseSchema(LanceModel):
                     f"a non-empty feature_space string"
                 )
             spec = get_spec(feature_space)
-            annotation_kind = (
-                PointerKind.SPARSE if pointer_type is SparseZarrPointer else PointerKind.DENSE
-            )
+            if pointer_type is SparseZarrPointer:
+                annotation_kind = PointerKind.SPARSE
+            elif pointer_type is DenseZarrPointer:
+                annotation_kind = PointerKind.DENSE
+            else:
+                annotation_kind = PointerKind.DISCRETE_SPATIAL
             if annotation_kind is not spec.pointer_kind:
                 raise TypeError(
                     f"{cls.__name__}.{name}: {annotation_kind.value} pointer annotation "
@@ -285,7 +326,10 @@ class HoxBaseSchema(LanceModel):
     def _require_at_least_one_pointer(self):
         """Instance-time: at least one pointer must be non-None."""
         for name in self.model_fields:
-            if isinstance(getattr(self, name), SparseZarrPointer | DenseZarrPointer):
+            if isinstance(
+                getattr(self, name),
+                SparseZarrPointer | DenseZarrPointer | DiscreteSpatialPointer,
+            ):
                 return self
         raise ValueError(
             f"{type(self).__name__} requires at least one populated zarr pointer field"
