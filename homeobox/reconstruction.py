@@ -290,18 +290,15 @@ class SparseCSRReconstructor(Reconstructor):
                 f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
             )
 
-        # TODO: Why is this necessary. obs_pl just removes rows that don't have the feature
-        # space. Shouldn't we return nothing in that case. I.e., just pass obs_pl to _build_obs_only_anndata
-        obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl)
 
         joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl)
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
         layers_path = zgs.find_layers_path()
@@ -409,16 +406,15 @@ class DenseReconstructor(Reconstructor):
         spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
 
-        obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl)
 
         joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl)
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
         layers_path = zgs.find_layers_path()
@@ -746,10 +742,9 @@ class FeatureCSCReconstructor(Reconstructor):
             )
         csr_index_name = zgs.required_arrays[0].array_name
 
-        obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl)
 
         n_features = len(wanted_globals)
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
