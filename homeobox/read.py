@@ -50,6 +50,10 @@ def _prepare_dense_obs(
     return obs_pl, groups
 
 
+# TODO: What is the actual point of `box_rank`? It's detached from the actual
+# dimensionality of the array. Feels like we should mandate that the shape is
+# uniform. Though that means we can't load multiple images with different
+# dimensionality in the same batch (probably OK?).
 def _prepare_discrete_spatial_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,

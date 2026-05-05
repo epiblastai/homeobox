@@ -16,7 +16,11 @@ from homeobox.group_specs import (
     ZarrGroupSpec,
     register_spec,
 )
-from homeobox.reconstruction import DenseReconstructor, SparseGeneExpressionReconstructor
+from homeobox.reconstruction import (
+    DenseReconstructor,
+    FieldImageReconstructor,
+    SparseGeneExpressionReconstructor,
+)
 
 # ---------------------------------------------------------------------------
 # Gene expression (CSR primary, optional CSC feature-oriented copy)
@@ -215,6 +219,63 @@ IMAGE_TILES_SPEC = FeatureSpaceSpec(
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Field images
+# ---------------------------------------------------------------------------
+
+FIELD_IMAGE_DTYPES = [np.float32, np.uint8, np.uint16]
+
+FIELD_IMAGE_SPEC = FeatureSpaceSpec(
+    feature_space="field_image",
+    pointer_kind=PointerKind.DISCRETE_SPATIAL,
+    has_var_df=False,
+    reconstructor=FieldImageReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(
+                array_name="data",
+                min_ndim=2,
+                max_ndim=5,
+                allowed_dtypes=FIELD_IMAGE_DTYPES,
+            ),
+        ],
+    ),
+)
+
+FIELD_SEMANTIC_SEGMENTATION_SPEC = FeatureSpaceSpec(
+    feature_space="field_semantic_segmentation",
+    pointer_kind=PointerKind.DISCRETE_SPATIAL,
+    has_var_df=False,
+    reconstructor=FieldImageReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(
+                array_name="data",
+                min_ndim=2,
+                max_ndim=5,
+                allowed_dtypes=[np.bool_],
+            ),
+        ],
+    ),
+)
+
+FIELD_INSTANCE_SEGMENTATION_SPEC = FeatureSpaceSpec(
+    feature_space="field_instance_segmentation",
+    pointer_kind=PointerKind.DISCRETE_SPATIAL,
+    has_var_df=False,
+    reconstructor=FieldImageReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[
+            ArraySpec(
+                array_name="data",
+                min_ndim=2,
+                max_ndim=5,
+                allowed_dtypes=[np.uint32],
+            ),
+        ],
+    ),
+)
+
 
 for _spec in [
     GENE_EXPRESSION_SPEC,
@@ -222,5 +283,8 @@ for _spec in [
     PROTEIN_ABUNDANCE_SPEC,
     CHROMATIN_ACCESSIBILITY_SPEC,
     IMAGE_TILES_SPEC,
+    FIELD_IMAGE_SPEC,
+    FIELD_SEMANTIC_SEGMENTATION_SPEC,
+    FIELD_INSTANCE_SEGMENTATION_SPEC,
 ]:
     register_spec(_spec)

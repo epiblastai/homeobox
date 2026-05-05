@@ -3,7 +3,7 @@ from typing import Any
 
 import numpy as np
 import zarr
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from homeobox.reconstructor_base import Reconstructor
 
@@ -22,6 +22,8 @@ class ArraySpec(BaseModel):
     array_name: str
     allowed_dtypes: list[np.dtype]
     ndim: int | None = None
+    min_ndim: int | None = None
+    max_ndim: int | None = None
     # Typed as Any because pydantic can't introspect zarr's CompressorsLike
     # (contains a forward-referenced JSON alias). Pass a value that
     # zarr.core.array accepts as CompressorsLike — e.g. a Numcodec or None.
@@ -36,6 +38,34 @@ class ArraySpec(BaseModel):
                 f"Pass e.g. [np.uint32] even for a single dtype."
             )
         return [np.dtype(entry) for entry in value]
+
+    @model_validator(mode="after")
+    def _validate_ndim_constraints(self):
+        if self.ndim is not None and (self.min_ndim is not None or self.max_ndim is not None):
+            raise ValueError("ArraySpec accepts either exact ndim or min_ndim/max_ndim, not both")
+        if self.min_ndim is not None and self.min_ndim < 0:
+            raise ValueError(f"min_ndim must be >= 0, got {self.min_ndim}")
+        if self.max_ndim is not None and self.max_ndim < 0:
+            raise ValueError(f"max_ndim must be >= 0, got {self.max_ndim}")
+        if (
+            self.min_ndim is not None
+            and self.max_ndim is not None
+            and self.min_ndim > self.max_ndim
+        ):
+            raise ValueError(f"min_ndim={self.min_ndim} exceeds max_ndim={self.max_ndim}")
+        return self
+
+    def check_ndim(self, ndim: int) -> str | None:
+        """Return an error message if *ndim* violates this spec."""
+        if self.ndim is not None:
+            if ndim != self.ndim:
+                return f"ndim={ndim}, expected {self.ndim}"
+            return None
+        if self.min_ndim is not None and ndim < self.min_ndim:
+            return f"ndim={ndim}, expected >= {self.min_ndim}"
+        if self.max_ndim is not None and ndim > self.max_ndim:
+            return f"ndim={ndim}, expected <= {self.max_ndim}"
+        return None
 
 
 class LayersSpec(BaseModel):
@@ -92,10 +122,9 @@ class ZarrGroupSpec(BaseModel):
                 errors.append(f"'{array_spec.array_name}' is not an array")
                 continue
             reference_shapes[array_spec.array_name] = arr.shape
-            if array_spec.ndim is not None and arr.ndim != array_spec.ndim:
-                errors.append(
-                    f"'{array_spec.array_name}' has ndim={arr.ndim}, expected {array_spec.ndim}"
-                )
+            ndim_error = array_spec.check_ndim(arr.ndim)
+            if ndim_error is not None:
+                errors.append(f"'{array_spec.array_name}' has {ndim_error}")
             if arr.dtype not in array_spec.allowed_dtypes:
                 errors.append(
                     f"'{array_spec.array_name}' has dtype={arr.dtype}, "
@@ -149,10 +178,9 @@ class ZarrGroupSpec(BaseModel):
                 layer_spec = layer_specs.get(name)
                 if layer_spec is None:
                     continue
-                if layer_spec.ndim is not None and arr.ndim != layer_spec.ndim:
-                    errors.append(
-                        f"'{layers_path}/{name}' has ndim={arr.ndim}, expected {layer_spec.ndim}"
-                    )
+                ndim_error = layer_spec.check_ndim(arr.ndim)
+                if ndim_error is not None:
+                    errors.append(f"'{layers_path}/{name}' has {ndim_error}")
                 if arr.dtype not in layer_spec.allowed_dtypes:
                     errors.append(
                         f"'{layers_path}/{name}' has dtype={arr.dtype}, "
@@ -198,10 +226,10 @@ class ZarrGroupSpec(BaseModel):
         ``required_arrays`` (e.g. ``"csr/indices"``, ``"cell_sorted/starts"``)
         or the name of a layer (e.g. ``"counts"``). Intermediate groups —
         including the layers path like ``"csr/layers"`` — are auto-created
-        via ``require_group``. The dtype, ndim, and compressor on the
+        via ``require_group``. The dtype, ndim constraints, and compressor on the
         matching ``ArraySpec`` are the authority: ``dtype`` (if supplied)
-        must be one of ``allowed_dtypes``; ``len(shape)`` must match
-        ``ndim`` if the spec declares one; and the ArraySpec's
+        must be one of ``allowed_dtypes``; ``len(shape)`` must satisfy the
+        spec's rank constraints if it declares any; and the ArraySpec's
         ``compressors`` is always passed through.
 
         ``chunks`` and ``shards`` both default to ``"auto"``. The readers
@@ -289,10 +317,9 @@ def _create_from_spec(
             f"dtype={resolved} not allowed for '{array_spec.array_name}'. "
             f"Allowed: {[str(d) for d in array_spec.allowed_dtypes]}"
         )
-    if array_spec.ndim is not None and len(shape) != array_spec.ndim:
-        raise ValueError(
-            f"'{array_spec.array_name}' expects ndim={array_spec.ndim}, got shape={shape}"
-        )
+    ndim_error = array_spec.check_ndim(len(shape))
+    if ndim_error is not None:
+        raise ValueError(f"'{array_spec.array_name}' has {ndim_error} for shape={shape}")
     kwargs: dict = {}
     if array_spec.compressors is not None:
         kwargs["compressors"] = array_spec.compressors

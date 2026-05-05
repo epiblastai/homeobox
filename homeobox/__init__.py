@@ -17,9 +17,11 @@ from homeobox.fragments.reconstruction import FragmentResult, IntervalReconstruc
 from homeobox.ingestion import add_anndata_batch, add_csc, add_from_anndata
 from homeobox.multimodal import MultimodalResult
 from homeobox.query import AtlasQuery
+from homeobox.reconstruction import FieldImageReconstructor
 from homeobox.schema import (
     DatasetSchema,
     DenseZarrPointer,
+    DiscreteSpatialPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
@@ -51,8 +53,10 @@ __all__ = [
     "StableUIDField",
     "SparseZarrPointer",
     "DenseZarrPointer",
+    "DiscreteSpatialPointer",
     "FragmentResult",
     "IntervalReconstructor",
+    "FieldImageReconstructor",
     "FragmentCounter",
     "GenomicRange",
     "GenomeSortedReader",

@@ -13,6 +13,7 @@ from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_obs,
+    _prepare_discrete_spatial_obs,
     _prepare_sparse_obs,
     _read_dense_group,
     _read_sparse_group,
@@ -35,6 +36,7 @@ __all__ = [
     "SparseCSRReconstructor",
     "SparseGeneExpressionReconstructor",
     "DenseReconstructor",
+    "FieldImageReconstructor",
     "FeatureCSCReconstructor",
     "_get_pointer_columns",
 ]
@@ -579,6 +581,99 @@ class DenseReconstructor(Reconstructor):
             n_rows_group = flat_data.shape[0] // max(1, int(np.prod(per_row_shape)))
             out[offset : offset + n_rows_group] = flat_data.reshape(n_rows_group, *per_row_shape)
 
+        return out
+
+
+class FieldImageReconstructor(Reconstructor):
+    """Reconstruct discrete-spatial field-image crops as stacked arrays."""
+
+    @endpoint
+    def as_array(
+        self,
+        atlas: "RaggedAtlas",
+        obs_pl: pl.DataFrame,
+        pf: PointerField,
+        spec: FeatureSpaceSpec,
+        array_name: str | None = None,
+    ) -> np.ndarray:
+        """Return uniform ``DiscreteSpatialPointer`` boxes from a field image.
+
+        The zarr array is layer-less by default (``data``). Pointer boxes may
+        cover any leading axes; trailing axes without corners are read in full.
+        All selected boxes must resolve to the same output shape so the result
+        can be stacked as ``(n_rows, *box_shape)``.
+        """
+        zgs = spec.zarr_group_spec
+        if array_name is None:
+            if not zgs.required_arrays:
+                raise ValueError(
+                    f"Spec for '{pf.feature_space}' has no required_arrays; "
+                    "pass array_name explicitly"
+                )
+            array_name = zgs.required_arrays[0].array_name
+
+        obs_pl, groups, box_rank = _prepare_discrete_spatial_obs(obs_pl, pf)
+        if not groups:
+            return np.empty((0,), dtype=np.float32)
+
+        obs_pl = obs_pl.with_row_index("_array_offset")
+        group_data: list[tuple[np.ndarray, np.ndarray, np.ndarray, BatchAsyncArray]] = []
+        per_row_shape: tuple[int, ...] | None = None
+        dtype: np.dtype | None = None
+
+        for zg in groups:
+            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+            min_corners = (
+                group_rows["_min_corner"].list.to_array(box_rank).to_numpy().astype(np.int64)
+            )
+            max_corners = (
+                group_rows["_max_corner"].list.to_array(box_rank).to_numpy().astype(np.int64)
+            )
+            offsets = group_rows["_array_offset"].to_numpy().astype(np.int64)
+
+            reader = atlas.get_group_reader(zg, pf.feature_space).get_array_reader(array_name)
+            if box_rank > len(reader.shape):
+                raise ValueError(
+                    f"DiscreteSpatialPointer box rank {box_rank} exceeds array rank "
+                    f"{len(reader.shape)} for '{pf.feature_space}' group '{zg}'"
+                )
+
+            if dtype is None:
+                dtype = reader._native_dtype
+            elif reader._native_dtype != dtype:
+                raise ValueError(
+                    f"Dtype mismatch across zarr groups for '{pf.feature_space}': "
+                    f"expected {dtype}, got {reader._native_dtype} in group '{zg}'"
+                )
+
+            box_shapes = max_corners - min_corners
+            trailing_shape = tuple(reader.shape[box_rank:])
+            for box_shape in box_shapes:
+                row_shape = (*box_shape.astype(int).tolist(), *trailing_shape)
+                if per_row_shape is None:
+                    per_row_shape = row_shape
+                elif row_shape != per_row_shape:
+                    raise ValueError(
+                        f"Ragged DiscreteSpatialPointer boxes cannot be returned by "
+                        f"to_array for '{pf.feature_space}': expected per-row shape "
+                        f"{per_row_shape}, got {row_shape}. Use to_unimodal_dataset("
+                        f"field_name='{pf.field_name}', stack_dense=False) for ragged reads."
+                    )
+
+            group_data.append((min_corners, max_corners, offsets, reader))
+
+        assert per_row_shape is not None
+        assert dtype is not None
+        out = np.empty((obs_pl.height, *per_row_shape), dtype=dtype)
+        all_results = _sync_gather(
+            [
+                reader.read_boxes(min_corners, max_corners, stack_uniform=True)
+                for min_corners, max_corners, _, reader in group_data
+            ]
+        )
+
+        for (_, _, offsets, _), arr in zip(group_data, all_results, strict=True):
+            out[offsets] = arr
         return out
 
 

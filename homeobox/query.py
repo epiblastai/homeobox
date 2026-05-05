@@ -17,7 +17,7 @@ import numpy as np
 import polars as pl
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.group_specs import get_spec
+from homeobox.group_specs import PointerKind, get_spec
 from homeobox.reconstruction import (
     _build_obs_only_anndata,
     _get_pointer_columns,
@@ -492,6 +492,7 @@ class AtlasQuery:
             The raw NumPy array and a DataFrame of obs metadata for the
             rows present in this modality.
         """
+        from homeobox.read import _prepare_dense_obs, _prepare_discrete_spatial_obs
         from homeobox.reconstruction import _build_obs_df
 
         pf = self._atlas.pointer_fields[field_name]
@@ -505,7 +506,11 @@ class AtlasQuery:
 
         obs_pl = self._materialize_rows()
         array = spec.reconstructor.as_array(self._atlas, obs_pl, pf, spec)
-        obs = _build_obs_df(obs_pl)
+        if spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            obs_for_result, _, _ = _prepare_discrete_spatial_obs(obs_pl, pf)
+        else:
+            obs_for_result, _ = _prepare_dense_obs(obs_pl, pf)
+        obs = _build_obs_df(obs_for_result)
         return array, obs
 
     def to_batches(self, batch_size: int = 1024) -> Iterator[ad.AnnData]:

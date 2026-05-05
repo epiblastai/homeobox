@@ -215,11 +215,28 @@ result.present["gene_expression"]      # boolean mask of which cells have this m
 frags = atlas_r.query().where("tissue = 'brain'").to_fragments("chromatin_accessibility")
 ```
 
-**`.to_array(field_name: str)`** reconstructs a single dense pointer field as a raw NumPy array alongside the obs DataFrame for present cells. Useful for modalities like image tiles that don't have feature annotations.
+**`.to_array(field_name: str)`** reconstructs a single array-like pointer field as a raw
+NumPy array alongside the obs DataFrame for present cells. Useful for modalities like
+image tiles and field images that don't have feature annotations.
 
 ```python
 array, obs = atlas_r.query().to_array("image_tiles")
 ```
+
+Field-image modalities use `DiscreteSpatialPointer` boxes into a layer-less zarr `data` array:
+
+```python
+class CellSchema(hox.HoxBaseSchema):
+    field_image: hox.DiscreteSpatialPointer | None = hox.PointerField.declare(
+        feature_space="field_image"
+    )
+
+crop_stack, obs = atlas_r.query().to_array("field_image")
+```
+
+Built-in field-image feature spaces are `field_image`, `field_semantic_segmentation`, and
+`field_instance_segmentation`. `to_array()` requires selected boxes to have a uniform
+output shape; use `to_unimodal_dataset(..., stack_dense=False)` for ragged crops.
 
 **`.to_batches(batch_size: int = 1024)`** returns a streaming iterator of `AnnData` objects. Each batch contains at most `batch_size` cells. Use this for large queries that would exhaust memory if materialised all at once.
 
