@@ -10,6 +10,7 @@ import polars as pl
 from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.obs_alignment import PointerField
 from homeobox.read import (
+    _group_key_to_zg,
     _prepare_sparse_obs,
     _read_parallel_arrays,
     _sync_gather,
@@ -100,7 +101,7 @@ class IntervalReconstructor(Reconstructor):
         """
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
-        if not groups:
+        if obs_pl.is_empty():
             return FragmentResult(
                 chromosomes=np.array([], dtype=np.uint8),
                 starts=np.array([], dtype=np.uint32),
@@ -124,8 +125,8 @@ class IntervalReconstructor(Reconstructor):
 
         # Prepare per-group readers and ranges
         group_data: list[tuple[str, pl.DataFrame, np.ndarray, np.ndarray, list]] = []
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
             starts = group_rows["_start"].to_numpy().astype(np.int64)
             ends = group_rows["_end"].to_numpy().astype(np.int64)
             gr = atlas.get_group_reader(zg, spec.feature_space)

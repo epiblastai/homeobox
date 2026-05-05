@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 import lancedb
 import numpy as np
 import polars as pl
+from polars.dataframe.group_by import GroupBy
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
@@ -37,6 +38,7 @@ from homeobox.group_specs import get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import (
     _apply_wanted_globals_remap,
+    _group_key_to_zg,
     _prepare_dense_obs,
     _prepare_discrete_spatial_obs,
     _prepare_sparse_obs,
@@ -48,7 +50,7 @@ from homeobox.read import (
 
 
 def _build_groups_np(zg_series: pl.Series, groups: list[str]) -> np.ndarray:
-    """Map group-name strings to contiguous integer IDs (groups must be sorted)."""
+    """Map group-name strings to contiguous integer IDs using the provided group order."""
     mapping = pl.DataFrame({"_zg": groups, "_gid": np.arange(len(groups), dtype=np.int32)})
     return zg_series.to_frame("_zg").join(mapping, on="_zg", how="left")["_gid"].to_numpy()
 
@@ -74,17 +76,20 @@ def _build_present_arrays(
 
 def _build_sparse_group_readers(
     atlas: "RaggedAtlas",
-    groups: list[str],
+    groups: GroupBy,
     feature_space: str,
     wanted_globals_for_fs: np.ndarray | None,
-) -> "dict[str, GroupReader]":
+) -> "tuple[list[str], dict[str, GroupReader]]":
     """Build per-group GroupReader instances for a sparse feature space.
 
     Resolves each group's remap and applies the optional feature filter.
     """
+    unique_groups: list[str] = []
     group_readers: dict[str, GroupReader] = {}
     layout_readers: dict[str, LayoutReader] = {}
-    for zg in groups:
+    for key, _group_rows in groups:
+        zg = _group_key_to_zg(key)
+        unique_groups.append(zg)
         atlas_group_reader = atlas.get_group_reader(zg, feature_space)
         raw_layout_reader = atlas_group_reader.layout_reader
         layout_uid = raw_layout_reader.layout_uid if raw_layout_reader is not None else None
@@ -107,7 +112,26 @@ def _build_sparse_group_readers(
             store=atlas.store,
             layout_reader=layout_reader,
         )
-    return group_readers
+    return unique_groups, group_readers
+
+
+def _build_group_readers(
+    atlas: "RaggedAtlas",
+    groups: GroupBy,
+    feature_space: str,
+) -> "tuple[list[str], dict[str, GroupReader]]":
+    """Build per-group readers and matching unique group order."""
+    unique_groups: list[str] = []
+    group_readers: dict[str, GroupReader] = {}
+    for key, _group_rows in groups:
+        zg = _group_key_to_zg(key)
+        unique_groups.append(zg)
+        group_readers[zg] = GroupReader.for_worker(
+            zarr_group=zg,
+            feature_space=feature_space,
+            store=atlas.store,
+        )
+    return unique_groups, group_readers
 
 
 def _build_sparse_modality_data(
@@ -135,12 +159,11 @@ def _build_sparse_modality_data(
     index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
 
     filtered, groups = _prepare_sparse_obs(rows_indexed, pf)
-    groups = sorted(groups)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
+    groups, group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
     layers_path = spec.zarr_group_spec.find_layers_path()
     n_features = (
@@ -186,7 +209,6 @@ def _build_dense_modality_data(
     """
     fs = pf.feature_space
     filtered, groups = _prepare_dense_obs(rows_indexed, pf)
-    groups = sorted(groups)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
@@ -194,14 +216,7 @@ def _build_dense_modality_data(
     # TODO: This is setup for image tiles, which have no var space
     # If we try to load other dense modalities, like protein abundance
     # we won't have remapping.
-    group_readers: dict[str, GroupReader] = {
-        zg: GroupReader.for_worker(
-            zarr_group=zg,
-            feature_space=fs,
-            store=atlas.store,
-        )
-        for zg in groups
-    }
+    groups, group_readers = _build_group_readers(atlas, groups, fs)
 
     layers_path = spec.zarr_group_spec.find_layers_path()
     array_path = f"{layers_path}/{layer}"
@@ -254,19 +269,11 @@ def _build_discrete_spatial_modality_data(
     """
     fs = pf.feature_space
     filtered, groups, _box_rank = _prepare_discrete_spatial_obs(rows_indexed, pf)
-    groups = sorted(groups)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    group_readers: dict[str, GroupReader] = {
-        zg: GroupReader.for_worker(
-            zarr_group=zg,
-            feature_space=fs,
-            store=atlas.store,
-        )
-        for zg in groups
-    }
+    groups, group_readers = _build_group_readers(atlas, groups, fs)
 
     layers_path = spec.zarr_group_spec.find_layers_path()
     array_path = f"{layers_path}/{layer}"

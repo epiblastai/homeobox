@@ -1,9 +1,11 @@
 """Zarr group read primitives and obs preparation helpers."""
 
 import asyncio
+from typing import Any, cast
 
 import numpy as np
 import polars as pl
+from polars.dataframe.group_by import GroupBy
 from zarr.core.sync import sync
 
 from homeobox.batch_array import BatchAsyncArray
@@ -18,36 +20,43 @@ from homeobox.schema import PointerField
 def _prepare_sparse_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,
-) -> tuple[pl.DataFrame, list[str]]:
-    """Prepare sparse obs and compute unique zarr groups.
+) -> tuple[pl.DataFrame, GroupBy]:
+    """Prepare sparse obs and group rows by zarr group.
 
     See :meth:`SparseZarrPointer.prepare_obs` for the column contract.
     """
     obs_pl = SparseZarrPointer.prepare_obs(obs_pl, pf.field_name)
-    groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
-    return obs_pl, groups
+    return obs_pl, obs_pl.group_by("_zg")
+
+
+def _group_key_to_zg(key: Any) -> str:
+    """Extract the zarr group string from a single-column Polars group key."""
+    if isinstance(key, tuple):
+        if len(key) != 1:
+            raise ValueError(f"Expected single-column group key, got {key!r}")
+        return cast(str, key[0])
+    return cast(str, key)
 
 
 def _prepare_dense_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,
-) -> tuple[pl.DataFrame, list[str]]:
-    """Prepare dense obs and compute unique zarr groups.
+) -> tuple[pl.DataFrame, GroupBy]:
+    """Prepare dense obs and group rows by zarr group.
 
     See :meth:`DenseZarrPointer.prepare_obs` for the column contract.
     """
     obs_pl = DenseZarrPointer.prepare_obs(obs_pl, pf.field_name)
-    groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
-    return obs_pl, groups
+    return obs_pl, obs_pl.group_by("_zg")
 
 
 def _prepare_discrete_spatial_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,
-) -> tuple[pl.DataFrame, list[str], int]:
-    """Prepare discrete-spatial obs, compute unique groups, validate box rank.
+) -> tuple[pl.DataFrame, GroupBy, int]:
+    """Prepare discrete-spatial obs, group rows by zarr group, validate box rank.
 
-    Returns ``(filtered_df, unique_groups, box_rank)``. All rows in the filtered
+    Returns ``(filtered_df, grouped_rows, box_rank)``. All rows in the filtered
     set must share the same box rank ``k``; ``k`` is returned so callers can
     preallocate ``(B, k)`` corner arrays. ``k`` is ``0`` when the filtered set
     is empty. See :meth:`DiscreteSpatialPointer.prepare_obs` for the column
@@ -55,7 +64,7 @@ def _prepare_discrete_spatial_obs(
     """
     obs_pl = DiscreteSpatialPointer.prepare_obs(obs_pl, pf.field_name)
     if obs_pl.is_empty():
-        return obs_pl, [], 0
+        return obs_pl, obs_pl.group_by("_zg"), 0
 
     min_lens = obs_pl["_min_corner"].list.len().unique().to_list()
     max_lens = obs_pl["_max_corner"].list.len().unique().to_list()
@@ -68,8 +77,7 @@ def _prepare_discrete_spatial_obs(
     if box_rank < 1:
         raise ValueError(f"DiscreteSpatial box rank must be >= 1, got {box_rank}")
 
-    groups = obs_pl["_zg"].unique().to_list()
-    return obs_pl, groups, box_rank
+    return obs_pl, obs_pl.group_by("_zg"), box_rank
 
 
 def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -> np.ndarray:

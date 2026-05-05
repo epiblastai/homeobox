@@ -8,10 +8,12 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import scipy.sparse as sp
+from polars.dataframe.group_by import GroupBy
 
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
+    _group_key_to_zg,
     _prepare_dense_obs,
     _prepare_sparse_obs,
     _read_dense_group,
@@ -47,7 +49,7 @@ __all__ = [
 
 def _load_remaps_and_features(
     atlas: "RaggedAtlas",
-    groups: list[str],
+    groups: GroupBy,
     spec: FeatureSpaceSpec,
     feature_join: Literal["union", "intersection"] = "union",
     wanted_globals: np.ndarray | None = None,
@@ -62,7 +64,8 @@ def _load_remaps_and_features(
     """
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
-        for zg in groups:
+        for key, _group_rows in groups:
+            zg = _group_key_to_zg(key)
             group_remaps[zg] = atlas.get_group_reader(zg, spec.feature_space).get_remap()
 
     if wanted_globals is not None:
@@ -292,9 +295,11 @@ class SparseCSRReconstructor(Reconstructor):
             )
         index_array_name = zgs.required_arrays[0].array_name
 
+        # TODO: Why is this necessary. obs_pl just removes rows that don't have the feature
+        # space. Shouldn't we return nothing in that case. I.e., just pass obs_pl to _build_obs_only_anndata
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
-        if not groups:
+        if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl_original)
 
         joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
@@ -310,11 +315,8 @@ class SparseCSRReconstructor(Reconstructor):
         group_data: list[
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
         ] = []
-        # TODO: Can this be parallelized? Probably only the group_rows step, isn't there a groupby equivalent
-        # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
-        # the loop should be quite fast.
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
             starts = group_rows["_start"].to_numpy().astype(np.int64)
             ends = group_rows["_end"].to_numpy().astype(np.int64)
             gr = atlas.get_group_reader(zg, pf.feature_space)
@@ -416,7 +418,7 @@ class DenseReconstructor(Reconstructor):
         zgs = spec.zarr_group_spec
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
-        if not groups:
+        if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl_original)
 
         joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
@@ -439,8 +441,8 @@ class DenseReconstructor(Reconstructor):
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, int, list[BatchAsyncArray]]
         ] = []
         offset = 0
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
             positions = group_rows["_pos"].to_numpy().astype(np.int64)
             starts = positions
             ends = positions + 1
@@ -524,8 +526,8 @@ class DenseReconstructor(Reconstructor):
         per_row_shape: tuple[int, ...] | None = None
         group_data: list[tuple[np.ndarray, np.ndarray, int, list[BatchAsyncArray]]] = []
         offset = 0
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
             positions = group_rows["_pos"].to_numpy().astype(np.int64)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             reader = gr.get_array_reader(array_name)
@@ -761,7 +763,7 @@ class FeatureCSCReconstructor(Reconstructor):
 
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
-        if not groups:
+        if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl_original)
 
         n_features = len(wanted_globals)
@@ -775,8 +777,8 @@ class FeatureCSCReconstructor(Reconstructor):
         group_info: list[dict] = []
         read_coroutines = []
 
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
             gr = atlas.get_group_reader(zg, spec.feature_space)
 
             if gr.has_csc:
