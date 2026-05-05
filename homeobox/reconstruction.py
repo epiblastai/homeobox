@@ -12,7 +12,7 @@ import scipy.sparse as sp
 
 from homeobox.batches import DenseBatch, ModalityData, SparseBatch
 from homeobox.group_reader import GroupReader, LayoutReader
-from homeobox.group_specs import FeatureSpaceSpec, PointerKind
+from homeobox.group_specs import FeatureSpaceSpec, PointerKind, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_obs,
@@ -40,7 +40,6 @@ __all__ = [
     "DenseReconstructor",
     "DiscreteSpatialReconstructor",
     "FeatureCSCReconstructor",
-    "_get_pointer_columns",
 ]
 
 
@@ -55,14 +54,14 @@ def _load_remaps_and_features(
     spec: FeatureSpaceSpec,
     feature_join: Literal["union", "intersection"] = "union",
     wanted_globals: np.ndarray | None = None,
-) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, np.ndarray], int]:
+) -> tuple[np.ndarray, dict[str, np.ndarray], int]:
     """Load remaps for groups, build joined feature space.
 
     When *wanted_globals* is provided, skip the union/intersection step and
     use the requested global indices directly, applying intersection-style
     masking for each group.
 
-    Returns (group_remaps, joined_globals, group_remap_to_joined, n_features).
+    Returns (joined_globals, group_remap_to_joined, n_features).
     """
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
@@ -84,7 +83,7 @@ def _load_remaps_and_features(
         group_remap_to_joined = {}
         n_features = 0
 
-    return group_remaps, joined_globals, group_remap_to_joined, n_features
+    return joined_globals, group_remap_to_joined, n_features
 
 
 def _build_feature_space(
@@ -146,21 +145,13 @@ def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
     return obs
 
 
-def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
-    """Return the names of zarr pointer struct columns.
-
-    Inverse of :func:`_build_obs_only_anndata` which strips pointer columns
-    and keeps only obs. This is used to ensure pointer columns are always
-    loaded from the database even when a user-level ``select`` restricts
-    the returned metadata columns.
-    """
-    return [c for c in obs_pl.columns if obs_pl[c].dtype == pl.Struct]
-
-
-def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
+def _build_obs_only_anndata(
+    obs_pl: pl.DataFrame,
+    pointer_field_names: list[str],
+) -> ad.AnnData:
     """Build an AnnData with only obs, no X."""
     keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
+        c for c in obs_pl.columns if c not in pointer_field_names and not c.startswith("_")
     ]
     obs = obs_pl.select(keep_cols).to_pandas()
     if "uid" in obs.columns:
@@ -470,6 +461,8 @@ class SparseCSRReconstructor(Reconstructor):
             If provided, pin the output feature space to these global indices.
             Overrides *feature_join*.
         """
+        # TODO: Should be done in `DenseReconstructor.as_anndata` when
+        # spec.has_var_df (that's a generic pre-condition here too!)
         if wanted_globals is not None and feature_join != "union":
             raise ValueError(
                 "feature_join has no effect when wanted_globals is provided; "
@@ -477,6 +470,12 @@ class SparseCSRReconstructor(Reconstructor):
             )
 
         zgs = spec.zarr_group_spec
+        # TODO: ZarrGroupSpec should maybe have a pre-built structure
+        # like CSRMatrixWithLayers that make the expectation explicit.
+        # This reconstructor could verify against that class. Otherwise
+        # the assumption of a single required array that is `indices` is
+        # unclear to users.
+        # Structural index array is specific to the idea of a CSR.
         # Determine index array name from spec's required_arrays
         if len(zgs.required_arrays) != 1:
             raise NotImplementedError(
@@ -488,14 +487,15 @@ class SparseCSRReconstructor(Reconstructor):
 
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
+        # TODO: Expand pointer field beyond pf.field_name
         if not groups:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl_original, [pf.field_name])
 
-        _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
+        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl_original, [pf.field_name])
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
 
@@ -504,9 +504,8 @@ class SparseCSRReconstructor(Reconstructor):
         group_data: list[
             tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
         ] = []
-        # TODO: Can this be parallelized? Probably only the group_rows step, isn't there a groupby equivalent
-        # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
-        # the loop should be quite fast.
+        # TODO: This is quite similar to the dense reconstructor case, just
+        # a difference in what fields we need
         for zg in groups:
             group_rows = obs_pl.filter(pl.col("_zg") == zg)
             starts = group_rows["_start"].to_numpy().astype(np.int64)
@@ -526,6 +525,8 @@ class SparseCSRReconstructor(Reconstructor):
         )
 
         # Assemble CSRs
+        # TODO: Whereas dense reconstructor uses a layer dictionary with
+        # dense placeholders, we use a sparse placeholder, the same otherwise
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
         obs_parts: list[pl.DataFrame] = []
 
@@ -533,6 +534,8 @@ class SparseCSRReconstructor(Reconstructor):
         for (zg, group_rows, _, _, _, _), (index_result, layer_results) in zip(
             group_data, all_results, strict=True
         ):
+            # TODO: This is quite similar to what happens in the dense reconstructor
+            # however remapping is different for a sparse array
             flat_indices, lengths = index_result
             n_rows_group = len(group_rows)
 
@@ -595,14 +598,9 @@ class SparseCSRReconstructor(Reconstructor):
     ) -> tuple[pl.DataFrame, ModalityData]:
         """Build ``ModalityData`` for a sparse pointer-field modality."""
         fs = pf.feature_space
-        # TODO: This excludes chromatin_accessibility. Feels like the feature
-        # spaces and reconstructors are not closely coupled as they should be
-        # Either we need to make feature space specific reconstructors; or if
-        # we want to keep them generic, then we need some state defined by the
-        # parameters of the feature space spec
         if len(spec.zarr_group_spec.required_arrays) != 1:
             raise NotImplementedError(
-                f"Sparse modality requires exactly 1 index array, "
+                f"Sparse CSR requires exactly 1 required array, which is an indices array, "
                 f"got {len(spec.zarr_group_spec.required_arrays)} for '{fs}'"
             )
         index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
@@ -718,39 +716,45 @@ class DenseReconstructor(Reconstructor):
         self,
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
-        # TODO: pf isn't required, we only grab field name from it
         pf: PointerField,
-        # TODO: Or if we leave pf, then this spec isn't required because
-        # we can load it from feature_space
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         obs_pl_original = obs_pl
+        # Step 1: Unwrap and validate the field_name pointer, organize
+        # rows into groups based on source zarr_group
         obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
+        # Step 2: If pf.field_name is null everywhere, return just the obs
         if not groups:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl_original, [pf.field_name])
 
-        _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
+        # Step 3: Make the plan for aligning features across groups
+        # based on global remaps
+        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
+        # If no features overlap in the plan, return only the obs
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl_original, [pf.field_name])
 
+        # By default we load all required layers, can load more or less
+        # if given an override
+        # TODO: Why aren't we using `_resolve_layers`?
         layers_to_read = (
             layer_overrides if layer_overrides is not None else zgs.layers.required_names
         )
 
-        # Resolve array names: "{layers_path}/{ln}" for layered specs, "data" for plain
         layers_path = zgs.find_layers_path()
-        array_names = (
-            [f"{layers_path}/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
-        )
-        output_keys = layers_to_read if layers_to_read else ["data"]
+        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
+        output_keys = layers_to_read
 
         n_total_rows = obs_pl.height
+        # TODO: In principle, we know the dtype from the spec, but it's ambiguous
+        # because multiple values can be allowed. This means we default to np.float32.
+        # Unlikely to be lossy but worth flagging.
         all_layers: dict[str, np.ndarray] = {
             k: np.zeros((n_total_rows, n_features), dtype=np.float32) for k in output_keys
         }
@@ -763,10 +767,15 @@ class DenseReconstructor(Reconstructor):
         for zg in groups:
             group_rows = obs_pl.filter(pl.col("_zg") == zg)
             positions = group_rows["_pos"].to_numpy().astype(np.int64)
+            # TODO: This is fundamentally tied to the DenseZarrPointer type,
+            # which isn't clear. If keeping PointerField.pointer_kind we should
+            # define a list of acceptable pointer_kind for each reconstructor and
+            # validate that the feature_space is compatible within FeatureSpaceSpec.
             starts = positions
             ends = positions + 1
             gr = atlas.get_group_reader(zg, pf.feature_space)
             readers = [gr.get_array_reader(an) for an in array_names]
+            # TODO: At the very least this feels like it deserves a NamedTuple
             group_data.append((zg, group_rows, starts, ends, offset, readers))
             offset += len(positions)
 
@@ -787,27 +796,34 @@ class DenseReconstructor(Reconstructor):
             n_rows_group = group_rows.height
 
             for out_key, (flat_data, _) in zip(output_keys, group_results, strict=True):
-                n_local_features = flat_data.shape[0] // n_rows_group
-                local_data = flat_data.reshape(n_rows_group, n_local_features)
+                # All rows have the same number of columns in a dense 2D array, so
+                # we can infer the dimension
+                local_data = flat_data.reshape(n_rows_group, -1)
+                n_local_features = local_data.shape[-1]
 
+                # Remap data from the layer to match the order of the global features
                 if zg in group_remap_to_joined:
                     joined_cols = group_remap_to_joined[zg]
                     if feature_join == "intersection" or wanted_globals is not None:
+                        # Remap a subset of features, selected explictly or in the intersection
                         valid = joined_cols >= 0
                         all_layers[out_key][offset : offset + n_rows_group][
                             :, joined_cols[valid]
                         ] = local_data[:, valid]
                     else:
+                        # Remap all features
                         all_layers[out_key][offset : offset + n_rows_group][:, joined_cols] = (
                             local_data
                         )
                 else:
+                    # No remapping necessary
                     all_layers[out_key][offset : offset + n_rows_group, :n_local_features] = (
                         local_data
                     )
 
             obs_parts.append(group_rows)
 
+        # Put obs, var, and layers in the right places
         return _assemble_anndata(
             atlas, pf.feature_space, joined_globals, obs_parts, output_keys, all_layers
         )
@@ -818,13 +834,12 @@ class DenseReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
-        array_name: str | None = None,
+        layer: str | None = None,
     ) -> np.ndarray:
         """Return raw dense data as a NumPy array preserving all dimensions.
 
-        Unlike :meth:`as_anndata`, this skips feature remapping, layer
-        handling, and AnnData assembly.  The result keeps the original
+        Unlike :meth:`as_anndata`, this skips feature remapping, multi-layer
+        stacking, and AnnData assembly. The result keeps the original
         array dimensionality — e.g. ``(n_rows, C, H, W)`` for 4-D
         image tiles.
 
@@ -836,24 +851,30 @@ class DenseReconstructor(Reconstructor):
             Polars DataFrame of obs rows (must include zarr pointer columns).
         pf:
             Pointer field info for the feature space.
-        spec:
-            FeatureSpaceSpec for this feature space.
-        array_name:
-            Zarr array to read within each group.  Defaults to the first
-            entry in ``spec.zarr_group_spec.required_arrays``.
+        layer:
+            Layer name to read within each group's ``layers/`` subgroup.
+            Defaults to the first entry in
+            ``spec.zarr_group_spec.layers.required``.
         """
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
-        if array_name is None:
-            if not zgs.required_arrays:
+        if layer is None:
+            required_layers = zgs.layers.required_names
+            if not required_layers:
                 raise ValueError(
-                    f"Spec for '{pf.feature_space}' has no required_arrays; "
-                    "pass array_name explicitly"
+                    f"Spec for '{pf.feature_space}' has no required layers; pass layer explicitly"
                 )
-            array_name = zgs.required_arrays[0].array_name
+            layer = required_layers[0]
+        array_path = f"{zgs.find_layers_path()}/{layer}"
 
         obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
 
-        # Prepare per-group reads and discover per-row shape
+        # Prepare per-group reads and discover per-row shape.
+        # TODO: per_row_shape is used to enforce that all groups have the same dimensions
+        # What we actually care about is whether all extracted arrays have matching shapes.
+        # This is problematic if we tried to read from a (4, 2000, 2000) and a (5, 5000, 5000)
+        # zarr group. This is overly specialized to the image tile case, and isn't accounting
+        # for image features (for which feature remapping may be required).
         per_row_shape: tuple[int, ...] | None = None
         group_data: list[tuple[np.ndarray, np.ndarray, int, list[BatchAsyncArray]]] = []
         offset = 0
@@ -861,7 +882,7 @@ class DenseReconstructor(Reconstructor):
             group_rows = obs_pl.filter(pl.col("_zg") == zg)
             positions = group_rows["_pos"].to_numpy().astype(np.int64)
             gr = atlas.get_group_reader(zg, pf.feature_space)
-            reader = gr.get_array_reader(array_name)
+            reader = gr.get_array_reader(array_path)
 
             shape_tail = tuple(reader.shape[1:])
             if per_row_shape is None:
@@ -892,6 +913,7 @@ class DenseReconstructor(Reconstructor):
             [_read_dense_group(readers, starts, ends) for starts, ends, _, readers in group_data]
         )
 
+        # Coalesce data from all of the groups
         for (_, _, offset, _), group_results in zip(group_data, all_results, strict=True):
             (flat_data, _) = group_results[0]
             n_rows_group = flat_data.shape[0] // max(1, int(np.prod(per_row_shape)))
@@ -904,7 +926,6 @@ class DenseReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         rows_indexed: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer: str,
         *,
         n_rows: int,
@@ -912,6 +933,7 @@ class DenseReconstructor(Reconstructor):
         **_opts: Any,
     ) -> tuple[pl.DataFrame, ModalityData]:
         """Build ``ModalityData`` for a dense pointer-field modality."""
+        spec = get_spec(pf.feature_space)
         fs = pf.feature_space
         filtered, groups = _prepare_dense_obs(rows_indexed, pf)
         groups = sorted(groups)
@@ -933,26 +955,9 @@ class DenseReconstructor(Reconstructor):
             for zg in groups
         }
 
-        has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
-            spec.zarr_group_spec.layers.allowed
-        )
+        layers_path = spec.zarr_group_spec.find_layers_path()
+        array_path = f"{layers_path}/{layer}"
         per_row_shape: tuple[int, ...] | None = None
-        array_name = ""
-
-        if has_layers:
-            layers_path = spec.zarr_group_spec.find_layers_path()
-            array_path = f"{layers_path}/{layer}"
-        else:
-            layers_path = ""
-            # TODO: Always picking the first required array feels prone to
-            # unexpected errors. Can we define a single `preferred` feature
-            # array within a FeatureSpaceSpec?
-            array_name = (
-                spec.zarr_group_spec.required_arrays[0].array_name
-                if spec.zarr_group_spec.required_arrays
-                else "data"
-            )
-            array_path = array_name
 
         if groups:
             reader = group_readers[groups[0]].get_array_reader(array_path)
@@ -978,7 +983,6 @@ class DenseReconstructor(Reconstructor):
             present_mask=present_mask,
             row_positions=row_positions,
             per_row_shape=per_row_shape,
-            array_name=array_name,
             stack_dense=stack_dense,
         )
         return filtered, mod_data
@@ -1002,12 +1006,11 @@ class DenseReconstructor(Reconstructor):
             row_shape = (mod_data.n_features,)
             out_dtype = np.dtype(np.float32)
 
-        array_path = (
-            mod_data.array_name
-            if mod_data.array_name
-            else f"{mod_data.layers_path}/{mod_data.layer}"
-        )
+        array_path = f"{mod_data.layers_path}/{mod_data.layer}"
 
+        # TODO: This sort by group -> dispatch reads per group -> invert sorted
+        # data pattern is used multiple places and should be standardized (it's
+        # also required for Lance `take` and is implemented in a separate function)
         sort_order = np.argsort(groups_np, kind="stable")
         sorted_groups = groups_np[sort_order]
         sorted_starts = starts[sort_order]
@@ -1257,12 +1260,12 @@ class FeatureCSCReconstructor(Reconstructor):
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
         if not groups:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl_original, [pf.field_name])
 
         n_features = len(wanted_globals)
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
 
-        _, _, group_remap_to_joined, _ = _load_remaps_and_features(
+        _, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas, groups, spec, "intersection", wanted_globals
         )
 

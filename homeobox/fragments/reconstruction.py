@@ -111,7 +111,7 @@ class IntervalReconstructor(Reconstructor):
             )
 
         # Build unified chromosome space across groups
-        _, joined_globals, group_remap_to_joined, _ = _load_remaps_and_features(
+        joined_globals, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas,
             groups,
             spec,
