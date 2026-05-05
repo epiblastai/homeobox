@@ -51,14 +51,14 @@ def _load_remaps_and_features(
     spec: FeatureSpaceSpec,
     feature_join: Literal["union", "intersection"] = "union",
     wanted_globals: np.ndarray | None = None,
-) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, np.ndarray], int]:
+) -> tuple[np.ndarray, dict[str, np.ndarray], int]:
     """Load remaps for groups, build joined feature space.
 
     When *wanted_globals* is provided, skip the union/intersection step and
     use the requested global indices directly, applying intersection-style
     masking for each group.
 
-    Returns (group_remaps, joined_globals, group_remap_to_joined, n_features).
+    Returns (joined_globals, group_remap_to_joined, n_features).
     """
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
@@ -80,7 +80,7 @@ def _load_remaps_and_features(
         group_remap_to_joined = {}
         n_features = 0
 
-    return group_remaps, joined_globals, group_remap_to_joined, n_features
+    return joined_globals, group_remap_to_joined, n_features
 
 
 def _build_feature_space(
@@ -297,7 +297,7 @@ class SparseCSRReconstructor(Reconstructor):
         if not groups:
             return _build_obs_only_anndata(obs_pl_original)
 
-        _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
+        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
@@ -413,7 +413,7 @@ class DenseReconstructor(Reconstructor):
         if not groups:
             return _build_obs_only_anndata(obs_pl_original)
 
-        _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
+        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
@@ -761,7 +761,7 @@ class FeatureCSCReconstructor(Reconstructor):
         n_features = len(wanted_globals)
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
 
-        _, _, group_remap_to_joined, _ = _load_remaps_and_features(
+        _, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas, groups, spec, "intersection", wanted_globals
         )
 
