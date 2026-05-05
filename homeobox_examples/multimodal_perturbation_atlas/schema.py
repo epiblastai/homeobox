@@ -9,13 +9,12 @@ if TYPE_CHECKING:
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
+from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
-    DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
     StableUIDBaseSchema,
     StableUIDField,
     make_uid,

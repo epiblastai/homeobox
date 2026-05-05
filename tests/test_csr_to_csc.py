@@ -11,12 +11,12 @@ from homeobox.batch_array import BatchArray
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_csc, add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
 )
 
 

@@ -13,12 +13,12 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.feature_layouts import read_feature_layout, reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
 )
 
 # ---------------------------------------------------------------------------

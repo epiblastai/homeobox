@@ -33,7 +33,7 @@ from homeobox.ingestion import (
     write_feature_layout,
 )
 from homeobox.obs_alignment import _schema_obs_fields
-from homeobox.schema import SparseZarrPointer, make_uid
+from homeobox.pointer_types import SparseZarrPointer, make_uid
 from homeobox_examples.multimodal_perturbation_atlas.schema import (
     CellIndex,
     DatasetSchema,

@@ -34,13 +34,13 @@ if TYPE_CHECKING:
 from homeobox.batch_array import BatchAsyncArray
 from homeobox.group_reader import GroupReader, LayoutReader
 from homeobox.group_specs import get_spec
+from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_obs,
     _prepare_discrete_spatial_obs,
     _prepare_sparse_obs,
 )
-from homeobox.schema import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin

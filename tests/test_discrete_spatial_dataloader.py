@@ -24,14 +24,13 @@ from homeobox.group_specs import (
 )
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
+from homeobox.pointer_types import DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.reconstructor_base import Reconstructor
 from homeobox.schema import (
     DatasetSchema,
-    DiscreteSpatialPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
     make_uid,
 )
 

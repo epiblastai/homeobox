@@ -7,6 +7,11 @@ import polars as pl
 from zarr.core.sync import sync
 
 from homeobox.batch_array import BatchAsyncArray
+from homeobox.pointer_types import (
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
+    SparseZarrPointer,
+)
 from homeobox.schema import PointerField
 
 
@@ -14,19 +19,11 @@ def _prepare_sparse_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
-    """Unnest sparse pointer struct, filter empty, return (filtered_df, unique_groups).
+    """Prepare sparse obs and compute unique zarr groups.
 
-    Adds internal columns ``_zg``, ``_start``, ``_end``, ``_zarr_row``.
+    See :meth:`SparseZarrPointer.prepare_obs` for the column contract.
     """
-    col = pf.field_name
-    struct_df = obs_pl[col].struct.unnest()
-    obs_pl = obs_pl.with_columns(
-        struct_df["zarr_group"].alias("_zg"),
-        struct_df["start"].alias("_start"),
-        struct_df["end"].alias("_end"),
-        struct_df["zarr_row"].alias("_zarr_row"),
-    )
-    obs_pl = obs_pl.filter(pl.col("_zg").is_not_null())
+    obs_pl = SparseZarrPointer.prepare_obs(obs_pl, pf.field_name)
     groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
     return obs_pl, groups
 
@@ -35,17 +32,11 @@ def _prepare_dense_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str]]:
-    """Unnest dense pointer struct, filter empty, return (filtered_df, unique_groups).
+    """Prepare dense obs and compute unique zarr groups.
 
-    Adds internal columns ``_zg``, ``_pos``.
+    See :meth:`DenseZarrPointer.prepare_obs` for the column contract.
     """
-    col = pf.field_name
-    struct_df = obs_pl[col].struct.unnest()
-    obs_pl = obs_pl.with_columns(
-        struct_df["zarr_group"].alias("_zg"),
-        struct_df["position"].alias("_pos"),
-    )
-    obs_pl = obs_pl.filter(pl.col("_zg").is_not_null())
+    obs_pl = DenseZarrPointer.prepare_obs(obs_pl, pf.field_name)
     groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
     return obs_pl, groups
 
@@ -54,22 +45,15 @@ def _prepare_discrete_spatial_obs(
     obs_pl: pl.DataFrame,
     pf: PointerField,
 ) -> tuple[pl.DataFrame, list[str], int]:
-    """Unnest DiscreteSpatial pointer struct, filter empty rows.
+    """Prepare discrete-spatial obs, compute unique groups, validate box rank.
 
-    Returns ``(filtered_df, unique_groups, box_rank)``. Adds internal columns
-    ``_zg``, ``_min_corner``, ``_max_corner`` (the latter two as ``List[Int64]``).
-    All rows in the filtered set must share the same box rank ``k``; ``k`` is
-    returned so callers can preallocate ``(B, k)`` corner arrays. ``k`` is
-    ``0`` when the filtered set is empty.
+    Returns ``(filtered_df, unique_groups, box_rank)``. All rows in the filtered
+    set must share the same box rank ``k``; ``k`` is returned so callers can
+    preallocate ``(B, k)`` corner arrays. ``k`` is ``0`` when the filtered set
+    is empty. See :meth:`DiscreteSpatialPointer.prepare_obs` for the column
+    contract.
     """
-    col = pf.field_name
-    struct_df = obs_pl[col].struct.unnest()
-    obs_pl = obs_pl.with_columns(
-        struct_df["zarr_group"].alias("_zg"),
-        struct_df["min_corner"].alias("_min_corner"),
-        struct_df["max_corner"].alias("_max_corner"),
-    )
-    obs_pl = obs_pl.filter(pl.col("_zg").is_not_null() & (pl.col("_zg") != ""))
+    obs_pl = DiscreteSpatialPointer.prepare_obs(obs_pl, pf.field_name)
     if obs_pl.is_empty():
         return obs_pl, [], 0
 
