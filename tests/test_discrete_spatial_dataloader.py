@@ -17,6 +17,7 @@ from homeobox.feature_layouts import reindex_registry
 from homeobox.group_specs import (
     ArraySpec,
     FeatureSpaceSpec,
+    LayersSpec,
     ZarrGroupSpec,
     register_spec,
     registered_feature_spaces,
@@ -50,13 +51,22 @@ if "image_crops" not in registered_feature_spaces():
             has_var_df=False,
             reconstructor=Reconstructor(),
             zarr_group_spec=ZarrGroupSpec(
-                required_arrays=[
-                    ArraySpec(
-                        array_name="data",
-                        ndim=2,
-                        allowed_dtypes=[np.uint16, np.float32, np.uint8],
-                    ),
-                ],
+                layers=LayersSpec(
+                    required=[
+                        ArraySpec(
+                            array_name="raw",
+                            ndim=2,
+                            allowed_dtypes=[np.uint16, np.float32, np.uint8],
+                        ),
+                    ],
+                    allowed=[
+                        ArraySpec(
+                            array_name="raw",
+                            ndim=2,
+                            allowed_dtypes=[np.uint16, np.float32, np.uint8],
+                        ),
+                    ],
+                ),
             ),
         )
     )
@@ -90,7 +100,7 @@ class CropAndGeneCellSchema(HoxBaseSchema):
 
 
 def _write_image_zarr(group: zarr.Group, image: np.ndarray) -> None:
-    """Write a 2-D image into a discrete-spatial 'data' zarr array.
+    """Write a 2-D image into the discrete-spatial 'layers/raw' zarr array.
 
     Picks a chunk shape that divides the array shape so the sharding codec
     can wrap the whole array in a single shard.
@@ -105,7 +115,8 @@ def _write_image_zarr(group: zarr.Group, image: np.ndarray) -> None:
 
     chunk_shape = (_largest_div(8, h), _largest_div(8, w))
     shard_shape = (h, w)
-    group.create_array("data", data=image, chunks=chunk_shape, shards=shard_shape)
+    layers = group.require_group("layers")
+    layers.create_array("raw", data=image, chunks=chunk_shape, shards=shard_shape)
 
 
 def _make_crop_atlas(

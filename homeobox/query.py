@@ -571,8 +571,7 @@ class AtlasQuery:
             Pointer-field attribute name on the obs schema.
         layer:
             Which layer to read within the pointer field's feature space.
-            When ``None``, auto-resolved to the first required layer for
-            layered specs or ignored for layer-less specs (e.g. ``image_tiles``).
+            When ``None``, auto-resolved to the spec's first required layer.
         metadata_columns:
             Obs column names to include as metadata on each batch.
         stack_dense:
@@ -595,8 +594,7 @@ class AtlasQuery:
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
         if layer is None:
-            zgs_layers = spec.zarr_group_spec.layers
-            layer = zgs_layers.required[0].array_name if zgs_layers.required else ""
+            layer = spec.zarr_group_spec.layers.required[0].array_name
 
         obs_pl = self._materialize_rows_for_dataset()
 
@@ -641,9 +639,8 @@ class AtlasQuery:
         field_names:
             Ordered list of pointer-field attribute names to include.
         layers:
-            ``{field_name: layer_name}`` mapping.  Defaults to the first
-            required layer of each pointer field's feature space (or ``""``
-            for layer-less specs) when omitted.
+            ``{field_name: layer_name}`` mapping. Defaults to the first
+            required layer of each pointer field's feature space when omitted.
         metadata_columns:
             Obs column names to include as metadata on each batch.
         stack_dense:
@@ -662,8 +659,7 @@ class AtlasQuery:
             layers = {}
             for fn, pf in resolved_pfs.items():
                 fs_spec = get_spec(pf.feature_space)
-                zgs_layers = fs_spec.zarr_group_spec.layers
-                layers[fn] = zgs_layers.required[0].array_name if zgs_layers.required else ""
+                layers[fn] = fs_spec.zarr_group_spec.layers.required[0].array_name
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fn, pf in resolved_pfs.items():

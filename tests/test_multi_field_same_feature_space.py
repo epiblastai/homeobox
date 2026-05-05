@@ -101,7 +101,8 @@ def _write_tile_group(group: zarr.Group, tiles: np.ndarray) -> None:
     n_cells, n_channels, h, w = tiles.shape
     chunk_shape = (1, n_channels, h, w)
     shard_shape = (min(64, n_cells), n_channels, h, w)
-    group.create_array("data", data=tiles, chunks=chunk_shape, shards=shard_shape)
+    layers = group.require_group("layers")
+    layers.create_array("raw", data=tiles, chunks=chunk_shape, shards=shard_shape)
 
 
 def _build_pointer_struct(feature_space: str, zarr_group: str, n_cells: int) -> pa.StructArray:

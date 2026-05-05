@@ -421,20 +421,13 @@ class DenseReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl_original)
 
-        layers_to_read = (
-            layer_overrides if layer_overrides is not None else zgs.layers.required_names
-        )
-
-        # Resolve array names: "{layers_path}/{ln}" for layered specs, "data" for plain
+        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
         layers_path = zgs.find_layers_path()
-        array_names = (
-            [f"{layers_path}/{ln}" for ln in layers_to_read] if layers_to_read else ["data"]
-        )
-        output_keys = layers_to_read if layers_to_read else ["data"]
+        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
 
         n_total_rows = obs_pl.height
         all_layers: dict[str, np.ndarray] = {
-            k: np.zeros((n_total_rows, n_features), dtype=np.float32) for k in output_keys
+            ln: np.zeros((n_total_rows, n_features), dtype=np.float32) for ln in layers_to_read
         }
 
         # Prepare per-group obs data, pre-create readers, and compute offsets
@@ -468,7 +461,7 @@ class DenseReconstructor(Reconstructor):
         ):
             n_rows_group = group_rows.height
 
-            for out_key, (flat_data, _) in zip(output_keys, group_results, strict=True):
+            for ln, (flat_data, _) in zip(layers_to_read, group_results, strict=True):
                 n_local_features = flat_data.shape[0] // n_rows_group
                 local_data = flat_data.reshape(n_rows_group, n_local_features)
 
@@ -476,22 +469,18 @@ class DenseReconstructor(Reconstructor):
                     joined_cols = group_remap_to_joined[zg]
                     if feature_join == "intersection" or wanted_globals is not None:
                         valid = joined_cols >= 0
-                        all_layers[out_key][offset : offset + n_rows_group][
-                            :, joined_cols[valid]
-                        ] = local_data[:, valid]
-                    else:
-                        all_layers[out_key][offset : offset + n_rows_group][:, joined_cols] = (
-                            local_data
+                        all_layers[ln][offset : offset + n_rows_group][:, joined_cols[valid]] = (
+                            local_data[:, valid]
                         )
+                    else:
+                        all_layers[ln][offset : offset + n_rows_group][:, joined_cols] = local_data
                 else:
-                    all_layers[out_key][offset : offset + n_rows_group, :n_local_features] = (
-                        local_data
-                    )
+                    all_layers[ln][offset : offset + n_rows_group, :n_local_features] = local_data
 
             obs_parts.append(group_rows)
 
         return _assemble_anndata(
-            atlas, pf.feature_space, joined_globals, obs_parts, output_keys, all_layers
+            atlas, pf.feature_space, joined_globals, obs_parts, layers_to_read, all_layers
         )
 
     @endpoint
@@ -501,12 +490,12 @@ class DenseReconstructor(Reconstructor):
         obs_pl: pl.DataFrame,
         pf: PointerField,
         spec: FeatureSpaceSpec,
-        array_name: str | None = None,
+        layer: str | None = None,
     ) -> np.ndarray:
         """Return raw dense data as a NumPy array preserving all dimensions.
 
         Unlike :meth:`as_anndata`, this skips feature remapping, layer
-        handling, and AnnData assembly.  The result keeps the original
+        stacking, and AnnData assembly. The result keeps the original
         array dimensionality — e.g. ``(n_rows, C, H, W)`` for 4-D
         image tiles.
 
@@ -520,18 +509,12 @@ class DenseReconstructor(Reconstructor):
             Pointer field info for the feature space.
         spec:
             FeatureSpaceSpec for this feature space.
-        array_name:
-            Zarr array to read within each group.  Defaults to the first
-            entry in ``spec.zarr_group_spec.required_arrays``.
+        layer:
+            Which layer to read. Defaults to the spec's first required layer.
         """
         zgs = spec.zarr_group_spec
-        if array_name is None:
-            if not zgs.required_arrays:
-                raise ValueError(
-                    f"Spec for '{pf.feature_space}' has no required_arrays; "
-                    "pass array_name explicitly"
-                )
-            array_name = zgs.required_arrays[0].array_name
+        layer = layer if layer is not None else _resolve_layers(spec, None, pf.feature_space)[0]
+        array_name = f"{zgs.find_layers_path()}/{layer}"
 
         obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
 

@@ -135,6 +135,13 @@ PROTEIN_ABUNDANCE_SPEC = FeatureSpaceSpec(
 
 # ---------------------------------------------------------------------------
 # Chromatin accessibility (cell-sorted fragments)
+#
+# Both layouts are purely structural: the arrays describe fragment
+# intervals (chromosome, start, length) and are not feature values.
+# A "counts" layer is intentionally omitted — at single-cell resolution
+# the signal is sparse enough that per-fragment counts would effectively
+# be boolean. Bulk data with real per-fragment counts would add a
+# ``counts`` layer here.
 # ---------------------------------------------------------------------------
 
 CHROMATIN_ACCESSIBILITY_CELL_SORTED = ZarrGroupSpec(
@@ -209,9 +216,18 @@ IMAGE_TILES_SPEC = FeatureSpaceSpec(
     has_var_df=False,
     reconstructor=DenseReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
-        required_arrays=[
-            ArraySpec(array_name="data", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]),
-        ],
+        layers=LayersSpec(
+            required=[
+                ArraySpec(
+                    array_name="raw", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]
+                ),
+            ],
+            allowed=[
+                ArraySpec(
+                    array_name="raw", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]
+                ),
+            ],
+        ),
     ),
 )
 
