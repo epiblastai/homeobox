@@ -18,10 +18,7 @@ import polars as pl
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import get_spec
-from homeobox.reconstruction import (
-    _build_obs_only_anndata,
-    _get_pointer_columns,
-)
+from homeobox.reconstruction import _build_obs_only_anndata
 from homeobox.schema import PointerField
 from homeobox.util import sql_escape
 
@@ -44,6 +41,10 @@ class AtlasQuery:
         self._feature_filter: dict[str, list[str]] = {}
         self._balanced_limit_n: int | None = None
         self._balanced_limit_column: str | None = None
+
+    @property
+    def pointer_field_names(self) -> list[str]:
+        return list(self._atlas.pointer_fields.keys())
 
     def search(
         self,
@@ -352,7 +353,7 @@ class AtlasQuery:
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of obs metadata."""
         result = self._materialize_rows()
-        pointer_cols = _get_pointer_columns(result)
+        pointer_cols = list(self.atlas._pointer_fields.keys())
         if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
             result = result.select(keep)
@@ -366,11 +367,11 @@ class AtlasQuery:
         """
         obs_pl = self._materialize_rows()
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, self.pointer_field_names)
 
         active_pfs = self._active_pointer_fields()
         if not active_pfs:
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, self.pointer_field_names)
 
         # Pick the first feature space that has data for the queried rows
         # TODO: Add a warning on this behavior. Should be clear to the user
@@ -383,7 +384,7 @@ class AtlasQuery:
             if zg.is_not_null().any():
                 return self._reconstruct_single_space_anndata(obs_pl, pf)
 
-        return _build_obs_only_anndata(obs_pl)
+        return _build_obs_only_anndata(obs_pl, self.pointer_field_names)
 
     def to_mudata(self) -> "mu.MuData":
         """Execute the query and return a MuData with one modality per feature space.
@@ -527,7 +528,7 @@ class AtlasQuery:
                 if chunk.is_empty():
                     continue
                 if pf is None:
-                    yield _build_obs_only_anndata(chunk)
+                    yield _build_obs_only_anndata(chunk, self.pointer_field_names)
                 else:
                     yield self._reconstruct_single_space_anndata(chunk, pf)
             return
@@ -539,7 +540,7 @@ class AtlasQuery:
             for batch in reader:
                 if batch.num_rows == 0:
                     continue
-                yield _build_obs_only_anndata(pl.from_arrow(batch))
+                yield _build_obs_only_anndata(pl.from_arrow(batch), self.pointer_field_names)
             return
 
         for batch in reader:

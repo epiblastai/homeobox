@@ -46,6 +46,8 @@ def _prepare_dense_obs(
         struct_df["position"].alias("_pos"),
     )
     obs_pl = obs_pl.filter(pl.col("_zg").is_not_null())
+    # TODO: Would we be better off returning the actual groups with group_by
+    # instead of a unique list?
     groups = obs_pl["_zg"].unique().to_list() if not obs_pl.is_empty() else []
     return obs_pl, groups
 
