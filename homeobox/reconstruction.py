@@ -406,6 +406,12 @@ class DenseReconstructor(Reconstructor):
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        if wanted_globals is not None and feature_join != "union":
+            raise ValueError(
+                "feature_join has no effect when wanted_globals is provided; "
+                "the feature space is pinned to the requested globals."
+            )
+
         spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         obs_pl_original = obs_pl
