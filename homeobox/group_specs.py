@@ -39,9 +39,22 @@ class ArraySpec(BaseModel):
 
 
 class LayersSpec(BaseModel):
-    """Spec for the layers zarr subgroup."""
+    """Spec for the ``layers/`` zarr subgroup.
 
-    # TODO: Write a more detailed docstring
+    A layer is a per-element measurement keyed by the feature space's
+    structural arrays — e.g. ``counts`` and ``log_normalized`` for a
+    sparse CSR matrix, or ``raw`` and ``ctrl_standardized`` for dense
+    image features. All arrays in ``layers/`` share a single shape
+    (enforced by ``validate_group``), so a layer is always an
+    alternative encoding/normalization of the same logical values, not
+    a separate field.
+
+    ``prefix`` nests the layers group under another path (e.g.
+    ``"csr"`` → ``csr/layers``). ``match_shape_of`` names a structural
+    array in ``ZarrGroupSpec.required_arrays`` whose shape every layer
+    must match. ``required`` layers must be present; ``allowed`` layers
+    are an optional whitelist (omit to allow any name).
+    """
 
     prefix: str = ""
     match_shape_of: str | None = None
@@ -75,6 +88,22 @@ class ZarrGroupSpec(BaseModel):
     Describes the required arrays and layer subgroup of a single zarr
     group on disk. Does not carry user-facing concerns like the feature
     space name or reconstructor — those live on :class:`FeatureSpaceSpec`.
+
+    The two slots have distinct roles:
+
+    * ``required_arrays`` is **structural** — the index/skeleton that
+      addresses elements (e.g. ``csr/indices`` and ``csc/indptr`` for
+      sparse layouts, ``cell_sorted/{chromosomes,starts,lengths}`` for
+      interval fragments). These arrays are not themselves feature
+      values; they describe how to locate values.
+    * ``layers`` holds the actual feature data — the per-element
+      measurements that queries reconstruct (counts, log-normalized
+      expression, image-feature values, etc.). See :class:`LayersSpec`.
+
+    A spec may legitimately have no layers when the structural arrays
+    fully describe the signal and no per-element measurement is stored
+    alongside them (see ``CHROMATIN_ACCESSIBILITY_*`` in
+    ``homeobox.builtins``).
     """
 
     required_arrays: list[ArraySpec] = []
