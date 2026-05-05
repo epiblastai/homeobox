@@ -242,6 +242,36 @@ class SparseCSRReconstructor(Reconstructor):
     this or :class:`FeatureCSCReconstructor`.
     """
 
+    def _remap_features(
+        self,
+        *,
+        zg: str,
+        flat_indices: np.ndarray,
+        lengths: np.ndarray,
+        n_rows_group: int,
+        group_remap_to_joined: dict[str, np.ndarray],
+        feature_join: Literal["union", "intersection"],
+        wanted_globals: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Map local sparse feature indices into the joined feature space."""
+        if zg in group_remap_to_joined:
+            joined_remap = group_remap_to_joined[zg]
+            joined_indices = joined_remap[flat_indices.astype(np.intp)]
+        else:
+            joined_indices = flat_indices.astype(np.int32)
+
+        if (
+            feature_join == "intersection" or wanted_globals is not None
+        ) and zg in group_remap_to_joined:
+            keep_mask = joined_indices >= 0
+            joined_indices = joined_indices[keep_mask]
+            row_ids = np.repeat(np.arange(n_rows_group), lengths)
+            lengths = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
+        else:
+            keep_mask = None
+
+        return joined_indices, lengths, keep_mask
+
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
@@ -290,6 +320,11 @@ class SparseCSRReconstructor(Reconstructor):
                 f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
             )
 
+        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
+        layers_path = zgs.find_layers_path()
+        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
+        index_array_name = zgs.required_arrays[0].array_name
+
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl)
@@ -299,11 +334,6 @@ class SparseCSRReconstructor(Reconstructor):
         )
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl)
-
-        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-        layers_path = zgs.find_layers_path()
-        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
-        index_array_name = zgs.required_arrays[0].array_name
 
         # Prepare per-group obs data and pre-create readers (must happen
         # outside the async context to avoid nested sync() calls)
@@ -330,25 +360,15 @@ class SparseCSRReconstructor(Reconstructor):
             layer_results = group_results[1:]
             flat_indices, lengths = index_result
             n_rows_group = len(group_rows)
-
-            # Remap local indices -> joined positions
-            if zg in group_remap_to_joined:
-                joined_remap = group_remap_to_joined[zg]
-                joined_indices = joined_remap[flat_indices.astype(np.intp)]
-            else:
-                joined_indices = flat_indices.astype(np.int32)
-
-            # For intersection or feature filter, filter out features not in the joined space
-            if (
-                feature_join == "intersection" or wanted_globals is not None
-            ) and zg in group_remap_to_joined:
-                keep_mask = joined_indices >= 0
-                joined_indices = joined_indices[keep_mask]
-                # Recompute per-row lengths after filtering
-                row_ids = np.repeat(np.arange(n_rows_group), lengths)
-                lengths = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
-            else:
-                keep_mask = None
+            joined_indices, lengths, keep_mask = self._remap_features(
+                zg=zg,
+                flat_indices=flat_indices,
+                lengths=lengths,
+                n_rows_group=n_rows_group,
+                group_remap_to_joined=group_remap_to_joined,
+                feature_join=feature_join,
+                wanted_globals=wanted_globals,
+            )
 
             # Build indptr from lengths
             indptr = np.zeros(n_rows_group + 1, dtype=np.int64)
@@ -385,6 +405,31 @@ class DenseReconstructor(Reconstructor):
     dimensionality).
     """
 
+    def _remap_features(
+        self,
+        *,
+        out_layer: np.ndarray,
+        local_data: np.ndarray,
+        zg: str,
+        row_start: int,
+        group_remap_to_joined: dict[str, np.ndarray],
+        feature_join: Literal["union", "intersection"],
+        wanted_globals: np.ndarray | None,
+    ) -> None:
+        """Place dense local feature columns into the joined feature space."""
+        row_stop = row_start + local_data.shape[0]
+        out_rows = out_layer[row_start:row_stop]
+
+        if zg in group_remap_to_joined:
+            joined_cols = group_remap_to_joined[zg]
+            if feature_join == "intersection" or wanted_globals is not None:
+                valid = joined_cols >= 0
+                out_rows[:, joined_cols[valid]] = local_data[:, valid]
+            else:
+                out_rows[:, joined_cols] = local_data
+        else:
+            out_rows[:, : local_data.shape[1]] = local_data
+
     @endpoint
     def as_anndata(
         self,
@@ -404,6 +449,10 @@ class DenseReconstructor(Reconstructor):
         spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
 
+        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
+        layers_path = zgs.find_layers_path()
+        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
+
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl)
@@ -413,10 +462,6 @@ class DenseReconstructor(Reconstructor):
         )
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl)
-
-        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-        layers_path = zgs.find_layers_path()
-        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
 
         # Prepare per-group obs data and pre-create readers
         read_tasks = []
@@ -448,19 +493,15 @@ class DenseReconstructor(Reconstructor):
             n_rows_group = group_rows.height
 
             for ln, local_data in zip(layers_to_read, group_results, strict=True):
-                if zg in group_remap_to_joined:
-                    joined_cols = group_remap_to_joined[zg]
-                    if feature_join == "intersection" or wanted_globals is not None:
-                        valid = joined_cols >= 0
-                        all_layers[ln][offset : offset + n_rows_group][:, joined_cols[valid]] = (
-                            local_data[:, valid]
-                        )
-                    else:
-                        all_layers[ln][offset : offset + n_rows_group][:, joined_cols] = local_data
-                else:
-                    all_layers[ln][offset : offset + n_rows_group, : local_data.shape[1]] = (
-                        local_data
-                    )
+                self._remap_features(
+                    out_layer=all_layers[ln],
+                    local_data=local_data,
+                    zg=zg,
+                    row_start=offset,
+                    group_remap_to_joined=group_remap_to_joined,
+                    feature_join=feature_join,
+                    wanted_globals=wanted_globals,
+                )
 
             obs_parts.append(group_rows)
             offset += n_rows_group
