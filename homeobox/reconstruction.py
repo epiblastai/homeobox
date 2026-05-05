@@ -420,10 +420,9 @@ class DenseReconstructor(Reconstructor):
         layers_path = zgs.find_layers_path()
         array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
 
-        # Prepare per-group obs data, pre-create readers, and compute offsets
+        # Prepare per-group obs data and pre-create readers
         read_tasks = []
-        group_obs_data: list[tuple[str, pl.DataFrame, int]] = []
-        offset = 0
+        group_obs_data: list[tuple[str, pl.DataFrame]] = []
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
             positions = group_rows["_pos"].to_numpy().astype(np.int64)
@@ -432,8 +431,7 @@ class DenseReconstructor(Reconstructor):
             gr = atlas.get_group_reader(zg, pf.feature_space)
             lyr_readers = [gr.get_array_reader(an) for an in array_names]
             read_tasks.append(_read_dense_group(lyr_readers, starts, ends))
-            group_obs_data.append((zg, group_rows, offset))
-            offset += len(positions)
+            group_obs_data.append((zg, group_rows))
 
         # Dispatch all groups concurrently
         all_results = _sync_gather(read_tasks)
@@ -445,9 +443,8 @@ class DenseReconstructor(Reconstructor):
         }
         obs_parts: list[pl.DataFrame] = []
 
-        for (zg, group_rows, offset), group_results in zip(
-            group_obs_data, all_results, strict=True
-        ):
+        offset = 0
+        for (zg, group_rows), group_results in zip(group_obs_data, all_results, strict=True):
             n_rows_group = group_rows.height
 
             for ln, local_data in zip(layers_to_read, group_results, strict=True):
@@ -466,6 +463,7 @@ class DenseReconstructor(Reconstructor):
                     )
 
             obs_parts.append(group_rows)
+            offset += n_rows_group
 
         return _assemble_anndata(
             atlas, pf.feature_space, joined_globals, obs_parts, layers_to_read, all_layers
