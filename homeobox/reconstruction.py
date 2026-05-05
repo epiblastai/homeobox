@@ -475,10 +475,7 @@ class DenseReconstructor(Reconstructor):
         ):
             n_rows_group = group_rows.height
 
-            for ln, (flat_data, _) in zip(layers_to_read, group_results, strict=True):
-                n_local_features = flat_data.shape[0] // n_rows_group
-                local_data = flat_data.reshape(n_rows_group, n_local_features)
-
+            for ln, local_data in zip(layers_to_read, group_results, strict=True):
                 if zg in group_remap_to_joined:
                     joined_cols = group_remap_to_joined[zg]
                     if feature_join == "intersection" or wanted_globals is not None:
@@ -489,7 +486,9 @@ class DenseReconstructor(Reconstructor):
                     else:
                         all_layers[ln][offset : offset + n_rows_group][:, joined_cols] = local_data
                 else:
-                    all_layers[ln][offset : offset + n_rows_group, :n_local_features] = local_data
+                    all_layers[ln][offset : offset + n_rows_group, : local_data.shape[1]] = (
+                        local_data
+                    )
 
             obs_parts.append(group_rows)
 
@@ -570,9 +569,8 @@ class DenseReconstructor(Reconstructor):
         )
 
         for (_, _, offset, _), group_results in zip(group_data, all_results, strict=True):
-            (flat_data, _) = group_results[0]
-            n_rows_group = flat_data.shape[0] // max(1, int(np.prod(per_row_shape)))
-            out[offset : offset + n_rows_group] = flat_data.reshape(n_rows_group, *per_row_shape)
+            arr = group_results[0]
+            out[offset : offset + arr.shape[0]] = arr
 
         return out
 

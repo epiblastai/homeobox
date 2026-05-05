@@ -110,27 +110,21 @@ async def _read_dense_group(
     readers: list[BatchAsyncArray],
     starts: np.ndarray,
     ends: np.ndarray,
-) -> list[tuple[np.ndarray, np.ndarray]]:
+) -> list[np.ndarray]:
     """Read all dense arrays concurrently for one zarr group.
 
-    ``starts`` / ``ends`` are positions along axis 0; trailing axes are read
-    in full via ``read_boxes`` (rank-1 boxes), so the returned ``flat_data``
-    contains ``len(starts) * prod(trailing_shape)`` elements per reader.
-    Returns ``(flat_data, lengths)`` per reader for compatibility with the
-    sparse-group call shape; ``lengths[i]`` is the per-row element count.
+    ``starts`` / ``ends`` are single-row positions along axis 0 (i.e.
+    ``ends == starts + 1``); trailing axes are read in full via ``read_boxes``
+    (rank-1 boxes). Returns one stacked array per reader with shape
+    ``(len(starts), *trailing_shape)``.
     """
     min_corners = starts.reshape(-1, 1)
     max_corners = ends.reshape(-1, 1)
     boxes = await asyncio.gather(
         *(r.read_boxes(min_corners, max_corners, stack_uniform=True) for r in readers)
     )
-    out: list[tuple[np.ndarray, np.ndarray]] = []
-    n = len(starts)
-    for arr in boxes:
-        per_row = int(np.prod(arr.shape[1:])) if arr.ndim > 1 else 1
-        lengths = np.full(n, per_row, dtype=np.int64)
-        out.append((arr.reshape(-1), lengths))
-    return out
+    # read_boxes returns (n_boxes, 1, *trailing) since each box spans one axis-0 row
+    return [arr.squeeze(axis=1) for arr in boxes]
 
 
 # TODO: Why is this private API
