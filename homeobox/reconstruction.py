@@ -229,6 +229,37 @@ def _assemble_anndata(
     return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 
 
+def _read_group_arrays(
+    atlas: "RaggedAtlas",
+    groups: GroupBy,
+    spec: FeatureSpaceSpec,
+    pf: PointerField,
+    array_names: list[str],
+    read_method: Literal["ranges", "boxes"],
+) -> tuple[list[tuple[str, pl.DataFrame]], list]:
+    """Read the same arrays for each zarr group using pointer ranges or boxes."""
+    read_tasks = []
+    group_obs_data: list[tuple[str, pl.DataFrame]] = []
+
+    for key, group_rows in groups:
+        zg = _group_key_to_zg(key)
+        gr = atlas.get_group_reader(zg, pf.feature_space)
+        readers = [gr.get_array_reader(an) for an in array_names]
+
+        if read_method == "ranges":
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
+            read_tasks.append(_read_sparse_ranges(readers, starts, ends))
+        elif read_method == "boxes":
+            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
+            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
+        else:
+            raise ValueError(f"Unknown read_method: {read_method}")
+
+        group_obs_data.append((zg, group_rows))
+
+    return group_obs_data, _sync_gather(read_tasks)
+
+
 # ---------------------------------------------------------------------------
 # Built-in reconstructor implementations
 # ---------------------------------------------------------------------------
@@ -335,20 +366,14 @@ class SparseCSRReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl)
 
-        # Prepare per-group obs data and pre-create readers (must happen
-        # outside the async context to avoid nested sync() calls)
-        read_tasks = []
-        group_obs_data: list[tuple[str, pl.DataFrame]] = []
-        for key, group_rows in groups:
-            zg = _group_key_to_zg(key)
-            starts, ends = spec.pointer_type.to_ranges(group_rows)
-            gr = atlas.get_group_reader(zg, pf.feature_space)
-            readers = [gr.get_array_reader(an) for an in [index_array_name] + array_names]
-            read_tasks.append(_read_sparse_ranges(readers, starts, ends))
-            group_obs_data.append((zg, group_rows))
-
-        # Dispatch all groups concurrently
-        all_results = _sync_gather(read_tasks)
+        group_obs_data, all_results = _read_group_arrays(
+            atlas=atlas,
+            groups=groups,
+            spec=spec,
+            pf=pf,
+            array_names=[index_array_name] + array_names,
+            read_method="ranges",
+        )
 
         # Assemble CSRs
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
@@ -463,19 +488,14 @@ class DenseReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl)
 
-        # Prepare per-group obs data and pre-create readers
-        read_tasks = []
-        group_obs_data: list[tuple[str, pl.DataFrame]] = []
-        for key, group_rows in groups:
-            zg = _group_key_to_zg(key)
-            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
-            gr = atlas.get_group_reader(zg, pf.feature_space)
-            readers = [gr.get_array_reader(an) for an in array_names]
-            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
-            group_obs_data.append((zg, group_rows))
-
-        # Dispatch all groups concurrently
-        all_results = _sync_gather(read_tasks)
+        group_obs_data, all_results = _read_group_arrays(
+            atlas=atlas,
+            groups=groups,
+            spec=spec,
+            pf=pf,
+            array_names=array_names,
+            read_method="boxes",
+        )
 
         # Assemble into pre-allocated arrays
         n_total_rows = obs_pl.height
