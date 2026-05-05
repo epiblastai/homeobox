@@ -26,7 +26,6 @@ from homeobox.schema import (
     PointerField,
     SparseZarrPointer,
     make_uid,
-    pointer_type_name,
 )
 from homeobox.util import sql_escape
 
@@ -726,7 +725,7 @@ def add_anndata_batch(
             )
     else:
         raise NotImplementedError(
-            f"add_anndata_batch does not support {pointer_type_name(spec.pointer_type)} "
+            f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
             f"feature space '{feature_space}'"
         )
 
@@ -741,7 +740,7 @@ def add_anndata_batch(
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
     else:
         raise NotImplementedError(
-            f"add_anndata_batch does not support {pointer_type_name(spec.pointer_type)} "
+            f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
             f"feature space '{feature_space}'"
         )
 
@@ -761,7 +760,7 @@ def add_anndata_batch(
         )
     else:
         raise NotImplementedError(
-            f"add_anndata_batch does not support {pointer_type_name(spec.pointer_type)} "
+            f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
             f"feature space '{feature_space}'"
         )
 
@@ -904,7 +903,7 @@ def add_coo_batch(
     if spec.pointer_type is not SparseZarrPointer:
         raise ValueError(
             f"add_coo_batch only supports sparse feature spaces, "
-            f"but '{feature_space}' is {pointer_type_name(spec.pointer_type)}"
+            f"but '{feature_space}' is {spec.pointer_type.pointer_type_name}"
         )
 
     if (
@@ -1099,7 +1098,7 @@ def add_coo_batch(
         else:
             raise TypeError(
                 f"Field '{other_pf_name}' uses unsupported pointer type "
-                f"{pointer_type_name(other_spec.pointer_type)}"
+                f"{other_spec.pointer_type.pointer_type_name}"
             )
 
     for col in schema_fields:

@@ -2,7 +2,7 @@ import dataclasses
 import datetime
 import uuid
 from types import UnionType
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any, ClassVar, Union, get_args, get_origin
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -15,6 +15,8 @@ from homeobox.group_specs import get_spec
 
 
 class SparseZarrPointer(LanceModel):
+    pointer_type_name: ClassVar[str] = "sparse"
+
     zarr_group: str | None = None
     start: int | None = None
     end: int | None = None
@@ -22,6 +24,8 @@ class SparseZarrPointer(LanceModel):
 
 
 class DenseZarrPointer(LanceModel):
+    pointer_type_name: ClassVar[str] = "dense"
+
     zarr_group: str | None = None
     position: int | None = None
 
@@ -34,6 +38,8 @@ class DiscreteSpatialPointer(LanceModel):
     array with ``min_corner=[0]``, ``max_corner=[10]`` the referenced region is
     ``array[0:10, :]``.
     """
+
+    pointer_type_name: ClassVar[str] = "discrete_spatial"
 
     zarr_group: str | None = None
     min_corner: list[int] | None = None
@@ -60,17 +66,6 @@ class DiscreteSpatialPointer(LanceModel):
 
 ZarrPointer = SparseZarrPointer | DenseZarrPointer | DiscreteSpatialPointer
 ZARR_POINTER_TYPES = (SparseZarrPointer, DenseZarrPointer, DiscreteSpatialPointer)
-
-
-def pointer_type_name(pointer_type: type) -> str:
-    """Return the stable layout name for a concrete zarr pointer type."""
-    if pointer_type is SparseZarrPointer:
-        return "sparse"
-    if pointer_type is DenseZarrPointer:
-        return "dense"
-    if pointer_type is DiscreteSpatialPointer:
-        return "discrete_spatial"
-    return getattr(pointer_type, "__name__", repr(pointer_type))
 
 
 # Arrow field metadata key used to persist the feature_space for each pointer column.
@@ -317,9 +312,9 @@ class HoxBaseSchema(LanceModel):
             spec = get_spec(feature_space)
             if pointer_type is not spec.pointer_type:
                 raise TypeError(
-                    f"{cls.__name__}.{name}: {pointer_type_name(pointer_type)} pointer annotation "
+                    f"{cls.__name__}.{name}: {pointer_type.pointer_type_name} pointer annotation "
                     f"does not match feature_space '{feature_space}' which expects "
-                    f"{pointer_type_name(spec.pointer_type)}"
+                    f"{spec.pointer_type.pointer_type_name}"
                 )
 
     @model_validator(mode="after")

@@ -19,7 +19,6 @@ from homeobox.schema import (
     SparseZarrPointer,
     _iter_pointer_annotations,
     _read_field_json_schema_extra,
-    pointer_type_name,
 )
 
 
@@ -48,8 +47,8 @@ def _extract_pointer_fields(
         spec = get_spec(feature_space)
         if pointer_type is not spec.pointer_type:
             raise TypeError(
-                f"Field '{name}' uses {pointer_type_name(pointer_type)} pointer but "
-                f"feature space '{feature_space}' requires {pointer_type_name(spec.pointer_type)}"
+                f"Field '{name}' uses {pointer_type.pointer_type_name} pointer but "
+                f"feature space '{feature_space}' requires {spec.pointer_type.pointer_type_name}"
             )
         result[name] = PointerField(
             field_name=name,
@@ -108,7 +107,7 @@ def _infer_pointer_fields_from_arrow(
             feature_space = field.name
         else:
             raise TypeError(
-                f"Arrow field '{field.name}' looks like a {pointer_type_name(pointer_type)} pointer "
+                f"Arrow field '{field.name}' looks like a {pointer_type.pointer_type_name} pointer "
                 f"but is missing the '{POINTER_FEATURE_SPACE_METADATA_KEY.decode()}' "
                 f"metadata key, and its name does not match any registered feature "
                 f"space. Open with an explicit obs_schema or re-create the atlas with "
@@ -118,8 +117,8 @@ def _infer_pointer_fields_from_arrow(
         if pointer_type is not spec.pointer_type:
             raise TypeError(
                 f"Arrow field '{field.name}' (feature_space='{feature_space}') is a "
-                f"{pointer_type_name(pointer_type)} pointer but the registered spec requires "
-                f"{pointer_type_name(spec.pointer_type)}"
+                f"{pointer_type.pointer_type_name} pointer but the registered spec requires "
+                f"{spec.pointer_type.pointer_type_name}"
             )
         result[field.name] = PointerField(
             field_name=field.name,
