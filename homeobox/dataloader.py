@@ -203,24 +203,9 @@ def _build_dense_modality_data(
         for zg in groups
     }
 
-    # Determine read path and shape based on spec capabilities
-    has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
-        spec.zarr_group_spec.layers.allowed
-    )
+    layers_path = spec.zarr_group_spec.find_layers_path()
+    array_path = f"{layers_path}/{layer}"
     per_row_shape: tuple[int, ...] | None = None
-    array_name = ""
-
-    if has_layers:
-        layers_path = spec.zarr_group_spec.find_layers_path()
-        array_path = f"{layers_path}/{layer}"
-    else:
-        layers_path = ""
-        array_name = (
-            spec.zarr_group_spec.required_arrays[0].array_name
-            if spec.zarr_group_spec.required_arrays
-            else "data"
-        )
-        array_path = array_name
 
     if groups:
         reader = group_readers[groups[0]].get_array_reader(array_path)
@@ -246,7 +231,6 @@ def _build_dense_modality_data(
         present_mask=present_mask,
         row_positions=row_positions,
         per_row_shape=per_row_shape,
-        array_name=array_name,
         stack_dense=stack_dense,
     )
     return filtered, mod_data
@@ -284,23 +268,9 @@ def _build_discrete_spatial_modality_data(
         for zg in groups
     }
 
-    has_layers = bool(spec.zarr_group_spec.layers.required) or bool(
-        spec.zarr_group_spec.layers.allowed
-    )
+    layers_path = spec.zarr_group_spec.find_layers_path()
+    array_path = f"{layers_path}/{layer}"
     per_row_shape: tuple[int, ...] | None = None
-    array_name = ""
-
-    if has_layers:
-        layers_path = spec.zarr_group_spec.find_layers_path()
-        array_path = f"{layers_path}/{layer}"
-    else:
-        layers_path = ""
-        array_name = (
-            spec.zarr_group_spec.required_arrays[0].array_name
-            if spec.zarr_group_spec.required_arrays
-            else "data"
-        )
-        array_path = array_name
 
     if groups:
         reader = group_readers[groups[0]].get_array_reader(array_path)
@@ -322,7 +292,6 @@ def _build_discrete_spatial_modality_data(
         present_mask=present_mask,
         row_positions=row_positions,
         per_row_shape=per_row_shape,
-        array_name=array_name,
         stack_dense=stack_dense,
     )
     return filtered, mod_data
@@ -484,7 +453,6 @@ class _ModalityData:
     present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
     row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
     per_row_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
-    array_name: str = ""  # direct zarr array for layer-less specs (e.g., "data")
     stack_dense: bool = True
 
 
@@ -682,10 +650,7 @@ async def _take_dense_from_pointers(
         row_shape = (mod_data.n_features,)
         out_dtype = np.dtype(np.float32)
 
-    # Determine which zarr array to read
-    array_path = (
-        mod_data.array_name if mod_data.array_name else f"{mod_data.layers_path}/{mod_data.layer}"
-    )
+    array_path = f"{mod_data.layers_path}/{mod_data.layer}"
 
     sort_order = np.argsort(groups_np, kind="stable")
     sorted_groups = groups_np[sort_order]
@@ -754,9 +719,7 @@ async def _take_discrete_spatial_from_pointers(
             per_row_shape=mod_data.per_row_shape,
         )
 
-    array_path = (
-        mod_data.array_name if mod_data.array_name else f"{mod_data.layers_path}/{mod_data.layer}"
-    )
+    array_path = f"{mod_data.layers_path}/{mod_data.layer}"
 
     sort_order = np.argsort(groups_np, kind="stable")
     sorted_groups = groups_np[sort_order]
