@@ -9,7 +9,7 @@ import pandas as pd
 import polars as pl
 import scipy.sparse as sp
 
-from homeobox.group_specs import FeatureSpaceSpec
+from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_obs,
@@ -247,7 +247,6 @@ class SparseCSRReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
@@ -267,8 +266,6 @@ class SparseCSRReconstructor(Reconstructor):
             Polars DataFrame of obs rows (must include zarr pointer columns).
         pf:
             Pointer field info describing the feature space and zarr layout.
-        spec:
-            FeatureSpaceSpec for this feature space.
         layer_overrides:
             Explicit list of layers to read. Defaults to the spec's required layers.
         feature_join:
@@ -284,6 +281,7 @@ class SparseCSRReconstructor(Reconstructor):
                 "the feature space is pinned to the requested globals."
             )
 
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         # Determine index array name from spec's required_arrays
         if len(zgs.required_arrays) != 1:
@@ -404,11 +402,11 @@ class DenseReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
@@ -489,7 +487,6 @@ class DenseReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer: str | None = None,
     ) -> np.ndarray:
         """Return raw dense data as a NumPy array preserving all dimensions.
@@ -507,11 +504,10 @@ class DenseReconstructor(Reconstructor):
             Polars DataFrame of obs rows (must include zarr pointer columns).
         pf:
             Pointer field info for the feature space.
-        spec:
-            FeatureSpaceSpec for this feature space.
         layer:
             Which layer to read. Defaults to the spec's first required layer.
         """
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         layer = layer if layer is not None else _resolve_layers(spec, None, pf.feature_space)[0]
         array_name = f"{zgs.find_layers_path()}/{layer}"
@@ -734,7 +730,6 @@ class FeatureCSCReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
@@ -750,6 +745,7 @@ class FeatureCSCReconstructor(Reconstructor):
                 "the feature space is pinned to the requested globals."
             )
 
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         if len(zgs.required_arrays) != 1:
             raise NotImplementedError(
@@ -870,11 +866,11 @@ class SparseGeneExpressionReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        spec = get_spec(pf.feature_space)
         # CSC is optimized for few features / many rows (column-oriented reads);
         # delegate when a feature-oriented copy exists and rows outnumber wanted features.
         use_csc = (
@@ -883,6 +879,4 @@ class SparseGeneExpressionReconstructor(Reconstructor):
             and len(obs_pl) > len(wanted_globals)
         )
         impl = self._csc if use_csc else self._csr
-        return impl.as_anndata(
-            atlas, obs_pl, pf, spec, layer_overrides, feature_join, wanted_globals
-        )
+        return impl.as_anndata(atlas, obs_pl, pf, layer_overrides, feature_join, wanted_globals)
