@@ -82,28 +82,24 @@ def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -
     return positions
 
 
-async def _read_sparse_group(
-    index_reader: BatchAsyncArray,
-    layer_readers: list[BatchAsyncArray],
+async def _read_sparse_ranges(
+    readers: list[BatchAsyncArray],
     starts: np.ndarray,
     ends: np.ndarray,
-) -> tuple[tuple[np.ndarray, np.ndarray], list[tuple[np.ndarray, np.ndarray]]]:
-    """Read index array and layer arrays concurrently for one zarr group."""
-    # TODO: Assumes sparse implies the existence of layers; true for gene expression
-    # but not generally
-    coros = [index_reader.read_ranges(starts, ends)]
-    coros.extend(r.read_ranges(starts, ends) for r in layer_readers)
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Read multiple arrays concurrently with shared start/end ranges.
 
-    results = await asyncio.gather(*coros)
-    return results[0], list(results[1:])
+    Returns ``[(flat_data, lengths), ...]`` in the same order as ``readers``.
+    """
+    return list(await asyncio.gather(*(r.read_ranges(starts, ends) for r in readers)))
 
 
-async def _read_dense_group(
+async def _read_dense_boxes(
     readers: list[BatchAsyncArray],
     min_corners: np.ndarray,
     max_corners: np.ndarray,
 ) -> list[np.ndarray]:
-    """Read all dense arrays concurrently for one zarr group.
+    """Read multiple arrays concurrently with shared bounding boxes.
 
     ``min_corners`` / ``max_corners`` are boxes produced by the pointer type.
     Dense row pointers are rank-1 boxes spanning one axis-0 row and return one
@@ -116,23 +112,6 @@ async def _read_dense_group(
         # Dense row pointers read one axis-0 row, so remove that singleton crop axis.
         return [arr.squeeze(axis=1) for arr in boxes]
     return list(boxes)
-
-
-# TODO: Why is this private API
-async def _read_parallel_arrays(
-    readers: list[BatchAsyncArray],
-    starts: np.ndarray,
-    ends: np.ndarray,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """Read N arrays concurrently with shared start/end ranges.
-
-    Returns [(flat_data, lengths), ...] for each reader.
-    Unlike :func:`_read_sparse_group`, does not assume a 1-index + N-layers
-    structure — all arrays are treated symmetrically.
-    """
-    # TODO: This is the more generic version of _read_sparse_group. Eventually
-    # we should remove _read_sparse_group and _read_dense_group in favor of this
-    return list(await asyncio.gather(*(r.read_ranges(starts, ends) for r in readers)))
 
 
 # TODO: Why is this private API

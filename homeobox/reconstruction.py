@@ -15,8 +15,8 @@ from homeobox.read import (
     _apply_wanted_globals_remap,
     _group_key_to_zg,
     _prepare_obs_and_groups,
-    _read_dense_group,
-    _read_sparse_group,
+    _read_dense_boxes,
+    _read_sparse_ranges,
     _sync_gather,
 )
 from homeobox.reconstructor_base import Reconstructor, endpoint
@@ -313,9 +313,8 @@ class SparseCSRReconstructor(Reconstructor):
             zg = _group_key_to_zg(key)
             starts, ends = spec.pointer_type.to_ranges(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
-            idx_reader = gr.get_array_reader(index_array_name)
-            lyr_readers = [gr.get_array_reader(an) for an in array_names]
-            read_tasks.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
+            readers = [gr.get_array_reader(an) for an in [index_array_name] + array_names]
+            read_tasks.append(_read_sparse_ranges(readers, starts, ends))
             group_obs_data.append((zg, group_rows))
 
         # Dispatch all groups concurrently
@@ -326,9 +325,9 @@ class SparseCSRReconstructor(Reconstructor):
         obs_parts: list[pl.DataFrame] = []
 
         # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
-        for (zg, group_rows), (index_result, layer_results) in zip(
-            group_obs_data, all_results, strict=True
-        ):
+        for (zg, group_rows), group_results in zip(group_obs_data, all_results, strict=True):
+            index_result = group_results[0]
+            layer_results = group_results[1:]
             flat_indices, lengths = index_result
             n_rows_group = len(group_rows)
 
@@ -426,8 +425,8 @@ class DenseReconstructor(Reconstructor):
             zg = _group_key_to_zg(key)
             min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
-            lyr_readers = [gr.get_array_reader(an) for an in array_names]
-            read_tasks.append(_read_dense_group(lyr_readers, min_corners, max_corners))
+            readers = [gr.get_array_reader(an) for an in array_names]
+            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
             group_obs_data.append((zg, group_rows))
 
         # Dispatch all groups concurrently
@@ -521,7 +520,7 @@ class DenseReconstructor(Reconstructor):
                     f"in group '{zg}'"
                 )
 
-            read_tasks.append(_read_dense_group([reader], min_corners, max_corners))
+            read_tasks.append(_read_dense_boxes([reader], min_corners, max_corners))
             offsets.append(offset)
             offset += len(min_corners)
 
@@ -588,7 +587,7 @@ def _prepare_csc_group(
 
     idx_reader = gr.get_array_reader("csc/indices")
     lyr_readers = [gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read]
-    coro = _read_sparse_group(idx_reader, lyr_readers, starts, ends)
+    coro = _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
 
     info = {
         "mode": "csc",
@@ -763,7 +762,9 @@ class FeatureCSCReconstructor(Reconstructor):
                 idx_reader = gr.get_array_reader(csr_index_name)
                 layers_path = zgs.find_layers_path()
                 lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
-                read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
+                read_coroutines.append(
+                    _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
+                )
                 group_info.append({"mode": "csr", "group_rows": group_rows, "zg": zg})
 
         all_results = _sync_gather(read_coroutines)
@@ -775,9 +776,11 @@ class FeatureCSCReconstructor(Reconstructor):
         obs_parts: list[pl.DataFrame] = []
         row_offset = 0
 
-        for info, (idx_result, layer_results) in zip(group_info, all_results, strict=True):
+        for info, group_results in zip(group_info, all_results, strict=True):
             group_rows = info["group_rows"]
             n_rows_group = group_rows.height
+            idx_result = group_results[0]
+            layer_results = group_results[1:]
             flat_indices, lengths = idx_result
 
             if info["mode"] == "csc":

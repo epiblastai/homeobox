@@ -12,7 +12,7 @@ from homeobox.obs_alignment import PointerField
 from homeobox.read import (
     _group_key_to_zg,
     _prepare_obs_and_groups,
-    _read_parallel_arrays,
+    _read_sparse_ranges,
     _sync_gather,
 )
 from homeobox.reconstruction import (
@@ -135,7 +135,7 @@ class IntervalReconstructor(Reconstructor):
         # Dispatch all groups concurrently
         all_results = _sync_gather(
             [
-                _read_parallel_arrays(readers, starts, ends)
+                _read_sparse_ranges(readers, starts, ends)
                 for _, _, starts, ends, readers in group_data
             ]
         )
