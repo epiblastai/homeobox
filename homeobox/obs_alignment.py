@@ -9,14 +9,16 @@ import pandas as pd
 import pyarrow as pa
 
 from homeobox.group_specs import get_spec, registered_feature_spaces
+from homeobox.pointer_types import (
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
+    SparseZarrPointer,
+)
 from homeobox.schema import (
     AUTO_FIELDS,
     POINTER_FEATURE_SPACE_METADATA_KEY,
-    DenseZarrPointer,
-    DiscreteSpatialPointer,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
     _iter_pointer_annotations,
     _read_field_json_schema_extra,
 )

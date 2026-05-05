@@ -5,12 +5,12 @@ Unlike the h5ad-based census example, var metadata here is limited to what
 tiledbsoma exposes (no feature_reference, feature_biotype, feature_is_filtered).
 """
 
+from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
 )
 
 

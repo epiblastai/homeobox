@@ -11,8 +11,7 @@ Beyond those two user-extensible families, homeobox maintains several internal t
 
 ```python
 from homeobox.schema import (
-    HoxBaseSchema, FeatureBaseSchema,
-    SparseZarrPointer, DenseZarrPointer, PointerField,
+    HoxBaseSchema, FeatureBaseSchema, PointerField,
     DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
@@ -136,8 +135,11 @@ At least one pointer field must be declared on the subclass, and at least one mu
 ### Multimodal example
 
 ```python
+from homeobox.pointer_types import (
+     SparseZarrPointer, DenseZarrPointer,
+)
 from homeobox.schema import (
-    HoxBaseSchema, SparseZarrPointer, DenseZarrPointer, PointerField,
+    HoxBaseSchema, PointerField,
 )
 
 class MultimodalCellSchema(HoxBaseSchema):

@@ -262,7 +262,7 @@ def _get_local_feature_count(
     """Derive the expected number of local features from the zarr group."""
     import zarr
 
-    from homeobox.schema import DenseZarrPointer
+    from homeobox.pointer_types import DenseZarrPointer
 
     if spec.pointer_type is DenseZarrPointer:
         if "layers" in group and isinstance(group["layers"], zarr.Group):

@@ -19,12 +19,14 @@ import zarr
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
-from homeobox.schema import (
-    DatasetSchema,
+from homeobox.pointer_types import (
     DenseZarrPointer,
     DiscreteSpatialPointer,
-    PointerField,
     SparseZarrPointer,
+)
+from homeobox.schema import (
+    DatasetSchema,
+    PointerField,
     make_uid,
 )
 from homeobox.util import sql_escape

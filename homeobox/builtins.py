@@ -15,8 +15,8 @@ from homeobox.group_specs import (
     ZarrGroupSpec,
     register_spec,
 )
+from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.reconstruction import DenseReconstructor, SparseGeneExpressionReconstructor
-from homeobox.schema import DenseZarrPointer, SparseZarrPointer
 
 # ---------------------------------------------------------------------------
 # Gene expression (CSR primary, optional CSC feature-oriented copy)

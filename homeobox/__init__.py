@@ -16,14 +16,16 @@ from homeobox.fragments.peak_matrix import FragmentCounter, GenomicRange
 from homeobox.fragments.reconstruction import FragmentResult, IntervalReconstructor
 from homeobox.ingestion import add_anndata_batch, add_csc, add_from_anndata
 from homeobox.multimodal import MultimodalResult
+from homeobox.pointer_types import (
+    DenseZarrPointer,
+    SparseZarrPointer,
+)
 from homeobox.query import AtlasQuery
 from homeobox.schema import (
     DatasetSchema,
-    DenseZarrPointer,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
     StableUIDBaseSchema,
     StableUIDField,
 )

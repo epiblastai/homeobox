@@ -14,9 +14,9 @@ from homeobox.dataloader import (
     dense_to_tensor_collate,
     multimodal_to_dense_collate,
 )
+from homeobox.pointer_types import DenseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
-    DenseZarrPointer,
     HoxBaseSchema,
     PointerField,
     make_uid,

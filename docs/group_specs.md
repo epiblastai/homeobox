@@ -7,7 +7,7 @@ from homeobox.group_specs import (
     ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec,
     register_spec, get_spec, registered_feature_spaces,
 )
-from homeobox.schema import DenseZarrPointer, SparseZarrPointer
+from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
 ```
 
@@ -148,7 +148,7 @@ from homeobox.group_specs import (
     ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
 )
 from homeobox.reconstruction import DenseReconstructor
-from homeobox.schema import DenseZarrPointer
+from homeobox.pointer_types import DenseZarrPointer
 
 LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
@@ -173,7 +173,7 @@ For sparse data such as chromatin accessibility, mirror the structure of `GENE_E
 ```python
 from homeobox.group_specs import ArraySpec, FeatureSpaceSpec, LayersSpec
 from homeobox.reconstruction import SparseCSRReconstructor
-from homeobox.schema import SparseZarrPointer
+from homeobox.pointer_types import SparseZarrPointer
 
 ATAC_SPEC = FeatureSpaceSpec(
     feature_space="chromatin_accessibility",

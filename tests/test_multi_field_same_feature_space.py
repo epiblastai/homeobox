@@ -24,10 +24,10 @@ from homeobox.obs_alignment import (
     _extract_pointer_fields,
     _infer_pointer_fields_from_arrow,
 )
+from homeobox.pointer_types import DenseZarrPointer
 from homeobox.schema import (
     POINTER_FEATURE_SPACE_METADATA_KEY,
     DatasetSchema,
-    DenseZarrPointer,
     HoxBaseSchema,
     PointerField,
     make_uid,

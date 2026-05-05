@@ -71,7 +71,7 @@ from homeobox.group_specs import (
     ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
 )
 from homeobox.reconstruction import DenseReconstructor
-from homeobox.schema import DenseZarrPointer
+from homeobox.pointer_types import DenseZarrPointer
 
 LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
@@ -92,8 +92,9 @@ register_spec(LOGNORM_RNA_SPEC)
 A feature schema extends `FeatureBaseSchema` with any modality-specific fields. Here we store the gene symbol alongside the inherited `uid` and `global_index`.
 
 ```python
+from homeobox.pointer_types import DenseZarrPointer
 from homeobox.schema import (
-    FeatureBaseSchema, HoxBaseSchema, DenseZarrPointer, PointerField,
+    FeatureBaseSchema, HoxBaseSchema, PointerField,
 )
 
 class GeneFeature(FeatureBaseSchema):

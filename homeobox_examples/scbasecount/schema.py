@@ -16,13 +16,13 @@ from homeobox.group_specs import (
     ZarrGroupSpec,
     register_spec,
 )
+from homeobox.pointer_types import SparseZarrPointer
 from homeobox.reconstruction import SparseGeneExpressionReconstructor
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
-    SparseZarrPointer,
 )
 
 # ---------------------------------------------------------------------------
