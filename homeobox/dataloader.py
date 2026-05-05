@@ -71,6 +71,7 @@ def _sparse_batch_to_dense_tensor(batch: SparseBatch):
     return X
 
 
+# TODO: We have very similar reorder functions in `reconstruction.py`
 def _reorder_take_result(result: pl.DataFrame, batch_row_ids: np.ndarray) -> pl.DataFrame:
     """Reorder ``take_row_ids`` result to match the input order of *batch_row_ids*.
 
@@ -106,11 +107,6 @@ class _AsyncDataset:
             if self._loop_thread is not None:
                 self._loop_thread.join(timeout=5)
             self._loop.close()
-
-
-# Used insted of a lambda function because pickle doesn't like lambdas
-def _identity_collate(x):
-    return x
 
 
 # ---------------------------------------------------------------------------
@@ -649,6 +645,11 @@ def dense_to_tensor_collate(batch: DenseBatch) -> dict:
             else:
                 result[col] = arr
     return result
+
+
+# Used insted of a lambda function because pickle doesn't like lambdas
+def _identity_collate(x):
+    return x
 
 
 # ---------------------------------------------------------------------------

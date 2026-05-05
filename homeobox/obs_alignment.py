@@ -24,7 +24,9 @@ from homeobox.schema import (
 
 # TODO: _infer_pointer_fields_from_arrow and _extract_pointer_fields have quite a bit in common.
 # They are distinct, but might we consolidate them a bit. There's also substantial overlap
-# with `HoxBaseSchema.__init_subclass__`
+# with `HoxBaseSchema.__init_subclass__`.
+# TODO: Unclear to me why this is in `obs_alignment`, which was originally intended
+# to help with ingestion only. Feels like it could belong in `schema.py`.
 def _extract_pointer_fields(
     schema_cls: type[HoxBaseSchema],
 ) -> dict[str, PointerField]:

@@ -104,6 +104,7 @@ class BatchAsyncArray(AsyncArray):
 
         crops = []
         offset = 0
+        # TODO: Is np.split better to use here?
         for length, shape in zip(lengths, shapes, strict=True):
             end = offset + int(length)
             crops.append(flat[offset:end].reshape(tuple(int(d) for d in shape)))

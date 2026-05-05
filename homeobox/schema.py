@@ -112,6 +112,7 @@ class PointerField:
     # a reconstructor we know how to parse it's pointer type no? I think maybe the issue
     # was that pointer type; which would be a better indicator than a string just couldn't
     # be serialized. Perhaps we can use the same arrow metadata trick to get around it.
+    # Just double checked, we can 100% remove it
     pointer_kind: PointerKind
 
     @staticmethod

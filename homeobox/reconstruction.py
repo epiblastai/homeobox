@@ -595,6 +595,11 @@ class SparseCSRReconstructor(Reconstructor):
     ) -> tuple[pl.DataFrame, ModalityData]:
         """Build ``ModalityData`` for a sparse pointer-field modality."""
         fs = pf.feature_space
+        # TODO: This excludes chromatin_accessibility. Feels like the feature
+        # spaces and reconstructors are not closely coupled as they should be
+        # Either we need to make feature space specific reconstructors; or if
+        # we want to keep them generic, then we need some state defined by the
+        # parameters of the feature space spec
         if len(spec.zarr_group_spec.required_arrays) != 1:
             raise NotImplementedError(
                 f"Sparse modality requires exactly 1 index array, "
@@ -610,6 +615,8 @@ class SparseCSRReconstructor(Reconstructor):
 
         group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals)
 
+        # TODO: Again assumes the existence of layers. Generally true for a
+        # sparse CSR, always true of gene_expression.
         layers_path = spec.zarr_group_spec.find_layers_path()
         n_features = (
             len(wanted_globals)
@@ -711,7 +718,10 @@ class DenseReconstructor(Reconstructor):
         self,
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
+        # TODO: pf isn't required, we only grab field name from it
         pf: PointerField,
+        # TODO: Or if we leave pf, then this spec isn't required because
+        # we can load it from feature_space
         spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
@@ -909,6 +919,11 @@ class DenseReconstructor(Reconstructor):
         present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
         present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
+        # TODO: This assumes that dense features never have wanted globals.
+        # That is always true when `has_var_df` is False, as for image_tiles, but
+        # is false for image_features and protein_abundance. We should generally
+        # go through the generalization of `_build_sparse_group_readers` for every
+        # feature space spec that has_var_df.
         group_readers: dict[str, GroupReader] = {
             zg: GroupReader.for_worker(
                 zarr_group=zg,
@@ -929,6 +944,9 @@ class DenseReconstructor(Reconstructor):
             array_path = f"{layers_path}/{layer}"
         else:
             layers_path = ""
+            # TODO: Always picking the first required array feels prone to
+            # unexpected errors. Can we define a single `preferred` feature
+            # array within a FeatureSpaceSpec?
             array_name = (
                 spec.zarr_group_spec.required_arrays[0].array_name
                 if spec.zarr_group_spec.required_arrays

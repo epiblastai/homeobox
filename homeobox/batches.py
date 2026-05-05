@@ -78,7 +78,7 @@ class MultimodalBatch:
     metadata:
         Optional dict of obs columns aligned to ``n_rows`` (query order).
     modalities:
-        ``{feature_space: SparseBatch | DenseBatch}``. Each sub-batch has
+        ``{field_name: SparseBatch | DenseBatch}``. Each sub-batch has
         ``present[fs].sum()`` rows in query order.
     present:
         ``{feature_space: bool ndarray}``, shape ``(n_rows,)`` per modality.
