@@ -26,7 +26,6 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from homeobox.atlas import RaggedAtlas
-    from homeobox.batch_array import BatchAsyncArray
     from homeobox.group_reader import GroupReader
 
 # Re-export for downstream convenience
@@ -243,19 +242,6 @@ class SparseCSRReconstructor(Reconstructor):
     this or :class:`FeatureCSCReconstructor`.
     """
 
-    def validate_spec(self, spec: FeatureSpaceSpec) -> None:
-        """Simple validation checks to make sure the reconstructor
-        is appropriate for a given spec.
-        """
-        # Determine index array name from spec's required_arrays
-        zgs = spec.zarr_group_spec
-        if len(zgs.required_arrays) != 1:
-            raise NotImplementedError(
-                f"Sparse reconstruction for feature space '{spec.feature_space}' "
-                f"is not supported (requires {len(zgs.required_arrays)} "
-                f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
-            )
-
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
@@ -296,9 +282,14 @@ class SparseCSRReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        self.validate_spec(spec)
-
         zgs = spec.zarr_group_spec
+        if len(zgs.required_arrays) != 1:
+            raise NotImplementedError(
+                f"Sparse reconstruction for feature space '{spec.feature_space}' "
+                f"is not supported (requires {len(zgs.required_arrays)} "
+                f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
+            )
+
         # TODO: Why is this necessary. obs_pl just removes rows that don't have the feature
         # space. Shouldn't we return nothing in that case. I.e., just pass obs_pl to _build_obs_only_anndata
         obs_pl_original = obs_pl
@@ -319,9 +310,8 @@ class SparseCSRReconstructor(Reconstructor):
 
         # Prepare per-group obs data and pre-create readers (must happen
         # outside the async context to avoid nested sync() calls)
-        group_data: list[
-            tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
-        ] = []
+        read_tasks = []
+        group_obs_data: list[tuple[str, pl.DataFrame]] = []
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
             starts = group_rows["_start"].to_numpy().astype(np.int64)
@@ -329,23 +319,19 @@ class SparseCSRReconstructor(Reconstructor):
             gr = atlas.get_group_reader(zg, pf.feature_space)
             idx_reader = gr.get_array_reader(index_array_name)
             lyr_readers = [gr.get_array_reader(an) for an in array_names]
-            group_data.append((zg, group_rows, starts, ends, idx_reader, lyr_readers))
+            read_tasks.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
+            group_obs_data.append((zg, group_rows))
 
         # Dispatch all groups concurrently
-        all_results = _sync_gather(
-            [
-                _read_sparse_group(idx_reader, lyr_readers, starts, ends)
-                for _, _, starts, ends, idx_reader, lyr_readers in group_data
-            ]
-        )
+        all_results = _sync_gather(read_tasks)
 
         # Assemble CSRs
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
         obs_parts: list[pl.DataFrame] = []
 
         # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
-        for (zg, group_rows, _, _, _, _), (index_result, layer_results) in zip(
-            group_data, all_results, strict=True
+        for (zg, group_rows), (index_result, layer_results) in zip(
+            group_obs_data, all_results, strict=True
         ):
             flat_indices, lengths = index_result
             n_rows_group = len(group_rows)
@@ -421,9 +407,8 @@ class DenseReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        self.validate_spec(spec)
-
         zgs = spec.zarr_group_spec
+
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
@@ -445,9 +430,8 @@ class DenseReconstructor(Reconstructor):
         }
 
         # Prepare per-group obs data, pre-create readers, and compute offsets
-        group_data: list[
-            tuple[str, pl.DataFrame, np.ndarray, np.ndarray, int, list[BatchAsyncArray]]
-        ] = []
+        read_tasks = []
+        group_obs_data: list[tuple[str, pl.DataFrame, int]] = []
         offset = 0
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
@@ -456,22 +440,18 @@ class DenseReconstructor(Reconstructor):
             ends = positions + 1
             gr = atlas.get_group_reader(zg, pf.feature_space)
             lyr_readers = [gr.get_array_reader(an) for an in array_names]
-            group_data.append((zg, group_rows, starts, ends, offset, lyr_readers))
+            read_tasks.append(_read_dense_group(lyr_readers, starts, ends))
+            group_obs_data.append((zg, group_rows, offset))
             offset += len(positions)
 
         # Dispatch all groups concurrently
-        all_results = _sync_gather(
-            [
-                _read_dense_group(readers, starts, ends)
-                for _, _, starts, ends, _, readers in group_data
-            ]
-        )
+        all_results = _sync_gather(read_tasks)
 
         # Assemble into pre-allocated arrays
         obs_parts: list[pl.DataFrame] = []
 
-        for (zg, group_rows, _, _, offset, _), group_results in zip(
-            group_data, all_results, strict=True
+        for (zg, group_rows, offset), group_results in zip(
+            group_obs_data, all_results, strict=True
         ):
             n_rows_group = group_rows.height
 
@@ -531,7 +511,8 @@ class DenseReconstructor(Reconstructor):
 
         # Prepare per-group reads and discover per-row shape
         per_row_shape: tuple[int, ...] | None = None
-        group_data: list[tuple[np.ndarray, np.ndarray, int, list[BatchAsyncArray]]] = []
+        read_tasks = []
+        offsets: list[int] = []
         offset = 0
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
@@ -552,7 +533,8 @@ class DenseReconstructor(Reconstructor):
 
             starts = positions
             ends = positions + 1
-            group_data.append((starts, ends, offset, [reader]))
+            read_tasks.append(_read_dense_group([reader], starts, ends))
+            offsets.append(offset)
             offset += len(positions)
 
         n_total_rows = offset
@@ -564,11 +546,9 @@ class DenseReconstructor(Reconstructor):
         if n_total_rows == 0:
             return out
 
-        all_results = _sync_gather(
-            [_read_dense_group(readers, starts, ends) for starts, ends, _, readers in group_data]
-        )
+        all_results = _sync_gather(read_tasks)
 
-        for (_, _, offset, _), group_results in zip(group_data, all_results, strict=True):
+        for offset, group_results in zip(offsets, all_results, strict=True):
             arr = group_results[0]
             out[offset : offset + arr.shape[0]] = arr
 
