@@ -55,16 +55,8 @@ def _prepare_discrete_spatial_obs(
     if obs_pl.is_empty():
         return obs_pl, groups, 0
 
-    min_lens = obs_pl["_min_corner"].list.len().unique().to_list()
-    max_lens = obs_pl["_max_corner"].list.len().unique().to_list()
-    if len(min_lens) != 1 or len(max_lens) != 1 or min_lens != max_lens:
-        raise ValueError(
-            f"DiscreteSpatial modality requires uniform box rank across rows, got "
-            f"min_corner lengths {min_lens}, max_corner lengths {max_lens}"
-        )
-    box_rank = int(min_lens[0])
-    if box_rank < 1:
-        raise ValueError(f"DiscreteSpatial box rank must be >= 1, got {box_rank}")
+    min_corners, _ = DiscreteSpatialPointer.to_boxes(obs_pl)
+    box_rank = min_corners.shape[1]
 
     return obs_pl, groups, box_rank
 

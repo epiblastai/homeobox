@@ -127,8 +127,7 @@ class IntervalReconstructor(Reconstructor):
         group_data: list[tuple[str, pl.DataFrame, np.ndarray, np.ndarray, list]] = []
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            starts = group_rows["_start"].to_numpy().astype(np.int64)
-            ends = group_rows["_end"].to_numpy().astype(np.int64)
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
             gr = atlas.get_group_reader(zg, spec.feature_space)
             readers = [gr.get_array_reader(name) for name in array_names]
             group_data.append((zg, group_rows, starts, ends, readers))

@@ -311,8 +311,7 @@ class SparseCSRReconstructor(Reconstructor):
         group_obs_data: list[tuple[str, pl.DataFrame]] = []
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            starts = group_rows["_start"].to_numpy().astype(np.int64)
-            ends = group_rows["_end"].to_numpy().astype(np.int64)
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             idx_reader = gr.get_array_reader(index_array_name)
             lyr_readers = [gr.get_array_reader(an) for an in array_names]
@@ -425,9 +424,7 @@ class DenseReconstructor(Reconstructor):
         group_obs_data: list[tuple[str, pl.DataFrame]] = []
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            positions = group_rows["_pos"].to_numpy().astype(np.int64)
-            starts = positions
-            ends = positions + 1
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             lyr_readers = [gr.get_array_reader(an) for an in array_names]
             read_tasks.append(_read_dense_group(lyr_readers, starts, ends))
@@ -509,7 +506,7 @@ class DenseReconstructor(Reconstructor):
         offset = 0
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            positions = group_rows["_pos"].to_numpy().astype(np.int64)
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             reader = gr.get_array_reader(array_name)
 
@@ -524,11 +521,9 @@ class DenseReconstructor(Reconstructor):
                     f"in group '{zg}'"
                 )
 
-            starts = positions
-            ends = positions + 1
             read_tasks.append(_read_dense_group([reader], starts, ends))
             offsets.append(offset)
-            offset += len(positions)
+            offset += len(starts)
 
         n_total_rows = offset
         if per_row_shape is None:
@@ -764,8 +759,7 @@ class FeatureCSCReconstructor(Reconstructor):
                 group_info.append(info)
                 read_coroutines.append(coro)
             else:
-                starts = group_rows["_start"].to_numpy().astype(np.int64)
-                ends = group_rows["_end"].to_numpy().astype(np.int64)
+                starts, ends = spec.pointer_type.to_ranges(group_rows)
                 idx_reader = gr.get_array_reader(csr_index_name)
                 layers_path = zgs.find_layers_path()
                 lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
