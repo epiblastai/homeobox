@@ -11,7 +11,7 @@ import pyarrow as pa
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from homeobox.group_specs import PointerKind, get_spec
+from homeobox.group_specs import get_spec
 
 
 class SparseZarrPointer(LanceModel):
@@ -59,6 +59,18 @@ class DiscreteSpatialPointer(LanceModel):
 
 
 ZarrPointer = SparseZarrPointer | DenseZarrPointer | DiscreteSpatialPointer
+ZARR_POINTER_TYPES = (SparseZarrPointer, DenseZarrPointer, DiscreteSpatialPointer)
+
+
+def pointer_type_name(pointer_type: type) -> str:
+    """Return the stable layout name for a concrete zarr pointer type."""
+    if pointer_type is SparseZarrPointer:
+        return "sparse"
+    if pointer_type is DenseZarrPointer:
+        return "dense"
+    if pointer_type is DiscreteSpatialPointer:
+        return "discrete_spatial"
+    return getattr(pointer_type, "__name__", repr(pointer_type))
 
 
 # Arrow field metadata key used to persist the feature_space for each pointer column.
@@ -102,17 +114,11 @@ class PointerField:
     ``cycle1_image_tiles`` and ``cycle2_image_tiles``, both with
     ``feature_space="image_tiles"``).
 
-    The concrete pointer type is derivable from ``pointer_kind`` and
-    intentionally not stored here.
+    The concrete pointer type is carried by the matching FeatureSpaceSpec.
     """
 
     field_name: str
     feature_space: str
-    # TODO: Is pointer kind even necessary? As long as a spec is registered with
-    # a reconstructor we know how to parse it's pointer type no? I think maybe the issue
-    # was that pointer type; which would be a better indicator than a string just couldn't
-    # be serialized. Perhaps we can use the same arrow metadata trick to get around it.
-    pointer_kind: PointerKind
 
     @staticmethod
     def declare(*, feature_space: str, default: Any = None, **kwargs: Any) -> Any:
@@ -177,7 +183,7 @@ def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
         else:
             inner_types = (annotation,)
         for t in inner_types:
-            if t is SparseZarrPointer or t is DenseZarrPointer or t is DiscreteSpatialPointer:
+            if t in ZARR_POINTER_TYPES:
                 result.append((name, t))
                 break
     return result
@@ -283,7 +289,7 @@ class HoxBaseSchema(LanceModel):
         Each pointer-typed field must be declared with
         :meth:`PointerField.declare`, which attaches ``is_pointer=True`` and the
         feature_space to the pydantic ``Field``. The declared feature_space must
-        be registered, and its ``pointer_kind`` must match the annotation
+        be registered, and its ``pointer_type`` must match the annotation
         (``SparseZarrPointer`` ↔ sparse spec, ``DenseZarrPointer`` ↔ dense spec,
         ``DiscreteSpatialPointer`` ↔ discrete_spatial spec).
         """
@@ -309,17 +315,11 @@ class HoxBaseSchema(LanceModel):
                     f"a non-empty feature_space string"
                 )
             spec = get_spec(feature_space)
-            if pointer_type is SparseZarrPointer:
-                annotation_kind = PointerKind.SPARSE
-            elif pointer_type is DenseZarrPointer:
-                annotation_kind = PointerKind.DENSE
-            else:
-                annotation_kind = PointerKind.DISCRETE_SPATIAL
-            if annotation_kind is not spec.pointer_kind:
+            if pointer_type is not spec.pointer_type:
                 raise TypeError(
-                    f"{cls.__name__}.{name}: {annotation_kind.value} pointer annotation "
+                    f"{cls.__name__}.{name}: {pointer_type_name(pointer_type)} pointer annotation "
                     f"does not match feature_space '{feature_space}' which expects "
-                    f"{spec.pointer_kind.value}"
+                    f"{pointer_type_name(spec.pointer_type)}"
                 )
 
     @model_validator(mode="after")

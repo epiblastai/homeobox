@@ -33,13 +33,14 @@ if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
 from homeobox.batch_array import BatchAsyncArray
 from homeobox.group_reader import GroupReader, LayoutReader
-from homeobox.group_specs import PointerKind, get_spec
+from homeobox.group_specs import get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _prepare_dense_obs,
     _prepare_discrete_spatial_obs,
     _prepare_sparse_obs,
 )
+from homeobox.schema import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
@@ -154,7 +155,7 @@ def _build_sparse_modality_data(
     )
 
     mod_data = _ModalityData(
-        kind=PointerKind.SPARSE,
+        pointer_type=SparseZarrPointer,
         unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
@@ -234,7 +235,7 @@ def _build_dense_modality_data(
         n_features = atlas.registry_tables[fs].count_rows() if spec.has_var_df else 0
 
     mod_data = _ModalityData(
-        kind=PointerKind.DENSE,
+        pointer_type=DenseZarrPointer,
         unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
@@ -310,7 +311,7 @@ def _build_discrete_spatial_modality_data(
         layer_dtype = np.dtype(np.float32)
 
     mod_data = _ModalityData(
-        kind=PointerKind.DISCRETE_SPATIAL,
+        pointer_type=DiscreteSpatialPointer,
         unique_groups=groups,
         group_readers=group_readers,
         n_features=0,
@@ -472,7 +473,7 @@ class _ModalityData:
     lazily per batch via lance ``take_row_ids``.
     """
 
-    kind: PointerKind
+    pointer_type: type
     unique_groups: list[str]
     group_readers: dict[str, GroupReader]
     n_features: int
@@ -812,7 +813,7 @@ async def _fetch_modality_from_pointers(
     mod_data: _ModalityData,
 ) -> "SparseBatch | DenseBatch":
     """Dispatch to sparse or dense fetch using pointer arrays."""
-    if mod_data.kind is PointerKind.SPARSE:
+    if mod_data.pointer_type is SparseZarrPointer:
         return await _take_sparse_from_pointers(groups_np, starts, ends, mod_data)
     return await _take_dense_from_pointers(groups_np, starts, ends, mod_data)
 
@@ -883,7 +884,7 @@ async def _take_multimodal(
         # Extract pointers for ALL batch rows for this modality
         pointer_df = take_result[pf_name].struct.unnest()
         zg_series = pointer_df["zarr_group"]
-        if mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+        if mod_data.pointer_type is DiscreteSpatialPointer:
             batch_present = (zg_series.is_not_null() & (zg_series != "")).to_numpy()
         else:
             batch_present = zg_series.is_not_null().to_numpy()
@@ -892,14 +893,14 @@ async def _take_multimodal(
         present_indices = np.where(batch_present)[0]
 
         if len(present_indices) == 0:
-            if mod_data.kind is PointerKind.SPARSE:
+            if mod_data.pointer_type is SparseZarrPointer:
                 empty_modalities[fs] = SparseBatch(
                     indices=np.array([], dtype=np.int32),
                     values=np.array([], dtype=mod_data.layer_dtype),
                     offsets=np.zeros(1, dtype=np.int64),
                     n_features=mod_data.n_features,
                 )
-            elif mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+            elif mod_data.pointer_type is DiscreteSpatialPointer:
                 # Box dims are per-row; with zero rows there is no stacked shape to fall back on.
                 empty_modalities[fs] = DenseBatch(
                     data=[],
@@ -920,12 +921,12 @@ async def _take_multimodal(
 
         # Extract pointers only for present rows
         present_take = take_result[present_indices.tolist()]
-        if mod_data.kind is PointerKind.SPARSE:
+        if mod_data.pointer_type is SparseZarrPointer:
             groups_np, starts, ends = _extract_pointers_sparse(
                 present_take, pf_name, mod_data.unique_groups
             )
             tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
-        elif mod_data.kind is PointerKind.DISCRETE_SPATIAL:
+        elif mod_data.pointer_type is DiscreteSpatialPointer:
             groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
                 present_take, pf_name, mod_data.unique_groups
             )
@@ -1019,12 +1020,12 @@ class UnimodalHoxDataset(_AsyncDataset):
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
         # Workers reconstruct the zarr root lazily from this store.
         self._store = atlas.store
-        self._pointer_kind = spec.pointer_kind
+        self._pointer_type = spec.pointer_type
 
         # Build modality data (filters empty rows, builds remaps & readers)
         rows_indexed = obs_pl.with_row_index("_orig_idx")
 
-        if spec.pointer_kind is PointerKind.SPARSE:
+        if spec.pointer_type is SparseZarrPointer:
             filtered, self._mod_data = _build_sparse_modality_data(
                 atlas,
                 rows_indexed,
@@ -1034,7 +1035,7 @@ class UnimodalHoxDataset(_AsyncDataset):
                 wanted_globals,
                 obs_pl.height,
             )
-        elif spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+        elif spec.pointer_type is DiscreteSpatialPointer:
             filtered, self._mod_data = _build_discrete_spatial_modality_data(
                 atlas,
                 rows_indexed,
@@ -1121,7 +1122,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         take_result = _reorder_take_result(take_result, batch_row_ids)
 
         # 3. Extract pointer data and dispatch async read
-        if self._pointer_kind is PointerKind.SPARSE:
+        if self._pointer_type is SparseZarrPointer:
             groups_np, starts, ends = _extract_pointers_sparse(
                 take_result, self._pointer_field, self._mod_data.unique_groups
             )
@@ -1129,7 +1130,7 @@ class UnimodalHoxDataset(_AsyncDataset):
                 _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
                 self._loop,
             )
-        elif self._pointer_kind is PointerKind.DISCRETE_SPATIAL:
+        elif self._pointer_type is DiscreteSpatialPointer:
             groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
                 take_result, self._pointer_field, self._mod_data.unique_groups
             )
@@ -1266,12 +1267,12 @@ class MultimodalHoxDataset(_AsyncDataset):
             spec = get_spec(pf.feature_space)
             layer = layers.get(fn, "counts")
 
-            if spec.pointer_kind is PointerKind.SPARSE:
+            if spec.pointer_type is SparseZarrPointer:
                 wg = wanted_globals.get(fn) if wanted_globals is not None else None
                 _, modality_data[fn] = _build_sparse_modality_data(
                     atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
                 )
-            elif spec.pointer_kind is PointerKind.DISCRETE_SPATIAL:
+            elif spec.pointer_type is DiscreteSpatialPointer:
                 stack_dense_for_field = (
                     stack_dense.get(fn, True) if isinstance(stack_dense, dict) else stack_dense
                 )

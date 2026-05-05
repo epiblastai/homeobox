@@ -1,12 +1,13 @@
 # Zarr Group Specs
 
-A `ZarrGroupSpec` is a declaration: it tells homeobox what zarr arrays to expect inside a group, which pointer kind to use, and how to reconstruct data at query time. Every feature space in the atlas must have a registered spec. Specs are validated at class-definition time — a `HoxBaseSchema` subclass that references a feature space without a registered spec will raise immediately.
+A `ZarrGroupSpec` is a declaration: it tells homeobox what zarr arrays to expect inside a group. `FeatureSpaceSpec` binds that layout to a feature space, concrete pointer type, and reconstructor. Every feature space in the atlas must have a registered spec. Specs are validated at class-definition time — a `HoxBaseSchema` subclass that references a feature space without a registered spec will raise immediately.
 
 ```python
 from homeobox.group_specs import (
-    ZarrGroupSpec, PointerKind, LayersSpec, ArraySpec,
-    DTypeKind, register_spec, get_spec, registered_feature_spaces,
+    ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec,
+    register_spec, get_spec, registered_feature_spaces,
 )
+from homeobox.schema import DenseZarrPointer, SparseZarrPointer
 from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
 ```
 
@@ -14,16 +15,17 @@ from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, 
 
 ## Core concepts
 
-### PointerKind
+### Pointer types
 
-`PointerKind` is a string enum with two values:
+Each `FeatureSpaceSpec` declares the concrete pointer model stored on cell rows:
 
-| Value | Pointer type on cell rows | Typical use |
+| Pointer type on cell rows | Typical use |
 |---|---|---|
-| `SPARSE` | `SparseZarrPointer` | High-dimensional sparse assays: gene expression, chromatin accessibility |
-| `DENSE` | `DenseZarrPointer` | Low-dimensional dense assays: protein panels, image embeddings |
+| `SparseZarrPointer` | High-dimensional sparse assays: gene expression, chromatin accessibility |
+| `DenseZarrPointer` | Low-dimensional dense assays: protein panels, image embeddings |
+| `DiscreteSpatialPointer` | N-D bounding boxes into an array, such as image crops |
 
-The `PointerKind` declared in the spec must match the pointer field types used in your `HoxBaseSchema` subclass. If a pointer field's annotation does not match `spec.pointer_kind` (e.g. a `SparseZarrPointer` column declared with `PointerField.declare(feature_space=...)` pointing at a `DENSE` spec), `HoxBaseSchema.__init_subclass__` raises `TypeError` at class-definition time.
+The pointer type declared in the spec must match the pointer field types used in your `HoxBaseSchema` subclass. If a pointer field's annotation does not match `spec.pointer_type` (e.g. a `SparseZarrPointer` column declared with `PointerField.declare(feature_space=...)` pointing at a dense spec), `HoxBaseSchema.__init_subclass__` raises `TypeError` at class-definition time.
 
 ### ArraySpec
 
@@ -58,9 +60,9 @@ The `path` property returns the resolved layers path: `f"{prefix}/layers"` if `p
 
 A string that must be unique across the spec registry. This value is used as the pointer field name in `HoxBaseSchema` subclasses and as the key for the feature registry table (when `has_var_df=True`). Choosing a stable, descriptive name matters: renaming a registered space after cells have been ingested requires migrating pointer field values in the cell table.
 
-### `pointer_kind`
+### `pointer_type`
 
-`PointerKind.SPARSE` or `PointerKind.DENSE`. Determines whether cells in this space carry `SparseZarrPointer` or `DenseZarrPointer` fields, and what zarr layout the ingestion layer writes.
+`SparseZarrPointer`, `DenseZarrPointer`, or `DiscreteSpatialPointer`. Determines what row-pointer struct cells in this space carry and which ingestion/dataloader path handles them.
 
 ### `reconstructor`
 
@@ -93,18 +95,19 @@ Two specs are pre-registered in `homeobox.builtins`. They are imported automatic
 ### `GENE_EXPRESSION_SPEC`
 
 ```python
-ZarrGroupSpec(
+FeatureSpaceSpec(
     feature_space="gene_expression",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     has_var_df=True,
-    required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER)],
-    layers=LayersSpec(
-        prefix="csr",
-        match_shape_of="csr/indices",
-        required=["counts"],
-        allowed=["counts", "log_normalized", "tpm"],
-    ),
     reconstructor=SparseCSRReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32])],
+        layers=LayersSpec(
+            prefix="csr",
+            match_shape_of="csr/indices",
+            required=[ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32])],
+        ),
+    ),
 )
 ```
 
@@ -113,15 +116,16 @@ The `match_shape_of="csr/indices"` constraint on the layers subgroup ensures tha
 ### `IMAGE_FEATURES_SPEC`
 
 ```python
-ZarrGroupSpec(
+FeatureSpaceSpec(
     feature_space="image_features",
-    pointer_kind=PointerKind.DENSE,
+    pointer_type=DenseZarrPointer,
     has_var_df=True,
-    layers=LayersSpec(
-        required=["raw"],
-        allowed=["raw", "log_normalized", "ctrl_standardized"],
-    ),
     reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            required=[ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32])],
+        ),
+    ),
 )
 ```
 
@@ -141,19 +145,21 @@ This example registers a `lognorm_rna` space for dense log-normalized RNA-seq da
 
 ```python
 from homeobox.group_specs import (
-    ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
+    ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
 )
 from homeobox.reconstruction import DenseReconstructor
+from homeobox.schema import DenseZarrPointer
 
-LOGNORM_RNA_SPEC = ZarrGroupSpec(
+LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
-    pointer_kind=PointerKind.DENSE,
+    pointer_type=DenseZarrPointer,
     has_var_df=True,
-    layers=LayersSpec(
-        required=["log_normalized"],
-        allowed=["log_normalized"],
-    ),
     reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            required=[ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32])],
+        ),
+    ),
 )
 register_spec(LOGNORM_RNA_SPEC)
 ```
@@ -165,21 +171,23 @@ After this call, `"lognorm_rna"` is a valid pointer field name for any `HoxBaseS
 For sparse data such as chromatin accessibility, mirror the structure of `GENE_EXPRESSION_SPEC`:
 
 ```python
-from homeobox.group_specs import ArraySpec, DTypeKind, LayersSpec
+from homeobox.group_specs import ArraySpec, FeatureSpaceSpec, LayersSpec
 from homeobox.reconstruction import SparseCSRReconstructor
+from homeobox.schema import SparseZarrPointer
 
-ATAC_SPEC = ZarrGroupSpec(
+ATAC_SPEC = FeatureSpaceSpec(
     feature_space="chromatin_accessibility",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     has_var_df=True,
-    required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, dtype_kind=DTypeKind.UNSIGNED_INTEGER)],
-    layers=LayersSpec(
-        prefix="csr",
-        match_shape_of="csr/indices",
-        required=["counts"],
-        allowed=["counts"],
-    ),
     reconstructor=SparseCSRReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        required_arrays=[ArraySpec(array_name="csr/indices", ndim=1, allowed_dtypes=[np.uint32])],
+        layers=LayersSpec(
+            prefix="csr",
+            match_shape_of="csr/indices",
+            required=[ArraySpec(array_name="counts", ndim=1, allowed_dtypes=[np.uint32])],
+        ),
+    ),
 )
 register_spec(ATAC_SPEC)
 ```
@@ -215,7 +223,7 @@ registered_feature_spaces()
 # {'gene_expression', 'image_features', 'lognorm_rna', 'chromatin_accessibility', ...}
 
 spec = get_spec("gene_expression")
-# ZarrGroupSpec(feature_space='gene_expression', pointer_kind=<PointerKind.SPARSE: 'sparse'>, ...)
+# FeatureSpaceSpec(feature_space='gene_expression', pointer_type=<class 'homeobox.schema.SparseZarrPointer'>, ...)
 ```
 
 `get_spec()` raises `KeyError` if the named space is not registered. Use `registered_feature_spaces()` to check membership before calling `get_spec()` in code that handles unknown spaces.

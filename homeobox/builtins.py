@@ -12,11 +12,11 @@ from homeobox.group_specs import (
     ArraySpec,
     FeatureSpaceSpec,
     LayersSpec,
-    PointerKind,
     ZarrGroupSpec,
     register_spec,
 )
 from homeobox.reconstruction import DenseReconstructor, SparseGeneExpressionReconstructor
+from homeobox.schema import DenseZarrPointer, SparseZarrPointer
 
 # ---------------------------------------------------------------------------
 # Gene expression (CSR primary, optional CSC feature-oriented copy)
@@ -82,7 +82,7 @@ GENE_EXPRESSION_CSC = ZarrGroupSpec(
 
 GENE_EXPRESSION_SPEC = FeatureSpaceSpec(
     feature_space="gene_expression",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     has_var_df=True,
     reconstructor=SparseGeneExpressionReconstructor(),
     zarr_group_spec=GENE_EXPRESSION_CSR,
@@ -95,7 +95,7 @@ GENE_EXPRESSION_SPEC = FeatureSpaceSpec(
 
 IMAGE_FEATURES_SPEC = FeatureSpaceSpec(
     feature_space="image_features",
-    pointer_kind=PointerKind.DENSE,
+    pointer_type=DenseZarrPointer,
     has_var_df=True,
     reconstructor=DenseReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
@@ -118,7 +118,7 @@ IMAGE_FEATURES_SPEC = FeatureSpaceSpec(
 
 PROTEIN_ABUNDANCE_SPEC = FeatureSpaceSpec(
     feature_space="protein_abundance",
-    pointer_kind=PointerKind.DENSE,
+    pointer_type=DenseZarrPointer,
     has_var_df=True,
     reconstructor=DenseReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
@@ -192,7 +192,7 @@ CHROMATIN_ACCESSIBILITY_GENOME_SORTED = ZarrGroupSpec(
 
 CHROMATIN_ACCESSIBILITY_SPEC = FeatureSpaceSpec(
     feature_space="chromatin_accessibility",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     has_var_df=True,
     reconstructor=IntervalReconstructor(),
     zarr_group_spec=CHROMATIN_ACCESSIBILITY_CELL_SORTED,
@@ -205,7 +205,7 @@ CHROMATIN_ACCESSIBILITY_SPEC = FeatureSpaceSpec(
 
 IMAGE_TILES_SPEC = FeatureSpaceSpec(
     feature_space="image_tiles",
-    pointer_kind=PointerKind.DENSE,
+    pointer_type=DenseZarrPointer,
     has_var_df=False,
     reconstructor=DenseReconstructor(),
     zarr_group_spec=ZarrGroupSpec(

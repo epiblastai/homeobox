@@ -26,14 +26,14 @@ import pyarrow as pa
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.group_specs import PointerKind, get_spec
+from homeobox.group_specs import get_spec
 from homeobox.ingestion import (
     _write_dense_batched,
     add_anndata_batch,
     write_feature_layout,
 )
 from homeobox.obs_alignment import _schema_obs_fields
-from homeobox.schema import make_uid
+from homeobox.schema import SparseZarrPointer, make_uid
 from homeobox_examples.multimodal_perturbation_atlas.schema import (
     CellIndex,
     DatasetSchema,
@@ -327,7 +327,7 @@ columns = {
 for pf_name, pf in atlas._pointer_fields.items():
     if pf_name in columns:
         continue
-    if pf.pointer_kind is PointerKind.SPARSE:
+    if get_spec(pf.feature_space).pointer_type is SparseZarrPointer:
         columns[pf_name] = pa.StructArray.from_arrays(
             [
                 pa.array([""] * n_overlap, type=pa.string()),

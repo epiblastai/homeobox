@@ -38,7 +38,7 @@ class Reconstructor(Protocol):
 Key parameters:
 
 - `cells_pl` — Polars DataFrame of the queried cells. Includes the zarr pointer struct columns used to locate each cell's row within its zarr group.
-- `pf` — `PointerField` identifying which pointer field this reconstructor handles (field name, feature space, and pointer kind).
+- `pf` — `PointerField` identifying which pointer field this reconstructor handles (field name and feature space).
 - `spec` — the `ZarrGroupSpec` for this feature space, carrying the declared array layout and layer names.
 - `layer_overrides` — if set, read these layers instead of `spec.layers.required`.
 - `feature_join` — `"union"` includes all features from any group; `"intersection"` includes only features present in every group. Ignored when `wanted_globals` is set.
@@ -57,7 +57,7 @@ from homeobox.reconstruction import SparseCSRReconstructor
 
 ZarrGroupSpec(
     feature_space="gene_expression",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     reconstructor=SparseCSRReconstructor(),
     ...
 )
@@ -78,7 +78,7 @@ from homeobox.reconstruction import DenseReconstructor
 
 ZarrGroupSpec(
     feature_space="protein_abundance",
-    pointer_kind=PointerKind.DENSE,
+    pointer_type=DenseZarrPointer,
     reconstructor=DenseReconstructor(),
     ...
 )
@@ -99,7 +99,7 @@ from homeobox.reconstruction import FeatureCSCReconstructor
 
 ZarrGroupSpec(
     feature_space="gene_expression",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     reconstructor=FeatureCSCReconstructor(),
     ...
 )
@@ -118,7 +118,7 @@ When `wanted_globals` is not provided, `FeatureCSCReconstructor` delegates entir
 | Data type | Reconstructor | Notes |
 |---|---|---|
 | Sparse counts (gene expression, ATAC) | `SparseCSRReconstructor` | Default choice for sparse assays |
-| Dense float arrays (protein, embeddings, log-normalized HVGs) | `DenseReconstructor` | Required for `PointerKind.DENSE` |
+| Dense float arrays (protein, embeddings, log-normalized HVGs) | `DenseReconstructor` | Required for `DenseZarrPointer` feature spaces |
 | Sparse + frequent feature-filtered queries | `FeatureCSCReconstructor` | Requires `add_csc()` on groups; falls back gracefully per group |
 
 Use `FeatureCSCReconstructor` instead of `SparseCSRReconstructor` when:

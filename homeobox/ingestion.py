@@ -17,12 +17,16 @@ import scipy.sparse as sp
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.group_specs import FeatureSpaceSpec, PointerKind, get_spec
+from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import (
     DatasetSchema,
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
     PointerField,
+    SparseZarrPointer,
     make_uid,
+    pointer_type_name,
 )
 from homeobox.util import sql_escape
 
@@ -695,7 +699,7 @@ def add_anndata_batch(
     n_rows = adata.n_obs
     zarr_group = dataset_record.zarr_group
 
-    if spec.pointer_kind is PointerKind.SPARSE:
+    if spec.pointer_type is SparseZarrPointer:
         chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
         shard_shape = shard_shape or (_SHARD_ELEMS,)
         if len(chunk_shape) != 1 or len(shard_shape) != 1:
@@ -703,7 +707,7 @@ def add_anndata_batch(
                 f"Sparse feature space '{feature_space}' requires 1-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
-    else:
+    elif spec.pointer_type is DenseZarrPointer:
         n_vars = adata.n_vars
         if chunk_shape is None:
             chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
@@ -720,30 +724,45 @@ def add_anndata_batch(
                 f"Dense feature space '{feature_space}' requires 2-element chunk_shape "
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
+    else:
+        raise NotImplementedError(
+            f"add_anndata_batch does not support {pointer_type_name(spec.pointer_type)} "
+            f"feature space '{feature_space}'"
+        )
 
     atlas.register_dataset(dataset_record)
 
     group = atlas.create_zarr_group(zarr_group)
-    if spec.pointer_kind is PointerKind.SPARSE:
+    if spec.pointer_type is SparseZarrPointer:
         starts, ends = _write_sparse_batched(
             group, adata, zarr_layer, chunk_shape, shard_shape, spec
         )
-    else:
+    elif spec.pointer_type is DenseZarrPointer:
         _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
+    else:
+        raise NotImplementedError(
+            f"add_anndata_batch does not support {pointer_type_name(spec.pointer_type)} "
+            f"feature space '{feature_space}'"
+        )
 
     if spec.has_var_df:
         write_feature_layout(atlas, adata, feature_space, zarr_group)
 
     # Build pointer struct for the active feature space
-    if spec.pointer_kind is PointerKind.SPARSE:
+    if spec.pointer_type is SparseZarrPointer:
         pointer_struct = _make_sparse_pointer(zarr_group, starts, ends)
-    else:
+    elif spec.pointer_type is DenseZarrPointer:
         pointer_struct = pa.StructArray.from_arrays(
             [
                 pa.array([zarr_group] * n_rows, type=pa.string()),
                 pa.array(np.arange(n_rows, dtype=np.int64), type=pa.int64()),
             ],
             names=["zarr_group", "position"],
+        )
+    else:
+        raise NotImplementedError(
+            f"add_anndata_batch does not support {pointer_type_name(spec.pointer_type)} "
+            f"feature space '{feature_space}'"
         )
 
     arrow_table = _build_row_arrow_table(
@@ -882,10 +901,10 @@ def add_coo_batch(
     pointer_field: PointerField = atlas.pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
-    if spec.pointer_kind is not PointerKind.SPARSE:
+    if spec.pointer_type is not SparseZarrPointer:
         raise ValueError(
             f"add_coo_batch only supports sparse feature spaces, "
-            f"but '{feature_space}' is {spec.pointer_kind.value}"
+            f"but '{feature_space}' is {pointer_type_name(spec.pointer_type)}"
         )
 
     if (
@@ -1049,7 +1068,8 @@ def add_coo_batch(
     for other_pf_name, other_pf in atlas.pointer_fields.items():
         if other_pf_name == pointer_field.field_name:
             continue
-        if other_pf.pointer_kind is PointerKind.SPARSE:
+        other_spec = get_spec(other_pf.feature_space)
+        if other_spec.pointer_type is SparseZarrPointer:
             columns[other_pf_name] = pa.StructArray.from_arrays(
                 [
                     pa.array([""] * n_rows, type=pa.string()),
@@ -1059,13 +1079,27 @@ def add_coo_batch(
                 ],
                 names=["zarr_group", "start", "end", "zarr_row"],
             )
-        else:
+        elif other_spec.pointer_type is DenseZarrPointer:
             columns[other_pf_name] = pa.StructArray.from_arrays(
                 [
                     pa.array([""] * n_rows, type=pa.string()),
                     pa.array([0] * n_rows, type=pa.int64()),
                 ],
                 names=["zarr_group", "position"],
+            )
+        elif other_spec.pointer_type is DiscreteSpatialPointer:
+            columns[other_pf_name] = pa.StructArray.from_arrays(
+                [
+                    pa.array([""] * n_rows, type=pa.string()),
+                    pa.array([[] for _ in range(n_rows)], type=pa.list_(pa.int64())),
+                    pa.array([[] for _ in range(n_rows)], type=pa.list_(pa.int64())),
+                ],
+                names=["zarr_group", "min_corner", "max_corner"],
+            )
+        else:
+            raise TypeError(
+                f"Field '{other_pf_name}' uses unsupported pointer type "
+                f"{pointer_type_name(other_spec.pointer_type)}"
             )
 
     for col in schema_fields:

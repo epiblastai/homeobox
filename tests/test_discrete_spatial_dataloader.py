@@ -17,7 +17,6 @@ from homeobox.feature_layouts import reindex_registry
 from homeobox.group_specs import (
     ArraySpec,
     FeatureSpaceSpec,
-    PointerKind,
     ZarrGroupSpec,
     register_spec,
     registered_feature_spaces,
@@ -39,7 +38,7 @@ from homeobox.schema import (
 # Test feature space registration
 # ---------------------------------------------------------------------------
 
-# Register a discrete-spatial spec for tests. Pointer-kind dispatch in the
+# Register a discrete-spatial spec for tests. Pointer-type dispatch in the
 # dataloader requires the feature space to resolve to a registered spec.
 # A no-endpoint Reconstructor() is sufficient: the dataloader builds its own
 # DenseBatch and never calls the reconstructor.
@@ -47,7 +46,7 @@ if "image_crops" not in registered_feature_spaces():
     register_spec(
         FeatureSpaceSpec(
             feature_space="image_crops",
-            pointer_kind=PointerKind.DISCRETE_SPATIAL,
+            pointer_type=DiscreteSpatialPointer,
             has_var_df=False,
             reconstructor=Reconstructor(),
             zarr_group_spec=ZarrGroupSpec(
