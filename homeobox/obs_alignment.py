@@ -8,7 +8,7 @@ import anndata as ad
 import pandas as pd
 import pyarrow as pa
 
-from homeobox.group_specs import PointerKind, get_spec, registered_feature_spaces
+from homeobox.group_specs import get_spec, registered_feature_spaces
 from homeobox.schema import (
     AUTO_FIELDS,
     POINTER_FEATURE_SPACE_METADATA_KEY,
@@ -44,24 +44,15 @@ def _extract_pointer_fields(
                 f"{schema_cls.__name__}.{name}: pointer field missing feature_space "
                 f"metadata; declare with PointerField.declare(feature_space=...)"
             )
-        if pointer_type is SparseZarrPointer:
-            pointer_kind = PointerKind.SPARSE
-        elif pointer_type is DenseZarrPointer:
-            pointer_kind = PointerKind.DENSE
-        elif pointer_type is DiscreteSpatialPointer:
-            pointer_kind = PointerKind.DISCRETE_SPATIAL
-        else:
-            raise TypeError(f"Field '{name}' has unrecognised pointer type {pointer_type.__name__}")
         spec = get_spec(feature_space)
-        if pointer_kind is not spec.pointer_kind:
+        if pointer_type is not spec.pointer_type:
             raise TypeError(
-                f"Field '{name}' uses {pointer_kind.value} pointer but "
-                f"feature space '{feature_space}' requires {spec.pointer_kind.value}"
+                f"Field '{name}' uses {pointer_type.pointer_type_name} pointer but "
+                f"feature space '{feature_space}' requires {spec.pointer_type.pointer_type_name}"
             )
         result[name] = PointerField(
             field_name=name,
             feature_space=feature_space,
-            pointer_kind=pointer_kind,
         )
     return result
 
@@ -96,11 +87,11 @@ def _infer_pointer_fields_from_arrow(
         # Subset match so legacy atlases (which carry an extra ``feature_space``
         # subfield per row) are still recognised as pointer structs.
         if _SPARSE_SUBFIELDS <= sub_names:
-            pointer_kind = PointerKind.SPARSE
+            pointer_type = SparseZarrPointer
         elif _DENSE_SUBFIELDS <= sub_names:
-            pointer_kind = PointerKind.DENSE
+            pointer_type = DenseZarrPointer
         elif _DISCRETE_SPATIAL_SUBFIELDS <= sub_names:
-            pointer_kind = PointerKind.DISCRETE_SPATIAL
+            pointer_type = DiscreteSpatialPointer
         else:
             continue
 
@@ -116,23 +107,22 @@ def _infer_pointer_fields_from_arrow(
             feature_space = field.name
         else:
             raise TypeError(
-                f"Arrow field '{field.name}' looks like a {pointer_kind.value} pointer "
+                f"Arrow field '{field.name}' looks like a {pointer_type.pointer_type_name} pointer "
                 f"but is missing the '{POINTER_FEATURE_SPACE_METADATA_KEY.decode()}' "
                 f"metadata key, and its name does not match any registered feature "
                 f"space. Open with an explicit obs_schema or re-create the atlas with "
                 f"a schema that uses PointerField.declare(feature_space=...)."
             )
         spec = get_spec(feature_space)
-        if pointer_kind is not spec.pointer_kind:
+        if pointer_type is not spec.pointer_type:
             raise TypeError(
                 f"Arrow field '{field.name}' (feature_space='{feature_space}') is a "
-                f"{pointer_kind.value} pointer but the registered spec requires "
-                f"{spec.pointer_kind.value}"
+                f"{pointer_type.pointer_type_name} pointer but the registered spec requires "
+                f"{spec.pointer_type.pointer_type_name}"
             )
         result[field.name] = PointerField(
             field_name=field.name,
             feature_space=feature_space,
-            pointer_kind=pointer_kind,
         )
     return result
 

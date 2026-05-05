@@ -24,10 +24,10 @@ from homeobox.fragments.ingestion import (
     write_fragment_arrays,
     write_genome_sorted_arrays,
 )
-from homeobox.group_specs import PointerKind, get_spec
+from homeobox.group_specs import get_spec
 from homeobox.ingestion import SparseZarrWriter, write_feature_layout
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
-from homeobox.schema import DatasetSchema, make_uid
+from homeobox.schema import DatasetSchema, DenseZarrPointer, SparseZarrPointer, make_uid
 
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
@@ -107,10 +107,14 @@ def _build_cell_arrow_table(
     for pf_name, pf in atlas.pointer_fields.items():
         if pf_name in pointer_data:
             columns[pf_name] = pointer_data[pf_name]
-        elif pf.pointer_kind is PointerKind.SPARSE:
+            continue
+        pointer_type = get_spec(pf.feature_space).pointer_type
+        if pointer_type is SparseZarrPointer:
             columns[pf_name] = _zero_sparse_pointer(n_cells)
-        else:
+        elif pointer_type is DenseZarrPointer:
             columns[pf_name] = _zero_dense_pointer(n_cells)
+        else:
+            raise TypeError(f"Unsupported pointer type for field '{pf_name}'")
 
     for col in schema_fields:
         if col in obs_df.columns:
@@ -236,7 +240,7 @@ def add_multimodal_batch(
         atlas.register_dataset(ds)
         group = atlas.create_zarr_group(zarr_group)
 
-        if spec.pointer_kind is PointerKind.SPARSE:
+        if spec.pointer_type is SparseZarrPointer:
             csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
             writer = SparseZarrWriter.create(
                 group,
@@ -247,9 +251,11 @@ def add_multimodal_batch(
             starts, ends = writer.append_csr(csr)
             writer.trim()
             pointer_data[field_name] = _make_sparse_pointer(zarr_group, starts, ends)
-        else:
+        elif spec.pointer_type is DenseZarrPointer:
             _write_dense_modality(group, adata, zarr_layer, spec)
             pointer_data[field_name] = _make_dense_pointer(zarr_group, n_cells)
+        else:
+            raise TypeError(f"Unsupported pointer type for feature space '{feature_space}'")
 
         if spec.has_var_df:
             write_feature_layout(atlas, adata, feature_space, zarr_group)

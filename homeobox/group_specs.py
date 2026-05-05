@@ -1,4 +1,3 @@
-from enum import Enum
 from typing import Any
 
 import numpy as np
@@ -6,12 +5,6 @@ import zarr
 from pydantic import BaseModel, field_validator
 
 from homeobox.reconstructor_base import Reconstructor
-
-
-class PointerKind(str, Enum):
-    SPARSE = "sparse"
-    DENSE = "dense"
-    DISCRETE_SPATIAL = "discrete_spatial"
 
 
 class ArraySpec(BaseModel):
@@ -243,7 +236,7 @@ class FeatureSpaceSpec(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     feature_space: str
-    pointer_kind: PointerKind
+    pointer_type: type[Any]
     has_var_df: bool = False
     reconstructor: Reconstructor
     zarr_group_spec: ZarrGroupSpec

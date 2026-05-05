@@ -95,7 +95,7 @@ Use `SparseZarrPointer` when most cells have zero values for most features — t
 
 Use `DenseZarrPointer` when the measurement is inherently dense: every cell has a value for every feature, or the feature count is small enough that storing zeros is cheaper than the index overhead. Protein panels (dozens of features) and image embeddings (fixed-dimension vectors) are typical dense cases.
 
-The choice is fixed at feature-space registration time via `PointerKind` in the `ZarrGroupSpec`. Pointer field types on your cell schema must match.
+The choice is fixed at feature-space registration time via `FeatureSpaceSpec.pointer_type`. Pointer field types on your cell schema must match.
 
 ---
 
@@ -129,7 +129,7 @@ Three invariants are enforced at class-definition time inside `__init_subclass__
 
 1. Every pointer-typed field must be declared via `PointerField.declare(...)`. A raw `= None` default raises `TypeError`.
 2. The declared `feature_space` must already be registered via `register_spec()`.
-3. The annotation kind (sparse vs dense) must match `spec.pointer_kind`.
+3. The annotation pointer type must match `spec.pointer_type`.
 
 At least one pointer field must be declared on the subclass, and at least one must be non-null per row (enforced by a model validator at instance creation time).
 

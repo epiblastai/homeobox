@@ -104,7 +104,7 @@ classDiagram
 
 ## Zarr group layouts
 
-Each ingested dataset occupies one zarr group. The internal layout depends on the feature space's `PointerKind`.
+Each ingested dataset occupies one zarr group. The internal layout depends on the feature space's concrete pointer type.
 
 ### Sparse groups
 

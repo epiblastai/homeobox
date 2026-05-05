@@ -65,20 +65,24 @@ Both datasets contain log-normalized dense expression values (highly variable ge
 A `ZarrGroupSpec` declares the expected zarr layout for a feature space. Registering it before defining any schema is required — the schema's pointer field names are validated against the spec registry at class definition time.
 
 ```python
+import numpy as np
+
 from homeobox.group_specs import (
-    ZarrGroupSpec, PointerKind, LayersSpec, register_spec,
+    ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
 )
 from homeobox.reconstruction import DenseReconstructor
+from homeobox.schema import DenseZarrPointer
 
-LOGNORM_RNA_SPEC = ZarrGroupSpec(
+LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
-    pointer_kind=PointerKind.DENSE,   # each cell stores a row index, not a byte range
+    pointer_type=DenseZarrPointer,    # each cell stores a row index, not a byte range
     has_var_df=True,                  # this space has a feature registry + _feature_layouts rows
-    layers=LayersSpec(
-        required=["log_normalized"],
-        allowed=["log_normalized"],
-    ),
     reconstructor=DenseReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            required=[ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32])],
+        ),
+    ),
 )
 register_spec(LOGNORM_RNA_SPEC)
 ```

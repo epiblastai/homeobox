@@ -679,12 +679,7 @@ class RaggedAtlas:
 
         # Schema validation
         for pf in self._pointer_fields.values():
-            spec = get_spec(pf.feature_space)
-            if pf.pointer_kind is not spec.pointer_kind:
-                errors.append(
-                    f"Field '{pf.field_name}': pointer_kind {pf.pointer_kind.value} "
-                    f"doesn't match spec {spec.pointer_kind.value}"
-                )
+            get_spec(pf.feature_space)
 
         if check_registries:
             errors.extend(self._validate_registries())

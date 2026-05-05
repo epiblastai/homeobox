@@ -13,7 +13,6 @@ from homeobox.group_specs import (
     ArraySpec,
     FeatureSpaceSpec,
     LayersSpec,
-    PointerKind,
     ZarrGroupSpec,
     register_spec,
 )
@@ -32,7 +31,7 @@ from homeobox.schema import (
 
 GENEFULL_EXPRESSION_SPEC = FeatureSpaceSpec(
     feature_space="genefull_expression",
-    pointer_kind=PointerKind.SPARSE,
+    pointer_type=SparseZarrPointer,
     has_var_df=True,
     reconstructor=SparseGeneExpressionReconstructor(),
     zarr_group_spec=ZarrGroupSpec(

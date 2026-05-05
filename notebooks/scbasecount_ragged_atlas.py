@@ -67,15 +67,15 @@ def _():
         ArraySpec,
         FeatureSpaceSpec,
         LayersSpec,
-        PointerKind,
         ZarrGroupSpec,
         register_spec,
     )
     from homeobox.reconstruction import SparseGeneExpressionReconstructor
+    from homeobox.schema import SparseZarrPointer
 
     GENEFULL_EXPRESSION_SPEC = FeatureSpaceSpec(
         feature_space="genefull_expression",
-        pointer_kind=PointerKind.SPARSE,
+        pointer_type=SparseZarrPointer,
         has_var_df=True,
         reconstructor=SparseGeneExpressionReconstructor(),
         zarr_group_spec=ZarrGroupSpec(
