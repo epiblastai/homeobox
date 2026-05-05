@@ -39,9 +39,8 @@ from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, Spa
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _group_key_to_zg,
-    _prepare_dense_obs,
     _prepare_discrete_spatial_obs,
-    _prepare_sparse_obs,
+    _prepare_obs_and_groups,
 )
 
 # ---------------------------------------------------------------------------
@@ -158,7 +157,7 @@ def _build_sparse_modality_data(
         )
     index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
 
-    filtered, groups = _prepare_sparse_obs(rows_indexed, pf)
+    filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
@@ -208,7 +207,7 @@ def _build_dense_modality_data(
     is the DataFrame after empty-row removal.
     """
     fs = pf.feature_space
-    filtered, groups = _prepare_dense_obs(rows_indexed, pf)
+    filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)

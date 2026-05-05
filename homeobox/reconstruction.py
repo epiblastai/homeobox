@@ -14,8 +14,7 @@ from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _group_key_to_zg,
-    _prepare_dense_obs,
-    _prepare_sparse_obs,
+    _prepare_obs_and_groups,
     _read_dense_group,
     _read_sparse_group,
     _sync_gather,
@@ -298,7 +297,7 @@ class SparseCSRReconstructor(Reconstructor):
         # TODO: Why is this necessary. obs_pl just removes rows that don't have the feature
         # space. Shouldn't we return nothing in that case. I.e., just pass obs_pl to _build_obs_only_anndata
         obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl_original)
 
@@ -309,6 +308,8 @@ class SparseCSRReconstructor(Reconstructor):
             return _build_obs_only_anndata(obs_pl_original)
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
+        layers_path = zgs.find_layers_path()
+        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
 
         # Prepare per-group obs data and pre-create readers (must happen
         # outside the async context to avoid nested sync() calls)
@@ -321,8 +322,7 @@ class SparseCSRReconstructor(Reconstructor):
             ends = group_rows["_end"].to_numpy().astype(np.int64)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             idx_reader = gr.get_array_reader(index_array_name)
-            layers_path = zgs.find_layers_path()
-            lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
+            lyr_readers = [gr.get_array_reader(an) for an in array_names]
             group_data.append((zg, group_rows, starts, ends, idx_reader, lyr_readers))
 
         # Dispatch all groups concurrently
@@ -417,7 +417,7 @@ class DenseReconstructor(Reconstructor):
         spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl_original)
 
@@ -447,8 +447,8 @@ class DenseReconstructor(Reconstructor):
             starts = positions
             ends = positions + 1
             gr = atlas.get_group_reader(zg, pf.feature_space)
-            readers = [gr.get_array_reader(an) for an in array_names]
-            group_data.append((zg, group_rows, starts, ends, offset, readers))
+            lyr_readers = [gr.get_array_reader(an) for an in array_names]
+            group_data.append((zg, group_rows, starts, ends, offset, lyr_readers))
             offset += len(positions)
 
         # Dispatch all groups concurrently
@@ -520,7 +520,7 @@ class DenseReconstructor(Reconstructor):
         layer = layer if layer is not None else _resolve_layers(spec, None, pf.feature_space)[0]
         array_name = f"{zgs.find_layers_path()}/{layer}"
 
-        obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
 
         # Prepare per-group reads and discover per-row shape
         per_row_shape: tuple[int, ...] | None = None
@@ -762,7 +762,7 @@ class FeatureCSCReconstructor(Reconstructor):
         csr_index_name = zgs.required_arrays[0].array_name
 
         obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl_original)
 

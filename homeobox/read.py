@@ -10,22 +10,23 @@ from zarr.core.sync import sync
 
 from homeobox.batch_array import BatchAsyncArray
 from homeobox.pointer_types import (
-    DenseZarrPointer,
     DiscreteSpatialPointer,
-    SparseZarrPointer,
+    ZarrPointer,
 )
 from homeobox.schema import PointerField
 
 
-def _prepare_sparse_obs(
+def _prepare_obs_and_groups(
     obs_pl: pl.DataFrame,
-    pf: PointerField,
+    pointer_type: type[ZarrPointer],
+    column_name: str,
 ) -> tuple[pl.DataFrame, GroupBy]:
-    """Prepare sparse obs and group rows by zarr group.
+    """Prepare pointer obs and group rows by zarr group.
 
-    See :meth:`SparseZarrPointer.prepare_obs` for the column contract.
+    See the concrete pointer type's ``prepare_obs`` method for the column
+    contract.
     """
-    obs_pl = SparseZarrPointer.prepare_obs(obs_pl, pf.field_name)
+    obs_pl = pointer_type.prepare_obs(obs_pl, column_name)
     return obs_pl, obs_pl.group_by("_zg")
 
 
@@ -36,18 +37,6 @@ def _group_key_to_zg(key: Any) -> str:
             raise ValueError(f"Expected single-column group key, got {key!r}")
         return cast(str, key[0])
     return cast(str, key)
-
-
-def _prepare_dense_obs(
-    obs_pl: pl.DataFrame,
-    pf: PointerField,
-) -> tuple[pl.DataFrame, GroupBy]:
-    """Prepare dense obs and group rows by zarr group.
-
-    See :meth:`DenseZarrPointer.prepare_obs` for the column contract.
-    """
-    obs_pl = DenseZarrPointer.prepare_obs(obs_pl, pf.field_name)
-    return obs_pl, obs_pl.group_by("_zg")
 
 
 def _prepare_discrete_spatial_obs(
@@ -62,9 +51,9 @@ def _prepare_discrete_spatial_obs(
     is empty. See :meth:`DiscreteSpatialPointer.prepare_obs` for the column
     contract.
     """
-    obs_pl = DiscreteSpatialPointer.prepare_obs(obs_pl, pf.field_name)
+    obs_pl, groups = _prepare_obs_and_groups(obs_pl, DiscreteSpatialPointer, pf.field_name)
     if obs_pl.is_empty():
-        return obs_pl, obs_pl.group_by("_zg"), 0
+        return obs_pl, groups, 0
 
     min_lens = obs_pl["_min_corner"].list.len().unique().to_list()
     max_lens = obs_pl["_max_corner"].list.len().unique().to_list()
@@ -77,7 +66,7 @@ def _prepare_discrete_spatial_obs(
     if box_rank < 1:
         raise ValueError(f"DiscreteSpatial box rank must be >= 1, got {box_rank}")
 
-    return obs_pl, obs_pl.group_by("_zg"), box_rank
+    return obs_pl, groups, box_rank
 
 
 def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -> np.ndarray:

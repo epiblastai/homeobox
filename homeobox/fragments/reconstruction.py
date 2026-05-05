@@ -11,7 +11,7 @@ from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.obs_alignment import PointerField
 from homeobox.read import (
     _group_key_to_zg,
-    _prepare_sparse_obs,
+    _prepare_obs_and_groups,
     _read_parallel_arrays,
     _sync_gather,
 )
@@ -100,7 +100,7 @@ class IntervalReconstructor(Reconstructor):
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
         obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return FragmentResult(
                 chromosomes=np.array([], dtype=np.uint8),
