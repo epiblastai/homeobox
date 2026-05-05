@@ -424,11 +424,6 @@ class DenseReconstructor(Reconstructor):
         layers_path = zgs.find_layers_path()
         array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
 
-        n_total_rows = obs_pl.height
-        all_layers: dict[str, np.ndarray] = {
-            ln: np.zeros((n_total_rows, n_features), dtype=np.float32) for ln in layers_to_read
-        }
-
         # Prepare per-group obs data, pre-create readers, and compute offsets
         read_tasks = []
         group_obs_data: list[tuple[str, pl.DataFrame, int]] = []
@@ -448,6 +443,10 @@ class DenseReconstructor(Reconstructor):
         all_results = _sync_gather(read_tasks)
 
         # Assemble into pre-allocated arrays
+        n_total_rows = obs_pl.height
+        all_layers: dict[str, np.ndarray] = {
+            ln: np.zeros((n_total_rows, n_features), dtype=np.float32) for ln in layers_to_read
+        }
         obs_parts: list[pl.DataFrame] = []
 
         for (zg, group_rows, offset), group_results in zip(
