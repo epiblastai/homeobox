@@ -434,6 +434,10 @@ class DenseReconstructor(Reconstructor):
 
         # Assemble into pre-allocated arrays
         n_total_rows = obs_pl.height
+        # TODO: We can get the dtypes from each reader (reader.dtype)
+        # If we take (1) the max bit depth and (2) drop to float if any
+        # float or keep int if all int, then we can set a dtype that we
+        # are confident is lossless (more or less)
         all_layers: dict[str, np.ndarray] = {
             ln: np.zeros((n_total_rows, n_features), dtype=np.float32) for ln in layers_to_read
         }
