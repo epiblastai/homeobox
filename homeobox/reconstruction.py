@@ -37,7 +37,6 @@ __all__ = [
     "SparseGeneExpressionReconstructor",
     "DenseReconstructor",
     "FeatureCSCReconstructor",
-    "_get_pointer_columns",
 ]
 
 
@@ -132,18 +131,6 @@ def _build_feature_space(
     return joined_globals, group_remap_to_joined
 
 
-def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
-    """Build an obs DataFrame from query results, excluding pointer/internal columns."""
-    # Drop struct columns (pointer fields) and internal helper columns
-    keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
-    ]
-    obs = obs_pl.select(keep_cols).to_pandas()
-    if "uid" in obs.columns:
-        obs = obs.set_index("uid")
-    return obs
-
-
 def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
     """Return the names of zarr pointer struct columns.
 
@@ -153,17 +140,6 @@ def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
     the returned metadata columns.
     """
     return [c for c in obs_pl.columns if obs_pl[c].dtype == pl.Struct]
-
-
-def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
-    """Build an AnnData with only obs, no X."""
-    keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
-    ]
-    obs = obs_pl.select(keep_cols).to_pandas()
-    if "uid" in obs.columns:
-        obs = obs.set_index("uid")
-    return ad.AnnData(obs=obs)
 
 
 def _build_var(
@@ -211,6 +187,29 @@ def _resolve_layers(
     return layers
 
 
+def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
+    """Build an obs DataFrame from query results, excluding pointer/internal columns."""
+    # Drop struct columns (pointer fields) and internal helper columns
+    keep_cols = [
+        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
+    ]
+    obs = obs_pl.select(keep_cols).to_pandas()
+    if "uid" in obs.columns:
+        obs = obs.set_index("uid")
+    return obs
+
+
+def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
+    """Build an AnnData with only obs, no X."""
+    keep_cols = [
+        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
+    ]
+    obs = obs_pl.select(keep_cols).to_pandas()
+    if "uid" in obs.columns:
+        obs = obs.set_index("uid")
+    return ad.AnnData(obs=obs)
+
+
 def _assemble_anndata(
     atlas: "RaggedAtlas",
     feature_space: str,
@@ -243,6 +242,19 @@ class SparseCSRReconstructor(Reconstructor):
     :class:`SparseGeneExpressionReconstructor`) decides whether to call
     this or :class:`FeatureCSCReconstructor`.
     """
+
+    def validate_spec(self, spec: FeatureSpaceSpec) -> None:
+        """Simple validation checks to make sure the reconstructor
+        is appropriate for a given spec.
+        """
+        # Determine index array name from spec's required_arrays
+        zgs = spec.zarr_group_spec
+        if len(zgs.required_arrays) != 1:
+            raise NotImplementedError(
+                f"Sparse reconstruction for feature space '{spec.feature_space}' "
+                f"is not supported (requires {len(zgs.required_arrays)} "
+                f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
+            )
 
     def as_anndata(
         self,
@@ -284,16 +296,9 @@ class SparseCSRReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        zgs = spec.zarr_group_spec
-        # Determine index array name from spec's required_arrays
-        if len(zgs.required_arrays) != 1:
-            raise NotImplementedError(
-                f"Sparse reconstruction for feature space '{pf.feature_space}' "
-                f"is not yet supported (requires {len(zgs.required_arrays)} "
-                f"primary arrays: {[a.array_name for a in zgs.required_arrays]})"
-            )
-        index_array_name = zgs.required_arrays[0].array_name
+        self.validate_spec(spec)
 
+        zgs = spec.zarr_group_spec
         # TODO: Why is this necessary. obs_pl just removes rows that don't have the feature
         # space. Shouldn't we return nothing in that case. I.e., just pass obs_pl to _build_obs_only_anndata
         obs_pl_original = obs_pl
@@ -310,6 +315,7 @@ class SparseCSRReconstructor(Reconstructor):
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
         layers_path = zgs.find_layers_path()
         array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
+        index_array_name = zgs.required_arrays[0].array_name
 
         # Prepare per-group obs data and pre-create readers (must happen
         # outside the async context to avoid nested sync() calls)
@@ -415,6 +421,8 @@ class DenseReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
+        self.validate_spec(spec)
+
         zgs = spec.zarr_group_spec
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
