@@ -100,23 +100,22 @@ async def _read_sparse_group(
 
 async def _read_dense_group(
     readers: list[BatchAsyncArray],
-    starts: np.ndarray,
-    ends: np.ndarray,
+    min_corners: np.ndarray,
+    max_corners: np.ndarray,
 ) -> list[np.ndarray]:
     """Read all dense arrays concurrently for one zarr group.
 
-    ``starts`` / ``ends`` are single-row positions along axis 0 (i.e.
-    ``ends == starts + 1``); trailing axes are read in full via ``read_boxes``
-    (rank-1 boxes). Returns one stacked array per reader with shape
-    ``(len(starts), *trailing_shape)``.
+    ``min_corners`` / ``max_corners`` are boxes produced by the pointer type.
+    Dense row pointers are rank-1 boxes spanning one axis-0 row and return one
+    stacked array per reader with shape ``(len(min_corners), *trailing_shape)``.
     """
-    min_corners = starts.reshape(-1, 1)
-    max_corners = ends.reshape(-1, 1)
     boxes = await asyncio.gather(
         *(r.read_boxes(min_corners, max_corners, stack_uniform=True) for r in readers)
     )
-    # read_boxes returns (n_boxes, 1, *trailing) since each box spans one axis-0 row
-    return [arr.squeeze(axis=1) for arr in boxes]
+    if min_corners.shape[1] == 1 and np.all((max_corners[:, 0] - min_corners[:, 0]) == 1):
+        # Dense row pointers read one axis-0 row, so remove that singleton crop axis.
+        return [arr.squeeze(axis=1) for arr in boxes]
+    return list(boxes)
 
 
 # TODO: Why is this private API

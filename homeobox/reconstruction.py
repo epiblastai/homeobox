@@ -424,10 +424,10 @@ class DenseReconstructor(Reconstructor):
         group_obs_data: list[tuple[str, pl.DataFrame]] = []
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            starts, ends = spec.pointer_type.to_ranges(group_rows)
+            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             lyr_readers = [gr.get_array_reader(an) for an in array_names]
-            read_tasks.append(_read_dense_group(lyr_readers, starts, ends))
+            read_tasks.append(_read_dense_group(lyr_readers, min_corners, max_corners))
             group_obs_data.append((zg, group_rows))
 
         # Dispatch all groups concurrently
@@ -506,7 +506,7 @@ class DenseReconstructor(Reconstructor):
         offset = 0
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            starts, ends = spec.pointer_type.to_ranges(group_rows)
+            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             reader = gr.get_array_reader(array_name)
 
@@ -521,9 +521,9 @@ class DenseReconstructor(Reconstructor):
                     f"in group '{zg}'"
                 )
 
-            read_tasks.append(_read_dense_group([reader], starts, ends))
+            read_tasks.append(_read_dense_group([reader], min_corners, max_corners))
             offsets.append(offset)
-            offset += len(starts)
+            offset += len(min_corners)
 
         n_total_rows = offset
         if per_row_shape is None:
