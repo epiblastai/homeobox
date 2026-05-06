@@ -1,8 +1,23 @@
 from typing import ClassVar
 
+import numpy as np
 import polars as pl
 from lancedb.pydantic import LanceModel
 from pydantic import model_validator
+
+
+def _require_prepared_columns(
+    obs_pl: pl.DataFrame,
+    columns: tuple[str, ...],
+    pointer_type: str,
+    method_name: str,
+) -> None:
+    missing = [c for c in columns if c not in obs_pl.columns]
+    if missing:
+        raise ValueError(
+            f"{pointer_type}.{method_name} requires prepared obs columns {columns}; "
+            f"missing {missing}. Call {pointer_type}.prepare_obs(...) first."
+        )
 
 
 class SparseZarrPointer(LanceModel):
@@ -28,6 +43,18 @@ class SparseZarrPointer(LanceModel):
         )
         return obs_pl.filter(pl.col("_zg").is_not_null())
 
+    @classmethod
+    def to_ranges(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Return raveled read ranges from a prepared sparse pointer dataframe."""
+        _require_prepared_columns(obs_pl, ("_start", "_end"), cls.__name__, "to_ranges")
+        starts = obs_pl["_start"].to_numpy().astype(np.int64)
+        ends = obs_pl["_end"].to_numpy().astype(np.int64)
+        return starts, ends
+
+    @classmethod
+    def to_boxes(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError(f"{cls.__name__} does not define bounding-box reads")
+
 
 class DenseZarrPointer(LanceModel):
     pointer_type_name: ClassVar[str] = "dense"
@@ -47,6 +74,20 @@ class DenseZarrPointer(LanceModel):
             struct_df["position"].alias("_pos"),
         )
         return obs_pl.filter(pl.col("_zg").is_not_null())
+
+    @classmethod
+    def to_ranges(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Return axis-0 read ranges from a prepared dense pointer dataframe."""
+        _require_prepared_columns(obs_pl, ("_pos",), cls.__name__, "to_ranges")
+        starts = obs_pl["_pos"].to_numpy().astype(np.int64)
+        ends = starts + 1
+        return starts, ends
+
+    @classmethod
+    def to_boxes(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Return rank-1 boxes from a prepared dense pointer dataframe."""
+        starts, ends = cls.to_ranges(obs_pl)
+        return starts.reshape(-1, 1), ends.reshape(-1, 1)
 
 
 class DiscreteSpatialPointer(LanceModel):
@@ -78,6 +119,38 @@ class DiscreteSpatialPointer(LanceModel):
             struct_df["max_corner"].alias("_max_corner"),
         )
         return obs_pl.filter(pl.col("_zg").is_not_null())
+
+    @classmethod
+    def to_ranges(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError(f"{cls.__name__} does not define raveled range reads")
+
+    @classmethod
+    def to_boxes(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Return N-D bounding boxes from a prepared discrete-spatial pointer dataframe."""
+        _require_prepared_columns(obs_pl, ("_min_corner", "_max_corner"), cls.__name__, "to_boxes")
+        if obs_pl.is_empty():
+            empty = np.empty((0, 0), dtype=np.int64)
+            return empty, empty
+
+        min_lens = obs_pl["_min_corner"].list.len().unique().to_list()
+        max_lens = obs_pl["_max_corner"].list.len().unique().to_list()
+        if len(min_lens) != 1 or len(max_lens) != 1 or min_lens != max_lens:
+            raise ValueError(
+                f"{cls.__name__}.to_boxes requires uniform box rank across rows, got "
+                f"min_corner lengths {min_lens}, max_corner lengths {max_lens}"
+            )
+
+        box_rank = int(min_lens[0])
+        if box_rank < 1:
+            raise ValueError(f"{cls.__name__}.to_boxes requires box rank >= 1, got {box_rank}")
+
+        min_corners = (
+            obs_pl["_min_corner"].list.to_array(box_rank).to_numpy().astype(np.int64, copy=False)
+        )
+        max_corners = (
+            obs_pl["_max_corner"].list.to_array(box_rank).to_numpy().astype(np.int64, copy=False)
+        )
+        return min_corners, max_corners
 
     @model_validator(mode="after")
     def _validate_corners(self):

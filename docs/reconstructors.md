@@ -177,9 +177,8 @@ The following helpers from `homeobox.reconstruction` handle the parts that are i
 
 ### `_load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)`
 
-Loads the per-group local-to-global remap arrays from `_feature_layouts` and computes the joined feature space. Returns a four-tuple:
+Loads the per-group local-to-global remap arrays from `_feature_layouts` and computes the joined feature space. `groups` is the `GroupBy` returned by a `_prepare_*_obs` helper. Returns:
 
-- `group_remaps` — `{zarr_group: remap_array}` where `remap[local_i] = global_index`.
 - `joined_globals` — sorted array of unique global indices in the output feature space.
 - `group_remap_to_joined` — `{zarr_group: positions_array}` where `positions[local_i]` is the column in the joined-space output matrix. For intersection or `wanted_globals` mode, local features not in the joined space are mapped to `-1`.
 - `n_features` — length of `joined_globals`.

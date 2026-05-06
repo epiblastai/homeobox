@@ -8,14 +8,15 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import scipy.sparse as sp
+from polars.dataframe.group_by import GroupBy
 
-from homeobox.group_specs import FeatureSpaceSpec
+from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
-    _prepare_dense_obs,
-    _prepare_sparse_obs,
-    _read_dense_group,
-    _read_sparse_group,
+    _group_key_to_zg,
+    _prepare_obs_and_groups,
+    _read_dense_boxes,
+    _read_sparse_ranges,
     _sync_gather,
 )
 from homeobox.reconstructor_base import Reconstructor, endpoint
@@ -25,7 +26,6 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from homeobox.atlas import RaggedAtlas
-    from homeobox.batch_array import BatchAsyncArray
     from homeobox.group_reader import GroupReader
 
 # Re-export for downstream convenience
@@ -36,7 +36,6 @@ __all__ = [
     "SparseGeneExpressionReconstructor",
     "DenseReconstructor",
     "FeatureCSCReconstructor",
-    "_get_pointer_columns",
 ]
 
 
@@ -47,22 +46,23 @@ __all__ = [
 
 def _load_remaps_and_features(
     atlas: "RaggedAtlas",
-    groups: list[str],
+    groups: GroupBy,
     spec: FeatureSpaceSpec,
     feature_join: Literal["union", "intersection"] = "union",
     wanted_globals: np.ndarray | None = None,
-) -> tuple[dict[str, np.ndarray], np.ndarray, dict[str, np.ndarray], int]:
+) -> tuple[np.ndarray, dict[str, np.ndarray], int]:
     """Load remaps for groups, build joined feature space.
 
     When *wanted_globals* is provided, skip the union/intersection step and
     use the requested global indices directly, applying intersection-style
     masking for each group.
 
-    Returns (group_remaps, joined_globals, group_remap_to_joined, n_features).
+    Returns (joined_globals, group_remap_to_joined, n_features).
     """
     group_remaps: dict[str, np.ndarray] = {}
     if spec.has_var_df:
-        for zg in groups:
+        for key, _group_rows in groups:
+            zg = _group_key_to_zg(key)
             group_remaps[zg] = atlas.get_group_reader(zg, spec.feature_space).get_remap()
 
     if wanted_globals is not None:
@@ -80,7 +80,7 @@ def _load_remaps_and_features(
         group_remap_to_joined = {}
         n_features = 0
 
-    return group_remaps, joined_globals, group_remap_to_joined, n_features
+    return joined_globals, group_remap_to_joined, n_features
 
 
 def _build_feature_space(
@@ -130,18 +130,6 @@ def _build_feature_space(
     return joined_globals, group_remap_to_joined
 
 
-def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
-    """Build an obs DataFrame from query results, excluding pointer/internal columns."""
-    # Drop struct columns (pointer fields) and internal helper columns
-    keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
-    ]
-    obs = obs_pl.select(keep_cols).to_pandas()
-    if "uid" in obs.columns:
-        obs = obs.set_index("uid")
-    return obs
-
-
 def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
     """Return the names of zarr pointer struct columns.
 
@@ -151,17 +139,6 @@ def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
     the returned metadata columns.
     """
     return [c for c in obs_pl.columns if obs_pl[c].dtype == pl.Struct]
-
-
-def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
-    """Build an AnnData with only obs, no X."""
-    keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
-    ]
-    obs = obs_pl.select(keep_cols).to_pandas()
-    if "uid" in obs.columns:
-        obs = obs.set_index("uid")
-    return ad.AnnData(obs=obs)
 
 
 def _build_var(
@@ -209,6 +186,29 @@ def _resolve_layers(
     return layers
 
 
+def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
+    """Build an obs DataFrame from query results, excluding pointer/internal columns."""
+    # Drop struct columns (pointer fields) and internal helper columns
+    keep_cols = [
+        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
+    ]
+    obs = obs_pl.select(keep_cols).to_pandas()
+    if "uid" in obs.columns:
+        obs = obs.set_index("uid")
+    return obs
+
+
+def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
+    """Build an AnnData with only obs, no X."""
+    keep_cols = [
+        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
+    ]
+    obs = obs_pl.select(keep_cols).to_pandas()
+    if "uid" in obs.columns:
+        obs = obs.set_index("uid")
+    return ad.AnnData(obs=obs)
+
+
 def _assemble_anndata(
     atlas: "RaggedAtlas",
     feature_space: str,
@@ -229,6 +229,37 @@ def _assemble_anndata(
     return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 
 
+def _read_group_arrays(
+    atlas: "RaggedAtlas",
+    groups: GroupBy,
+    spec: FeatureSpaceSpec,
+    pf: PointerField,
+    array_names: list[str],
+    read_method: Literal["ranges", "boxes"],
+) -> tuple[list[tuple[str, pl.DataFrame]], list]:
+    """Read the same arrays for each zarr group using pointer ranges or boxes."""
+    read_tasks = []
+    group_obs_data: list[tuple[str, pl.DataFrame]] = []
+
+    for key, group_rows in groups:
+        zg = _group_key_to_zg(key)
+        gr = atlas.get_group_reader(zg, pf.feature_space)
+        readers = [gr.get_array_reader(an) for an in array_names]
+
+        if read_method == "ranges":
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
+            read_tasks.append(_read_sparse_ranges(readers, starts, ends))
+        elif read_method == "boxes":
+            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
+            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
+        else:
+            raise ValueError(f"Unknown read_method: {read_method}")
+
+        group_obs_data.append((zg, group_rows))
+
+    return group_obs_data, _sync_gather(read_tasks)
+
+
 # ---------------------------------------------------------------------------
 # Built-in reconstructor implementations
 # ---------------------------------------------------------------------------
@@ -242,12 +273,41 @@ class SparseCSRReconstructor(Reconstructor):
     this or :class:`FeatureCSCReconstructor`.
     """
 
+    def _remap_features(
+        self,
+        *,
+        zg: str,
+        flat_indices: np.ndarray,
+        lengths: np.ndarray,
+        n_rows_group: int,
+        group_remap_to_joined: dict[str, np.ndarray],
+        feature_join: Literal["union", "intersection"],
+        wanted_globals: np.ndarray | None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        """Map local sparse feature indices into the joined feature space."""
+        if zg in group_remap_to_joined:
+            joined_remap = group_remap_to_joined[zg]
+            joined_indices = joined_remap[flat_indices.astype(np.intp)]
+        else:
+            joined_indices = flat_indices.astype(np.int32)
+
+        if (
+            feature_join == "intersection" or wanted_globals is not None
+        ) and zg in group_remap_to_joined:
+            keep_mask = joined_indices >= 0
+            joined_indices = joined_indices[keep_mask]
+            row_ids = np.repeat(np.arange(n_rows_group), lengths)
+            lengths = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
+        else:
+            keep_mask = None
+
+        return joined_indices, lengths, keep_mask
+
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
@@ -267,8 +327,6 @@ class SparseCSRReconstructor(Reconstructor):
             Polars DataFrame of obs rows (must include zarr pointer columns).
         pf:
             Pointer field info describing the feature space and zarr layout.
-        spec:
-            FeatureSpaceSpec for this feature space.
         layer_overrides:
             Explicit list of layers to read. Defaults to the spec's required layers.
         feature_join:
@@ -284,53 +342,37 @@ class SparseCSRReconstructor(Reconstructor):
                 "the feature space is pinned to the requested globals."
             )
 
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
-        # Determine index array name from spec's required_arrays
         if len(zgs.required_arrays) != 1:
             raise NotImplementedError(
-                f"Sparse reconstruction for feature space '{pf.feature_space}' "
-                f"is not yet supported (requires {len(zgs.required_arrays)} "
-                f"primary arrays: {[a.array_name for a in zgs.required_arrays]})"
+                f"Sparse reconstruction for feature space '{spec.feature_space}' "
+                f"is not supported (requires {len(zgs.required_arrays)} "
+                f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
             )
+
+        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
+        layers_path = zgs.find_layers_path()
+        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
         index_array_name = zgs.required_arrays[0].array_name
 
-        obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
-        if not groups:
-            return _build_obs_only_anndata(obs_pl_original)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return _build_obs_only_anndata(obs_pl)
 
-        _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
+        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl_original)
+            return _build_obs_only_anndata(obs_pl)
 
-        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-
-        # Prepare per-group obs data and pre-create readers (must happen
-        # outside the async context to avoid nested sync() calls)
-        group_data: list[
-            tuple[str, pl.DataFrame, np.ndarray, np.ndarray, BatchAsyncArray, list[BatchAsyncArray]]
-        ] = []
-        # TODO: Can this be parallelized? Probably only the group_rows step, isn't there a groupby equivalent
-        # in polars? Applying a filter in each step is probably slower than groupby. Everything else in
-        # the loop should be quite fast.
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
-            starts = group_rows["_start"].to_numpy().astype(np.int64)
-            ends = group_rows["_end"].to_numpy().astype(np.int64)
-            gr = atlas.get_group_reader(zg, pf.feature_space)
-            idx_reader = gr.get_array_reader(index_array_name)
-            layers_path = zgs.find_layers_path()
-            lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
-            group_data.append((zg, group_rows, starts, ends, idx_reader, lyr_readers))
-
-        # Dispatch all groups concurrently
-        all_results = _sync_gather(
-            [
-                _read_sparse_group(idx_reader, lyr_readers, starts, ends)
-                for _, _, starts, ends, idx_reader, lyr_readers in group_data
-            ]
+        group_obs_data, all_results = _read_group_arrays(
+            atlas=atlas,
+            groups=groups,
+            spec=spec,
+            pf=pf,
+            array_names=[index_array_name] + array_names,
+            read_method="ranges",
         )
 
         # Assemble CSRs
@@ -338,30 +380,20 @@ class SparseCSRReconstructor(Reconstructor):
         obs_parts: list[pl.DataFrame] = []
 
         # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
-        for (zg, group_rows, _, _, _, _), (index_result, layer_results) in zip(
-            group_data, all_results, strict=True
-        ):
+        for (zg, group_rows), group_results in zip(group_obs_data, all_results, strict=True):
+            index_result = group_results[0]
+            layer_results = group_results[1:]
             flat_indices, lengths = index_result
             n_rows_group = len(group_rows)
-
-            # Remap local indices -> joined positions
-            if zg in group_remap_to_joined:
-                joined_remap = group_remap_to_joined[zg]
-                joined_indices = joined_remap[flat_indices.astype(np.intp)]
-            else:
-                joined_indices = flat_indices.astype(np.int32)
-
-            # For intersection or feature filter, filter out features not in the joined space
-            if (
-                feature_join == "intersection" or wanted_globals is not None
-            ) and zg in group_remap_to_joined:
-                keep_mask = joined_indices >= 0
-                joined_indices = joined_indices[keep_mask]
-                # Recompute per-row lengths after filtering
-                row_ids = np.repeat(np.arange(n_rows_group), lengths)
-                lengths = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
-            else:
-                keep_mask = None
+            joined_indices, lengths, keep_mask = self._remap_features(
+                zg=zg,
+                flat_indices=flat_indices,
+                lengths=lengths,
+                n_rows_group=n_rows_group,
+                group_remap_to_joined=group_remap_to_joined,
+                feature_join=feature_join,
+                wanted_globals=wanted_globals,
+            )
 
             # Build indptr from lengths
             indptr = np.zeros(n_rows_group + 1, dtype=np.int64)
@@ -398,86 +430,101 @@ class DenseReconstructor(Reconstructor):
     dimensionality).
     """
 
+    def _remap_features(
+        self,
+        *,
+        out_layer: np.ndarray,
+        local_data: np.ndarray,
+        zg: str,
+        row_start: int,
+        group_remap_to_joined: dict[str, np.ndarray],
+        feature_join: Literal["union", "intersection"],
+        wanted_globals: np.ndarray | None,
+    ) -> None:
+        """Place dense local feature columns into the joined feature space."""
+        row_stop = row_start + local_data.shape[0]
+        out_rows = out_layer[row_start:row_stop]
+
+        if zg in group_remap_to_joined:
+            joined_cols = group_remap_to_joined[zg]
+            if feature_join == "intersection" or wanted_globals is not None:
+                valid = joined_cols >= 0
+                out_rows[:, joined_cols[valid]] = local_data[:, valid]
+            else:
+                out_rows[:, joined_cols] = local_data
+        else:
+            out_rows[:, : local_data.shape[1]] = local_data
+
     @endpoint
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
-        zgs = spec.zarr_group_spec
-        obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
-        if not groups:
-            return _build_obs_only_anndata(obs_pl_original)
+        if wanted_globals is not None and feature_join != "union":
+            raise ValueError(
+                "feature_join has no effect when wanted_globals is provided; "
+                "the feature space is pinned to the requested globals."
+            )
 
-        _, joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
-            atlas, groups, spec, feature_join, wanted_globals
-        )
-        if n_features == 0:
-            return _build_obs_only_anndata(obs_pl_original)
+        spec = get_spec(pf.feature_space)
+        zgs = spec.zarr_group_spec
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
         layers_path = zgs.find_layers_path()
         array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
 
-        n_total_rows = obs_pl.height
-        all_layers: dict[str, np.ndarray] = {
-            ln: np.zeros((n_total_rows, n_features), dtype=np.float32) for ln in layers_to_read
-        }
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return _build_obs_only_anndata(obs_pl)
 
-        # Prepare per-group obs data, pre-create readers, and compute offsets
-        group_data: list[
-            tuple[str, pl.DataFrame, np.ndarray, np.ndarray, int, list[BatchAsyncArray]]
-        ] = []
-        offset = 0
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
-            positions = group_rows["_pos"].to_numpy().astype(np.int64)
-            starts = positions
-            ends = positions + 1
-            gr = atlas.get_group_reader(zg, pf.feature_space)
-            readers = [gr.get_array_reader(an) for an in array_names]
-            group_data.append((zg, group_rows, starts, ends, offset, readers))
-            offset += len(positions)
+        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
+            atlas, groups, spec, feature_join, wanted_globals
+        )
+        if n_features == 0:
+            return _build_obs_only_anndata(obs_pl)
 
-        # Dispatch all groups concurrently
-        all_results = _sync_gather(
-            [
-                _read_dense_group(readers, starts, ends)
-                for _, _, starts, ends, _, readers in group_data
-            ]
+        group_obs_data, all_results = _read_group_arrays(
+            atlas=atlas,
+            groups=groups,
+            spec=spec,
+            pf=pf,
+            array_names=array_names,
+            read_method="boxes",
         )
 
         # Assemble into pre-allocated arrays
+        n_total_rows = obs_pl.height
+        # TODO: We can get the dtypes from each reader (reader.dtype)
+        # If we take (1) the max bit depth and (2) drop to float if any
+        # float or keep int if all int, then we can set a dtype that we
+        # are confident is lossless (more or less)
+        all_layers: dict[str, np.ndarray] = {
+            ln: np.zeros((n_total_rows, n_features), dtype=np.float32) for ln in layers_to_read
+        }
         obs_parts: list[pl.DataFrame] = []
 
-        for (zg, group_rows, _, _, offset, _), group_results in zip(
-            group_data, all_results, strict=True
-        ):
+        offset = 0
+        for (zg, group_rows), group_results in zip(group_obs_data, all_results, strict=True):
             n_rows_group = group_rows.height
 
-            for ln, (flat_data, _) in zip(layers_to_read, group_results, strict=True):
-                n_local_features = flat_data.shape[0] // n_rows_group
-                local_data = flat_data.reshape(n_rows_group, n_local_features)
-
-                if zg in group_remap_to_joined:
-                    joined_cols = group_remap_to_joined[zg]
-                    if feature_join == "intersection" or wanted_globals is not None:
-                        valid = joined_cols >= 0
-                        all_layers[ln][offset : offset + n_rows_group][:, joined_cols[valid]] = (
-                            local_data[:, valid]
-                        )
-                    else:
-                        all_layers[ln][offset : offset + n_rows_group][:, joined_cols] = local_data
-                else:
-                    all_layers[ln][offset : offset + n_rows_group, :n_local_features] = local_data
+            for ln, local_data in zip(layers_to_read, group_results, strict=True):
+                self._remap_features(
+                    out_layer=all_layers[ln],
+                    local_data=local_data,
+                    zg=zg,
+                    row_start=offset,
+                    group_remap_to_joined=group_remap_to_joined,
+                    feature_join=feature_join,
+                    wanted_globals=wanted_globals,
+                )
 
             obs_parts.append(group_rows)
+            offset += n_rows_group
 
         return _assemble_anndata(
             atlas, pf.feature_space, joined_globals, obs_parts, layers_to_read, all_layers
@@ -489,7 +536,6 @@ class DenseReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer: str | None = None,
     ) -> np.ndarray:
         """Return raw dense data as a NumPy array preserving all dimensions.
@@ -507,24 +553,24 @@ class DenseReconstructor(Reconstructor):
             Polars DataFrame of obs rows (must include zarr pointer columns).
         pf:
             Pointer field info for the feature space.
-        spec:
-            FeatureSpaceSpec for this feature space.
         layer:
             Which layer to read. Defaults to the spec's first required layer.
         """
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         layer = layer if layer is not None else _resolve_layers(spec, None, pf.feature_space)[0]
         array_name = f"{zgs.find_layers_path()}/{layer}"
 
-        obs_pl, groups = _prepare_dense_obs(obs_pl, pf)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
 
         # Prepare per-group reads and discover per-row shape
         per_row_shape: tuple[int, ...] | None = None
-        group_data: list[tuple[np.ndarray, np.ndarray, int, list[BatchAsyncArray]]] = []
+        read_tasks = []
+        offsets: list[int] = []
         offset = 0
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
-            positions = group_rows["_pos"].to_numpy().astype(np.int64)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
+            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
             gr = atlas.get_group_reader(zg, pf.feature_space)
             reader = gr.get_array_reader(array_name)
 
@@ -539,10 +585,9 @@ class DenseReconstructor(Reconstructor):
                     f"in group '{zg}'"
                 )
 
-            starts = positions
-            ends = positions + 1
-            group_data.append((starts, ends, offset, [reader]))
-            offset += len(positions)
+            read_tasks.append(_read_dense_boxes([reader], min_corners, max_corners))
+            offsets.append(offset)
+            offset += len(min_corners)
 
         n_total_rows = offset
         if per_row_shape is None:
@@ -553,14 +598,11 @@ class DenseReconstructor(Reconstructor):
         if n_total_rows == 0:
             return out
 
-        all_results = _sync_gather(
-            [_read_dense_group(readers, starts, ends) for starts, ends, _, readers in group_data]
-        )
+        all_results = _sync_gather(read_tasks)
 
-        for (_, _, offset, _), group_results in zip(group_data, all_results, strict=True):
-            (flat_data, _) = group_results[0]
-            n_rows_group = flat_data.shape[0] // max(1, int(np.prod(per_row_shape)))
-            out[offset : offset + n_rows_group] = flat_data.reshape(n_rows_group, *per_row_shape)
+        for offset, group_results in zip(offsets, all_results, strict=True):
+            arr = group_results[0]
+            out[offset : offset + arr.shape[0]] = arr
 
         return out
 
@@ -610,7 +652,7 @@ def _prepare_csc_group(
 
     idx_reader = gr.get_array_reader("csc/indices")
     lyr_readers = [gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read]
-    coro = _read_sparse_group(idx_reader, lyr_readers, starts, ends)
+    coro = _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
 
     info = {
         "mode": "csc",
@@ -734,7 +776,6 @@ class FeatureCSCReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
@@ -750,6 +791,7 @@ class FeatureCSCReconstructor(Reconstructor):
                 "the feature space is pinned to the requested globals."
             )
 
+        spec = get_spec(pf.feature_space)
         zgs = spec.zarr_group_spec
         if len(zgs.required_arrays) != 1:
             raise NotImplementedError(
@@ -757,15 +799,14 @@ class FeatureCSCReconstructor(Reconstructor):
             )
         csr_index_name = zgs.required_arrays[0].array_name
 
-        obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
-        if not groups:
-            return _build_obs_only_anndata(obs_pl_original)
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return _build_obs_only_anndata(obs_pl)
 
         n_features = len(wanted_globals)
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
 
-        _, _, group_remap_to_joined, _ = _load_remaps_and_features(
+        _, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas, groups, spec, "intersection", wanted_globals
         )
 
@@ -773,8 +814,8 @@ class FeatureCSCReconstructor(Reconstructor):
         group_info: list[dict] = []
         read_coroutines = []
 
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
             gr = atlas.get_group_reader(zg, spec.feature_space)
 
             if gr.has_csc:
@@ -782,12 +823,13 @@ class FeatureCSCReconstructor(Reconstructor):
                 group_info.append(info)
                 read_coroutines.append(coro)
             else:
-                starts = group_rows["_start"].to_numpy().astype(np.int64)
-                ends = group_rows["_end"].to_numpy().astype(np.int64)
+                starts, ends = spec.pointer_type.to_ranges(group_rows)
                 idx_reader = gr.get_array_reader(csr_index_name)
                 layers_path = zgs.find_layers_path()
                 lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
-                read_coroutines.append(_read_sparse_group(idx_reader, lyr_readers, starts, ends))
+                read_coroutines.append(
+                    _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
+                )
                 group_info.append({"mode": "csr", "group_rows": group_rows, "zg": zg})
 
         all_results = _sync_gather(read_coroutines)
@@ -799,9 +841,11 @@ class FeatureCSCReconstructor(Reconstructor):
         obs_parts: list[pl.DataFrame] = []
         row_offset = 0
 
-        for info, (idx_result, layer_results) in zip(group_info, all_results, strict=True):
+        for info, group_results in zip(group_info, all_results, strict=True):
             group_rows = info["group_rows"]
             n_rows_group = group_rows.height
+            idx_result = group_results[0]
+            layer_results = group_results[1:]
             flat_indices, lengths = idx_result
 
             if info["mode"] == "csc":
@@ -870,11 +914,11 @@ class SparseGeneExpressionReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
+        spec = get_spec(pf.feature_space)
         # CSC is optimized for few features / many rows (column-oriented reads);
         # delegate when a feature-oriented copy exists and rows outnumber wanted features.
         use_csc = (
@@ -883,6 +927,4 @@ class SparseGeneExpressionReconstructor(Reconstructor):
             and len(obs_pl) > len(wanted_globals)
         )
         impl = self._csc if use_csc else self._csr
-        return impl.as_anndata(
-            atlas, obs_pl, pf, spec, layer_overrides, feature_join, wanted_globals
-        )
+        return impl.as_anndata(atlas, obs_pl, pf, layer_overrides, feature_join, wanted_globals)

@@ -444,7 +444,7 @@ class AtlasQuery:
             if "as_fragments" in endpoints:
                 result = reconstructor.as_fragments(self._atlas, obs_pl, pf, spec)
             elif "as_array" in endpoints and not spec.has_var_df:
-                result = reconstructor.as_array(self._atlas, obs_pl, pf, spec)
+                result = reconstructor.as_array(self._atlas, obs_pl, pf)
             else:
                 result = self._reconstruct_single_space_anndata(obs_pl, pf)
 
@@ -504,7 +504,7 @@ class AtlasQuery:
             )
 
         obs_pl = self._materialize_rows()
-        array = spec.reconstructor.as_array(self._atlas, obs_pl, pf, spec)
+        array = spec.reconstructor.as_array(self._atlas, obs_pl, pf)
         obs = _build_obs_df(obs_pl)
         return array, obs
 
@@ -714,7 +714,6 @@ class AtlasQuery:
             self._atlas,
             obs_pl,
             pf,
-            spec,
             layer_overrides=self._layer_overrides.get(pf.feature_space),
             feature_join=self._feature_join,
             wanted_globals=wanted_globals,

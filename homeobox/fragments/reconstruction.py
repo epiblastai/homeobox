@@ -10,8 +10,9 @@ import polars as pl
 from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.obs_alignment import PointerField
 from homeobox.read import (
-    _prepare_sparse_obs,
-    _read_parallel_arrays,
+    _group_key_to_zg,
+    _prepare_obs_and_groups,
+    _read_sparse_ranges,
     _sync_gather,
 )
 from homeobox.reconstruction import (
@@ -99,8 +100,8 @@ class IntervalReconstructor(Reconstructor):
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
         obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_sparse_obs(obs_pl, pf)
-        if not groups:
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
             return FragmentResult(
                 chromosomes=np.array([], dtype=np.uint8),
                 starts=np.array([], dtype=np.uint32),
@@ -111,7 +112,7 @@ class IntervalReconstructor(Reconstructor):
             )
 
         # Build unified chromosome space across groups
-        _, joined_globals, group_remap_to_joined, _ = _load_remaps_and_features(
+        joined_globals, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas,
             groups,
             spec,
@@ -124,10 +125,9 @@ class IntervalReconstructor(Reconstructor):
 
         # Prepare per-group readers and ranges
         group_data: list[tuple[str, pl.DataFrame, np.ndarray, np.ndarray, list]] = []
-        for zg in groups:
-            group_rows = obs_pl.filter(pl.col("_zg") == zg)
-            starts = group_rows["_start"].to_numpy().astype(np.int64)
-            ends = group_rows["_end"].to_numpy().astype(np.int64)
+        for key, group_rows in groups:
+            zg = _group_key_to_zg(key)
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
             gr = atlas.get_group_reader(zg, spec.feature_space)
             readers = [gr.get_array_reader(name) for name in array_names]
             group_data.append((zg, group_rows, starts, ends, readers))
@@ -135,7 +135,7 @@ class IntervalReconstructor(Reconstructor):
         # Dispatch all groups concurrently
         all_results = _sync_gather(
             [
-                _read_parallel_arrays(readers, starts, ends)
+                _read_sparse_ranges(readers, starts, ends)
                 for _, _, starts, ends, readers in group_data
             ]
         )
