@@ -516,13 +516,20 @@ async def _take_sparse_from_pointers(
     this receives the pointer data directly (loaded from lance per-batch).
     """
     group_obs_data, results = read_arrays_by_group(
-        # Hardcode the spec for the moment
         mod_data.group_readers,
         groups,
         spec=spec,
         array_names=[mod_data.index_array_name, mod_data.layer_path],
         read_method="ranges",
     )
+    if not group_obs_data:
+        return SparseBatch(
+            indices=np.array([], dtype=np.int32),
+            values=np.array([], dtype=mod_data.layer_dtype),
+            offsets=np.zeros(len(batch_row_ids) + 1, dtype=np.int64),
+            n_features=mod_data.n_features,
+        )
+
     obs_parts = []
     all_indices = []
     all_values = []
@@ -604,6 +611,25 @@ def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBa
     )
 
 
+def _reorder_dense_batch_rows(batch: DenseBatch, perm: np.ndarray) -> DenseBatch:
+    """Reorder rows of a DenseBatch; ``perm[i]`` is the source row for output row ``i``."""
+    reordered_metadata = (
+        {col: arr[perm] for col, arr in batch.metadata.items()}
+        if batch.metadata is not None
+        else None
+    )
+    if isinstance(batch.data, list):
+        data = [batch.data[int(i)] for i in perm]
+    else:
+        data = batch.data[perm]
+    return DenseBatch(
+        data=data,
+        n_features=batch.n_features,
+        metadata=reordered_metadata,
+        per_row_shape=batch.per_row_shape,
+    )
+
+
 async def _take_group_dense(
     reader: BatchAsyncArray,
     starts: np.ndarray,
@@ -645,15 +671,83 @@ async def _take_group_dense(
 #   - Drop the legacy float32 cast for the 2-D dense (per_row_shape is None)
 #     sub-case, or push it to the caller.
 async def _take_dense_from_pointers(
+    groups: GroupBy,
+    spec: FeatureSpaceSpec,
+    batch_row_ids: np.ndarray,
+    mod_data: _ModalityData,
+) -> DenseBatch:
+    """Fetch a dense batch from per-row pointer arrays."""
+    if mod_data.per_row_shape is not None:
+        row_shape = mod_data.per_row_shape
+        out_dtype = mod_data.layer_dtype
+    else:
+        row_shape = (mod_data.n_features,)
+        out_dtype = np.dtype(np.float32)
+
+    group_obs_data, results = read_arrays_by_group(
+        mod_data.group_readers,
+        groups,
+        spec=spec,
+        array_names=[mod_data.layer_path],
+        read_method="boxes",
+    )
+    if not group_obs_data:
+        data: np.ndarray | list[np.ndarray]
+        if mod_data.stack_dense:
+            data = np.zeros((0, *row_shape), dtype=out_dtype)
+        else:
+            data = []
+        return DenseBatch(
+            data=data,
+            n_features=mod_data.n_features,
+            per_row_shape=mod_data.per_row_shape,
+        )
+
+    obs_parts = []
+    data_parts = []
+    for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
+        group_data = group_results[0]
+        if mod_data.per_row_shape is None:
+            group_data = group_data.astype(np.float32)
+        elif group_data.dtype != mod_data.layer_dtype:
+            group_data = group_data.astype(mod_data.layer_dtype)
+
+        obs_parts.append(group_rows)
+        data_parts.append(group_data)
+
+    if mod_data.stack_dense:
+        data = np.concatenate(data_parts, axis=0)
+    else:
+        data = [row for group_data in data_parts for row in group_data]
+
+    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
+    metadata = {
+        col: obs_pl[col].to_numpy()
+        for col, dtype in obs_pl.schema.items()
+        if not col.startswith("_") and dtype.base_type() != pl.Struct
+    }
+    batch = DenseBatch(
+        data=data,
+        n_features=mod_data.n_features,
+        metadata=metadata or None,
+        per_row_shape=mod_data.per_row_shape,
+    )
+
+    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
+    row_id_order = np.argsort(grouped_row_ids, kind="stable")
+    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
+    return _reorder_dense_batch_rows(batch, row_perm)
+
+
+async def _take_dense_from_pointer_arrays(
     groups_np: np.ndarray,
     starts: np.ndarray,
     ends: np.ndarray,
     mod_data: _ModalityData,
 ) -> DenseBatch:
-    """Fetch a dense batch from per-row pointer arrays."""
+    """Fetch a dense batch from extracted pointer arrays."""
     n_present = len(groups_np)
 
-    # Determine per-row shape and output dtype
     if mod_data.per_row_shape is not None:
         row_shape = mod_data.per_row_shape
         out_dtype = mod_data.layer_dtype
@@ -662,7 +756,6 @@ async def _take_dense_from_pointers(
         out_dtype = np.dtype(np.float32)
 
     array_path = mod_data.layer_path
-
     sort_order = np.argsort(groups_np, kind="stable")
     sorted_groups = groups_np[sort_order]
     sorted_starts = starts[sort_order]
@@ -834,7 +927,7 @@ async def _fetch_modality_from_pointers(
         )
         inv_sort = np.argsort(sort_order, kind="stable")
         return _reorder_sparse_batch_rows(batch, inv_sort)
-    return await _take_dense_from_pointers(groups_np, starts, ends, mod_data)
+    return await _take_dense_from_pointer_arrays(groups_np, starts, ends, mod_data)
 
 
 def _extract_pointers_sparse(
@@ -1173,21 +1266,15 @@ class UnimodalHoxDataset(_AsyncDataset):
                     if col in take_result.columns
                 }
         else:
-            groups_np, starts, ends = _extract_pointers_dense(
-                take_result, self._pointer_field, self._mod_data.unique_groups
+            obs_pl, groups = _prepare_obs_and_groups(
+                take_result, self._pointer_type, self._pointer_field
             )
+            assert len(obs_pl) == len(take_result)
             future = asyncio.run_coroutine_threadsafe(
-                _take_dense_from_pointers(groups_np, starts, ends, self._mod_data),
+                _take_dense_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
                 self._loop,
             )
             batch = future.result()
-
-            if self._metadata_columns:
-                batch.metadata = {
-                    col: take_result[col].to_numpy()
-                    for col in self._metadata_columns
-                    if col in take_result.columns
-                }
 
         return batch
 
