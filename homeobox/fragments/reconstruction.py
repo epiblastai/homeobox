@@ -99,6 +99,7 @@ class IntervalReconstructor(Reconstructor):
         FragmentResult
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
+        pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
@@ -108,7 +109,7 @@ class IntervalReconstructor(Reconstructor):
                 lengths=np.array([], dtype=np.uint16),
                 offsets=np.zeros(obs_pl_original.height + 1, dtype=np.int64),
                 chrom_names=[],
-                obs=_build_obs_df(obs_pl_original),
+                obs=_build_obs_df(obs_pl_original, pointer_cols),
             )
 
         # Build unified chromosome space across groups
@@ -176,7 +177,7 @@ class IntervalReconstructor(Reconstructor):
         np.cumsum(all_row_lengths, out=offsets[1:])
 
         obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
+        obs = _build_obs_df(obs_pl, pointer_cols)
 
         return FragmentResult(
             chromosomes=chromosomes,

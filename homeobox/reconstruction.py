@@ -164,23 +164,19 @@ def _build_var(
     return var
 
 
-# TODO: This should explicitly take pointer_fields from the atlas/query instead
-# of assuming that all pl.Struct are point fields
-def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
+def _build_obs_df(obs_pl: pl.DataFrame, pointer_cols: list[str]) -> pd.DataFrame:
     """Build an obs DataFrame from query results, excluding pointer/internal columns."""
-    # Drop struct columns (pointer fields) and internal helper columns
-    keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
-    ]
+    pointer_cols_set = set(pointer_cols)
+    keep_cols = [c for c in obs_pl.columns if c not in pointer_cols_set and not c.startswith("_")]
     obs = obs_pl.select(keep_cols).to_pandas()
     if "uid" in obs.columns:
         obs = obs.set_index("uid")
     return obs
 
 
-def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
+def _build_obs_only_anndata(obs_pl: pl.DataFrame, pointer_cols: list[str]) -> ad.AnnData:
     """Build an AnnData with only obs, no X."""
-    return ad.AnnData(obs=_build_obs_df(obs_pl))
+    return ad.AnnData(obs=_build_obs_df(obs_pl, pointer_cols))
 
 
 def _assemble_anndata(
@@ -193,7 +189,7 @@ def _assemble_anndata(
 ) -> ad.AnnData:
     """Build final AnnData from stacked layer data, obs parts, and registry."""
     obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    obs = _build_obs_df(obs_pl)
+    obs = _build_obs_df(obs_pl, list(atlas.pointer_fields.keys()))
     var = _build_var(atlas, feature_space, joined_globals)
 
     first_layer = layers_to_read[0]
@@ -296,15 +292,16 @@ class SparseCSRReconstructor(Reconstructor):
         )
         layer_names, layer_paths = map(list, zip(*layer_array_paths_dict.items(), strict=False))
 
+        pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, pointer_cols)
 
         joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, pointer_cols)
 
         group_readers: dict[str, GroupReader] = {}
         for key, _group_rows in groups:
@@ -416,15 +413,16 @@ class DenseReconstructor(Reconstructor):
         layers_to_read = list(layer_array_paths_dict.keys())
         array_names = list(layer_array_paths_dict.values())
 
+        pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, pointer_cols)
 
         joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
             atlas, groups, spec, feature_join, wanted_globals
         )
         if n_features == 0:
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, pointer_cols)
 
         group_readers: dict[str, GroupReader] = {}
         for key, _group_rows in groups:
@@ -742,9 +740,10 @@ class FeatureCSCReconstructor(Reconstructor):
             )
         csr_index_name = zgs.required_arrays[0].array_name
 
+        pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl)
+            return _build_obs_only_anndata(obs_pl, pointer_cols)
 
         n_features = len(wanted_globals)
         _, layer_array_paths_dict = get_array_paths_to_read(spec, layer_overrides)
