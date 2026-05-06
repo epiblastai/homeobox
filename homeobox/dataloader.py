@@ -668,8 +668,6 @@ async def _take_group_dense(
 #     A unified path treats the dense case as a degenerate ragged case.
 #   - Empty-batch shape: dense knows per_row_shape and returns a (0, *shape)
 #     ndarray; discrete-spatial returns []. Pick one contract.
-#   - Drop the legacy float32 cast for the 2-D dense (per_row_shape is None)
-#     sub-case, or push it to the caller.
 async def _take_dense_from_pointers(
     groups: GroupBy,
     spec: FeatureSpaceSpec,
@@ -677,12 +675,12 @@ async def _take_dense_from_pointers(
     mod_data: _ModalityData,
 ) -> DenseBatch:
     """Fetch a dense batch from per-row pointer arrays."""
-    if mod_data.per_row_shape is not None:
-        row_shape = mod_data.per_row_shape
-        out_dtype = mod_data.layer_dtype
-    else:
+    if mod_data.pointer_type is DenseZarrPointer and mod_data.per_row_shape is None:
         row_shape = (mod_data.n_features,)
         out_dtype = np.dtype(np.float32)
+    else:
+        row_shape = mod_data.per_row_shape or ()
+        out_dtype = mod_data.layer_dtype
 
     group_obs_data, results = read_arrays_by_group(
         mod_data.group_readers,
@@ -690,10 +688,13 @@ async def _take_dense_from_pointers(
         spec=spec,
         array_names=[mod_data.layer_path],
         read_method="boxes",
+        stack_uniform=mod_data.stack_dense,
     )
     if not group_obs_data:
         data: np.ndarray | list[np.ndarray]
-        if mod_data.stack_dense:
+        if mod_data.pointer_type is DiscreteSpatialPointer:
+            data = []
+        elif mod_data.stack_dense:
             data = np.zeros((0, *row_shape), dtype=out_dtype)
         else:
             data = []
@@ -707,10 +708,12 @@ async def _take_dense_from_pointers(
     data_parts = []
     for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
         group_data = group_results[0]
-        if mod_data.per_row_shape is None:
-            group_data = group_data.astype(np.float32)
-        elif group_data.dtype != mod_data.layer_dtype:
-            group_data = group_data.astype(mod_data.layer_dtype)
+        if isinstance(group_data, list):
+            group_data = [
+                row if row.dtype == out_dtype else row.astype(out_dtype) for row in group_data
+            ]
+        elif group_data.dtype != out_dtype:
+            group_data = group_data.astype(out_dtype)
 
         obs_parts.append(group_rows)
         data_parts.append(group_data)
@@ -1248,23 +1251,15 @@ class UnimodalHoxDataset(_AsyncDataset):
             )
             batch = future.result()
         elif self._pointer_type is DiscreteSpatialPointer:
-            groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
-                take_result, self._pointer_field, self._mod_data.unique_groups
+            obs_pl, groups = _prepare_obs_and_groups(
+                take_result, self._pointer_type, self._pointer_field
             )
+            assert len(obs_pl) == len(take_result)
             future = asyncio.run_coroutine_threadsafe(
-                _take_discrete_spatial_from_pointers(
-                    groups_np, min_corners, max_corners, self._mod_data
-                ),
+                _take_dense_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
                 self._loop,
             )
             batch = future.result()
-
-            if self._metadata_columns:
-                batch.metadata = {
-                    col: take_result[col].to_numpy()
-                    for col in self._metadata_columns
-                    if col in take_result.columns
-                }
         else:
             obs_pl, groups = _prepare_obs_and_groups(
                 take_result, self._pointer_type, self._pointer_field

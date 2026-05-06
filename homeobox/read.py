@@ -98,7 +98,9 @@ async def _read_dense_boxes(
     readers: list[BatchAsyncArray],
     min_corners: np.ndarray,
     max_corners: np.ndarray,
-) -> list[np.ndarray]:
+    *,
+    stack_uniform: bool = True,
+) -> list[np.ndarray | list[np.ndarray]]:
     """Read multiple arrays concurrently with shared bounding boxes.
 
     ``min_corners`` / ``max_corners`` are boxes produced by the pointer type.
@@ -106,11 +108,16 @@ async def _read_dense_boxes(
     stacked array per reader with shape ``(len(min_corners), *trailing_shape)``.
     """
     boxes = await asyncio.gather(
-        *(r.read_boxes(min_corners, max_corners, stack_uniform=True) for r in readers)
+        *(r.read_boxes(min_corners, max_corners, stack_uniform=stack_uniform) for r in readers)
     )
     if min_corners.shape[1] == 1 and np.all((max_corners[:, 0] - min_corners[:, 0]) == 1):
         # Dense row pointers read one axis-0 row, so remove that singleton crop axis.
-        return [arr.squeeze(axis=1) for arr in boxes]
+        return [
+            [arr.squeeze(axis=0) for arr in result]
+            if isinstance(result, list)
+            else result.squeeze(axis=1)
+            for result in boxes
+        ]
     return list(boxes)
 
 

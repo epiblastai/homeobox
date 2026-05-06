@@ -17,6 +17,9 @@ from homeobox.read import (
 
 ArrayPath = NewType("ArrayPath", str)
 
+# TODO: Add a dtype resolution function for making placeholder arrays
+# and doing casting appropriately without loss
+
 
 def get_array_paths_to_read(
     spec: FeatureSpaceSpec,
@@ -51,6 +54,8 @@ def read_arrays_by_group(
     spec: FeatureSpaceSpec,
     array_names: list[str],
     read_method: Literal["ranges", "boxes"],
+    *,
+    stack_uniform: bool = True,
 ) -> tuple[list[tuple[str, pl.DataFrame]], list]:
     """Async read and gather the same array_names
     for each zarr group using pointer ranges or boxes.
@@ -71,7 +76,14 @@ def read_arrays_by_group(
             read_tasks.append(_read_sparse_ranges(readers, starts, ends))
         elif read_method == "boxes":
             min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
-            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
+            read_tasks.append(
+                _read_dense_boxes(
+                    readers,
+                    min_corners,
+                    max_corners,
+                    stack_uniform=stack_uniform,
+                )
+            )
         else:
             raise ValueError(f"Unknown read_method: {read_method}")
 
