@@ -1238,40 +1238,22 @@ class UnimodalHoxDataset(_AsyncDataset):
 
         # 3. Extract pointer data and dispatch async read
         if self._pointer_type is SparseZarrPointer:
-            # This is safe because we already filtered at __init__, that
-            # guarantees that this op will not drop any rows from take_result
-            obs_pl, groups = _prepare_obs_and_groups(
-                take_result, self._pointer_type, self._pointer_field
-            )
-            # Sanity check
-            assert len(obs_pl) == len(take_result)
-            future = asyncio.run_coroutine_threadsafe(
-                _take_sparse_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
-                self._loop,
-            )
-            batch = future.result()
-        elif self._pointer_type is DiscreteSpatialPointer:
-            obs_pl, groups = _prepare_obs_and_groups(
-                take_result, self._pointer_type, self._pointer_field
-            )
-            assert len(obs_pl) == len(take_result)
-            future = asyncio.run_coroutine_threadsafe(
-                _take_dense_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
-                self._loop,
-            )
-            batch = future.result()
+            take_fn = _take_sparse_from_pointers
         else:
-            obs_pl, groups = _prepare_obs_and_groups(
-                take_result, self._pointer_type, self._pointer_field
-            )
-            assert len(obs_pl) == len(take_result)
-            future = asyncio.run_coroutine_threadsafe(
-                _take_dense_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
-                self._loop,
-            )
-            batch = future.result()
+            take_fn = _take_dense_from_pointers
 
-        return batch
+        # This is safe because we already filtered at __init__, that
+        # guarantees that this op will not drop any rows from take_result
+        obs_pl, groups = _prepare_obs_and_groups(
+            take_result, self._pointer_type, self._pointer_field
+        )
+        # Sanity check
+        assert len(obs_pl) == len(take_result)
+        future = asyncio.run_coroutine_threadsafe(
+            take_fn(groups, self.spec, batch_row_ids, self._mod_data),
+            self._loop,
+        )
+        return future.result()
 
     def __getitem__(self, idx: int) -> "SparseBatch | DenseBatch":
         """Fetch a single row as a batch."""
