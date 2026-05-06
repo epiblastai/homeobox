@@ -1,6 +1,19 @@
-from typing import NewType
+from typing import Literal, NewType
 
+import numpy as np
+import polars as pl
+from polars.dataframe.group_by import GroupBy
+
+from homeobox.group_reader import GroupReader
+
+# TODO: Can we wrap any of these in TYPE_CHECKING
 from homeobox.group_specs import FeatureSpaceSpec
+from homeobox.read import (
+    _group_key_to_zg,
+    _read_dense_boxes,
+    _read_sparse_ranges,
+    _sync_gather,
+)
 
 ArrayPath = NewType("ArrayPath", str)
 
@@ -30,3 +43,62 @@ def get_array_paths_to_read(
         raise Exception("required_array_paths and layer_array_paths cannot both be empty")
 
     return required_array_paths, layer_array_paths
+
+
+def read_arrays_by_group(
+    group_readers: dict[str, GroupReader],
+    groups: GroupBy,
+    spec: FeatureSpaceSpec,
+    array_names: list[str],
+    read_method: Literal["ranges", "boxes"],
+) -> tuple[list[tuple[str, pl.DataFrame]], list]:
+    """Async read and gather the same array_names
+    for each zarr group using pointer ranges or boxes.
+    """
+    read_tasks = []
+    # TODO: Isn't _zg already a column? Any specific reason
+    # we need the tuple with zg?
+    group_obs_data: list[tuple[str, pl.DataFrame]] = []
+
+    for key, group_rows in groups:
+        zg = _group_key_to_zg(key)
+        # TODO: Add more descriptive error handling?
+        gr = group_readers[zg]
+        readers = [gr.get_array_reader(an) for an in array_names]
+
+        if read_method == "ranges":
+            starts, ends = spec.pointer_type.to_ranges(group_rows)
+            read_tasks.append(_read_sparse_ranges(readers, starts, ends))
+        elif read_method == "boxes":
+            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
+            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
+        else:
+            raise ValueError(f"Unknown read_method: {read_method}")
+
+        group_obs_data.append((zg, group_rows))
+
+    return group_obs_data, _sync_gather(read_tasks)
+
+
+def remap_sparse_indices_and_values(
+    remapping_array: np.ndarray,
+    flat_indices: np.ndarray,
+    flat_values_per_layer: dict[str, np.ndarray],
+    lengths: np.ndarray,
+) -> tuple[np.ndarray, dict[str, np.ndarray], np.ndarray | None]:
+    remapped_indices = remapping_array[flat_indices.astype(np.intp)]
+    # By construction the remapping array maps OOB indices to -1
+    # Those indices and values are discarded
+    keep_mask = remapped_indices >= 0
+    if not keep_mask.all():
+        remapped_indices = remapped_indices[keep_mask]
+        flat_values_per_layer = {
+            layer_name: flat_values[keep_mask]
+            for layer_name, flat_values in flat_values_per_layer.items()
+        }
+        # Determine the row_ids for each value
+        row_ids = np.repeat(np.arange(len(lengths)), lengths)
+        # Update the lengths so that row_ids are consistent after the filtering
+        lengths = np.bincount(row_ids[keep_mask], minlength=len(lengths)).astype(np.int64)
+
+    return remapped_indices, flat_values_per_layer, lengths

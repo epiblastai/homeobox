@@ -265,6 +265,8 @@ class FeatureSpaceSpec(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     feature_space: str
+    # TODO: Stop using pydantic, so that we can type these properly?
+    # Are we sure they can't be typed to ZarrPointer?
     pointer_type: type[Any]
     has_var_df: bool = False
     reconstructor: Reconstructor

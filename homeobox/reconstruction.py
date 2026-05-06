@@ -21,6 +21,8 @@ from homeobox.read import (
 )
 from homeobox.reconstruction_functional import (
     get_array_paths_to_read,
+    read_arrays_by_group,
+    remap_sparse_indices_and_values,
 )
 from homeobox.reconstructor_base import Reconstructor, endpoint
 from homeobox.schema import PointerField
@@ -133,6 +135,7 @@ def _build_feature_space(
     return joined_globals, group_remap_to_joined
 
 
+# TODO: Remove this in favor of getting these from the atlas class instead
 def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
     """Return the names of zarr pointer struct columns.
 
@@ -345,8 +348,13 @@ class SparseCSRReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl)
 
-        group_obs_data, all_results = _read_group_arrays(
-            atlas=atlas,
+        group_readers: dict[str, GroupReader] = {}
+        for key, _group_rows in groups:
+            zg = _group_key_to_zg(key)
+            group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)
+
+        group_obs_data, all_results = read_arrays_by_group(
+            group_readers=group_readers,
             groups=groups,
             spec=spec,
             array_names=required_array_paths + layer_paths,
@@ -357,36 +365,32 @@ class SparseCSRReconstructor(Reconstructor):
         all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layer_names}
         obs_parts: list[pl.DataFrame] = []
 
-        # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
         for (zg, group_rows), group_results in zip(group_obs_data, all_results, strict=True):
-            index_result = group_results[0]
-            layer_results = group_results[1:]
-            flat_indices, lengths = index_result
-            n_rows_group = len(group_rows)
-            joined_indices, lengths, keep_mask = self._remap_features(
-                zg=zg,
-                flat_indices=flat_indices,
-                lengths=lengths,
-                n_rows_group=n_rows_group,
-                group_remap_to_joined=group_remap_to_joined,
-                feature_join=feature_join,
-                wanted_globals=wanted_globals,
-            )
+            flat_indices, lengths = group_results[0]
+            flat_values_per_layer = {
+                ln: flat_values
+                for ln, (flat_values, _) in zip(layer_names, group_results[1:], strict=True)
+            }
+            if zg in group_remap_to_joined:
+                remapping_array = group_remap_to_joined[zg]
+                # Remapping indices and filter any indices and values that
+                # were OOB and mapped to -1
+                flat_indices, flat_values_per_layer, lengths = remap_sparse_indices_and_values(
+                    remapping_array=remapping_array,
+                    flat_indices=flat_indices,
+                    flat_values_per_layer=flat_values_per_layer,
+                    lengths=lengths,
+                )
 
-            # Build indptr from lengths
-            indptr = np.zeros(n_rows_group + 1, dtype=np.int64)
+            indptr = np.zeros(len(lengths) + 1, dtype=np.int64)
             np.cumsum(lengths, out=indptr[1:])
 
-            # Build CSR for each layer
-            for ln, (flat_values, _) in zip(layer_names, layer_results, strict=True):
-                if keep_mask is not None:
-                    flat_values = flat_values[keep_mask]
+            for ln, flat_values in flat_values_per_layer.items():
                 csr = sp.csr_matrix(
-                    (flat_values, joined_indices, indptr),
-                    shape=(n_rows_group, n_features),
+                    (flat_values, flat_indices, indptr),
+                    shape=(len(lengths), n_features),
                 )
                 all_csrs[ln].append(csr)
-
             obs_parts.append(group_rows)
 
         # Stack CSRs
@@ -464,8 +468,13 @@ class DenseReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl)
 
-        group_obs_data, all_results = _read_group_arrays(
-            atlas=atlas,
+        group_readers: dict[str, GroupReader] = {}
+        for key, _group_rows in groups:
+            zg = _group_key_to_zg(key)
+            group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)
+
+        group_obs_data, all_results = read_arrays_by_group(
+            group_readers=group_readers,
             groups=groups,
             spec=spec,
             array_names=array_names,
