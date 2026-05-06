@@ -514,31 +514,6 @@ async def _take_sparse_from_pointers(
     Unlike the old ``_take_sparse`` which indexed into stored arrays,
     this receives the pointer data directly (loaded from lance per-batch).
     """
-    # n_rows = len(groups_np)
-
-    # Sort by group for ordered concatenation
-    # sort_order = np.argsort(groups_np, kind="stable")
-    # sorted_groups = groups_np[sort_order]
-    # sorted_starts = starts[sort_order]
-    # sorted_ends = ends[sort_order]
-
-    # Dispatch one task per unique group
-    # tasks = []
-    # for gid in np.unique(sorted_groups):
-    #     mask = sorted_groups == gid
-    #     zg = mod_data.unique_groups[gid]
-    #     gr = mod_data.group_readers[zg]
-    #     tasks.append(
-    #         _take_group_sparse(
-    #             gr.get_array_reader(mod_data.index_array_name),
-    #             gr.get_array_reader(mod_data.layer_path),
-    #             gr.get_remap(),
-    #             sorted_starts[mask],
-    #             sorted_ends[mask],
-    #         )
-    #     )
-
-    # results = await asyncio.gather(*tasks)
     group_obs_data, results = read_arrays_by_group(
         # Hardcode the spec for the moment
         mod_data.group_readers,
@@ -573,25 +548,6 @@ async def _take_sparse_from_pointers(
     obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
     offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
     np.cumsum(lengths, out=offsets[1:])
-
-    # Assemble: concatenate in group order
-    # all_indices = []
-    # all_values = []
-    # all_lengths = []
-    # for remapped_indices, values, lengths in results:
-    #     all_indices.append(remapped_indices)
-    #     all_values.append(values)
-    #     all_lengths.append(lengths)
-
-    # flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
-    # flat_values = (
-    #     np.concatenate(all_values) if all_values else np.array([], dtype=mod_data.layer_dtype)
-    # )
-    # lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
-
-    # # Build CSR-style offsets
-    # offsets = np.zeros(n_rows + 1, dtype=np.int64)
-    # np.cumsum(lengths, out=offsets[1:])
 
     metadata = {
         col: obs_pl[col].to_numpy()
@@ -1185,9 +1141,6 @@ class UnimodalHoxDataset(_AsyncDataset):
 
         # 3. Extract pointer data and dispatch async read
         if self._pointer_type is SparseZarrPointer:
-            # groups_np, starts, ends = _extract_pointers_sparse(
-            #     take_result, self._pointer_field, self._mod_data.unique_groups
-            # )
             # This is safe because we already filtered at __init__, that
             # guarantees that this op will not drop any rows from take_result
             obs_pl, groups = _prepare_obs_and_groups(
@@ -1196,7 +1149,6 @@ class UnimodalHoxDataset(_AsyncDataset):
             # Sanity check
             assert len(obs_pl) == len(take_result)
             future = asyncio.run_coroutine_threadsafe(
-                # _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
                 _take_sparse_from_pointers(groups, batch_row_ids, self._mod_data),
                 self._loop,
             )
