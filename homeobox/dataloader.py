@@ -42,7 +42,11 @@ from homeobox.read import (
     _prepare_discrete_spatial_obs,
     _prepare_obs_and_groups,
 )
-from homeobox.reconstruction_functional import get_array_paths_to_read
+from homeobox.reconstruction_functional import (
+    get_array_paths_to_read,
+    read_arrays_by_group,
+    remap_sparse_indices_and_values,
+)
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
@@ -498,9 +502,11 @@ async def _take_group_sparse(
 # has layers. This is true for gene_expression but not necessarily a fundamental
 # feature of sparse data.
 async def _take_sparse_from_pointers(
-    groups_np: np.ndarray,
-    starts: np.ndarray,
-    ends: np.ndarray,
+    # groups_np: np.ndarray,
+    # starts: np.ndarray,
+    # ends: np.ndarray,
+    groups: GroupBy,
+    batch_row_ids: np.ndarray,
     mod_data: _ModalityData,
 ) -> SparseBatch:
     """Fetch a sparse batch from per-row pointer arrays.
@@ -508,40 +514,55 @@ async def _take_sparse_from_pointers(
     Unlike the old ``_take_sparse`` which indexed into stored arrays,
     this receives the pointer data directly (loaded from lance per-batch).
     """
-    n_rows = len(groups_np)
+    # n_rows = len(groups_np)
 
     # Sort by group for ordered concatenation
-    sort_order = np.argsort(groups_np, kind="stable")
-    sorted_groups = groups_np[sort_order]
-    sorted_starts = starts[sort_order]
-    sorted_ends = ends[sort_order]
+    # sort_order = np.argsort(groups_np, kind="stable")
+    # sorted_groups = groups_np[sort_order]
+    # sorted_starts = starts[sort_order]
+    # sorted_ends = ends[sort_order]
 
     # Dispatch one task per unique group
-    tasks = []
-    for gid in np.unique(sorted_groups):
-        mask = sorted_groups == gid
-        zg = mod_data.unique_groups[gid]
-        gr = mod_data.group_readers[zg]
-        tasks.append(
-            _take_group_sparse(
-                gr.get_array_reader(mod_data.index_array_name),
-                gr.get_array_reader(mod_data.layer_path),
-                gr.get_remap(),
-                sorted_starts[mask],
-                sorted_ends[mask],
-            )
-        )
+    # tasks = []
+    # for gid in np.unique(sorted_groups):
+    #     mask = sorted_groups == gid
+    #     zg = mod_data.unique_groups[gid]
+    #     gr = mod_data.group_readers[zg]
+    #     tasks.append(
+    #         _take_group_sparse(
+    #             gr.get_array_reader(mod_data.index_array_name),
+    #             gr.get_array_reader(mod_data.layer_path),
+    #             gr.get_remap(),
+    #             sorted_starts[mask],
+    #             sorted_ends[mask],
+    #         )
+    #     )
 
-    results = await asyncio.gather(*tasks)
-
-    # Assemble: concatenate in group order
+    # results = await asyncio.gather(*tasks)
+    group_obs_data, results = read_arrays_by_group(
+        # Hardcode the spec for the moment
+        mod_data.group_readers,
+        groups,
+        get_spec("gene_expression"),
+        array_names=[mod_data.index_array_name, mod_data.layer_path],
+        read_method="ranges",
+    )
+    obs_parts = []
     all_indices = []
     all_values = []
     all_lengths = []
-    for remapped_indices, values, lengths in results:
-        all_indices.append(remapped_indices)
-        all_values.append(values)
+    for (zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
+        (flat_indices, lengths), (flat_values, _) = group_results
+        flat_indices, flat_values_per_layer, lengths = remap_sparse_indices_and_values(
+            remapping_array=mod_data.group_readers[zg].get_remap(),
+            flat_indices=flat_indices,
+            flat_values_per_layer={"layer": flat_values},
+            lengths=lengths,
+        )
+        all_indices.append(flat_indices)
+        all_values.append(flat_values_per_layer.pop("layer"))
         all_lengths.append(lengths)
+        obs_parts.append(group_rows)
 
     flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
     flat_values = (
@@ -549,20 +570,46 @@ async def _take_sparse_from_pointers(
     )
     lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
 
-    # Build CSR-style offsets
-    offsets = np.zeros(n_rows + 1, dtype=np.int64)
+    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
+    offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
     np.cumsum(lengths, out=offsets[1:])
 
+    # Assemble: concatenate in group order
+    # all_indices = []
+    # all_values = []
+    # all_lengths = []
+    # for remapped_indices, values, lengths in results:
+    #     all_indices.append(remapped_indices)
+    #     all_values.append(values)
+    #     all_lengths.append(lengths)
+
+    # flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
+    # flat_values = (
+    #     np.concatenate(all_values) if all_values else np.array([], dtype=mod_data.layer_dtype)
+    # )
+    # lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
+
+    # # Build CSR-style offsets
+    # offsets = np.zeros(n_rows + 1, dtype=np.int64)
+    # np.cumsum(lengths, out=offsets[1:])
+
+    metadata = {
+        col: obs_pl[col].to_numpy()
+        for col, dtype in obs_pl.schema.items()
+        if not col.startswith("_") and dtype.base_type() != pl.Struct
+    }
     batch = SparseBatch(
         indices=flat_indices,
         values=flat_values,
         offsets=offsets,
         n_features=mod_data.n_features,
+        metadata=metadata or None,
     )
 
-    # Reorder to input order
-    inv_sort = np.argsort(sort_order, kind="stable")
-    return _reorder_sparse_batch_rows(batch, inv_sort)
+    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
+    row_id_order = np.argsort(grouped_row_ids, kind="stable")
+    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
+    return _reorder_sparse_batch_rows(batch, row_perm)
 
 
 def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBatch:
@@ -784,7 +831,52 @@ async def _fetch_modality_from_pointers(
 ) -> "SparseBatch | DenseBatch":
     """Dispatch to sparse or dense fetch using pointer arrays."""
     if mod_data.pointer_type is SparseZarrPointer:
-        return await _take_sparse_from_pointers(groups_np, starts, ends, mod_data)
+        n_rows = len(groups_np)
+        sort_order = np.argsort(groups_np, kind="stable")
+        sorted_groups = groups_np[sort_order]
+        sorted_starts = starts[sort_order]
+        sorted_ends = ends[sort_order]
+
+        tasks = []
+        for gid in np.unique(sorted_groups):
+            mask = sorted_groups == gid
+            zg = mod_data.unique_groups[gid]
+            gr = mod_data.group_readers[zg]
+            tasks.append(
+                _take_group_sparse(
+                    gr.get_array_reader(mod_data.index_array_name),
+                    gr.get_array_reader(mod_data.layer_path),
+                    gr.get_remap(),
+                    sorted_starts[mask],
+                    sorted_ends[mask],
+                )
+            )
+
+        results = await asyncio.gather(*tasks)
+        all_indices = []
+        all_values = []
+        all_lengths = []
+        for remapped_indices, values, lengths in results:
+            all_indices.append(remapped_indices)
+            all_values.append(values)
+            all_lengths.append(lengths)
+
+        flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
+        flat_values = (
+            np.concatenate(all_values) if all_values else np.array([], dtype=mod_data.layer_dtype)
+        )
+        lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
+        offsets = np.zeros(n_rows + 1, dtype=np.int64)
+        np.cumsum(lengths, out=offsets[1:])
+
+        batch = SparseBatch(
+            indices=flat_indices,
+            values=flat_values,
+            offsets=offsets,
+            n_features=mod_data.n_features,
+        )
+        inv_sort = np.argsort(sort_order, kind="stable")
+        return _reorder_sparse_batch_rows(batch, inv_sort)
     return await _take_dense_from_pointers(groups_np, starts, ends, mod_data)
 
 
@@ -1093,13 +1185,22 @@ class UnimodalHoxDataset(_AsyncDataset):
 
         # 3. Extract pointer data and dispatch async read
         if self._pointer_type is SparseZarrPointer:
-            groups_np, starts, ends = _extract_pointers_sparse(
-                take_result, self._pointer_field, self._mod_data.unique_groups
+            # groups_np, starts, ends = _extract_pointers_sparse(
+            #     take_result, self._pointer_field, self._mod_data.unique_groups
+            # )
+            # This is safe because we already filtered at __init__, that
+            # guarantees that this op will not drop any rows from take_result
+            obs_pl, groups = _prepare_obs_and_groups(
+                take_result, self._pointer_type, self._pointer_field
             )
+            # Sanity check
+            assert len(obs_pl) == len(take_result)
             future = asyncio.run_coroutine_threadsafe(
-                _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
+                # _take_sparse_from_pointers(groups_np, starts, ends, self._mod_data),
+                _take_sparse_from_pointers(groups, batch_row_ids, self._mod_data),
                 self._loop,
             )
+            batch = future.result()
         elif self._pointer_type is DiscreteSpatialPointer:
             groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
                 take_result, self._pointer_field, self._mod_data.unique_groups
@@ -1110,6 +1211,14 @@ class UnimodalHoxDataset(_AsyncDataset):
                 ),
                 self._loop,
             )
+            batch = future.result()
+
+            if self._metadata_columns:
+                batch.metadata = {
+                    col: take_result[col].to_numpy()
+                    for col in self._metadata_columns
+                    if col in take_result.columns
+                }
         else:
             groups_np, starts, ends = _extract_pointers_dense(
                 take_result, self._pointer_field, self._mod_data.unique_groups
@@ -1118,16 +1227,15 @@ class UnimodalHoxDataset(_AsyncDataset):
                 _take_dense_from_pointers(groups_np, starts, ends, self._mod_data),
                 self._loop,
             )
+            batch = future.result()
 
-        batch = future.result()
+            if self._metadata_columns:
+                batch.metadata = {
+                    col: take_result[col].to_numpy()
+                    for col in self._metadata_columns
+                    if col in take_result.columns
+                }
 
-        # 4. Extract metadata from same take result
-        if self._metadata_columns:
-            batch.metadata = {
-                col: take_result[col].to_numpy()
-                for col in self._metadata_columns
-                if col in take_result.columns
-            }
         return batch
 
     def __getitem__(self, idx: int) -> "SparseBatch | DenseBatch":
