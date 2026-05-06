@@ -15,10 +15,8 @@ from homeobox.read import (
     _read_sparse_ranges,
     _sync_gather,
 )
-from homeobox.reconstruction import (
-    _build_obs_df,
-    _load_remaps_and_features,
-)
+from homeobox.reconstruction import _build_obs_df
+from homeobox.reconstruction_functional import collect_remapped_layout_readers_from_atlas
 from homeobox.reconstructor_base import Reconstructor, endpoint
 
 if TYPE_CHECKING:
@@ -113,12 +111,14 @@ class IntervalReconstructor(Reconstructor):
             )
 
         # Build unified chromosome space across groups
-        joined_globals, group_remap_to_joined, _ = _load_remaps_and_features(
+        layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
             atlas,
             groups,
             spec,
             feature_join="union",
+            return_joined_globals=True,
         )
+        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
         chrom_names = _resolve_chrom_names(atlas, spec.feature_space, joined_globals)
 
         # Array names from spec (chromosomes, starts, lengths)

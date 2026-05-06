@@ -1,3 +1,4 @@
+import functools
 from typing import TYPE_CHECKING, Literal, NewType
 
 import numpy as np
@@ -9,6 +10,7 @@ from homeobox.group_reader import GroupReader, LayoutReader
 # TODO: Can we wrap any of these in TYPE_CHECKING
 from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.read import (
+    _apply_wanted_globals_remap,
     _group_key_to_zg,
     _read_dense_boxes,
     _read_sparse_ranges,
@@ -20,6 +22,8 @@ if TYPE_CHECKING:
 
 ArrayPath = NewType("ArrayPath", str)
 ReadersByZarrGroup = NewType("ReadersByZarrGroup", dict[str, GroupReader])
+LayoutsByZarrGroup = NewType("LayoutsByZarrGroup", dict[str, LayoutReader])
+LayoutsByLayoutUid = NewType("LayoutsByLayoutUid", dict[str, LayoutReader])
 
 # TODO: Add a dtype resolution function for making placeholder arrays
 # and doing casting appropriately without loss
@@ -55,27 +59,93 @@ def get_array_paths_to_read(
 def collect_group_readers_from_atlas(
     atlas: RaggedAtlas,
     groups: GroupBy,
-    feature_space: str,
+    spec: FeatureSpaceSpec,
     *,
-    # kwargs when collecting the readers for dataloader workers
-    layout_reader: LayoutReader | None = None,
+    # kwargs used when creating GroupReaders for dataloader workers
+    layouts_per_group: LayoutsByZarrGroup | None = None,
     for_worker: bool = False,
 ) -> ReadersByZarrGroup:
     """Build per-group readers and matching unique group order."""
+    if not spec.has_var_df and layouts_per_group is not None:
+        raise ValueError("Cannot pass feature layouts to feature spaces with has_var_df==False")
+
     group_readers: dict[str, GroupReader] = {}
     for key, _group_rows in groups:
         zg = _group_key_to_zg(key)
         if for_worker:
             group_readers[zg] = GroupReader.for_worker(
                 zarr_group=zg,
-                feature_space=feature_space,
+                feature_space=spec.feature_space,
                 store=atlas.store,
-                layout_reader=layout_reader,
+                # TODO: Consider a better error if zg isn't present.
+                # Are we sure it will always be present?
+                layout_reader=layouts_per_group[zg],
             )
         else:
-            group_readers[zg] = atlas.get_group_reader(zg, feature_space)
+            group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)
 
     return group_readers
+
+
+def collect_remapped_layout_readers_from_atlas(
+    atlas: RaggedAtlas,
+    groups: GroupBy,
+    spec: FeatureSpaceSpec,
+    *,
+    feature_join: Literal["union", "intersection"] | None = None,
+    wanted_globals: np.ndarray | None = None,
+    return_joined_globals: bool = False,
+) -> LayoutsByZarrGroup | tuple[LayoutsByZarrGroup, np.ndarray]:
+    if not spec.has_var_df:
+        raise ValueError("There are no feature layouts for feature spaces with has_var_df==False")
+
+    if wanted_globals is None and feature_join is None and return_joined_globals:
+        raise ValueError(
+            "return_joined_globals requires either wanted_globals or feature_join; "
+            "raw layouts do not define a joined feature space."
+        )
+
+    if wanted_globals is not None and feature_join is not None:
+        raise ValueError(
+            "feature_join=='intersection' has no effect when wanted_globals is "
+            "provided; the feature space is pinned to the requested globals."
+        )
+
+    group_to_layout_uid: dict[str, str] = {}
+    layouts_per_layout_uid: LayoutsByLayoutUid = {}
+    for key, _group_rows in groups:
+        zg = _group_key_to_zg(key)
+        group_reader = atlas.get_group_reader(zg, spec.feature_space)
+        # raw_remap remaps features from the group into the global feature registry
+        raw_remap = group_reader.get_remap()
+        layout_uid = group_reader.layout_reader.layout_uid
+        group_to_layout_uid[zg] = layout_uid
+
+        effective_remap_layout = layouts_per_layout_uid.get(layout_uid)
+        if wanted_globals is not None:
+            if not effective_remap_layout:
+                # effective_remap remaps features from the group into the feature space
+                # defined by wanted_globals
+                effective_remap = _apply_wanted_globals_remap(raw_remap, wanted_globals)
+                layouts_per_layout_uid[layout_uid] = LayoutReader.from_remap(
+                    layout_uid=layout_uid, remap=effective_remap
+                )
+        else:
+            layouts_per_layout_uid[layout_uid] = group_reader.layout_reader
+
+    if feature_join is not None:
+        layouts_per_layout_uid, joined_globals = _remap_layouts_to_joint_space(
+            layouts_per_layout_uid, join=feature_join
+        )
+    elif wanted_globals is not None:
+        joined_globals = wanted_globals
+
+    # Finally organize the layouts to groups
+    layouts_per_group = {zg: layouts_per_layout_uid[uid] for zg, uid in group_to_layout_uid.items()}
+    if return_joined_globals:
+        return layouts_per_group, joined_globals
+    else:
+        return layouts_per_group
 
 
 def read_arrays_by_group(
@@ -144,3 +214,44 @@ def remap_sparse_indices_and_values(
         lengths = np.bincount(row_ids[keep_mask], minlength=len(lengths)).astype(np.int64)
 
     return remapped_indices, flat_values_per_layer, lengths
+
+
+# TODO: Better to build this from unique layouts than from
+# unique groups
+def _remap_layouts_to_joint_space(
+    layout_readers: LayoutsByLayoutUid,
+    join: Literal["union", "intersection"] = "union",
+) -> tuple[LayoutsByLayoutUid, np.ndarray]:
+    """Compute union or intersection of global indices and per-group local-to-joined mappings."""
+    remaps_by_layout = {
+        uid: layout_reader.get_remap() for uid, layout_reader in layout_readers.items()
+    }
+    if join == "union":
+        reduce_fn = np.union1d
+    elif join == "intersection":
+        reduce_fn = np.intersect1d
+    else:
+        raise ValueError(f"feature_join must be 'union' or 'intersection', got '{join}'")
+
+    # functools.reduce with a single-element iterable returns that element unchanged
+    # (reduce_fn is never called), so the result may be unsorted. np.unique ensures
+    # sorted unique output in all cases, which searchsorted requires.
+    joined_globals = np.unique(functools.reduce(reduce_fn, remaps_by_layout.values())).astype(
+        np.int32
+    )
+
+    layout_readers_to_joined: dict[str, LayoutReader] = {}
+    for layout_uid, remap in remaps_by_layout.items():
+        # effective_remap remaps features from the group into the feature space
+        # defined by joined_globals
+        effective_remap = np.searchsorted(joined_globals, remap).astype(np.int32)
+        if join == "intersection":
+            # searchsorted can return out-of-bounds or wrong-match indices;
+            # mark features not in the intersection as -1
+            mask = np.isin(remap, joined_globals)
+            effective_remap[~mask] = -1
+        layout_readers_to_joined[layout_uid] = LayoutReader.from_remap(
+            layout_uid=layout_uid, remap=effective_remap
+        )
+
+    return layout_readers_to_joined, joined_globals

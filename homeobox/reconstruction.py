@@ -1,6 +1,5 @@
 """Reconstruction helpers for building AnnData from atlas query results."""
 
-import functools
 from typing import TYPE_CHECKING, Literal
 
 import anndata as ad
@@ -8,11 +7,9 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import scipy.sparse as sp
-from polars.dataframe.group_by import GroupBy
 
-from homeobox.group_specs import FeatureSpaceSpec, get_spec
+from homeobox.group_specs import get_spec
 from homeobox.read import (
-    _apply_wanted_globals_remap,
     _group_key_to_zg,
     _prepare_obs_and_groups,
     _read_dense_boxes,
@@ -21,6 +18,7 @@ from homeobox.read import (
 )
 from homeobox.reconstruction_functional import (
     collect_group_readers_from_atlas,
+    collect_remapped_layout_readers_from_atlas,
     get_array_paths_to_read,
     read_arrays_by_group,
     remap_sparse_indices_and_values,
@@ -48,92 +46,6 @@ __all__ = [
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _load_remaps_and_features(
-    atlas: "RaggedAtlas",
-    groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    feature_join: Literal["union", "intersection"] = "union",
-    wanted_globals: np.ndarray | None = None,
-) -> tuple[np.ndarray, dict[str, np.ndarray], int]:
-    """Load remaps for groups, build joined feature space.
-
-    When *wanted_globals* is provided, skip the union/intersection step and
-    use the requested global indices directly, applying intersection-style
-    masking for each group.
-
-    Returns (joined_globals, group_remap_to_joined, n_features).
-    """
-    group_remaps: dict[str, np.ndarray] = {}
-    if spec.has_var_df:
-        for key, _group_rows in groups:
-            zg = _group_key_to_zg(key)
-            group_remaps[zg] = atlas.get_group_reader(zg, spec.feature_space).get_remap()
-
-    if wanted_globals is not None:
-        joined_globals = wanted_globals
-        group_remap_to_joined = {
-            zg: _apply_wanted_globals_remap(remap, wanted_globals)
-            for zg, remap in group_remaps.items()
-        }
-        n_features = len(wanted_globals)
-    elif group_remaps:
-        joined_globals, group_remap_to_joined = _build_feature_space(group_remaps, feature_join)
-        n_features = len(joined_globals)
-    else:
-        joined_globals = np.array([], dtype=np.int32)
-        group_remap_to_joined = {}
-        n_features = 0
-
-    return joined_globals, group_remap_to_joined, n_features
-
-
-def _build_feature_space(
-    remaps: dict[str, np.ndarray],
-    join: Literal["union", "intersection"] = "union",
-) -> tuple[np.ndarray, dict[str, np.ndarray]]:
-    """Compute union or intersection of global indices and per-group local-to-joined mappings.
-
-    Parameters
-    ----------
-    remaps:
-        ``{zarr_group: remap_array}`` where ``remap[local_i] = global_index``.
-    join:
-        ``"union"`` to include all features across groups, ``"intersection"``
-        to include only features present in every group.
-
-    Returns
-    -------
-    (joined_globals, group_remap_to_joined)
-        ``joined_globals``: sorted array of unique global indices in the joined space.
-        ``group_remap_to_joined[zg]``: array where ``arr[local_i]`` is the
-        column position in the joined-space matrix. For intersection mode,
-        local features not in the joined space are mapped to ``-1``.
-    """
-    if join == "union":
-        reduce_fn = np.union1d
-    elif join == "intersection":
-        reduce_fn = np.intersect1d
-    else:
-        raise ValueError(f"feature_join must be 'union' or 'intersection', got '{join}'")
-
-    # functools.reduce with a single-element iterable returns that element unchanged
-    # (reduce_fn is never called), so the result may be unsorted. np.unique ensures
-    # sorted unique output in all cases, which searchsorted requires.
-    joined_globals = np.unique(functools.reduce(reduce_fn, remaps.values())).astype(np.int32)
-
-    group_remap_to_joined: dict[str, np.ndarray] = {}
-    for group, remap in remaps.items():
-        positions = np.searchsorted(joined_globals, remap).astype(np.int32)
-        if join == "intersection":
-            # searchsorted can return out-of-bounds or wrong-match indices;
-            # mark features not in the intersection as -1
-            mask = np.isin(remap, joined_globals)
-            positions[~mask] = -1
-        group_remap_to_joined[group] = positions
-
-    return joined_globals, group_remap_to_joined
 
 
 def _build_var(
@@ -281,11 +193,9 @@ class SparseCSRReconstructor(Reconstructor):
             If provided, pin the output feature space to these global indices.
             Overrides *feature_join*.
         """
-        if wanted_globals is not None and feature_join != "union":
-            raise ValueError(
-                "feature_join has no effect when wanted_globals is provided; "
-                "the feature space is pinned to the requested globals."
-            )
+        if wanted_globals is not None:
+            # wanted_globals overrides feature_join, so turn it off
+            feature_join = None
 
         spec = get_spec(pf.feature_space)
         required_array_paths, layer_array_paths_dict = get_array_paths_to_read(
@@ -298,13 +208,20 @@ class SparseCSRReconstructor(Reconstructor):
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
-            atlas, groups, spec, feature_join, wanted_globals
+        layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
+            atlas,
+            groups,
+            spec,
+            feature_join=feature_join,
+            wanted_globals=wanted_globals,
+            return_joined_globals=True,
         )
+        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
+        n_features = len(joined_globals)
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        group_readers = collect_group_readers_from_atlas(atlas, groups, spec.feature_space)
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
         group_obs_data, all_results = read_arrays_by_group(
             group_readers=group_readers,
             groups=groups,
@@ -415,13 +332,20 @@ class DenseReconstructor(Reconstructor):
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        joined_globals, group_remap_to_joined, n_features = _load_remaps_and_features(
-            atlas, groups, spec, feature_join, wanted_globals
+        layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
+            atlas,
+            groups,
+            spec,
+            feature_join=None if wanted_globals is not None else feature_join,
+            wanted_globals=wanted_globals,
+            return_joined_globals=True,
         )
+        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
+        n_features = len(joined_globals)
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        group_readers = collect_group_readers_from_atlas(atlas, groups, spec.feature_space)
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
         group_obs_data, all_results = read_arrays_by_group(
             group_readers=group_readers,
             groups=groups,
@@ -742,9 +666,14 @@ class FeatureCSCReconstructor(Reconstructor):
         _, layer_array_paths_dict = get_array_paths_to_read(spec, layer_overrides)
         layers_to_read = list(layer_array_paths_dict.keys())
 
-        _, group_remap_to_joined, _ = _load_remaps_and_features(
-            atlas, groups, spec, "intersection", wanted_globals
+        layouts_per_group, _ = collect_remapped_layout_readers_from_atlas(
+            atlas,
+            groups,
+            spec,
+            wanted_globals=wanted_globals,
+            return_joined_globals=True,
         )
+        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
 
         # Per-group preparation: one read coroutine per group (CSC or CSR fallback)
         group_info: list[dict] = []

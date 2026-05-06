@@ -33,16 +33,17 @@ from polars.dataframe.group_by import GroupBy
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
 from homeobox.batch_array import BatchAsyncArray
-from homeobox.group_reader import GroupReader, LayoutReader
+from homeobox.group_reader import GroupReader
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import (
-    _apply_wanted_globals_remap,
     _group_key_to_zg,
     _prepare_discrete_spatial_obs,
     _prepare_obs_and_groups,
 )
 from homeobox.reconstruction_functional import (
+    collect_group_readers_from_atlas,
+    collect_remapped_layout_readers_from_atlas,
     get_array_paths_to_read,
     read_arrays_by_group,
     remap_sparse_indices_and_values,
@@ -75,39 +76,19 @@ def _build_present_arrays(
 def _build_sparse_group_readers(
     atlas: "RaggedAtlas",
     groups: GroupBy,
-    feature_space: str,
+    spec,
     wanted_globals_for_fs: np.ndarray | None,
 ) -> dict[str, GroupReader]:
     """Build per-group GroupReader instances for a sparse feature space.
 
     Resolves each group's remap and applies the optional feature filter.
     """
-    group_readers: dict[str, GroupReader] = {}
-    layout_readers: dict[str, LayoutReader] = {}
-    for key, _group_rows in groups:
-        zg = _group_key_to_zg(key)
-        atlas_group_reader = atlas.get_group_reader(zg, feature_space)
-        raw_layout_reader = atlas_group_reader.layout_reader
-        layout_uid = raw_layout_reader.layout_uid if raw_layout_reader is not None else None
-
-        layout_reader = layout_readers.get(layout_uid) if layout_uid is not None else None
-        if layout_reader is None:
-            raw_remap = atlas_group_reader.get_remap()
-            effective_remap = (
-                _apply_wanted_globals_remap(raw_remap, wanted_globals_for_fs)
-                if wanted_globals_for_fs is not None
-                else raw_remap
-            )
-            layout_reader = LayoutReader.from_remap(layout_uid=layout_uid, remap=effective_remap)
-            if layout_uid is not None:
-                layout_readers[layout_uid] = layout_reader
-
-        group_readers[zg] = GroupReader.for_worker(
-            zarr_group=zg,
-            feature_space=feature_space,
-            store=atlas.store,
-            layout_reader=layout_reader,
-        )
+    layouts_per_group = collect_remapped_layout_readers_from_atlas(
+        atlas, groups, spec, wanted_globals=wanted_globals_for_fs
+    )
+    group_readers = collect_group_readers_from_atlas(
+        atlas, groups, spec, layouts_per_group=layouts_per_group, for_worker=True
+    )
     return group_readers
 
 
@@ -154,7 +135,7 @@ def _build_sparse_modality_data(
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
+    group_readers = _build_sparse_group_readers(atlas, groups, spec, wanted_globals_for_fs)
 
     n_features = (
         len(wanted_globals_for_fs)
