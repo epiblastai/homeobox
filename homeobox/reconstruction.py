@@ -19,6 +19,9 @@ from homeobox.read import (
     _read_sparse_ranges,
     _sync_gather,
 )
+from homeobox.reconstruction_functional import (
+    get_array_paths_to_read,
+)
 from homeobox.reconstructor_base import Reconstructor, endpoint
 from homeobox.schema import PointerField
 
@@ -168,22 +171,6 @@ def _build_var(
     # uid is mandatory via FeatureBaseSchema
     var = var.set_index("uid")
     return var
-
-
-def _resolve_layers(
-    spec: FeatureSpaceSpec,
-    layer_overrides: list[str] | None,
-    feature_space: str,
-) -> list[str]:
-    """Return the list of layers to read, from overrides or the spec default."""
-    if layer_overrides is not None:
-        return layer_overrides
-    layers = spec.zarr_group_spec.layers.required_names
-    if not layers:
-        raise ValueError(
-            f"No layers specified and spec for '{feature_space}' has no required layers"
-        )
-    return layers
 
 
 # TODO: This should explicitly take pointer_fields from the atlas/query instead
@@ -343,17 +330,10 @@ class SparseCSRReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        zgs = spec.zarr_group_spec
-        if len(zgs.required_arrays) != 1:
-            raise NotImplementedError(
-                f"Sparse reconstruction for feature space '{spec.feature_space}' "
-                f"is not supported (requires {len(zgs.required_arrays)} "
-                f"primary array for indices: {[a.array_name for a in zgs.required_arrays]})"
-            )
-
-        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-        array_names = [f"{zgs.find_layers_path()}/{ln}" for ln in layers_to_read]
-        index_array_name = zgs.required_arrays[0].array_name
+        required_array_paths, layer_array_paths_dict = get_array_paths_to_read(
+            spec, layer_overrides
+        )
+        layer_names, layer_paths = map(list, zip(*layer_array_paths_dict.items(), strict=False))
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
@@ -369,12 +349,12 @@ class SparseCSRReconstructor(Reconstructor):
             atlas=atlas,
             groups=groups,
             spec=spec,
-            array_names=[index_array_name] + array_names,
+            array_names=required_array_paths + layer_paths,
             read_method="ranges",
         )
 
         # Assemble CSRs
-        all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layers_to_read}
+        all_csrs: dict[str, list[sp.csr_matrix]] = {ln: [] for ln in layer_names}
         obs_parts: list[pl.DataFrame] = []
 
         # TODO: Can this be parallelized? Should consider pushing this pattern down to rust
@@ -398,7 +378,7 @@ class SparseCSRReconstructor(Reconstructor):
             np.cumsum(lengths, out=indptr[1:])
 
             # Build CSR for each layer
-            for ln, (flat_values, _) in zip(layers_to_read, layer_results, strict=True):
+            for ln, (flat_values, _) in zip(layer_names, layer_results, strict=True):
                 if keep_mask is not None:
                     flat_values = flat_values[keep_mask]
                 csr = sp.csr_matrix(
@@ -416,7 +396,7 @@ class SparseCSRReconstructor(Reconstructor):
                 stacked[ln] = sp.vstack(csr_list, format="csr")
 
         return _assemble_anndata(
-            atlas, pf.feature_space, joined_globals, obs_parts, layers_to_read, stacked
+            atlas, pf.feature_space, joined_globals, obs_parts, layer_names, stacked
         )
 
 
@@ -470,10 +450,9 @@ class DenseReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        zgs = spec.zarr_group_spec
-
-        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-        array_names = [f"{zgs.find_layers_path()}/{ln}" for ln in layers_to_read]
+        _, layer_array_paths_dict = get_array_paths_to_read(spec, layer_overrides)
+        layers_to_read = list(layer_array_paths_dict.keys())
+        array_names = list(layer_array_paths_dict.values())
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
@@ -553,9 +532,10 @@ class DenseReconstructor(Reconstructor):
             Which layer to read. Defaults to the spec's first required layer.
         """
         spec = get_spec(pf.feature_space)
-        zgs = spec.zarr_group_spec
-        layer = layer if layer is not None else _resolve_layers(spec, None, pf.feature_space)[0]
-        array_name = f"{zgs.find_layers_path()}/{layer}"
+        _, layer_array_paths_dict = get_array_paths_to_read(
+            spec, [layer] if layer is not None else None
+        )
+        array_name = next(iter(layer_array_paths_dict.values()))
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
 
@@ -800,7 +780,8 @@ class FeatureCSCReconstructor(Reconstructor):
             return _build_obs_only_anndata(obs_pl)
 
         n_features = len(wanted_globals)
-        layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
+        _, layer_array_paths_dict = get_array_paths_to_read(spec, layer_overrides)
+        layers_to_read = list(layer_array_paths_dict.keys())
 
         _, group_remap_to_joined, _ = _load_remaps_and_features(
             atlas, groups, spec, "intersection", wanted_globals
@@ -821,8 +802,9 @@ class FeatureCSCReconstructor(Reconstructor):
             else:
                 starts, ends = spec.pointer_type.to_ranges(group_rows)
                 idx_reader = gr.get_array_reader(csr_index_name)
-                layers_path = zgs.find_layers_path()
-                lyr_readers = [gr.get_array_reader(f"{layers_path}/{ln}") for ln in layers_to_read]
+                lyr_readers = [
+                    gr.get_array_reader(layer_array_paths_dict[ln]) for ln in layers_to_read
+                ]
                 read_coroutines.append(
                     _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
                 )
