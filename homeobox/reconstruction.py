@@ -314,6 +314,9 @@ class SparseCSRReconstructor(Reconstructor):
         space, and assembles the result into an AnnData with sparse CSR
         matrices.
 
+        NOTE: as_anndata does not preserve the order of `obs_pl`. Rows are
+        contiguous by zarr_group instead.
+
         Parameters
         ----------
         atlas:
