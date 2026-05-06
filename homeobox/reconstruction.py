@@ -186,6 +186,8 @@ def _resolve_layers(
     return layers
 
 
+# TODO: This should explicitly take pointer_fields from the atlas/query instead
+# of assuming that all pl.Struct are point fields
 def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
     """Build an obs DataFrame from query results, excluding pointer/internal columns."""
     # Drop struct columns (pointer fields) and internal helper columns
@@ -200,13 +202,7 @@ def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
 
 def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
     """Build an AnnData with only obs, no X."""
-    keep_cols = [
-        c for c in obs_pl.columns if obs_pl[c].dtype != pl.Struct and not c.startswith("_")
-    ]
-    obs = obs_pl.select(keep_cols).to_pandas()
-    if "uid" in obs.columns:
-        obs = obs.set_index("uid")
-    return ad.AnnData(obs=obs)
+    return ad.AnnData(obs=_build_obs_df(obs_pl))
 
 
 def _assemble_anndata(
@@ -233,7 +229,6 @@ def _read_group_arrays(
     atlas: "RaggedAtlas",
     groups: GroupBy,
     spec: FeatureSpaceSpec,
-    pf: PointerField,
     array_names: list[str],
     read_method: Literal["ranges", "boxes"],
 ) -> tuple[list[tuple[str, pl.DataFrame]], list]:
@@ -243,7 +238,7 @@ def _read_group_arrays(
 
     for key, group_rows in groups:
         zg = _group_key_to_zg(key)
-        gr = atlas.get_group_reader(zg, pf.feature_space)
+        gr = atlas.get_group_reader(zg, spec.feature_space)
         readers = [gr.get_array_reader(an) for an in array_names]
 
         if read_method == "ranges":
@@ -352,8 +347,7 @@ class SparseCSRReconstructor(Reconstructor):
             )
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-        layers_path = zgs.find_layers_path()
-        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
+        array_names = [f"{zgs.find_layers_path()}/{ln}" for ln in layers_to_read]
         index_array_name = zgs.required_arrays[0].array_name
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
@@ -370,7 +364,6 @@ class SparseCSRReconstructor(Reconstructor):
             atlas=atlas,
             groups=groups,
             spec=spec,
-            pf=pf,
             array_names=[index_array_name] + array_names,
             read_method="ranges",
         )
@@ -430,7 +423,7 @@ class DenseReconstructor(Reconstructor):
     dimensionality).
     """
 
-    def _remap_features(
+    def _remap_features_inplace(
         self,
         *,
         out_layer: np.ndarray,
@@ -475,8 +468,7 @@ class DenseReconstructor(Reconstructor):
         zgs = spec.zarr_group_spec
 
         layers_to_read = _resolve_layers(spec, layer_overrides, pf.feature_space)
-        layers_path = zgs.find_layers_path()
-        array_names = [f"{layers_path}/{ln}" for ln in layers_to_read]
+        array_names = [f"{zgs.find_layers_path()}/{ln}" for ln in layers_to_read]
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
@@ -492,7 +484,6 @@ class DenseReconstructor(Reconstructor):
             atlas=atlas,
             groups=groups,
             spec=spec,
-            pf=pf,
             array_names=array_names,
             read_method="boxes",
         )
@@ -513,7 +504,7 @@ class DenseReconstructor(Reconstructor):
             n_rows_group = group_rows.height
 
             for ln, local_data in zip(layers_to_read, group_results, strict=True):
-                self._remap_features(
+                self._remap_features_inplace(
                     out_layer=all_layers[ln],
                     local_data=local_data,
                     zg=zg,
