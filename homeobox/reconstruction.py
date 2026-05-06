@@ -215,36 +215,6 @@ def _assemble_anndata(
     return ad.AnnData(X=X, obs=obs, var=var, layers=extra_layers if extra_layers else None)
 
 
-def _read_group_arrays(
-    atlas: "RaggedAtlas",
-    groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    array_names: list[str],
-    read_method: Literal["ranges", "boxes"],
-) -> tuple[list[tuple[str, pl.DataFrame]], list]:
-    """Read the same arrays for each zarr group using pointer ranges or boxes."""
-    read_tasks = []
-    group_obs_data: list[tuple[str, pl.DataFrame]] = []
-
-    for key, group_rows in groups:
-        zg = _group_key_to_zg(key)
-        gr = atlas.get_group_reader(zg, spec.feature_space)
-        readers = [gr.get_array_reader(an) for an in array_names]
-
-        if read_method == "ranges":
-            starts, ends = spec.pointer_type.to_ranges(group_rows)
-            read_tasks.append(_read_sparse_ranges(readers, starts, ends))
-        elif read_method == "boxes":
-            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
-            read_tasks.append(_read_dense_boxes(readers, min_corners, max_corners))
-        else:
-            raise ValueError(f"Unknown read_method: {read_method}")
-
-        group_obs_data.append((zg, group_rows))
-
-    return group_obs_data, _sync_gather(read_tasks)
-
-
 # ---------------------------------------------------------------------------
 # Built-in reconstructor implementations
 # ---------------------------------------------------------------------------
