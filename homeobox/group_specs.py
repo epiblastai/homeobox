@@ -2,7 +2,7 @@ from typing import Any
 
 import numpy as np
 import zarr
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from homeobox.reconstructor_base import Reconstructor
 
@@ -270,6 +270,19 @@ class FeatureSpaceSpec(BaseModel):
     reconstructor: Reconstructor
     zarr_group_spec: ZarrGroupSpec
     feature_oriented: ZarrGroupSpec | None = None
+
+    @model_validator(mode="after")
+    def _validate_reconstructor_required_arrays(self) -> "FeatureSpaceSpec":
+        declared = [a.array_name for a in self.zarr_group_spec.required_arrays]
+        declared_set = set(declared)
+        missing = [name for name in self.reconstructor.required_arrays if name not in declared_set]
+        if missing:
+            raise ValueError(
+                f"Reconstructor for feature space '{self.feature_space}' requires "
+                f"arrays {missing}, but zarr_group_spec.required_arrays only declares "
+                f"{declared}"
+            )
+        return self
 
     def valid_endpoints(self) -> list[str]:
         """Endpoints that are meaningful for this feature space.

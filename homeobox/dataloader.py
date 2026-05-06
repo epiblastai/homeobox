@@ -439,6 +439,7 @@ class MultimodalBatch:
     present: dict[str, np.ndarray]
 
 
+# TODO: This should be a frozen dataclass
 @dataclass
 class _ModalityData:
     """Pre-computed per-modality metadata for UnimodalHoxDataset and MultimodalHoxDataset.
@@ -449,15 +450,23 @@ class _ModalityData:
     """
 
     pointer_type: type
+    # TODO: This can be derived from group_readers.keys()
+    # Make it a @property
     unique_groups: list[str]
     group_readers: dict[str, GroupReader]
+    # This is the full size of the feature registry for the data
+    # modality, unless specific features are provided by wanted_globals
     n_features: int
+    # Can we keep `spec` or just feature_space instead
     index_array_name: str  # sparse only; "" for dense
     layer: str
     layer_dtype: np.dtype
+    # This is derivable from a spec
     layers_path: str = ""  # e.g. "csr/layers" or "layers"
+    # TODO: Multimodal fields; maybe move to a separate class that inherits
     present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
     row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
+    # I never liked this, can is be removed
     per_row_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
     stack_dense: bool = True
 

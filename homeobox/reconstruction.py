@@ -268,6 +268,8 @@ class SparseCSRReconstructor(Reconstructor):
     this or :class:`FeatureCSCReconstructor`.
     """
 
+    required_arrays: list[str] = ["csr/indices"]
+
     def _remap_features(
         self,
         *,
@@ -897,6 +899,8 @@ class SparseGeneExpressionReconstructor(Reconstructor):
     where a feature-oriented (CSC) copy exists and would be cheaper to
     read.
     """
+
+    required_arrays: list[str] = ["csr/indices"]
 
     def __init__(self) -> None:
         self._csr = SparseCSRReconstructor()
