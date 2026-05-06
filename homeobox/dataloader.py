@@ -32,7 +32,6 @@ from polars.dataframe.group_by import GroupBy
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
-from homeobox.batch_array import BatchAsyncArray
 from homeobox.group_reader import GroupReader
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
@@ -566,36 +565,6 @@ def _reorder_dense_batch_rows(batch: DenseBatch, perm: np.ndarray) -> DenseBatch
         metadata=reordered_metadata,
         per_row_shape=batch.per_row_shape,
     )
-
-
-async def _take_group_dense(
-    reader: BatchAsyncArray,
-    starts: np.ndarray,
-    ends: np.ndarray,
-    row_shape: tuple[int, ...],
-    dtype: np.dtype | None = None,
-) -> np.ndarray:
-    """Read dense data for one zarr group.
-
-    ``starts`` / ``ends`` are positions along axis 0 (one row per pointer).
-    Trailing axes are read in full via ``read_boxes`` (rank-1 boxes), which
-    handles the multi-strip decomposition that ``read_ranges`` cannot
-    express for arrays with rank > 2.
-
-    Parameters
-    ----------
-    row_shape:
-        Per-row shape, e.g. ``(n_features,)`` for 2D or ``(C, H, W)`` for tiles.
-    dtype:
-        Output dtype.  ``None`` means cast to float32 (legacy 2D behaviour).
-    """
-    min_corners = starts.reshape(-1, 1)
-    max_corners = ends.reshape(-1, 1)
-    out = await reader.read_boxes(min_corners, max_corners, stack_uniform=True)
-    out = out.reshape(len(starts), *row_shape)
-    if dtype is None:
-        return out.astype(np.float32)
-    return out if out.dtype == dtype else out.astype(dtype)
 
 
 async def _take_dense_from_pointers(
