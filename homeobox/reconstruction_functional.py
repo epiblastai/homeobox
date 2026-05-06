@@ -57,7 +57,7 @@ def get_array_paths_to_read(
 
 
 def collect_group_readers_from_atlas(
-    atlas: RaggedAtlas,
+    atlas: "RaggedAtlas",
     groups: GroupBy,
     spec: FeatureSpaceSpec,
     *,
@@ -88,7 +88,7 @@ def collect_group_readers_from_atlas(
 
 
 def collect_remapped_layout_readers_from_atlas(
-    atlas: RaggedAtlas,
+    atlas: "RaggedAtlas",
     groups: GroupBy,
     spec: FeatureSpaceSpec,
     *,
