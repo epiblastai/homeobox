@@ -27,6 +27,8 @@ class Reconstructor:
     ``as_fragments``.
     """
 
+    required_arrays: list[str] = []
+
     @classmethod
     def endpoints(cls) -> list[str]:
         """Return the names of user-facing endpoint methods."""

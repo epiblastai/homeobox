@@ -2,7 +2,7 @@ from typing import Any
 
 import numpy as np
 import zarr
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 from homeobox.reconstructor_base import Reconstructor
 
@@ -265,11 +265,26 @@ class FeatureSpaceSpec(BaseModel):
     model_config = {"arbitrary_types_allowed": True}
 
     feature_space: str
+    # TODO: Stop using pydantic, so that we can type these properly?
+    # Are we sure they can't be typed to ZarrPointer?
     pointer_type: type[Any]
     has_var_df: bool = False
     reconstructor: Reconstructor
     zarr_group_spec: ZarrGroupSpec
     feature_oriented: ZarrGroupSpec | None = None
+
+    @model_validator(mode="after")
+    def _validate_reconstructor_required_arrays(self) -> "FeatureSpaceSpec":
+        declared = [a.array_name for a in self.zarr_group_spec.required_arrays]
+        declared_set = set(declared)
+        missing = [name for name in self.reconstructor.required_arrays if name not in declared_set]
+        if missing:
+            raise ValueError(
+                f"Reconstructor for feature space '{self.feature_space}' requires "
+                f"arrays {missing}, but zarr_group_spec.required_arrays only declares "
+                f"{declared}"
+            )
+        return self
 
     def valid_endpoints(self) -> list[str]:
         """Endpoints that are meaningful for this feature space.
