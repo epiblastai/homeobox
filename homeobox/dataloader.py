@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
 from homeobox.batch_array import BatchAsyncArray
 from homeobox.group_reader import GroupReader, LayoutReader
-from homeobox.group_specs import get_spec
+from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import (
     _apply_wanted_globals_remap,
@@ -506,6 +506,7 @@ async def _take_sparse_from_pointers(
     # starts: np.ndarray,
     # ends: np.ndarray,
     groups: GroupBy,
+    spec: FeatureSpaceSpec,
     batch_row_ids: np.ndarray,
     mod_data: _ModalityData,
 ) -> SparseBatch:
@@ -518,7 +519,7 @@ async def _take_sparse_from_pointers(
         # Hardcode the spec for the moment
         mod_data.group_readers,
         groups,
-        get_spec("gene_expression"),
+        spec=spec,
         array_names=[mod_data.index_array_name, mod_data.layer_path],
         read_method="ranges",
     )
@@ -1033,32 +1034,32 @@ class UnimodalHoxDataset(_AsyncDataset):
         stack_dense: bool = True,
     ) -> None:
         pf = atlas.pointer_fields[field_name]
-        spec = get_spec(pf.feature_space)
+        self.spec = get_spec(pf.feature_space)
 
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
         # Workers reconstruct the zarr root lazily from this store.
         self._store = atlas.store
-        self._pointer_type = spec.pointer_type
+        self._pointer_type = self.spec.pointer_type
 
         # Build modality data (filters empty rows, builds remaps & readers)
         rows_indexed = obs_pl.with_row_index("_orig_idx")
 
-        if spec.pointer_type is SparseZarrPointer:
+        if self.spec.pointer_type is SparseZarrPointer:
             filtered, self._mod_data = _build_sparse_modality_data(
                 atlas,
                 rows_indexed,
                 pf,
-                spec,
+                self.spec,
                 layer,
                 wanted_globals,
                 obs_pl.height,
             )
-        elif spec.pointer_type is DiscreteSpatialPointer:
+        elif self.spec.pointer_type is DiscreteSpatialPointer:
             filtered, self._mod_data = _build_discrete_spatial_modality_data(
                 atlas,
                 rows_indexed,
                 pf,
-                spec,
+                self.spec,
                 layer,
                 obs_pl.height,
                 stack_dense=stack_dense,
@@ -1068,7 +1069,7 @@ class UnimodalHoxDataset(_AsyncDataset):
                 atlas,
                 rows_indexed,
                 pf,
-                spec,
+                self.spec,
                 layer,
                 obs_pl.height,
                 stack_dense=stack_dense,
@@ -1149,7 +1150,7 @@ class UnimodalHoxDataset(_AsyncDataset):
             # Sanity check
             assert len(obs_pl) == len(take_result)
             future = asyncio.run_coroutine_threadsafe(
-                _take_sparse_from_pointers(groups, batch_row_ids, self._mod_data),
+                _take_sparse_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
                 self._loop,
             )
             batch = future.result()
