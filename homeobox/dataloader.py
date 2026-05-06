@@ -42,6 +42,7 @@ from homeobox.read import (
     _prepare_discrete_spatial_obs,
     _prepare_obs_and_groups,
 )
+from homeobox.reconstruction_functional import get_array_paths_to_read
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
@@ -150,12 +151,9 @@ def _build_sparse_modality_data(
     added).
     """
     fs = pf.feature_space
-    if len(spec.zarr_group_spec.required_arrays) != 1:
-        raise NotImplementedError(
-            f"Sparse modality requires exactly 1 index array, "
-            f"got {len(spec.zarr_group_spec.required_arrays)} for '{fs}'"
-        )
-    index_array_name = spec.zarr_group_spec.required_arrays[0].array_name
+    required_array_paths, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
+    [index_array_name] = required_array_paths
+    layer_path = layer_array_paths_dict[layer]
 
     filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
 
@@ -164,14 +162,13 @@ def _build_sparse_modality_data(
 
     groups, group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
-    layers_path = spec.zarr_group_spec.find_layers_path()
     n_features = (
         len(wanted_globals_for_fs)
         if wanted_globals_for_fs is not None
         else atlas.registry_tables[fs].count_rows()
     )
     layer_dtype = (
-        group_readers[groups[0]].get_array_reader(f"{layers_path}/{layer}")._native_dtype
+        group_readers[groups[0]].get_array_reader(layer_path)._native_dtype
         if groups
         else np.dtype(np.float32)
     )
@@ -182,9 +179,8 @@ def _build_sparse_modality_data(
         group_readers=group_readers,
         n_features=n_features,
         index_array_name=index_array_name,
-        layer=layer,
+        layer_path=layer_path,
         layer_dtype=layer_dtype,
-        layers_path=layers_path,
         present_mask=present_mask,
         row_positions=row_positions,
     )
@@ -217,12 +213,12 @@ def _build_dense_modality_data(
     # we won't have remapping.
     groups, group_readers = _build_group_readers(atlas, groups, fs)
 
-    layers_path = spec.zarr_group_spec.find_layers_path()
-    array_path = f"{layers_path}/{layer}"
+    _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
+    layer_path = layer_array_paths_dict[layer]
     per_row_shape: tuple[int, ...] | None = None
 
     if groups:
-        reader = group_readers[groups[0]].get_array_reader(array_path)
+        reader = group_readers[groups[0]].get_array_reader(layer_path)
         layer_dtype = reader._native_dtype
         if spec.has_var_df:
             n_features = atlas.registry_tables[fs].count_rows()
@@ -239,9 +235,8 @@ def _build_dense_modality_data(
         group_readers=group_readers,
         n_features=n_features,
         index_array_name="",
-        layer=layer,
+        layer_path=layer_path,
         layer_dtype=layer_dtype,
-        layers_path=layers_path,
         present_mask=present_mask,
         row_positions=row_positions,
         per_row_shape=per_row_shape,
@@ -274,12 +269,12 @@ def _build_discrete_spatial_modality_data(
 
     groups, group_readers = _build_group_readers(atlas, groups, fs)
 
-    layers_path = spec.zarr_group_spec.find_layers_path()
-    array_path = f"{layers_path}/{layer}"
+    _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
+    layer_path = layer_array_paths_dict[layer]
     per_row_shape: tuple[int, ...] | None = None
 
     if groups:
-        reader = group_readers[groups[0]].get_array_reader(array_path)
+        reader = group_readers[groups[0]].get_array_reader(layer_path)
         layer_dtype = reader._native_dtype
         trailing = tuple(reader.shape[_box_rank:])
         per_row_shape = trailing or None
@@ -292,9 +287,8 @@ def _build_discrete_spatial_modality_data(
         group_readers=group_readers,
         n_features=0,
         index_array_name="",
-        layer=layer,
+        layer_path=layer_path,
         layer_dtype=layer_dtype,
-        layers_path=layers_path,
         present_mask=present_mask,
         row_positions=row_positions,
         per_row_shape=per_row_shape,
@@ -459,10 +453,8 @@ class _ModalityData:
     n_features: int
     # Can we keep `spec` or just feature_space instead
     index_array_name: str  # sparse only; "" for dense
-    layer: str
+    layer_path: str  # full zarr path, e.g. "csr/layers/counts" or "layers/raw"
     layer_dtype: np.dtype
-    # This is derivable from a spec
-    layers_path: str = ""  # e.g. "csr/layers" or "layers"
     # TODO: Multimodal fields; maybe move to a separate class that inherits
     present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
     row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
@@ -533,7 +525,7 @@ async def _take_sparse_from_pointers(
         tasks.append(
             _take_group_sparse(
                 gr.get_array_reader(mod_data.index_array_name),
-                gr.get_array_reader(f"{mod_data.layers_path}/{mod_data.layer}"),
+                gr.get_array_reader(mod_data.layer_path),
                 gr.get_remap(),
                 sorted_starts[mask],
                 sorted_ends[mask],
@@ -665,7 +657,7 @@ async def _take_dense_from_pointers(
         row_shape = (mod_data.n_features,)
         out_dtype = np.dtype(np.float32)
 
-    array_path = f"{mod_data.layers_path}/{mod_data.layer}"
+    array_path = mod_data.layer_path
 
     sort_order = np.argsort(groups_np, kind="stable")
     sorted_groups = groups_np[sort_order]
@@ -734,7 +726,7 @@ async def _take_discrete_spatial_from_pointers(
             per_row_shape=mod_data.per_row_shape,
         )
 
-    array_path = f"{mod_data.layers_path}/{mod_data.layer}"
+    array_path = mod_data.layer_path
 
     sort_order = np.argsort(groups_np, kind="stable")
     sorted_groups = groups_np[sort_order]
