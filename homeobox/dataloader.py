@@ -472,39 +472,10 @@ class _ModalityData:
 # ---------------------------------------------------------------------------
 
 
-async def _take_group_sparse(
-    index_reader: BatchAsyncArray,
-    layer_reader: BatchAsyncArray,
-    remap: np.ndarray,
-    starts: np.ndarray,
-    ends: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Read indices and values for one zarr group concurrently.
-
-    Dispatches two concurrent ``run_in_executor`` calls (indices + values)
-    for maximum I/O overlap with GIL released.
-    """
-    (flat_indices, lengths), (flat_values, _) = await asyncio.gather(
-        index_reader.read_ranges(starts, ends),
-        layer_reader.read_ranges(starts, ends),
-    )
-    remapped = remap[flat_indices.astype(np.intp)]
-    mask = remapped >= 0
-    if not mask.all():
-        row_ids = np.repeat(np.arange(len(lengths)), lengths)
-        remapped = remapped[mask]
-        flat_values = flat_values[mask]
-        lengths = np.bincount(row_ids[mask], minlength=len(lengths)).astype(np.int64)
-    return remapped, flat_values, lengths
-
-
 # TODO: This is assuming that just because a pointer is sparse, that it also
 # has layers. This is true for gene_expression but not necessarily a fundamental
 # feature of sparse data.
 async def _take_sparse_from_pointers(
-    # groups_np: np.ndarray,
-    # starts: np.ndarray,
-    # ends: np.ndarray,
     groups: GroupBy,
     spec: FeatureSpaceSpec,
     batch_row_ids: np.ndarray,
@@ -660,14 +631,6 @@ async def _take_group_dense(
     return out if out.dtype == dtype else out.astype(dtype)
 
 
-# TODO: Consolidate with _take_discrete_spatial_from_pointers. Both paths now
-# route through read_boxes; dense is a strict subset (rank-1 box per row,
-# stack_uniform=True). Wrinkles to resolve before merging:
-#   - stack_dense=False here means "per-group uniform, cross-group ragged"
-#     (one shape per group); for discrete-spatial it means "per-row ragged".
-#     A unified path treats the dense case as a degenerate ragged case.
-#   - Empty-batch shape: dense knows per_row_shape and returns a (0, *shape)
-#     ndarray; discrete-spatial returns []. Pick one contract.
 async def _take_dense_from_pointers(
     groups: GroupBy,
     spec: FeatureSpaceSpec,
@@ -742,246 +705,10 @@ async def _take_dense_from_pointers(
     return _reorder_dense_batch_rows(batch, row_perm)
 
 
-async def _take_dense_from_pointer_arrays(
-    groups_np: np.ndarray,
-    starts: np.ndarray,
-    ends: np.ndarray,
-    mod_data: _ModalityData,
-) -> DenseBatch:
-    """Fetch a dense batch from extracted pointer arrays."""
-    n_present = len(groups_np)
-
-    if mod_data.per_row_shape is not None:
-        row_shape = mod_data.per_row_shape
-        out_dtype = mod_data.layer_dtype
-    else:
-        row_shape = (mod_data.n_features,)
-        out_dtype = np.dtype(np.float32)
-
-    array_path = mod_data.layer_path
-    sort_order = np.argsort(groups_np, kind="stable")
-    sorted_groups = groups_np[sort_order]
-    sorted_starts = starts[sort_order]
-    sorted_ends = ends[sort_order]
-
-    tasks = []
-    group_slices: list[tuple[int, int]] = []
-    pos = 0
-    for gid in np.unique(sorted_groups):
-        mask = sorted_groups == gid
-        count = int(mask.sum())
-        zg = mod_data.unique_groups[gid]
-        gr = mod_data.group_readers[zg]
-        group_reader = gr.get_array_reader(array_path)
-        group_row_shape = tuple(group_reader.shape[1:]) if not mod_data.stack_dense else row_shape
-        tasks.append(
-            _take_group_dense(
-                group_reader,
-                sorted_starts[mask],
-                sorted_ends[mask],
-                group_row_shape,
-                mod_data.layer_dtype if mod_data.per_row_shape is not None else None,
-            )
-        )
-        group_slices.append((pos, pos + count))
-        pos += count
-
-    results = await asyncio.gather(*tasks)
-
-    if not mod_data.stack_dense:
-        sorted_items: list[np.ndarray] = []
-        for group_data in results:
-            sorted_items.extend(group_data[i] for i in range(group_data.shape[0]))
-        inv_sort = np.argsort(sort_order, kind="stable")
-        return DenseBatch(
-            data=[sorted_items[i] for i in inv_sort],
-            n_features=mod_data.n_features,
-            per_row_shape=mod_data.per_row_shape,
-        )
-
-    sorted_data = np.empty((n_present, *row_shape), dtype=out_dtype)
-    for (s, e), group_data in zip(group_slices, results, strict=True):
-        sorted_data[s:e] = group_data
-
-    inv_sort = np.argsort(sort_order, kind="stable")
-    return DenseBatch(
-        data=sorted_data[inv_sort],
-        n_features=mod_data.n_features,
-        per_row_shape=mod_data.per_row_shape,
-    )
-
-
-async def _take_discrete_spatial_from_pointers(
-    groups_np: np.ndarray,
-    min_corners: np.ndarray,
-    max_corners: np.ndarray,
-    mod_data: _ModalityData,
-) -> "DenseBatch":
-    """Fetch a discrete-spatial batch via ``BatchAsyncArray.read_boxes``."""
-    n_present = len(groups_np)
-    if n_present == 0:
-        return DenseBatch(
-            data=[],
-            n_features=mod_data.n_features,
-            per_row_shape=mod_data.per_row_shape,
-        )
-
-    array_path = mod_data.layer_path
-
-    sort_order = np.argsort(groups_np, kind="stable")
-    sorted_groups = groups_np[sort_order]
-    sorted_min = min_corners[sort_order]
-    sorted_max = max_corners[sort_order]
-
-    tasks: list = []
-    group_slices: list[tuple[int, int]] = []
-    pos = 0
-    for gid in np.unique(sorted_groups):
-        mask = sorted_groups == gid
-        count = int(mask.sum())
-        zg = mod_data.unique_groups[gid]
-        reader = mod_data.group_readers[zg].get_array_reader(array_path)
-        tasks.append(
-            reader.read_boxes(
-                sorted_min[mask],
-                sorted_max[mask],
-                stack_uniform=mod_data.stack_dense,
-            )
-        )
-        group_slices.append((pos, pos + count))
-        pos += count
-
-    results = await asyncio.gather(*tasks)
-    inv_sort = np.empty_like(sort_order)
-    inv_sort[sort_order] = np.arange(n_present)
-
-    if mod_data.stack_dense:
-        first = results[0]
-        out = np.empty((n_present, *first.shape[1:]), dtype=first.dtype)
-        for (s, e), arr in zip(group_slices, results, strict=True):
-            out[s:e] = arr
-        return DenseBatch(
-            data=out[inv_sort],
-            n_features=mod_data.n_features,
-            per_row_shape=mod_data.per_row_shape,
-        )
-
-    sorted_items: list[np.ndarray] = []
-    for arrs in results:
-        sorted_items.extend(arrs)
-    return DenseBatch(
-        data=[sorted_items[i] for i in inv_sort],
-        n_features=mod_data.n_features,
-        per_row_shape=mod_data.per_row_shape,
-    )
-
-
-async def _fetch_modality_from_pointers(
-    groups_np: np.ndarray,
-    starts: np.ndarray,
-    ends: np.ndarray,
-    mod_data: _ModalityData,
-) -> "SparseBatch | DenseBatch":
-    """Dispatch to sparse or dense fetch using pointer arrays."""
-    if mod_data.pointer_type is SparseZarrPointer:
-        n_rows = len(groups_np)
-        sort_order = np.argsort(groups_np, kind="stable")
-        sorted_groups = groups_np[sort_order]
-        sorted_starts = starts[sort_order]
-        sorted_ends = ends[sort_order]
-
-        tasks = []
-        for gid in np.unique(sorted_groups):
-            mask = sorted_groups == gid
-            zg = mod_data.unique_groups[gid]
-            gr = mod_data.group_readers[zg]
-            tasks.append(
-                _take_group_sparse(
-                    gr.get_array_reader(mod_data.index_array_name),
-                    gr.get_array_reader(mod_data.layer_path),
-                    gr.get_remap(),
-                    sorted_starts[mask],
-                    sorted_ends[mask],
-                )
-            )
-
-        results = await asyncio.gather(*tasks)
-        all_indices = []
-        all_values = []
-        all_lengths = []
-        for remapped_indices, values, lengths in results:
-            all_indices.append(remapped_indices)
-            all_values.append(values)
-            all_lengths.append(lengths)
-
-        flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
-        flat_values = (
-            np.concatenate(all_values) if all_values else np.array([], dtype=mod_data.layer_dtype)
-        )
-        lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
-        offsets = np.zeros(n_rows + 1, dtype=np.int64)
-        np.cumsum(lengths, out=offsets[1:])
-
-        batch = SparseBatch(
-            indices=flat_indices,
-            values=flat_values,
-            offsets=offsets,
-            n_features=mod_data.n_features,
-        )
-        inv_sort = np.argsort(sort_order, kind="stable")
-        return _reorder_sparse_batch_rows(batch, inv_sort)
-    return await _take_dense_from_pointer_arrays(groups_np, starts, ends, mod_data)
-
-
-def _extract_pointers_sparse(
-    take_result: pl.DataFrame,
-    pointer_field: str,
-    unique_groups: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract (groups_np, starts, ends) from a take result for a sparse pointer field."""
-    pointer_df = take_result[pointer_field].struct.unnest()
-    zg_series = pointer_df["zarr_group"]
-    groups_np = _build_groups_np(zg_series, unique_groups)
-    starts = pointer_df["start"].to_numpy().astype(np.int64)
-    ends = pointer_df["end"].to_numpy().astype(np.int64)
-    return groups_np, starts, ends
-
-
-def _extract_pointers_dense(
-    take_result: pl.DataFrame,
-    pointer_field: str,
-    unique_groups: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract (groups_np, starts, ends) from a take result for a dense pointer field."""
-    pointer_df = take_result[pointer_field].struct.unnest()
-    zg_series = pointer_df["zarr_group"]
-    groups_np = _build_groups_np(zg_series, unique_groups)
-    pos_arr = pointer_df["position"].to_numpy().astype(np.int64)
-    return groups_np, pos_arr, pos_arr + 1
-
-
-def _extract_pointers_discrete_spatial(
-    take_result: pl.DataFrame,
-    pointer_field: str,
-    unique_groups: list[str],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Extract ``(groups_np, min_corners, max_corners)`` for a discrete-spatial pointer field.
-
-    ``min_corners`` and ``max_corners`` are ``(B, k)`` int64 arrays. Box rank
-    ``k`` is uniform across rows in the modality (validated at modality build).
-    """
-    pointer_df = take_result[pointer_field].struct.unnest()
-    zg_series = pointer_df["zarr_group"]
-    groups_np = _build_groups_np(zg_series, unique_groups)
-    k = int(pointer_df["min_corner"].head(1).list.len().item())
-    min_corners = pointer_df["min_corner"].list.to_array(k).to_numpy().astype(np.int64, copy=False)
-    max_corners = pointer_df["max_corner"].list.to_array(k).to_numpy().astype(np.int64, copy=False)
-    return groups_np, min_corners, max_corners
-
-
 async def _take_multimodal(
     take_result: pl.DataFrame,
     modality_data: dict[str, _ModalityData],
+    specs: dict[str, FeatureSpaceSpec],
     pointer_fields: dict[str, str],
     metadata_columns: list[str] | None,
 ) -> MultimodalBatch:
@@ -991,7 +718,6 @@ async def _take_multimodal(
     tasks: list = []
     task_fs: list[str] = []
     present_masks: dict[str, np.ndarray] = {}
-    empty_modalities: dict[str, SparseBatch | DenseBatch] = {}
 
     for fs, mod_data in modality_data.items():
         pf_name = pointer_fields[fs]
@@ -1007,57 +733,21 @@ async def _take_multimodal(
         present_masks[fs] = batch_present
         present_indices = np.where(batch_present)[0]
 
-        if len(present_indices) == 0:
-            if mod_data.pointer_type is SparseZarrPointer:
-                empty_modalities[fs] = SparseBatch(
-                    indices=np.array([], dtype=np.int32),
-                    values=np.array([], dtype=mod_data.layer_dtype),
-                    offsets=np.zeros(1, dtype=np.int64),
-                    n_features=mod_data.n_features,
-                )
-            elif mod_data.pointer_type is DiscreteSpatialPointer:
-                # Box dims are per-row; with zero rows there is no stacked shape to fall back on.
-                empty_modalities[fs] = DenseBatch(
-                    data=[],
-                    n_features=mod_data.n_features,
-                    per_row_shape=mod_data.per_row_shape,
-                )
-            else:
-                if mod_data.per_row_shape is not None:
-                    empty_shape = (0, *mod_data.per_row_shape)
-                else:
-                    empty_shape = (0, mod_data.n_features)
-                empty_modalities[fs] = DenseBatch(
-                    data=np.zeros(empty_shape, dtype=mod_data.layer_dtype),
-                    n_features=mod_data.n_features,
-                    per_row_shape=mod_data.per_row_shape,
-                )
-            continue
-
         # Extract pointers only for present rows
         present_take = take_result[present_indices.tolist()]
+        present_row_ids = present_take["_rowid"].to_numpy().astype(np.uint64, copy=False)
+        obs_pl, groups = _prepare_obs_and_groups(present_take, mod_data.pointer_type, pf_name)
+        assert len(obs_pl) == len(present_take)
+
         if mod_data.pointer_type is SparseZarrPointer:
-            groups_np, starts, ends = _extract_pointers_sparse(
-                present_take, pf_name, mod_data.unique_groups
-            )
-            tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
-        elif mod_data.pointer_type is DiscreteSpatialPointer:
-            groups_np, min_corners, max_corners = _extract_pointers_discrete_spatial(
-                present_take, pf_name, mod_data.unique_groups
-            )
-            tasks.append(
-                _take_discrete_spatial_from_pointers(groups_np, min_corners, max_corners, mod_data)
-            )
+            tasks.append(_take_sparse_from_pointers(groups, specs[fs], present_row_ids, mod_data))
         else:
-            groups_np, starts, ends = _extract_pointers_dense(
-                present_take, pf_name, mod_data.unique_groups
-            )
-            tasks.append(_fetch_modality_from_pointers(groups_np, starts, ends, mod_data))
+            tasks.append(_take_dense_from_pointers(groups, specs[fs], present_row_ids, mod_data))
         task_fs.append(fs)
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
 
-    modalities: dict[str, SparseBatch | DenseBatch] = dict(empty_modalities)
+    modalities: dict[str, SparseBatch | DenseBatch] = {}
     for fs, result in zip(task_fs, results, strict=True):
         modalities[fs] = result
 
@@ -1350,6 +1040,7 @@ class MultimodalHoxDataset(_AsyncDataset):
         # Map field_name -> pointer field name (identical here, kept for parity
         # with lance take() call shape).
         self._pointer_fields: dict[str, str] = {}
+        self._specs: dict[str, FeatureSpaceSpec] = {}
 
         # Attach row indices so we can track original positions after per-modality filters
         rows_indexed = obs_pl.with_row_index("_orig_idx")
@@ -1360,6 +1051,7 @@ class MultimodalHoxDataset(_AsyncDataset):
             pf = atlas.pointer_fields[fn]
             self._pointer_fields[fn] = pf.field_name
             spec = get_spec(pf.feature_space)
+            self._specs[fn] = spec
             layer = layers.get(fn, "counts")
 
             if spec.pointer_type is SparseZarrPointer:
@@ -1438,6 +1130,7 @@ class MultimodalHoxDataset(_AsyncDataset):
             _take_multimodal(
                 take_result,
                 self._modality_data,
+                self._specs,
                 self._pointer_fields,
                 self._metadata_columns,
             ),
