@@ -77,17 +77,15 @@ def _build_sparse_group_readers(
     groups: GroupBy,
     feature_space: str,
     wanted_globals_for_fs: np.ndarray | None,
-) -> "tuple[list[str], dict[str, GroupReader]]":
+) -> dict[str, GroupReader]:
     """Build per-group GroupReader instances for a sparse feature space.
 
     Resolves each group's remap and applies the optional feature filter.
     """
-    unique_groups: list[str] = []
     group_readers: dict[str, GroupReader] = {}
     layout_readers: dict[str, LayoutReader] = {}
     for key, _group_rows in groups:
         zg = _group_key_to_zg(key)
-        unique_groups.append(zg)
         atlas_group_reader = atlas.get_group_reader(zg, feature_space)
         raw_layout_reader = atlas_group_reader.layout_reader
         layout_uid = raw_layout_reader.layout_uid if raw_layout_reader is not None else None
@@ -110,26 +108,24 @@ def _build_sparse_group_readers(
             store=atlas.store,
             layout_reader=layout_reader,
         )
-    return unique_groups, group_readers
+    return group_readers
 
 
 def _build_group_readers(
     atlas: "RaggedAtlas",
     groups: GroupBy,
     feature_space: str,
-) -> "tuple[list[str], dict[str, GroupReader]]":
+) -> dict[str, GroupReader]:
     """Build per-group readers and matching unique group order."""
-    unique_groups: list[str] = []
     group_readers: dict[str, GroupReader] = {}
     for key, _group_rows in groups:
         zg = _group_key_to_zg(key)
-        unique_groups.append(zg)
         group_readers[zg] = GroupReader.for_worker(
             zarr_group=zg,
             feature_space=feature_space,
             store=atlas.store,
         )
-    return unique_groups, group_readers
+    return group_readers
 
 
 def _build_sparse_modality_data(
@@ -158,22 +154,21 @@ def _build_sparse_modality_data(
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    groups, group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
+    group_readers = _build_sparse_group_readers(atlas, groups, fs, wanted_globals_for_fs)
 
     n_features = (
         len(wanted_globals_for_fs)
         if wanted_globals_for_fs is not None
         else atlas.registry_tables[fs].count_rows()
     )
-    layer_dtype = (
-        group_readers[groups[0]].get_array_reader(layer_path)._native_dtype
-        if groups
-        else np.dtype(np.float32)
-    )
+    if group_readers:
+        first_key = list(group_readers.keys())[0]
+        layer_dtype = group_readers[first_key].get_array_reader(layer_path)._native_dtype
+    else:
+        layer_dtype = np.dtype(np.float32)
 
     mod_data = _ModalityData(
         pointer_type=SparseZarrPointer,
-        unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
         index_array_name=index_array_name,
@@ -209,14 +204,15 @@ def _build_dense_modality_data(
     # TODO: This is setup for image tiles, which have no var space
     # If we try to load other dense modalities, like protein abundance
     # we won't have remapping.
-    groups, group_readers = _build_group_readers(atlas, groups, fs)
+    group_readers = _build_group_readers(atlas, groups, fs)
 
     _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
     layer_path = layer_array_paths_dict[layer]
     per_row_shape: tuple[int, ...] | None = None
 
-    if groups:
-        reader = group_readers[groups[0]].get_array_reader(layer_path)
+    if group_readers:
+        first_key = list(group_readers.keys())[0]
+        reader = group_readers[first_key].get_array_reader(layer_path)
         layer_dtype = reader._native_dtype
         if spec.has_var_df:
             n_features = atlas.registry_tables[fs].count_rows()
@@ -229,7 +225,6 @@ def _build_dense_modality_data(
 
     mod_data = _ModalityData(
         pointer_type=DenseZarrPointer,
-        unique_groups=groups,
         group_readers=group_readers,
         n_features=n_features,
         index_array_name="",
@@ -265,14 +260,15 @@ def _build_discrete_spatial_modality_data(
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    groups, group_readers = _build_group_readers(atlas, groups, fs)
+    group_readers = _build_group_readers(atlas, groups, fs)
 
     _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
     layer_path = layer_array_paths_dict[layer]
     per_row_shape: tuple[int, ...] | None = None
 
-    if groups:
-        reader = group_readers[groups[0]].get_array_reader(layer_path)
+    if group_readers:
+        first_key = list(group_readers.keys())[0]
+        reader = group_readers[first_key].get_array_reader(layer_path)
         layer_dtype = reader._native_dtype
         trailing = tuple(reader.shape[_box_rank:])
         per_row_shape = trailing or None
@@ -281,7 +277,6 @@ def _build_discrete_spatial_modality_data(
 
     mod_data = _ModalityData(
         pointer_type=DiscreteSpatialPointer,
-        unique_groups=groups,
         group_readers=group_readers,
         n_features=0,
         index_array_name="",
@@ -442,9 +437,6 @@ class _ModalityData:
     """
 
     pointer_type: type
-    # TODO: This can be derived from group_readers.keys()
-    # Make it a @property
-    unique_groups: list[str]
     group_readers: dict[str, GroupReader]
     # This is the full size of the feature registry for the data
     # modality, unless specific features are provided by wanted_globals
