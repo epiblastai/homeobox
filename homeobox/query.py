@@ -18,10 +18,7 @@ import polars as pl
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import get_spec
-from homeobox.reconstruction import (
-    _build_obs_only_anndata,
-    _get_pointer_columns,
-)
+from homeobox.reconstruction import _build_obs_only_anndata
 from homeobox.schema import PointerField
 from homeobox.util import sql_escape
 
@@ -44,6 +41,10 @@ class AtlasQuery:
         self._feature_filter: dict[str, list[str]] = {}
         self._balanced_limit_n: int | None = None
         self._balanced_limit_column: str | None = None
+
+    @property
+    def pointer_field_names(self) -> list[str]:
+        return list(self._atlas.pointer_fields.keys())
 
     def search(
         self,
@@ -352,7 +353,7 @@ class AtlasQuery:
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of obs metadata."""
         result = self._materialize_rows()
-        pointer_cols = _get_pointer_columns(result)
+        pointer_cols = self.pointer_field_names
         if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
             result = result.select(keep)

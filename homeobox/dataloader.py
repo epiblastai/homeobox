@@ -53,12 +53,6 @@ from homeobox.reconstruction_functional import (
 # ---------------------------------------------------------------------------
 
 
-def _build_groups_np(zg_series: pl.Series, groups: list[str]) -> np.ndarray:
-    """Map group-name strings to contiguous integer IDs using the provided group order."""
-    mapping = pl.DataFrame({"_zg": groups, "_gid": np.arange(len(groups), dtype=np.int32)})
-    return zg_series.to_frame("_zg").join(mapping, on="_zg", how="left")["_gid"].to_numpy()
-
-
 def _build_present_arrays(
     present_indices: np.ndarray,
     n_rows: int,

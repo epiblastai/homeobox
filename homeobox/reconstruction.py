@@ -135,18 +135,6 @@ def _build_feature_space(
     return joined_globals, group_remap_to_joined
 
 
-# TODO: Remove this in favor of getting these from the atlas class instead
-def _get_pointer_columns(obs_pl: pl.DataFrame) -> list[str]:
-    """Return the names of zarr pointer struct columns.
-
-    Inverse of :func:`_build_obs_only_anndata` which strips pointer columns
-    and keeps only obs. This is used to ensure pointer columns are always
-    loaded from the database even when a user-level ``select`` restricts
-    the returned metadata columns.
-    """
-    return [c for c in obs_pl.columns if obs_pl[c].dtype == pl.Struct]
-
-
 def _build_var(
     atlas: "RaggedAtlas",
     feature_space: str,
