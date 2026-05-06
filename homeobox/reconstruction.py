@@ -20,6 +20,7 @@ from homeobox.read import (
     _sync_gather,
 )
 from homeobox.reconstruction_functional import (
+    collect_group_readers_from_atlas,
     get_array_paths_to_read,
     read_arrays_by_group,
     remap_sparse_indices_and_values,
@@ -303,11 +304,7 @@ class SparseCSRReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        group_readers: dict[str, GroupReader] = {}
-        for key, _group_rows in groups:
-            zg = _group_key_to_zg(key)
-            group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)
-
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec.feature_space)
         group_obs_data, all_results = read_arrays_by_group(
             group_readers=group_readers,
             groups=groups,
@@ -424,11 +421,7 @@ class DenseReconstructor(Reconstructor):
         if n_features == 0:
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        group_readers: dict[str, GroupReader] = {}
-        for key, _group_rows in groups:
-            zg = _group_key_to_zg(key)
-            group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)
-
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec.feature_space)
         group_obs_data, all_results = read_arrays_by_group(
             group_readers=group_readers,
             groups=groups,

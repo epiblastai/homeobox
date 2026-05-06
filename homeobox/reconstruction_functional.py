@@ -1,10 +1,10 @@
-from typing import Literal, NewType
+from typing import TYPE_CHECKING, Literal, NewType
 
 import numpy as np
 import polars as pl
 from polars.dataframe.group_by import GroupBy
 
-from homeobox.group_reader import GroupReader
+from homeobox.group_reader import GroupReader, LayoutReader
 
 # TODO: Can we wrap any of these in TYPE_CHECKING
 from homeobox.group_specs import FeatureSpaceSpec
@@ -15,7 +15,11 @@ from homeobox.read import (
     _sync_gather,
 )
 
+if TYPE_CHECKING:
+    from homeobox.atlas import RaggedAtlas
+
 ArrayPath = NewType("ArrayPath", str)
+ReadersByZarrGroup = NewType("ReadersByZarrGroup", dict[str, GroupReader])
 
 # TODO: Add a dtype resolution function for making placeholder arrays
 # and doing casting appropriately without loss
@@ -48,8 +52,34 @@ def get_array_paths_to_read(
     return required_array_paths, layer_array_paths
 
 
+def collect_group_readers_from_atlas(
+    atlas: RaggedAtlas,
+    groups: GroupBy,
+    feature_space: str,
+    *,
+    # kwargs when collecting the readers for dataloader workers
+    layout_reader: LayoutReader | None = None,
+    for_worker: bool = False,
+) -> ReadersByZarrGroup:
+    """Build per-group readers and matching unique group order."""
+    group_readers: dict[str, GroupReader] = {}
+    for key, _group_rows in groups:
+        zg = _group_key_to_zg(key)
+        if for_worker:
+            group_readers[zg] = GroupReader.for_worker(
+                zarr_group=zg,
+                feature_space=feature_space,
+                store=atlas.store,
+                layout_reader=layout_reader,
+            )
+        else:
+            group_readers[zg] = atlas.get_group_reader(zg, feature_space)
+
+    return group_readers
+
+
 def read_arrays_by_group(
-    group_readers: dict[str, GroupReader],
+    group_readers: ReadersByZarrGroup,
     groups: GroupBy,
     spec: FeatureSpaceSpec,
     array_names: list[str],
