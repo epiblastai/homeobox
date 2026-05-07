@@ -345,7 +345,7 @@ def test_dense_feature_dataset_returns_dense_feature_batch(single_group_dense_fe
     assert data.dtype == np.float32
     np.testing.assert_array_equal(data, expected)
     assert batch.metadata is not None
-    assert batch.metadata["tissue"].tolist() == ["tissue_0", "tissue_1", "tissue_0", "tissue_1"]
+    assert batch.metadata["tissue"].to_list() == ["tissue_0", "tissue_1", "tissue_0", "tissue_1"]
 
     tensor_batch = dense_to_tensor_collate(batch)
     assert tuple(tensor_batch["X"].shape) == (4, 3)
@@ -425,7 +425,7 @@ def test_round_trip_values(single_group_atlas):
         cd_dense[i, batch.indices[s:e]] = batch.layers["counts"][s:e]
 
     # Match rows by uid (order may differ between AnnData and UnimodalHoxDataset)
-    cd_uids = batch.metadata["uid"].tolist()
+    cd_uids = batch.metadata["uid"].to_list()
 
     for cd_idx, uid in enumerate(cd_uids):
         ref_idx = ref_uids.index(uid)
@@ -454,7 +454,7 @@ def test_round_trip_two_groups(two_group_atlas):
         s, e = batch.offsets[i], batch.offsets[i + 1]
         cd_dense[i, batch.indices[s:e]] = batch.layers["counts"][s:e]
 
-    cd_uids = batch.metadata["uid"].tolist()
+    cd_uids = batch.metadata["uid"].to_list()
 
     for cd_idx, uid in enumerate(cd_uids):
         ref_idx = ref_uids.index(uid)
@@ -482,7 +482,7 @@ def test_shuffle_with_loader(two_group_atlas):
 
     uids = []
     for batch in loader:
-        uids.extend(batch.metadata["uid"].tolist())
+        uids.extend(batch.metadata["uid"].to_list())
 
     assert len(uids) == ds.n_rows
     assert len(set(uids)) == ds.n_rows
@@ -503,7 +503,7 @@ def test_shuffle_reproducible(two_group_atlas):
         loader = make_loader(ds, batch_size=10, shuffle=True, num_workers=0, generator=gen)
         out: list[str] = []
         for batch in loader:
-            out.extend(batch.metadata["uid"].tolist())
+            out.extend(batch.metadata["uid"].to_list())
         return out
 
     assert collect(42) == collect(42)
@@ -607,8 +607,8 @@ def test_lazy_metadata_round_trip(two_group_atlas):
     all_tissues = []
     for indices in _iter_indices(ds.n_rows, batch_size=100):
         batch = ds.__getitems__(indices)
-        all_uids.extend(batch.metadata["uid"].tolist())
-        all_tissues.extend(batch.metadata["tissue"].tolist())
+        all_uids.extend(batch.metadata["uid"].to_list())
+        all_tissues.extend(batch.metadata["tissue"].to_list())
 
     # All UIDs from AnnData are present in the lazy path
     assert set(all_uids) == ref_uids

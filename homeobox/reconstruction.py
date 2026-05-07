@@ -799,7 +799,9 @@ class SparseGeneExpressionReconstructor(Reconstructor):
 
     def __init__(self) -> None:
         self._csr = SparseCSRReconstructor()
-        self._csc = FeatureCSCReconstructor()
+        # TODO: Making this a dead code path until we can do a substantial
+        # refactor to the reconstructor: it's way to complex right now
+        self._csc = None  # FeatureCSCReconstructor()
 
     @endpoint
     def as_anndata(
