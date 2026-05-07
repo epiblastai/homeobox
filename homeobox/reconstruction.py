@@ -494,6 +494,7 @@ def _prepare_csc_group(
     gr: "GroupReader",
     layout: "LayoutReader",
     group_rows: pl.DataFrame,
+    pointer_type: type,
     csc_layer_paths: dict[str, str],
 ) -> tuple[dict, "Coroutine"]:
     """Prepare CSC read coroutine and metadata for one group.
@@ -512,7 +513,7 @@ def _prepare_csc_group(
     starts = indptr[present_local].astype(np.int64)
     ends = indptr[present_local + 1].astype(np.int64)
 
-    zarr_rows_arr = group_rows["_zarr_row"].to_numpy().astype(np.int64)
+    zarr_rows_arr, _ = pointer_type.to_feature_oriented_ranges(group_rows)
     max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
     zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
     zr_to_rank[zarr_rows_arr] = np.arange(len(zarr_rows_arr), dtype=np.int64)
@@ -652,7 +653,9 @@ class FeatureCSCReconstructor(Reconstructor):
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
             gr = group_readers[zg]
-            info, coro = _prepare_csc_group(gr, layouts_per_group[zg], group_rows, csc_layer_paths)
+            info, coro = _prepare_csc_group(
+                gr, layouts_per_group[zg], group_rows, spec.pointer_type, csc_layer_paths
+            )
             group_info.append(info)
             read_coroutines.append(coro)
 
