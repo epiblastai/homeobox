@@ -1,5 +1,5 @@
 import functools
-from typing import TYPE_CHECKING, Literal, NewType
+from typing import TYPE_CHECKING, Literal, NamedTuple, NewType
 
 import numpy as np
 import polars as pl
@@ -372,6 +372,109 @@ def _concat_spatial_tile_batches(
     return SpatialTileBatch(
         layers=out_layers,
         metadata=_concat_metadata(batches),
+    )
+
+
+class RowOrderMapping(NamedTuple):
+    """Maps a batch's current row order to a desired output order.
+
+    Both arrays must have the same length and contain the same multiset of
+    values. ``source_row_ids[i]`` identifies the row currently at position
+    *i* in the batch; ``target_row_ids[j]`` is the row that should end up at
+    output position *j*.
+    """
+
+    source_row_ids: np.ndarray
+    target_row_ids: np.ndarray
+
+
+def _compute_row_perm(mapping: RowOrderMapping) -> np.ndarray:
+    """Compute a positional permutation: ``perm[j]`` is the source index
+    of the row that should land at output position *j*."""
+    source = mapping.source_row_ids
+    target = mapping.target_row_ids
+    if len(source) != len(target):
+        raise ValueError(
+            f"RowOrderMapping length mismatch: source={len(source)} vs target={len(target)}"
+        )
+    source_order = np.argsort(source, kind="stable")
+    return source_order[np.searchsorted(source[source_order], target)]
+
+
+def reorder_batch_rows(
+    batch: "GroupBatch",
+    mapping: RowOrderMapping,
+) -> "GroupBatch":
+    """Reorder a batch's rows according to *mapping*. Dispatches by batch type.
+
+    Operates only on the batch's row-aligned arrays — it does not inspect
+    metadata column names, so callers can attach (or strip) metadata
+    independently of reordering.
+    """
+    perm = _compute_row_perm(mapping)
+    if isinstance(batch, SparseBatch):
+        return _reorder_sparse_batch_rows(batch, perm)
+    if isinstance(batch, DenseFeatureBatch):
+        return _reorder_dense_feature_batch_rows(batch, perm)
+    if isinstance(batch, SpatialTileBatch):
+        return _reorder_spatial_tile_batch_rows(batch, perm)
+    raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
+
+
+def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBatch:
+    """Reorder rows of a SparseBatch; ``perm[i]`` is the source row for output row ``i``."""
+    n_rows = len(perm)
+    sorted_lengths = np.diff(batch.offsets)
+    new_lengths = sorted_lengths[perm]
+    new_offsets = np.zeros(n_rows + 1, dtype=np.int64)
+    np.cumsum(new_lengths, out=new_offsets[1:])
+
+    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
+
+    total = int(new_lengths.sum())
+    if total == 0:
+        return SparseBatch(
+            indices=batch.indices,
+            offsets=new_offsets,
+            layers=batch.layers,
+            n_features=batch.n_features,
+            metadata=reordered_metadata,
+        )
+
+    # Segment-arange gather: for each output row i, collect elements from source row perm[i]
+    src_starts = batch.offsets[:-1][perm]
+    cumlen = np.zeros(n_rows + 1, dtype=np.int64)
+    np.cumsum(new_lengths, out=cumlen[1:])
+    within = np.arange(total, dtype=np.int64) - np.repeat(cumlen[:-1], new_lengths)
+    gather = np.repeat(src_starts, new_lengths) + within
+    return SparseBatch(
+        indices=batch.indices[gather],
+        offsets=new_offsets,
+        layers={name: arr[gather] for name, arr in batch.layers.items()},
+        n_features=batch.n_features,
+        metadata=reordered_metadata,
+    )
+
+
+def _reorder_dense_feature_batch_rows(
+    batch: DenseFeatureBatch, perm: np.ndarray
+) -> DenseFeatureBatch:
+    """Reorder rows of a DenseFeatureBatch; ``perm[i]`` is the source row for output row ``i``."""
+    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
+    return DenseFeatureBatch(
+        layers={name: arr[perm] for name, arr in batch.layers.items()},
+        n_features=batch.n_features,
+        metadata=reordered_metadata,
+    )
+
+
+def _reorder_spatial_tile_batch_rows(batch: SpatialTileBatch, perm: np.ndarray) -> SpatialTileBatch:
+    """Reorder rows of a SpatialTileBatch; ``perm[i]`` is the source row for output row ``i``."""
+    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
+    perm_idx = [int(i) for i in perm]
+    return SpatialTileBatch(
+        layers={name: [rows[i] for i in perm_idx] for name, rows in batch.layers.items()},
+        metadata=reordered_metadata,
     )
 
 

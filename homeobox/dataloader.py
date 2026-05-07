@@ -43,11 +43,15 @@ from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
+    RowOrderMapping,
+    _reorder_dense_feature_batch_rows,  # transitional: until dense take is refactored
+    _reorder_spatial_tile_batch_rows,  # transitional: until spatial take is refactored
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
     concat_remapped_batches,
     get_array_paths_to_read,
     read_arrays_by_group,
+    reorder_batch_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -315,69 +319,13 @@ async def _take_sparse_from_pointers(
         n_features=mod_data.n_features,
     )
 
-    grouped_row_ids = batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
-    row_id_order = np.argsort(grouped_row_ids, kind="stable")
-    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    batch = _reorder_sparse_batch_rows(batch, row_perm)
+    mapping = RowOrderMapping(
+        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        target_row_ids=batch_row_ids,
+    )
+    batch = reorder_batch_rows(batch, mapping)
     batch.metadata = _select_obs_metadata(batch.metadata)
     return batch
-
-
-def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBatch:
-    """Reorder rows of a SparseBatch; ``perm[i]`` is the source row for output row ``i``."""
-    n_rows = len(perm)
-    sorted_lengths = np.diff(batch.offsets)
-    new_lengths = sorted_lengths[perm]
-    new_offsets = np.zeros(n_rows + 1, dtype=np.int64)
-    np.cumsum(new_lengths, out=new_offsets[1:])
-
-    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
-
-    total = int(new_lengths.sum())
-    if total == 0:
-        return SparseBatch(
-            indices=batch.indices,
-            offsets=new_offsets,
-            layers=batch.layers,
-            n_features=batch.n_features,
-            metadata=reordered_metadata,
-        )
-
-    # Segment-arange gather: for each output row i, collect elements from source row perm[i]
-    src_starts = batch.offsets[:-1][perm]
-    cumlen = np.zeros(n_rows + 1, dtype=np.int64)
-    np.cumsum(new_lengths, out=cumlen[1:])
-    within = np.arange(total, dtype=np.int64) - np.repeat(cumlen[:-1], new_lengths)
-    gather = np.repeat(src_starts, new_lengths) + within
-    return SparseBatch(
-        indices=batch.indices[gather],
-        offsets=new_offsets,
-        layers={name: arr[gather] for name, arr in batch.layers.items()},
-        n_features=batch.n_features,
-        metadata=reordered_metadata,
-    )
-
-
-def _reorder_dense_feature_batch_rows(
-    batch: DenseFeatureBatch, perm: np.ndarray
-) -> DenseFeatureBatch:
-    """Reorder rows of a DenseFeatureBatch; ``perm[i]`` is the source row for output row ``i``."""
-    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
-    return DenseFeatureBatch(
-        layers={name: arr[perm] for name, arr in batch.layers.items()},
-        n_features=batch.n_features,
-        metadata=reordered_metadata,
-    )
-
-
-def _reorder_spatial_tile_batch_rows(batch: SpatialTileBatch, perm: np.ndarray) -> SpatialTileBatch:
-    """Reorder rows of a SpatialTileBatch; ``perm[i]`` is the source row for output row ``i``."""
-    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
-    perm_idx = [int(i) for i in perm]
-    return SpatialTileBatch(
-        layers={name: [rows[i] for i in perm_idx] for name, rows in batch.layers.items()},
-        metadata=reordered_metadata,
-    )
 
 
 async def _take_dense_feature_from_pointers(
