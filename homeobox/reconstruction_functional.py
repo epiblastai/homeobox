@@ -56,6 +56,35 @@ def get_layer_maximal_dtypes(spec: FeatureSpaceSpec) -> dict[str, np.dtype]:
     }
 
 
+def cast_batch_layers_to_dtypes(
+    batch: "GroupBatch",
+    layer_dtypes: dict[str, np.dtype],
+) -> "GroupBatch":
+    """Cast a batch's layer arrays in place to the requested per-layer dtypes."""
+    if isinstance(batch, SparseBatch | DenseFeatureBatch):
+        batch.layers = {
+            name: arr
+            if arr.dtype == layer_dtypes[name]
+            else arr.astype(layer_dtypes[name], copy=False)
+            for name, arr in batch.layers.items()
+        }
+        return batch
+
+    if isinstance(batch, SpatialTileBatch):
+        batch.layers = {
+            name: [
+                row
+                if row.dtype == layer_dtypes[name]
+                else row.astype(layer_dtypes[name], copy=False)
+                for row in rows
+            ]
+            for name, rows in batch.layers.items()
+        }
+        return batch
+
+    raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
+
+
 def get_array_paths_to_read(
     spec: FeatureSpaceSpec,
     layer_overrides: list[str] | None = None,

@@ -264,7 +264,7 @@ def test_unimodal_uniform_shapes(uniform_crop_atlas):
     assert isinstance(batch, SpatialTileBatch)
     assert len(batch.layers["raw"]) == 8
     assert all(crop.shape == (4, 4) for crop in batch.layers["raw"])
-    assert all(crop.dtype == np.uint16 for crop in batch.layers["raw"])
+    assert all(crop.dtype == np.float32 for crop in batch.layers["raw"])
 
 
 def test_unimodal_uniform_round_trip(uniform_crop_atlas):
@@ -499,7 +499,7 @@ def test_spatial_reconstructor_as_array_uniform(two_group_uniform_crop_atlas):
     total = sum(len(b) for b in boxes_per_group)
     assert isinstance(array, np.ndarray)
     assert array.shape == (total, 4, 4)
-    assert array.dtype == np.uint16
+    assert array.dtype == np.float32
 
     expected_sigs: set[tuple] = set()
     for image, boxes in zip(images, boxes_per_group, strict=True):
@@ -521,7 +521,7 @@ def test_spatial_reconstructor_as_array_ragged_raises(ragged_crop_atlas):
 
 
 def test_spatial_reconstructor_as_array_list_ragged(ragged_crop_atlas):
-    """as_array_list returns one ndarray per row, preserving native crop shapes."""
+    """as_array_list returns one ndarray per row, preserving crop shapes."""
     atlas, images, boxes_per_group = ragged_crop_atlas
     image = images[0]
     boxes = boxes_per_group[0]
@@ -534,7 +534,7 @@ def test_spatial_reconstructor_as_array_list_ragged(ragged_crop_atlas):
     assert isinstance(arrays, list)
     assert len(arrays) == len(boxes)
     assert all(isinstance(a, np.ndarray) for a in arrays)
-    assert all(a.dtype == np.uint16 for a in arrays)
+    assert all(a.dtype == np.float32 for a in arrays)
 
     expected = _crops_from(image, boxes)
     expected_sigs = {(c.shape, tuple(c.ravel())) for c in expected}

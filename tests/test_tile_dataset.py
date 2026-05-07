@@ -175,7 +175,7 @@ def test_tile_dataset_shapes(single_group_tile_atlas):
     assert isinstance(batch, SpatialTileBatch)
     assert len(batch.layers["raw"]) == 10
     assert all(tile.shape == (3, 8, 8) for tile in batch.layers["raw"])
-    assert all(tile.dtype == np.uint16 for tile in batch.layers["raw"])
+    assert all(tile.dtype == np.float32 for tile in batch.layers["raw"])
 
 
 def test_tile_dataset_multi_group(two_group_tile_atlas):
@@ -194,7 +194,7 @@ def test_tile_dataset_multi_group(two_group_tile_atlas):
         batch = ds.__getitems__(indices)
         assert isinstance(batch, SpatialTileBatch)
         assert all(tile.shape == (3, 8, 8) for tile in batch.layers["raw"])
-        assert all(tile.dtype == np.uint16 for tile in batch.layers["raw"])
+        assert all(tile.dtype == np.float32 for tile in batch.layers["raw"])
         total_cells += len(batch.layers["raw"])
         n_batches += 1
 
@@ -266,7 +266,7 @@ def test_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas)
     assert isinstance(batch, SpatialTileBatch)
     assert len(batch.layers["raw"]) == 7
     assert {tile.shape for tile in batch.layers["raw"]} == {(3, 8, 8), (3, 10, 6)}
-    assert all(tile.dtype == np.uint16 for tile in batch.layers["raw"])
+    assert all(tile.dtype == np.float32 for tile in batch.layers["raw"])
 
     batch_set = {tuple(tile.ravel()) for tile in batch.layers["raw"]}
     ref_set = {tuple(tile.ravel()) for _, tiles in all_tiles for tile in tiles}
@@ -340,7 +340,7 @@ def test_dense_to_tensor_collate(single_group_tile_atlas):
     assert "X" in result
     assert len(result["X"]) == 5
     assert all(tuple(tile.shape) == (3, 8, 8) for tile in result["X"])
-    assert all(tile.dtype == torch.uint16 for tile in result["X"])  # native dtype preserved
+    assert all(tile.dtype == torch.float32 for tile in result["X"])
 
 
 def test_tile_dataset_empty_query(single_group_tile_atlas):
