@@ -189,34 +189,33 @@ class TestAddCsc:
         assert len(indptr) == 21  # n_features + 1
         assert indptr[0] == 0
 
-    # TODO: This test is dead until we update the FeatureCSCReconstructor
-    # def test_dispatch_csr_and_csc_paths_match(self, tmp_path):
-    #     """Querying with feature filter returns the same AnnData with or without CSC."""
-    #     atlas, zarr_group, _ = _create_atlas_with_data(tmp_path, n_obs=200, n_vars=40)
-    #     store = obstore.store.LocalStore(prefix=str(tmp_path))
+    def test_dispatch_csr_and_csc_paths_match(self, tmp_path):
+        """Querying with feature filter returns the same AnnData with or without CSC."""
+        atlas, zarr_group, _ = _create_atlas_with_data(tmp_path, n_obs=200, n_vars=40)
+        store = obstore.store.LocalStore(prefix=str(tmp_path))
 
-    #     # Pick a small subset of features so the dispatch heuristic prefers CSC
-    #     # (cells > wanted_features).
-    #     wanted_uids = [f"gene_{i}" for i in (0, 5, 11, 23)]
-    #     db_uri = atlas.db_uri
+        # Pick a small subset of features so the dispatch heuristic prefers CSC
+        # (cells > wanted_features).
+        wanted_uids = [f"gene_{i}" for i in (0, 5, 11, 23)]
+        db_uri = atlas.db_uri
 
-    #     # Before add_csc: SparseGeneExpressionReconstructor falls back to the CSR path.
-    #     atlas.snapshot()
-    #     reader = RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
-    #     adata_csr = (
-    #         reader.query().features(wanted_uids, feature_space="gene_expression").to_anndata()
-    #     )
+        # Before add_csc: SparseGeneExpressionReconstructor falls back to the CSR path.
+        atlas.snapshot()
+        reader = RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
+        adata_csr = (
+            reader.query().features(wanted_uids, feature_space="gene_expression").to_anndata()
+        )
 
-    #     add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
-    #     atlas.snapshot()
-    #     reader_csc = RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
-    #     adata_csc = (
-    #         reader_csc.query().features(wanted_uids, feature_space="gene_expression").to_anndata()
-    #     )
+        add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
+        atlas.snapshot()
+        reader_csc = RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
+        adata_csc = (
+            reader_csc.query().features(wanted_uids, feature_space="gene_expression").to_anndata()
+        )
 
-    #     np.testing.assert_array_equal(adata_csr.X.toarray(), adata_csc.X.toarray())
-    #     assert list(adata_csr.var_names) == list(adata_csc.var_names)
-    #     assert list(adata_csr.obs_names) == list(adata_csc.obs_names)
+        np.testing.assert_array_equal(adata_csr.X.toarray(), adata_csc.X.toarray())
+        assert list(adata_csr.var_names) == list(adata_csc.var_names)
+        assert list(adata_csr.obs_names) == list(adata_csc.obs_names)
 
 
 def test_to_array_on_gene_expression_raises_with_endpoint_hint(tmp_path):

@@ -22,6 +22,7 @@ from homeobox.read import (
 )
 from homeobox.reconstruction_functional import (
     build_feature_read_plan,
+    collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
     finalize_grouped_read,
     get_array_paths_to_read,
@@ -35,7 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from homeobox.atlas import RaggedAtlas
-    from homeobox.group_reader import GroupReader
+    from homeobox.group_reader import GroupReader, LayoutReader
 
 # Re-export for downstream convenience
 __all__ = [
@@ -474,57 +475,55 @@ class SpatialReconstructor(Reconstructor):
         return rows if rows is not None else []
 
 
+def _csc_layer_paths(
+    spec: FeatureSpaceSpec,
+    layer_overrides: list[str] | None,
+) -> dict[str, str]:
+    """Resolve CSC layer array paths from the feature-oriented spec."""
+    if spec.feature_oriented is None:
+        raise ValueError(
+            f"Feature space '{spec.feature_space}' has no feature_oriented spec; "
+            "CSC reconstruction is not available."
+        )
+    fo = spec.feature_oriented
+    layer_names = layer_overrides if layer_overrides is not None else fo.layers.required_names
+    return {ln: f"{fo.find_layers_path()}/{ln}" for ln in layer_names}
+
+
 def _prepare_csc_group(
     gr: "GroupReader",
+    layout: "LayoutReader",
     group_rows: pl.DataFrame,
-    wanted_globals: np.ndarray,
-    layers_to_read: list[str],
+    csc_layer_paths: dict[str, str],
 ) -> tuple[dict, "Coroutine"]:
     """Prepare CSC read coroutine and metadata for one group.
 
-    Resolves which wanted features exist locally, looks up CSC byte ranges
-    from ``var_df``, builds ``zr_to_rank`` lookup, and creates readers.
-    Returns ``(group_info_dict, read_coroutine)``.
+    The ``layout``'s effective remap (built against ``wanted_globals``) tells
+    us, per local feature column, its position in the joined output space
+    (``-1`` if absent). We invert it to get one (start, end) byte range per
+    present feature from ``csc/indptr``, then schedule a single async read
+    spanning ``csc/indices`` + each requested layer.
     """
-    remap = gr.get_remap()
-
-    # Build global_index -> local_index inverse map (vectorized)
-    sort_order = np.argsort(remap)
-    sorted_remap = remap[sort_order]
-
-    positions = np.searchsorted(sorted_remap, wanted_globals)
-    in_range = positions < len(sorted_remap)
-    clipped = np.where(in_range, positions, 0)
-    matched = in_range & (sorted_remap[clipped] == wanted_globals)
-    local_indices = np.where(matched, sort_order[clipped], -1).astype(np.int64)
-
-    # Vectorized CSC range lookup: index numpy arrays instead of per-row dict calls
-    valid_mask = local_indices >= 0
-    valid_local = local_indices[valid_mask]
-    valid_col_indices = np.where(valid_mask)[0]
+    effective_remap = layout.get_remap()
+    present_local = np.flatnonzero(effective_remap >= 0).astype(np.int64)
+    feat_col_indices = effective_remap[present_local].astype(np.int64)
 
     indptr = gr.get_csc_indptr()
-    csc_start_arr = indptr[:-1]
-    csc_end_arr = indptr[1:]
+    starts = indptr[present_local].astype(np.int64)
+    ends = indptr[present_local + 1].astype(np.int64)
 
-    starts = csc_start_arr[valid_local].astype(np.int64)
-    ends = csc_end_arr[valid_local].astype(np.int64)
-    feat_col_indices = valid_col_indices.tolist()
-
-    # Build zarr_row -> rank-within-group lookup (vectorized)
     zarr_rows_arr = group_rows["_zarr_row"].to_numpy().astype(np.int64)
     max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
     zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
     zr_to_rank[zarr_rows_arr] = np.arange(len(zarr_rows_arr), dtype=np.int64)
 
     idx_reader = gr.get_array_reader("csc/indices")
-    lyr_readers = [gr.get_array_reader(f"csc/layers/{ln}") for ln in layers_to_read]
+    lyr_readers = [gr.get_array_reader(p) for p in csc_layer_paths.values()]
     coro = _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
 
     info = {
-        "mode": "csc",
         "group_rows": group_rows,
-        "feat_col_indices": feat_col_indices,
+        "feat_col_indices": feat_col_indices.tolist(),
         "zr_to_rank": zr_to_rank,
     }
     return info, coro
@@ -570,42 +569,6 @@ def _assemble_csc_coo_entries(
     return rows_parts, cols_parts, layer_vals_parts
 
 
-def _assemble_csr_fallback_coo_entries(
-    flat_indices: np.ndarray,
-    lengths: np.ndarray,
-    layer_results: list[tuple[np.ndarray, np.ndarray]],
-    joined_remap: np.ndarray | None,
-    n_rows_group: int,
-    row_offset: int,
-    layers_to_read: list[str],
-) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-    """Remap CSR local indices to joined-space positions, build COO entries for one group."""
-    if joined_remap is not None:
-        joined_indices = joined_remap[flat_indices.astype(np.intp)]
-        keep_mask = joined_indices >= 0
-        joined_indices_kept = joined_indices[keep_mask]
-    else:
-        keep_mask = None
-        joined_indices_kept = flat_indices.astype(np.int64)
-
-    if keep_mask is not None:
-        row_ids = np.repeat(np.arange(n_rows_group, dtype=np.int64), lengths)
-        lengths_filtered = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
-    else:
-        lengths_filtered = lengths
-
-    row_local_ids = np.repeat(np.arange(n_rows_group, dtype=np.int64), lengths_filtered)
-    rows = row_offset + row_local_ids
-    cols = joined_indices_kept.astype(np.int64)
-
-    layer_vals: dict[str, np.ndarray] = {}
-    for ln_i, ln in enumerate(layers_to_read):
-        flat_vals, _ = layer_results[ln_i]
-        layer_vals[ln] = flat_vals[keep_mask] if keep_mask is not None else flat_vals
-
-    return rows, cols, layer_vals
-
-
 def _build_coo_to_csr(
     rows_parts: list[np.ndarray],
     cols_parts: list[np.ndarray],
@@ -633,15 +596,21 @@ def _build_coo_to_csr(
 
 
 class FeatureCSCReconstructor(Reconstructor):
-    """Reconstruct sparse data using CSC for groups that have it, CSR otherwise.
+    """Reconstruct sparse data using each group's feature-oriented (CSC) copy.
 
     Internal building block. Intended for feature-filtered queries (few
-    features, many rows). When a group has CSC data (populated
-    ``csc_start``/``csc_end`` in var.parquet), reads O(nnz for wanted
-    features) instead of O(nnz per obs × n_rows). Falls back to CSR
-    for groups that have not been post-processed by ``add_csc`` — this
-    keeps half-built atlases queryable.
+    features, many rows): reads O(nnz for wanted features) instead of
+    O(nnz per obs × n_rows). Every group must have a CSC copy
+    (post-processed via ``add_csc``); ``SparseGeneExpressionReconstructor``
+    is responsible for only dispatching here when that holds.
+
+    Has its own bespoke read flow because reads are per-feature-column
+    against ``csc/indptr`` rather than per-obs-row against ``csr/indices``,
+    so it does not drive :func:`read_arrays_by_group`.
     """
+
+    required_arrays: list[str] = ["csc/indices", "csc/indptr"]
+    require_var_df: bool = True
 
     def as_anndata(
         self,
@@ -664,58 +633,37 @@ class FeatureCSCReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        zgs = spec.zarr_group_spec
-        if len(zgs.required_arrays) != 1:
-            raise NotImplementedError(
-                f"CSC reconstruction for '{pf.feature_space}' requires exactly one primary array"
-            )
-        csr_index_name = zgs.required_arrays[0].array_name
-
         pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
-        n_features = len(wanted_globals)
-        _, layer_array_paths_dict = get_array_paths_to_read(spec, layer_overrides)
-        layers_to_read = list(layer_array_paths_dict.keys())
+        csc_layer_paths = _csc_layer_paths(spec, layer_overrides)
+        layers_to_read = list(csc_layer_paths.keys())
         layer_dtypes = _layer_dtypes_for_names(spec, layers_to_read)
 
-        layouts_per_group, _ = collect_remapped_layout_readers_from_atlas(
-            atlas,
-            groups,
-            spec,
-            wanted_globals=wanted_globals,
-            return_joined_globals=True,
+        layouts_per_group = collect_remapped_layout_readers_from_atlas(
+            atlas, groups, spec, wanted_globals=wanted_globals
         )
-        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
 
-        # Per-group preparation: one read coroutine per group (CSC or CSR fallback)
         group_info: list[dict] = []
         read_coroutines = []
-
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
-            gr = atlas.get_group_reader(zg, spec.feature_space)
-
-            if gr.has_csc:
-                info, coro = _prepare_csc_group(gr, group_rows, wanted_globals, layers_to_read)
-                group_info.append(info)
-                read_coroutines.append(coro)
-            else:
-                starts, ends = spec.pointer_type.to_ranges(group_rows)
-                idx_reader = gr.get_array_reader(csr_index_name)
-                lyr_readers = [
-                    gr.get_array_reader(layer_array_paths_dict[ln]) for ln in layers_to_read
-                ]
-                read_coroutines.append(
-                    _read_sparse_ranges([idx_reader, *lyr_readers], starts, ends)
+            gr = group_readers[zg]
+            if not gr.has_csc:
+                raise ValueError(
+                    f"Group '{zg}' has no CSC copy for feature space "
+                    f"'{spec.feature_space}'; run add_csc on this group "
+                    f"or use SparseCSRReconstructor."
                 )
-                group_info.append({"mode": "csr", "group_rows": group_rows, "zg": zg})
+            info, coro = _prepare_csc_group(gr, layouts_per_group[zg], group_rows, csc_layer_paths)
+            group_info.append(info)
+            read_coroutines.append(coro)
 
         all_results = _sync_gather(read_coroutines)
 
-        # Assemble COO entries across all groups
         rows_parts: list[np.ndarray] = []
         cols_parts: list[np.ndarray] = []
         layer_vals_parts: dict[str, list[np.ndarray]] = {ln: [] for ln in layers_to_read}
@@ -724,49 +672,32 @@ class FeatureCSCReconstructor(Reconstructor):
 
         for info, group_results in zip(group_info, all_results, strict=True):
             group_rows = info["group_rows"]
-            n_rows_group = group_rows.height
-            idx_result = group_results[0]
+            flat_indices, lengths = group_results[0]
             layer_results = group_results[1:]
-            flat_indices, lengths = idx_result
 
-            if info["mode"] == "csc":
-                r, c, lv = _assemble_csc_coo_entries(
-                    flat_indices,
-                    lengths,
-                    layer_results,
-                    info["feat_col_indices"],
-                    info["zr_to_rank"],
-                    row_offset,
-                    layers_to_read,
-                )
-                rows_parts.extend(r)
-                cols_parts.extend(c)
-                for ln in layers_to_read:
-                    layer_vals_parts[ln].extend(lv[ln])
-            else:
-                r, c, lv = _assemble_csr_fallback_coo_entries(
-                    flat_indices,
-                    lengths,
-                    layer_results,
-                    group_remap_to_joined.get(info["zg"]),
-                    n_rows_group,
-                    row_offset,
-                    layers_to_read,
-                )
-                rows_parts.append(r)
-                cols_parts.append(c)
-                for ln in layers_to_read:
-                    layer_vals_parts[ln].append(lv[ln])
+            r, c, lv = _assemble_csc_coo_entries(
+                flat_indices,
+                lengths,
+                layer_results,
+                info["feat_col_indices"],
+                info["zr_to_rank"],
+                row_offset,
+                layers_to_read,
+            )
+            rows_parts.extend(r)
+            cols_parts.extend(c)
+            for ln in layers_to_read:
+                layer_vals_parts[ln].extend(lv[ln])
 
             obs_parts.append(group_rows)
-            row_offset += n_rows_group
+            row_offset += group_rows.height
 
         stacked = _build_coo_to_csr(
             rows_parts,
             cols_parts,
             layer_vals_parts,
             row_offset,
-            n_features,
+            len(wanted_globals),
             layers_to_read,
             layer_dtypes,
         )
@@ -816,9 +747,7 @@ class SparseGeneExpressionReconstructor(Reconstructor):
 
     def __init__(self) -> None:
         self._csr = SparseCSRReconstructor()
-        # TODO: Making this a dead code path until we can do a substantial
-        # refactor to the reconstructor: it's way to complex right now
-        self._csc = None  # FeatureCSCReconstructor()
+        self._csc = FeatureCSCReconstructor()
 
     @endpoint
     def as_anndata(
@@ -831,12 +760,35 @@ class SparseGeneExpressionReconstructor(Reconstructor):
         wanted_globals: np.ndarray | None = None,
     ) -> ad.AnnData:
         spec = get_spec(pf.feature_space)
-        # CSC is optimized for few features / many rows (column-oriented reads);
-        # delegate when a feature-oriented copy exists and rows outnumber wanted features.
-        use_csc = (
-            wanted_globals is not None
-            and spec.feature_oriented is not None
-            and len(obs_pl) > len(wanted_globals)
+        impl = (
+            self._csc
+            if self._should_use_csc(atlas, obs_pl, pf, spec, wanted_globals)
+            else self._csr
         )
-        impl = self._csc if use_csc else self._csr
         return impl.as_anndata(atlas, obs_pl, pf, layer_overrides, feature_join, wanted_globals)
+
+    def _should_use_csc(
+        self,
+        atlas: "RaggedAtlas",
+        obs_pl: pl.DataFrame,
+        pf: PointerField,
+        spec: FeatureSpaceSpec,
+        wanted_globals: np.ndarray | None,
+    ) -> bool:
+        """Pick CSC when feature-filtered, rows outnumber wanted features, and
+        every queried group has a feature-oriented copy. Mid-migration atlases
+        (some groups CSC-populated, others not) fall back to CSR."""
+        if (
+            wanted_globals is None
+            or spec.feature_oriented is None
+            or len(obs_pl) <= len(wanted_globals)
+        ):
+            return False
+        obs_pl_prep, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl_prep.is_empty():
+            return False
+        for key, _ in groups:
+            zg = _group_key_to_zg(key)
+            if not atlas.get_group_reader(zg, spec.feature_space).has_csc:
+                return False
+        return True
