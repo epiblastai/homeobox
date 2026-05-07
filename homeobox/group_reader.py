@@ -127,7 +127,6 @@ class GroupReader:
         self._store = store
         self._layout_reader = layout_reader
         self._zarr_group_handle = zarr_group_handle
-        self._csc_indptr: np.ndarray | None = None
         self._array_reader_cache: dict[str, BatchAsyncArray] = {}
 
     @classmethod
@@ -197,28 +196,10 @@ class GroupReader:
         return self._layout_reader.var_df
 
     @property
-    def has_csc(self) -> bool:
-        """Return True if this zarr group has a feature-oriented (CSC) copy.
-
-        Resolved against the registered ``FeatureSpaceSpec.feature_oriented``:
-        if the spec declares no feature-oriented copy this always returns
-        False, otherwise the on-disk subgroup is validated against the spec.
-        """
-        from homeobox.group_specs import get_spec
-
-        spec = get_spec(self.feature_space)
-        if spec.feature_oriented is None:
-            return False
+    def zarr_group_handle(self) -> zarr.Group:
+        """Return the live ``zarr.Group`` for this reader (opened lazily)."""
         self._ensure_initialized()
-        return spec.has_feature_oriented_copy(self._zarr_group_handle)
-
-    def get_csc_indptr(self) -> np.ndarray:
-        """Lazily load and cache the CSC indptr array from zarr."""
-        if self._csc_indptr is not None:
-            return self._csc_indptr
-        self._ensure_initialized()
-        self._csc_indptr = np.asarray(self._zarr_group_handle["csc"]["indptr"][:])
-        return self._csc_indptr
+        return self._zarr_group_handle
 
     def get_array_reader(self, array_name: str) -> BatchAsyncArray:
         """Return a cached BatchAsyncArray reader for a zarr array."""

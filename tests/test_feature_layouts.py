@@ -551,52 +551,6 @@ class TestGroupReaderRemap:
         assert result is remap  # frozen — same object
         assert not result.flags.writeable
 
-    def test_has_csc_via_zarr(self, tmp_path):
-        """has_csc validates the CSC subgroup against the spec's feature_oriented layout."""
-        import obstore
-
-        from homeobox.group_reader import GroupReader
-
-        store = obstore.store.MemoryStore()
-        zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
-        grp = zarr_root.create_group("my_group")
-
-        gr = GroupReader.for_worker("my_group", "gene_expression", store)
-        assert not gr.has_csc
-
-        # A partial CSC group (indptr only) does not satisfy the spec — still False.
-        csc = grp.create_group("csc")
-        csc.create_array("indptr", shape=(3,), dtype=np.int64)
-        gr_partial = GroupReader.for_worker("my_group", "gene_expression", store)
-        assert not gr_partial.has_csc
-
-        # Populate the rest of the CSC layout: indices + layers/counts.
-        csc.create_array("indices", shape=(0,), dtype=np.uint32)
-        layers_grp = csc.create_group("layers")
-        layers_grp.create_array("counts", shape=(0,), dtype=np.uint32)
-
-        gr2 = GroupReader.for_worker("my_group", "gene_expression", store)
-        assert gr2.has_csc
-
-    def test_get_csc_indptr(self, tmp_path):
-        """get_csc_indptr() loads from zarr and caches."""
-        import obstore
-
-        from homeobox.group_reader import GroupReader
-
-        store = obstore.store.MemoryStore()
-        zarr_root = zarr.open_group(zarr.storage.ObjectStore(store), mode="w")
-        grp = zarr_root.create_group("my_group")
-        csc = grp.create_group("csc")
-        expected_indptr = np.array([0, 3, 7, 10], dtype=np.int64)
-        csc.create_array("indptr", data=expected_indptr)
-
-        gr = GroupReader.for_worker("my_group", "gene_expression", store)
-        indptr = gr.get_csc_indptr()
-        np.testing.assert_array_equal(indptr, expected_indptr)
-        # Cached
-        assert gr.get_csc_indptr() is indptr
-
 
 # ---------------------------------------------------------------------------
 # FeatureBaseSchema (kept for completeness)
