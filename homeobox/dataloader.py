@@ -599,10 +599,7 @@ class UnimodalHoxDataset(_AsyncDataset):
             .to_polars()
         )
 
-        # 2. Reorder to match input order (take_row_ids sorts by _rowid)
-        take_result = _reorder_take_result(take_result, batch_row_ids)
-
-        # 3. Extract pointer data and dispatch async read
+        # 2. Extract pointer data and dispatch async read
         if self._pointer_type is SparseZarrPointer:
             take_fn = _take_sparse_from_pointers
         elif self._pointer_type is DenseZarrPointer and self.spec.has_var_df:
