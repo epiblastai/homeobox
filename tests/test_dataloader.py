@@ -347,6 +347,7 @@ def test_dense_feature_dataset_returns_dense_feature_batch(single_group_dense_fe
     assert batch.metadata is not None
     assert batch.metadata["tissue"].tolist() == ["tissue_0", "tissue_1", "tissue_0", "tissue_1"]
 
+    pytest.importorskip("torch")
     tensor_batch = dense_to_tensor_collate(batch)
     assert tuple(tensor_batch["X"].shape) == (4, 3)
 
