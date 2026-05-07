@@ -1,10 +1,15 @@
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import zarr
 from pydantic import BaseModel, field_validator, model_validator
 
 from homeobox.reconstructor_base import Reconstructor
+
+AxisName = Literal["N", "T", "C", "Z", "Y", "X"]
+
+SPATIAL_AXIS_ORDER: tuple[AxisName, ...] = ("T", "C", "Z", "Y", "X")
+IMAGE_TILE_AXIS_ORDER: tuple[AxisName, ...] = ("N", "C", "Y", "X")
 
 
 class ArraySpec(BaseModel):
@@ -14,7 +19,11 @@ class ArraySpec(BaseModel):
 
     array_name: str
     allowed_dtypes: list[np.dtype]
+    # EITHER: Pin an exact dimensionality
     ndim: int | None = None
+    # OR: Allow a range of dimensionalities
+    min_ndim: int | None = None
+    max_ndim: int | None = None
     # Typed as Any because pydantic can't introspect zarr's CompressorsLike
     # (contains a forward-referenced JSON alias). Pass a value that
     # zarr.core.array accepts as CompressorsLike — e.g. a Numcodec or None.
@@ -30,6 +39,34 @@ class ArraySpec(BaseModel):
             )
         return [np.dtype(entry) for entry in value]
 
+    @model_validator(mode="after")
+    def _validate_ndim_constraints(self):
+        if self.ndim is not None and (self.min_ndim is not None or self.max_ndim is not None):
+            raise ValueError("ArraySpec accepts either exact ndim or min_ndim/max_ndim, not both")
+        if self.min_ndim is not None and self.min_ndim < 0:
+            raise ValueError(f"min_ndim must be >= 0, got {self.min_ndim}")
+        if self.max_ndim is not None and self.max_ndim < 0:
+            raise ValueError(f"max_ndim must be >= 0, got {self.max_ndim}")
+        if (
+            self.min_ndim is not None
+            and self.max_ndim is not None
+            and self.min_ndim > self.max_ndim
+        ):
+            raise ValueError(f"min_ndim={self.min_ndim} exceeds max_ndim={self.max_ndim}")
+        return self
+
+    def check_ndim(self, ndim: int) -> str | None:
+        """Return an error message if *ndim* violates this spec."""
+        if self.ndim is not None:
+            if ndim != self.ndim:
+                return f"ndim={ndim}, expected {self.ndim}"
+            return None
+        if self.min_ndim is not None and ndim < self.min_ndim:
+            return f"ndim={ndim}, expected >= {self.min_ndim}"
+        if self.max_ndim is not None and ndim > self.max_ndim:
+            return f"ndim={ndim}, expected <= {self.max_ndim}"
+        return None
+
 
 class LayersSpec(BaseModel):
     """Spec for the ``layers/`` zarr subgroup.
@@ -37,22 +74,42 @@ class LayersSpec(BaseModel):
     A layer is a per-element measurement keyed by the feature space's
     structural arrays — e.g. ``counts`` and ``log_normalized`` for a
     sparse CSR matrix, or ``raw`` and ``ctrl_standardized`` for dense
-    image features. All arrays in ``layers/`` share a single shape
-    (enforced by ``validate_group``), so a layer is always an
-    alternative encoding/normalization of the same logical values, not
-    a separate field.
+    image features. By default, all arrays in ``layers/`` share a single
+    shape (enforced by ``validate_group``), so a layer is always an
+    alternative encoding/normalization of the same logical values, not a
+    separate field.
 
     ``prefix`` nests the layers group under another path (e.g.
     ``"csr"`` → ``csr/layers``). ``match_shape_of`` names a structural
     array in ``ZarrGroupSpec.required_arrays`` whose shape every layer
     must match. ``required`` layers must be present; ``allowed`` layers
-    are an optional whitelist (omit to allow any name).
+    are an optional whitelist (omit to allow any name). ``axis_order`` and
+    ``shape_mismatch_axes`` allow narrowly-scoped shape exceptions, such as
+    TCZYX spatial layers where only channel counts may differ.
     """
 
     prefix: str = ""
     match_shape_of: str | None = None
+    axis_order: tuple[AxisName, ...] | None = None
+    shape_mismatch_axes: tuple[AxisName, ...] = ()
     required: list[ArraySpec] = []
     allowed: list[ArraySpec] = []
+
+    @model_validator(mode="after")
+    def _validate_axis_shape_policy(self):
+        if len(set(self.shape_mismatch_axes)) != len(self.shape_mismatch_axes):
+            raise ValueError(f"shape_mismatch_axes contains duplicates: {self.shape_mismatch_axes}")
+        if self.axis_order is not None and len(set(self.axis_order)) != len(self.axis_order):
+            raise ValueError(f"axis_order contains duplicates: {self.axis_order}")
+        if self.shape_mismatch_axes:
+            if self.axis_order is None:
+                raise ValueError("shape_mismatch_axes requires axis_order")
+            missing = [axis for axis in self.shape_mismatch_axes if axis not in self.axis_order]
+            if missing:
+                raise ValueError(
+                    f"shape_mismatch_axes {missing} are not present in axis_order {self.axis_order}"
+                )
+        return self
 
     @property
     def path(self) -> str:
@@ -73,6 +130,55 @@ class LayersSpec(BaseModel):
         for a in self.required:
             merged[a.array_name] = a
         return merged
+
+
+def _check_layer_shape_consistency(
+    layers_path: str, shapes: dict[str, tuple[int, ...]], layers_spec: LayersSpec
+) -> list[str]:
+    if len(set(shapes.values())) <= 1:
+        return []
+
+    if not layers_spec.shape_mismatch_axes:
+        return [f"'{layers_path}' arrays have inconsistent shapes: {shapes}"]
+
+    ndims = {len(shape) for shape in shapes.values()}
+    if len(ndims) > 1:
+        return [
+            f"'{layers_path}' arrays have inconsistent ranks; "
+            f"allowed mismatch axes {layers_spec.shape_mismatch_axes} require equal ranks: {shapes}"
+        ]
+
+    ndim = ndims.pop()
+    # Guaranteed non-None by LayersSpec validator (shape_mismatch_axes requires axis_order).
+    assert layers_spec.axis_order is not None
+    axis_order = layers_spec.axis_order
+    if ndim > len(axis_order):
+        return [
+            f"'{layers_path}' axis_order {axis_order} cannot describe ndim={ndim} "
+            f"layer shapes: {shapes}"
+        ]
+
+    axes = axis_order[-ndim:]
+    allowed_axes = set(layers_spec.shape_mismatch_axes)
+    reference_name, reference_shape = next(iter(shapes.items()))
+    errors: list[str] = []
+
+    for name, shape in shapes.items():
+        differing_axes = [
+            axis
+            for axis, actual, expected in zip(axes, shape, reference_shape, strict=True)
+            if actual != expected
+        ]
+        disallowed_axes = [axis for axis in differing_axes if axis not in allowed_axes]
+        if disallowed_axes:
+            errors.append(
+                f"'{layers_path}/{name}' shape {shape} differs from "
+                f"'{layers_path}/{reference_name}' shape {reference_shape} on "
+                f"non-variable axes {disallowed_axes}; allowed mismatch axes: "
+                f"{layers_spec.shape_mismatch_axes}"
+            )
+
+    return errors
 
 
 class ZarrGroupSpec(BaseModel):
@@ -114,10 +220,9 @@ class ZarrGroupSpec(BaseModel):
                 errors.append(f"'{array_spec.array_name}' is not an array")
                 continue
             reference_shapes[array_spec.array_name] = arr.shape
-            if array_spec.ndim is not None and arr.ndim != array_spec.ndim:
-                errors.append(
-                    f"'{array_spec.array_name}' has ndim={arr.ndim}, expected {array_spec.ndim}"
-                )
+            ndim_error = array_spec.check_ndim(arr.ndim)
+            if ndim_error is not None:
+                errors.append(f"'{array_spec.array_name}' has {ndim_error}")
             if arr.dtype not in array_spec.allowed_dtypes:
                 errors.append(
                     f"'{array_spec.array_name}' has dtype={arr.dtype}, "
@@ -171,10 +276,9 @@ class ZarrGroupSpec(BaseModel):
                 layer_spec = layer_specs.get(name)
                 if layer_spec is None:
                     continue
-                if layer_spec.ndim is not None and arr.ndim != layer_spec.ndim:
-                    errors.append(
-                        f"'{layers_path}/{name}' has ndim={arr.ndim}, expected {layer_spec.ndim}"
-                    )
+                ndim_error = layer_spec.check_ndim(arr.ndim)
+                if ndim_error is not None:
+                    errors.append(f"'{layers_path}/{name}' has {ndim_error}")
                 if arr.dtype not in layer_spec.allowed_dtypes:
                     errors.append(
                         f"'{layers_path}/{name}' has dtype={arr.dtype}, "
@@ -183,8 +287,7 @@ class ZarrGroupSpec(BaseModel):
 
             if sub_arrays:
                 shapes = {name: arr.shape for name, arr in sub_arrays.items()}
-                if len(set(shapes.values())) > 1:
-                    errors.append(f"'{layers_path}' arrays have inconsistent shapes: {shapes}")
+                errors.extend(_check_layer_shape_consistency(layers_path, shapes, self.layers))
 
             if self.layers.match_shape_of and self.layers.match_shape_of in reference_shapes:
                 expected = reference_shapes[self.layers.match_shape_of]
@@ -220,11 +323,10 @@ class ZarrGroupSpec(BaseModel):
         ``required_arrays`` (e.g. ``"csr/indices"``, ``"cell_sorted/starts"``)
         or the name of a layer (e.g. ``"counts"``). Intermediate groups —
         including the layers path like ``"csr/layers"`` — are auto-created
-        via ``require_group``. The dtype, ndim, and compressor on the
+        via ``require_group``. The dtype, ndim constraints, and compressor on the
         matching ``ArraySpec`` are the authority: ``dtype`` (if supplied)
-        must be one of ``allowed_dtypes``; ``len(shape)`` must match
-        ``ndim`` if the spec declares one; and the ArraySpec's
-        ``compressors`` is always passed through.
+        must be one of ``allowed_dtypes``; ``len(shape)`` must satisfy the
+        spec's rank constraints if it declares any; and the ArraySpec's
 
         ``chunks`` and ``shards`` both default to ``"auto"``. The readers
         assume sharded arrays, so never pass ``shards=None``.
@@ -326,10 +428,9 @@ def _create_from_spec(
             f"dtype={resolved} not allowed for '{array_spec.array_name}'. "
             f"Allowed: {[str(d) for d in array_spec.allowed_dtypes]}"
         )
-    if array_spec.ndim is not None and len(shape) != array_spec.ndim:
-        raise ValueError(
-            f"'{array_spec.array_name}' expects ndim={array_spec.ndim}, got shape={shape}"
-        )
+    ndim_error = array_spec.check_ndim(len(shape))
+    if ndim_error is not None:
+        raise ValueError(f"'{array_spec.array_name}' has {ndim_error} for shape={shape}")
     kwargs: dict = {}
     if array_spec.compressors is not None:
         kwargs["compressors"] = array_spec.compressors

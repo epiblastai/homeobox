@@ -39,6 +39,7 @@ __all__ = [
     "SparseCSRReconstructor",
     "SparseGeneExpressionReconstructor",
     "DenseReconstructor",
+    "SpatialReconstructor",
     "FeatureCSCReconstructor",
 ]
 
@@ -115,6 +116,16 @@ def _assemble_anndata(
 # ---------------------------------------------------------------------------
 # Built-in reconstructor implementations
 # ---------------------------------------------------------------------------
+
+
+def _single_layer_array_name(layer_array_paths_dict: dict[str, str], feature_space: str) -> str:
+    if len(layer_array_paths_dict) != 1:
+        raise ValueError(
+            f"Reconstructor for '{feature_space}' expects exactly one layer to read; "
+            f"resolved {len(layer_array_paths_dict)}: {list(layer_array_paths_dict)}. "
+            f"Pass an explicit `layer=` argument."
+        )
+    return next(iter(layer_array_paths_dict.values()))
 
 
 class SparseCSRReconstructor(Reconstructor):
@@ -417,7 +428,7 @@ class DenseReconstructor(Reconstructor):
         _, layer_array_paths_dict = get_array_paths_to_read(
             spec, [layer] if layer is not None else None
         )
-        array_name = next(iter(layer_array_paths_dict.values()))
+        array_name = _single_layer_array_name(layer_array_paths_dict, pf.feature_space)
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
 
@@ -462,6 +473,60 @@ class DenseReconstructor(Reconstructor):
             arr = group_results[0]
             out[offset : offset + arr.shape[0]] = arr
 
+        return out
+
+
+class SpatialReconstructor(Reconstructor):
+    """Reconstruct discrete-spatial field-image crops as stacked arrays."""
+
+    @endpoint
+    def as_array_list(
+        self,
+        atlas: "RaggedAtlas",
+        obs_pl: pl.DataFrame,
+        pf: PointerField,
+        layer: str | None = None,
+    ) -> list[np.ndarray]:
+        """Return one ndarray per obs row, preserving each crop's native shape.
+
+        Crops from discrete-spatial pointers can have heterogeneous shapes,
+        so they cannot be stacked. Results are concatenated in zarr-group
+        order (rows are not aligned to the original ``obs_pl`` row order).
+
+        Parameters
+        ----------
+        atlas:
+            The atlas to read from.
+        obs_pl:
+            Polars DataFrame of obs rows (must include zarr pointer columns).
+        pf:
+            Pointer field info for the feature space.
+        layer:
+            Which layer to read. Defaults to the spec's only required layer.
+        """
+        spec = get_spec(pf.feature_space)
+        _, layer_array_paths_dict = get_array_paths_to_read(
+            spec, [layer] if layer is not None else None
+        )
+        array_name = _single_layer_array_name(layer_array_paths_dict, pf.feature_space)
+
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return []
+
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
+        _, all_results = read_arrays_by_group(
+            group_readers=group_readers,
+            groups=groups,
+            spec=spec,
+            array_names=[array_name],
+            read_method="boxes",
+            stack_uniform=False,
+        )
+
+        out: list[np.ndarray] = []
+        for group_results in all_results:
+            out.extend(group_results[0])
         return out
 
 
