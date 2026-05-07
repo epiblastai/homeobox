@@ -553,7 +553,7 @@ class AtlasQuery:
     def to_unimodal_dataset(
         self,
         field_name: str,
-        layer: str | None = None,
+        layer_overrides: list[str] | None = None,
         metadata_columns: list[str] | None = None,
         stack_dense: bool = True,
     ) -> "UnimodalHoxDataset":
@@ -573,9 +573,9 @@ class AtlasQuery:
         ----------
         field_name:
             Pointer-field attribute name on the obs schema.
-        layer:
-            Which layer to read within the pointer field's feature space.
-            When ``None``, auto-resolved to the spec's first required layer.
+        layer_overrides:
+            Which layers to read within the pointer field's feature space.
+            When ``None``, all required layers from the spec are read.
         metadata_columns:
             Obs column names to include as metadata on each batch.
         stack_dense:
@@ -596,8 +596,6 @@ class AtlasQuery:
         pf = self._atlas.pointer_fields[field_name]
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
-        if layer is None:
-            layer = spec.zarr_group_spec.layers.required[0].array_name
 
         obs_pl = self._materialize_rows_for_dataset()
 
@@ -614,7 +612,7 @@ class AtlasQuery:
             atlas=self._atlas,
             obs_pl=obs_pl,
             field_name=field_name,
-            layer=layer,
+            layer_overrides=layer_overrides,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
             stack_dense=stack_dense,
@@ -623,7 +621,7 @@ class AtlasQuery:
     def to_multimodal_dataset(
         self,
         field_names: list[str],
-        layers: dict[str, str] | None = None,
+        layer_overrides: dict[str, list[str] | None] | None = None,
         metadata_columns: list[str] | None = None,
         stack_dense: bool | dict[str, bool] = True,
     ) -> "MultimodalHoxDataset":
@@ -641,9 +639,10 @@ class AtlasQuery:
         ----------
         field_names:
             Ordered list of pointer-field attribute names to include.
-        layers:
-            ``{field_name: layer_name}`` mapping. Defaults to the first
-            required layer of each pointer field's feature space when omitted.
+        layer_overrides:
+            Optional ``{field_name: list_of_layer_names | None}`` mapping. Per
+            field, ``None`` (or a missing entry) reads all required layers
+            from the spec.
         metadata_columns:
             Obs column names to include as metadata on each batch.
         stack_dense:
@@ -656,12 +655,6 @@ class AtlasQuery:
         obs_pl = self._materialize_rows_for_dataset()
 
         resolved_pfs = {fn: self._atlas.pointer_fields[fn] for fn in field_names}
-
-        if layers is None:
-            layers = {}
-            for fn, pf in resolved_pfs.items():
-                fs_spec = get_spec(pf.feature_space)
-                layers[fn] = fs_spec.zarr_group_spec.layers.required[0].array_name
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fn, pf in resolved_pfs.items():
@@ -681,7 +674,7 @@ class AtlasQuery:
             atlas=self._atlas,
             obs_pl=obs_pl,
             field_names=field_names,
-            layers=layers,
+            layer_overrides=layer_overrides,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
             stack_dense=stack_dense,

@@ -12,14 +12,18 @@ class SparseBatch:
     Represents a batch of rows as flat CSR-style arrays, avoiding
     the overhead of full AnnData/scipy/var DataFrame construction.
 
+    The CSR skeleton (``indices`` and ``offsets``) is shared across all
+    layers; ``layers`` holds one flat values array per requested layer.
+
     Attributes
     ----------
     indices:
         int32, flat global feature indices (remapped from local).
-    values:
-        Native dtype, flat expression values.
     offsets:
         int64, CSR-style indptr (length = n_rows + 1).
+    layers:
+        ``{layer_name: values_array}``. Each values array uses the layer's
+        native dtype and is aligned to ``indices``.
     n_features:
         Global feature space width (registry size).
     metadata:
@@ -27,8 +31,8 @@ class SparseBatch:
     """
 
     indices: np.ndarray
-    values: np.ndarray
     offsets: np.ndarray
+    layers: dict[str, np.ndarray]
     n_features: int
     metadata: dict[str, np.ndarray] | None = None
 
@@ -37,18 +41,21 @@ class SparseBatch:
 class DenseFeatureBatch:
     """Dense feature batch for ML training.
 
-    Represents a batch of rows as a dense feature matrix. Only rows that
-    have this modality are included (no fill values).
+    Represents a batch of rows as one stacked dense matrix per layer.
+    Only rows that have this modality are included (no fill values).
 
     Attributes
     ----------
-    data:
-        Stacked ndarray with leading row axis. Rows/items are in query order.
+    layers:
+        ``{layer_name: ndarray}``. Each ndarray has shape ``(n_rows, n_features)``
+        and rows are in query order.
     n_features:
         Feature space width.
+    metadata:
+        Optional dict of obs columns as numpy arrays, aligned to rows.
     """
 
-    data: np.ndarray
+    layers: dict[str, np.ndarray]
     n_features: int
     metadata: dict[str, np.ndarray] | None = None
 
@@ -57,19 +64,20 @@ class DenseFeatureBatch:
 class SpatialTileBatch:
     """Spatial tile/crop batch for ML training.
 
-    Represents a batch of spatial arrays as one ndarray per row. Spatial
-    batches are always list-backed so uniform and ragged reads expose the
-    same shape contract.
+    Represents a batch of spatial arrays as one ndarray per row, per layer.
+    Spatial batches are always list-backed so uniform and ragged reads expose
+    the same shape contract.
 
     Attributes
     ----------
-    data:
-        One ndarray per row, in query order.
+    layers:
+        ``{layer_name: list_of_ndarrays}``. Each list has one ndarray per row
+        in query order.
     metadata:
         Optional dict of obs columns as numpy arrays, aligned to rows.
     """
 
-    data: list[np.ndarray]
+    layers: dict[str, list[np.ndarray]]
     metadata: dict[str, np.ndarray] | None = None
 
 

@@ -173,9 +173,9 @@ def test_tile_dataset_shapes(single_group_tile_atlas):
 
     batch = ds.__getitems__(list(range(10)))
     assert isinstance(batch, SpatialTileBatch)
-    assert len(batch.data) == 10
-    assert all(tile.shape == (3, 8, 8) for tile in batch.data)
-    assert all(tile.dtype == np.uint16 for tile in batch.data)
+    assert len(batch.layers["raw"]) == 10
+    assert all(tile.shape == (3, 8, 8) for tile in batch.layers["raw"])
+    assert all(tile.dtype == np.uint16 for tile in batch.layers["raw"])
 
 
 def test_tile_dataset_multi_group(two_group_tile_atlas):
@@ -193,9 +193,9 @@ def test_tile_dataset_multi_group(two_group_tile_atlas):
         indices = list(range(start, min(start + 10, ds.n_rows)))
         batch = ds.__getitems__(indices)
         assert isinstance(batch, SpatialTileBatch)
-        assert all(tile.shape == (3, 8, 8) for tile in batch.data)
-        assert all(tile.dtype == np.uint16 for tile in batch.data)
-        total_cells += len(batch.data)
+        assert all(tile.shape == (3, 8, 8) for tile in batch.layers["raw"])
+        assert all(tile.dtype == np.uint16 for tile in batch.layers["raw"])
+        total_cells += len(batch.layers["raw"])
         n_batches += 1
 
     assert total_cells == 35
@@ -232,9 +232,9 @@ def test_tile_dataset_round_trip(single_group_tile_atlas):
     np.testing.assert_array_equal(tiles_ref, original_tiles)
 
     # UnimodalHoxDataset batch should match (order may differ due to lance ordering)
-    assert len(batch.data) == original_tiles.shape[0]
+    assert len(batch.layers["raw"]) == original_tiles.shape[0]
     # Compare sets of tiles (order-independent)
-    batch_set = {tuple(tile.ravel()) for tile in batch.data}
+    batch_set = {tuple(tile.ravel()) for tile in batch.layers["raw"]}
     ref_set = {tuple(original_tiles[i].ravel()) for i in range(original_tiles.shape[0])}
     assert batch_set == ref_set
 
@@ -249,9 +249,9 @@ def test_tile_dataset_two_groups_round_trip(two_group_tile_atlas):
     ds = atlas.query().to_unimodal_dataset("image_tiles")
     batch = ds.__getitems__(list(range(ds.n_rows)))
 
-    assert len(batch.data) == 35
+    assert len(batch.layers["raw"]) == 35
     # Compare sets of tiles
-    batch_set = {tuple(tile.ravel()) for tile in batch.data}
+    batch_set = {tuple(tile.ravel()) for tile in batch.layers["raw"]}
     ref_set = {tuple(all_original[i].ravel()) for i in range(all_original.shape[0])}
     assert batch_set == ref_set
 
@@ -264,11 +264,11 @@ def test_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas)
     batch = ds.__getitems__(list(range(7)))
 
     assert isinstance(batch, SpatialTileBatch)
-    assert len(batch.data) == 7
-    assert {tile.shape for tile in batch.data} == {(3, 8, 8), (3, 10, 6)}
-    assert all(tile.dtype == np.uint16 for tile in batch.data)
+    assert len(batch.layers["raw"]) == 7
+    assert {tile.shape for tile in batch.layers["raw"]} == {(3, 8, 8), (3, 10, 6)}
+    assert all(tile.dtype == np.uint16 for tile in batch.layers["raw"])
 
-    batch_set = {tuple(tile.ravel()) for tile in batch.data}
+    batch_set = {tuple(tile.ravel()) for tile in batch.layers["raw"]}
     ref_set = {tuple(tile.ravel()) for _, tiles in all_tiles for tile in tiles}
     assert batch_set == ref_set
 
@@ -280,7 +280,7 @@ def test_tile_dataset_variable_group_shapes_default_list_mode(variable_shape_til
     ds = atlas.query().to_unimodal_dataset("image_tiles")
     batch = ds.__getitems__(list(range(7)))
     assert isinstance(batch, SpatialTileBatch)
-    assert {tile.shape for tile in batch.data} == {(3, 8, 8), (3, 10, 6)}
+    assert {tile.shape for tile in batch.layers["raw"]} == {(3, 8, 8), (3, 10, 6)}
 
 
 def test_dense_to_tensor_collate_handles_list_tiles(variable_shape_tile_atlas):
@@ -306,8 +306,8 @@ def test_multimodal_tile_dataset_variable_group_shapes_list_mode(variable_shape_
     tile_batch = batch.modalities["image_tiles"]
 
     assert isinstance(tile_batch, SpatialTileBatch)
-    assert len(tile_batch.data) == 7
-    assert {tile.shape for tile in tile_batch.data} == {(3, 8, 8), (3, 10, 6)}
+    assert len(tile_batch.layers["raw"]) == 7
+    assert {tile.shape for tile in tile_batch.layers["raw"]} == {(3, 8, 8), (3, 10, 6)}
 
 
 def test_multimodal_to_dense_collate_handles_list_tiles(variable_shape_tile_atlas):
