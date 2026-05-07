@@ -168,36 +168,6 @@ class SparseCSRReconstructor(Reconstructor):
             metadata=group_rows,
         )
 
-    def _remap_features(
-        self,
-        *,
-        zg: str,
-        flat_indices: np.ndarray,
-        lengths: np.ndarray,
-        n_rows_group: int,
-        group_remap_to_joined: dict[str, np.ndarray],
-        feature_join: Literal["union", "intersection"],
-        wanted_globals: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-        """Map local sparse feature indices into the joined feature space."""
-        if zg in group_remap_to_joined:
-            joined_remap = group_remap_to_joined[zg]
-            joined_indices = joined_remap[flat_indices.astype(np.intp)]
-        else:
-            joined_indices = flat_indices.astype(np.int32)
-
-        if (
-            feature_join == "intersection" or wanted_globals is not None
-        ) and zg in group_remap_to_joined:
-            keep_mask = joined_indices >= 0
-            joined_indices = joined_indices[keep_mask]
-            row_ids = np.repeat(np.arange(n_rows_group), lengths)
-            lengths = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
-        else:
-            keep_mask = None
-
-        return joined_indices, lengths, keep_mask
-
     def as_anndata(
         self,
         atlas: "RaggedAtlas",
