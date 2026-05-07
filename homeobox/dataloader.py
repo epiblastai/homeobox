@@ -165,53 +165,7 @@ def _build_sparse_modality_data(
     return filtered, mod_data
 
 
-def _build_dense_feature_modality_data(
-    atlas: "RaggedAtlas",
-    rows_indexed: pl.DataFrame,
-    # TODO: Should type these
-    pf,
-    spec,
-    layer: str,
-    n_rows: int,
-) -> "tuple[pl.DataFrame, _ModalityData]":
-    """Build ``_ModalityData`` for a dense feature pointer-field modality.
-
-    Returns ``(filtered_rows, modality_data)`` where *filtered_rows*
-    is the DataFrame after empty-row removal.
-    """
-    fs = pf.feature_space
-    filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
-
-    present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
-    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
-
-    group_readers = _build_group_readers(atlas, groups, fs)
-
-    _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
-    layer_path = layer_array_paths_dict[layer]
-
-    if group_readers:
-        first_key = list(group_readers.keys())[0]
-        reader = group_readers[first_key].get_array_reader(layer_path)
-        layer_dtype = reader._native_dtype
-    else:
-        layer_dtype = np.dtype(np.float32)
-    n_features = atlas.registry_tables[fs].count_rows()
-
-    mod_data = _ModalityData(
-        pointer_type=DenseZarrPointer,
-        group_readers=group_readers,
-        n_features=n_features,
-        index_array_name="",
-        layer_path=layer_path,
-        layer_dtype=layer_dtype,
-        present_mask=present_mask,
-        row_positions=row_positions,
-    )
-    return filtered, mod_data
-
-
-def _build_spatial_modality_data(
+def _build_dense_modality_data(
     atlas: "RaggedAtlas",
     rows_indexed: pl.DataFrame,
     # TODO: Should type these
@@ -239,10 +193,12 @@ def _build_spatial_modality_data(
     else:
         layer_dtype = np.dtype(np.float32)
 
+    n_features = atlas.registry_tables[fs].count_rows() if spec.has_var_df else 0
+
     mod_data = _ModalityData(
         pointer_type=spec.pointer_type,
         group_readers=group_readers,
-        n_features=0,
+        n_features=n_features,
         index_array_name="",
         layer_path=layer_path,
         layer_dtype=layer_dtype,
@@ -720,19 +676,8 @@ class UnimodalHoxDataset(_AsyncDataset):
                 wanted_globals,
                 obs_pl.height,
             )
-        elif self.spec.pointer_type is DiscreteSpatialPointer or (
-            self.spec.pointer_type is DenseZarrPointer and not self.spec.has_var_df
-        ):
-            filtered, self._mod_data = _build_spatial_modality_data(
-                atlas,
-                rows_indexed,
-                pf,
-                self.spec,
-                layer,
-                obs_pl.height,
-            )
         else:
-            filtered, self._mod_data = _build_dense_feature_modality_data(
+            filtered, self._mod_data = _build_dense_modality_data(
                 atlas,
                 rows_indexed,
                 pf,
@@ -939,19 +884,8 @@ class MultimodalHoxDataset(_AsyncDataset):
                 _, modality_data[fn] = _build_sparse_modality_data(
                     atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
                 )
-            elif spec.pointer_type is DiscreteSpatialPointer or (
-                spec.pointer_type is DenseZarrPointer and not spec.has_var_df
-            ):
-                _, modality_data[fn] = _build_spatial_modality_data(
-                    atlas,
-                    rows_indexed,
-                    pf,
-                    spec,
-                    layer,
-                    self._n_rows,
-                )
             else:
-                _, modality_data[fn] = _build_dense_feature_modality_data(
+                _, modality_data[fn] = _build_dense_modality_data(
                     atlas,
                     rows_indexed,
                     pf,
