@@ -267,6 +267,38 @@ def read_arrays_by_group(
     ]
 
 
+def finalize_grouped_read(
+    group_batches: "list[tuple[str, GroupBatch]]",
+    *,
+    layouts_per_group: LayoutsByZarrGroup | None,
+    n_features: int,
+    layer_dtypes: dict[str, np.dtype],
+    target_row_ids: np.ndarray | None = None,
+) -> "GroupBatch":
+    """Cast, concat-remap, and (optionally) reorder per-group batches.
+
+    Bundles the post-:func:`read_arrays_by_group` pipeline shared by the
+    dataloader take path and the reconstructor ``as_anndata`` paths. When
+    ``target_row_ids`` is provided the output is reordered to match it
+    (dataloader path); otherwise the batch keeps the zarr-group order
+    produced by the read (reconstructor path).
+    """
+    cast_batches = [
+        (zg, cast_batch_layers_to_dtypes(batch, layer_dtypes)) for zg, batch in group_batches
+    ]
+    batch = concat_remapped_batches(
+        cast_batches, layouts_per_group=layouts_per_group, n_features=n_features
+    )
+    if target_row_ids is not None:
+        source_row_ids = (
+            batch.metadata["_rowid"].to_numpy().astype(target_row_ids.dtype, copy=False)
+        )
+        batch = reorder_batch_rows(
+            batch, RowOrderMapping(source_row_ids=source_row_ids, target_row_ids=target_row_ids)
+        )
+    return batch
+
+
 def concat_remapped_batches(
     batches: "list[tuple[str, GroupBatch]]",
     *,

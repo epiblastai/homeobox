@@ -40,18 +40,15 @@ from homeobox.batch_types import (
 )
 from homeobox.group_reader import GroupReader
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
-from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
+from homeobox.pointer_types import DiscreteSpatialPointer
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
-    RowOrderMapping,
-    cast_batch_layers_to_dtypes,
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
-    concat_remapped_batches,
+    finalize_grouped_read,
     get_array_paths_to_read,
     get_layer_maximal_dtypes,
     read_arrays_by_group,
-    reorder_batch_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -276,16 +273,19 @@ class _ModalityData:
 # ---------------------------------------------------------------------------
 
 
-# TODO: This is assuming that just because a pointer is sparse, that it also
-# has layers. This is true for gene_expression but not necessarily a fundamental
-# feature of sparse data.
-async def _take_sparse_from_pointers(
+async def _take_from_pointers(
     groups: GroupBy,
     spec: FeatureSpaceSpec,
     batch_row_ids: np.ndarray,
     mod_data: _ModalityData,
-) -> SparseBatch:
-    """Fetch a sparse batch from per-row pointer arrays."""
+) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    """Fetch a batch from per-row pointer arrays.
+
+    Pointer-type-agnostic: the spec's reconstructor handles batch construction
+    (per-group via :meth:`Reconstructor.build_group_batch`, and the empty case
+    via :meth:`Reconstructor.build_empty_batch`), so the same flow works for
+    sparse CSR, dense feature, and spatial tile pointers.
+    """
     group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
@@ -294,109 +294,26 @@ async def _take_sparse_from_pointers(
         layer_array_paths=mod_data.layer_array_paths,
     )
     if not group_batches:
-        return SparseBatch.empty(
+        return spec.reconstructor.build_empty_batch(
             n_rows=len(batch_row_ids),
             n_features=mod_data.n_features,
             layer_dtypes=mod_data.layer_dtypes,
+            layer_names=list(mod_data.layer_array_paths.keys()),
         )
-    group_batches = [
-        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
-        for zg, batch in group_batches
-    ]
 
     layouts_per_group = {
         zg: gr.layout_reader
         for zg, gr in mod_data.group_readers.items()
         if gr.layout_reader is not None
-    }
-    batch = concat_remapped_batches(
+    } or None
+
+    batch = finalize_grouped_read(
         group_batches,
-        layouts_per_group=layouts_per_group or None,
+        layouts_per_group=layouts_per_group,
         n_features=mod_data.n_features,
-    )
-
-    mapping = RowOrderMapping(
-        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        layer_dtypes=mod_data.layer_dtypes,
         target_row_ids=batch_row_ids,
     )
-    batch = reorder_batch_rows(batch, mapping)
-    batch.metadata = _select_obs_metadata(batch.metadata)
-    return batch
-
-
-async def _take_dense_feature_from_pointers(
-    groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    batch_row_ids: np.ndarray,
-    mod_data: _ModalityData,
-) -> DenseFeatureBatch:
-    """Fetch a dense feature batch from per-row pointer arrays."""
-    group_batches = read_arrays_by_group(
-        mod_data.group_readers,
-        groups,
-        spec=spec,
-        required_array_paths=mod_data.required_array_paths,
-        layer_array_paths=mod_data.layer_array_paths,
-    )
-    if not group_batches:
-        return DenseFeatureBatch.empty(
-            n_features=mod_data.n_features,
-            layer_dtypes=mod_data.layer_dtypes,
-        )
-    group_batches = [
-        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
-        for zg, batch in group_batches
-    ]
-
-    layouts_per_group = {
-        zg: gr.layout_reader
-        for zg, gr in mod_data.group_readers.items()
-        if gr.layout_reader is not None
-    }
-    batch = concat_remapped_batches(
-        group_batches,
-        layouts_per_group=layouts_per_group or None,
-        n_features=mod_data.n_features,
-    )
-
-    mapping = RowOrderMapping(
-        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
-        target_row_ids=batch_row_ids,
-    )
-    batch = reorder_batch_rows(batch, mapping)
-    batch.metadata = _select_obs_metadata(batch.metadata)
-    return batch
-
-
-async def _take_spatial_tile_from_pointers(
-    groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    batch_row_ids: np.ndarray,
-    mod_data: _ModalityData,
-) -> SpatialTileBatch:
-    """Fetch a spatial tile/crop batch from per-row pointer arrays."""
-    layer_names = list(mod_data.layer_array_paths.keys())
-    group_batches = read_arrays_by_group(
-        mod_data.group_readers,
-        groups,
-        spec=spec,
-        required_array_paths=mod_data.required_array_paths,
-        layer_array_paths=mod_data.layer_array_paths,
-    )
-    if not group_batches:
-        return SpatialTileBatch.empty(layer_names=layer_names)
-    group_batches = [
-        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
-        for zg, batch in group_batches
-    ]
-
-    batch = concat_remapped_batches(group_batches, layouts_per_group=None, n_features=0)
-
-    mapping = RowOrderMapping(
-        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
-        target_row_ids=batch_row_ids,
-    )
-    batch = reorder_batch_rows(batch, mapping)
     batch.metadata = _select_obs_metadata(batch.metadata)
     return batch
 
@@ -436,16 +353,7 @@ async def _take_multimodal(
         obs_pl, groups = _prepare_obs_and_groups(present_take, pointer_type, pf_name)
         assert len(obs_pl) == len(present_take)
 
-        if pointer_type is SparseZarrPointer:
-            tasks.append(_take_sparse_from_pointers(groups, specs[fs], present_row_ids, mod_data))
-        elif pointer_type is DenseZarrPointer and specs[fs].has_var_df:
-            tasks.append(
-                _take_dense_feature_from_pointers(groups, specs[fs], present_row_ids, mod_data)
-            )
-        else:
-            tasks.append(
-                _take_spatial_tile_from_pointers(groups, specs[fs], present_row_ids, mod_data)
-            )
+        tasks.append(_take_from_pointers(groups, specs[fs], present_row_ids, mod_data))
         task_fs.append(fs)
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
@@ -600,13 +508,6 @@ class UnimodalHoxDataset(_AsyncDataset):
         )
 
         # 2. Extract pointer data and dispatch async read
-        if self._pointer_type is SparseZarrPointer:
-            take_fn = _take_sparse_from_pointers
-        elif self._pointer_type is DenseZarrPointer and self.spec.has_var_df:
-            take_fn = _take_dense_feature_from_pointers
-        else:
-            take_fn = _take_spatial_tile_from_pointers
-
         # This is safe because we already filtered at __init__, that
         # guarantees that this op will not drop any rows from take_result
         obs_pl, groups = _prepare_obs_and_groups(
@@ -615,7 +516,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         # Sanity check
         assert len(obs_pl) == len(take_result)
         future = asyncio.run_coroutine_threadsafe(
-            take_fn(groups, self.spec, batch_row_ids, self._mod_data),
+            _take_from_pointers(groups, self.spec, batch_row_ids, self._mod_data),
             self._loop,
         )
         return future.result()

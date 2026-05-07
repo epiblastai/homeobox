@@ -11,6 +11,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Literal, TypeVar
 
 if TYPE_CHECKING:
+    import numpy as np
     import polars as pl
 
     from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
@@ -69,6 +70,22 @@ class Reconstructor:
         Implemented by reconstructors that drive ``read_arrays_by_group``.
         """
         raise NotImplementedError(f"{type(self).__name__} does not implement build_group_batch")
+
+    def build_empty_batch(
+        self,
+        *,
+        n_rows: int,
+        n_features: int,
+        layer_dtypes: "dict[str, np.dtype]",
+        layer_names: list[str],
+    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+        """Construct an empty batch matching this reconstructor's batch type.
+
+        Called when ``read_arrays_by_group`` returns no groups (empty query).
+        Each subclass uses the subset of arguments relevant to its batch type;
+        callers pass all of them so the call site does not branch on type.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement build_empty_batch")
 
     @classmethod
     def endpoints(cls) -> list[str]:
