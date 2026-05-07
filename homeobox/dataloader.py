@@ -45,9 +45,9 @@ from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
+    concat_remapped_batches,
     get_array_paths_to_read,
     read_arrays_by_group,
-    remap_sparse_indices_and_values,
 )
 
 # ---------------------------------------------------------------------------
@@ -287,22 +287,16 @@ async def _take_sparse_from_pointers(
     batch_row_ids: np.ndarray,
     mod_data: _ModalityData,
 ) -> SparseBatch:
-    """Fetch a sparse batch from per-row pointer arrays.
-
-    Unlike the old ``_take_sparse`` which indexed into stored arrays,
-    this receives the pointer data directly (loaded from lance per-batch).
-    """
-    [index_array_name] = mod_data.required_array_paths
+    """Fetch a sparse batch from per-row pointer arrays."""
     layer_names = list(mod_data.layer_array_paths.keys())
-    layer_paths = list(mod_data.layer_array_paths.values())
-    group_obs_data, results = read_arrays_by_group(
+    group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=[index_array_name, *layer_paths],
-        read_method="ranges",
+        required_array_paths=mod_data.required_array_paths,
+        layer_array_paths=mod_data.layer_array_paths,
     )
-    if not group_obs_data:
+    if not group_batches:
         return SparseBatch(
             indices=np.array([], dtype=np.int32),
             offsets=np.zeros(len(batch_row_ids) + 1, dtype=np.int64),
@@ -310,50 +304,23 @@ async def _take_sparse_from_pointers(
             n_features=mod_data.n_features,
         )
 
-    obs_parts = []
-    all_indices = []
-    all_values_per_layer: dict[str, list[np.ndarray]] = {name: [] for name in layer_names}
-    all_lengths = []
-    for (zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
-        flat_indices, lengths = group_results[0]
-        flat_values_per_layer = {
-            name: vals for name, (vals, _) in zip(layer_names, group_results[1:], strict=True)
-        }
-        flat_indices, flat_values_per_layer, lengths = remap_sparse_indices_and_values(
-            remapping_array=mod_data.group_readers[zg].get_remap(),
-            flat_indices=flat_indices,
-            flat_values_per_layer=flat_values_per_layer,
-            lengths=lengths,
-        )
-        all_indices.append(flat_indices)
-        for name in layer_names:
-            all_values_per_layer[name].append(flat_values_per_layer[name])
-        all_lengths.append(lengths)
-        obs_parts.append(group_rows)
-
-    flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
-    layers_data = {
-        name: (np.concatenate(parts) if parts else np.array([], dtype=mod_data.layer_dtypes[name]))
-        for name, parts in all_values_per_layer.items()
+    layouts_per_group = {
+        zg: gr.layout_reader
+        for zg, gr in mod_data.group_readers.items()
+        if gr.layout_reader is not None
     }
-    lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
-
-    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
-    np.cumsum(lengths, out=offsets[1:])
-
-    batch = SparseBatch(
-        indices=flat_indices,
-        offsets=offsets,
-        layers=layers_data,
+    batch = concat_remapped_batches(
+        group_batches,
+        layouts_per_group=layouts_per_group or None,
         n_features=mod_data.n_features,
-        metadata=_select_obs_metadata(obs_pl),
     )
 
-    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
+    grouped_row_ids = batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
     row_id_order = np.argsort(grouped_row_ids, kind="stable")
     row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_sparse_batch_rows(batch, row_perm)
+    batch = _reorder_sparse_batch_rows(batch, row_perm)
+    batch.metadata = _select_obs_metadata(batch.metadata)
+    return batch
 
 
 def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBatch:

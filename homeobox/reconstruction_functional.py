@@ -5,6 +5,7 @@ import numpy as np
 import polars as pl
 from polars.dataframe.group_by import GroupBy
 
+from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
 from homeobox.group_reader import GroupReader, LayoutReader
 
 # TODO: Can we wrap any of these in TYPE_CHECKING
@@ -16,6 +17,8 @@ from homeobox.read import (
     _read_sparse_ranges,
     _sync_gather,
 )
+
+GroupBatch = "SparseBatch | DenseFeatureBatch | SpatialTileBatch"
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
@@ -151,44 +154,225 @@ def read_arrays_by_group(
     group_readers: ReadersByZarrGroup,
     groups: GroupBy,
     spec: FeatureSpaceSpec,
-    array_names: list[str],
-    read_method: Literal["ranges", "boxes"],
-    *,
-    stack_uniform: bool = True,
-) -> tuple[list[tuple[str, pl.DataFrame]], list]:
-    """Async read and gather the same array_names
-    for each zarr group using pointer ranges or boxes.
+    required_array_paths: list[str],
+    layer_array_paths: dict[str, str],
+) -> "list[tuple[str, GroupBatch]]":
+    """Read per-group arrays and package each group as a local-space batch.
+
+    Schedules async reads (ranges or boxes, per
+    :attr:`Reconstructor.read_method`) for every group and delegates per-group
+    batch construction to
+    :meth:`Reconstructor.build_group_batch`. Each returned batch lives in the
+    group's local feature space — sparse indices and dense feature columns
+    have not been remapped to the joined registry yet. Use
+    :func:`concat_remapped_batches` to remap and merge into a single
+    joined-space batch.
+
+    Each batch's ``metadata`` is the full group obs DataFrame, including
+    internal ``_``-prefixed columns. Filter at the call site if needed.
     """
+    reconstructor = spec.reconstructor
+    layer_names = list(layer_array_paths.keys())
+    array_paths = list(required_array_paths) + list(layer_array_paths.values())
+
     read_tasks = []
-    # TODO: Isn't _zg already a column? Any specific reason
-    # we need the tuple with zg?
-    group_obs_data: list[tuple[str, pl.DataFrame]] = []
+    group_meta: list[tuple[str, pl.DataFrame]] = []
 
     for key, group_rows in groups:
         zg = _group_key_to_zg(key)
-        # TODO: Add more descriptive error handling?
-        gr = group_readers[zg]
-        readers = [gr.get_array_reader(an) for an in array_names]
+        readers = [group_readers[zg].get_array_reader(an) for an in array_paths]
 
-        if read_method == "ranges":
+        if reconstructor.read_method == "ranges":
             starts, ends = spec.pointer_type.to_ranges(group_rows)
             read_tasks.append(_read_sparse_ranges(readers, starts, ends))
-        elif read_method == "boxes":
+        elif reconstructor.read_method == "boxes":
             min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
             read_tasks.append(
                 _read_dense_boxes(
                     readers,
                     min_corners,
                     max_corners,
-                    stack_uniform=stack_uniform,
+                    stack_uniform=reconstructor.stack_uniform,
                 )
             )
         else:
-            raise ValueError(f"Unknown read_method: {read_method}")
+            raise ValueError(
+                f"Unknown read_method on {type(reconstructor).__name__}: "
+                f"{reconstructor.read_method!r}"
+            )
 
-        group_obs_data.append((zg, group_rows))
+        group_meta.append((zg, group_rows))
 
-    return group_obs_data, _sync_gather(read_tasks)
+    all_results = _sync_gather(read_tasks)
+
+    return [
+        (
+            zg,
+            reconstructor.build_group_batch(group_readers[zg], group_rows, layer_names, results),
+        )
+        for (zg, group_rows), results in zip(group_meta, all_results, strict=True)
+    ]
+
+
+def concat_remapped_batches(
+    batches: "list[tuple[str, GroupBatch]]",
+    *,
+    layouts_per_group: LayoutsByZarrGroup | None,
+    n_features: int,
+) -> "GroupBatch":
+    """Remap each per-group local-space batch into the joined feature space and concat.
+
+    All batches must be the same concrete type (matches the output of a single
+    :func:`read_arrays_by_group` call). Dispatches by batch type:
+
+    - :class:`SparseBatch`: per-group remap of indices via
+      :func:`remap_sparse_indices_and_values` (drops OOB entries), then
+      vstack of CSR skeletons.
+    - :class:`DenseFeatureBatch`: scatter-write each group's local columns
+      into a pre-allocated ``(n_total_rows, n_features)`` matrix per layer,
+      preserving the dense allocation pattern.
+    - :class:`SpatialTileBatch`: concat per-layer row lists. ``layouts_per_group``
+      and ``n_features`` are ignored.
+
+    Parameters
+    ----------
+    batches:
+        Non-empty list of ``(zarr_group, local_space_batch)`` tuples.
+    layouts_per_group:
+        Per-zarr-group :class:`LayoutReader` providing the remap into the
+        joined feature space. Groups absent from the dict are passed through
+        without remap. Pass ``None`` to skip remapping for all groups.
+    n_features:
+        Joined feature space width (output ``n_features`` for sparse and
+        dense). Ignored for spatial.
+
+    Output ``metadata`` is the per-layer concatenation of input batch
+    metadata using ``pl.concat(..., how="diagonal_relaxed")``; ``None`` if
+    every input batch's metadata is ``None``.
+    """
+    if not batches:
+        raise ValueError("concat_remapped_batches requires at least one batch")
+
+    first_batch = batches[0][1]
+    if isinstance(first_batch, SparseBatch):
+        return _concat_remapped_sparse_batches(batches, layouts_per_group, n_features)
+    if isinstance(first_batch, DenseFeatureBatch):
+        return _concat_remapped_dense_feature_batches(batches, layouts_per_group, n_features)
+    if isinstance(first_batch, SpatialTileBatch):
+        return _concat_spatial_tile_batches(batches)
+    raise TypeError(f"Unsupported batch type: {type(first_batch).__name__}")
+
+
+def _concat_metadata(batches: "list[tuple[str, GroupBatch]]") -> pl.DataFrame | None:
+    parts = [b.metadata for _zg, b in batches if b.metadata is not None]
+    if not parts:
+        return None
+    return pl.concat(parts, how="diagonal_relaxed")
+
+
+def _concat_remapped_sparse_batches(
+    batches: "list[tuple[str, SparseBatch]]",
+    layouts_per_group: LayoutsByZarrGroup | None,
+    n_features: int,
+) -> SparseBatch:
+    layer_names = list(batches[0][1].layers.keys())
+    layer_dtypes = {ln: batches[0][1].layers[ln].dtype for ln in layer_names}
+
+    all_indices: list[np.ndarray] = []
+    all_values_per_layer: dict[str, list[np.ndarray]] = {ln: [] for ln in layer_names}
+    all_lengths: list[np.ndarray] = []
+
+    for zg, batch in batches:
+        flat_indices = batch.indices
+        lengths = np.diff(batch.offsets)
+        flat_values_per_layer = batch.layers
+
+        if layouts_per_group is not None and zg in layouts_per_group:
+            remap = layouts_per_group[zg].get_remap()
+            flat_indices, flat_values_per_layer, lengths = remap_sparse_indices_and_values(
+                remapping_array=remap,
+                flat_indices=flat_indices,
+                flat_values_per_layer=flat_values_per_layer,
+                lengths=lengths,
+            )
+
+        all_indices.append(flat_indices)
+        for ln in layer_names:
+            all_values_per_layer[ln].append(flat_values_per_layer[ln])
+        all_lengths.append(lengths)
+
+    flat_indices_out = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
+    layers_out = {
+        ln: (np.concatenate(parts) if parts else np.array([], dtype=layer_dtypes[ln]))
+        for ln, parts in all_values_per_layer.items()
+    }
+    lengths_out = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
+    offsets_out = np.zeros(len(lengths_out) + 1, dtype=np.int64)
+    np.cumsum(lengths_out, out=offsets_out[1:])
+
+    return SparseBatch(
+        indices=flat_indices_out,
+        offsets=offsets_out,
+        layers=layers_out,
+        n_features=n_features,
+        metadata=_concat_metadata(batches),
+    )
+
+
+def _concat_remapped_dense_feature_batches(
+    batches: "list[tuple[str, DenseFeatureBatch]]",
+    layouts_per_group: LayoutsByZarrGroup | None,
+    n_features: int,
+) -> DenseFeatureBatch:
+    first_batch = batches[0][1]
+    layer_names = list(first_batch.layers.keys())
+    n_total_rows = sum(b.layers[layer_names[0]].shape[0] for _zg, b in batches)
+
+    out_layers: dict[str, np.ndarray] = {
+        ln: np.zeros((n_total_rows, n_features), dtype=first_batch.layers[ln].dtype)
+        for ln in layer_names
+    }
+
+    offset = 0
+    for zg, batch in batches:
+        n_rows_group = batch.layers[layer_names[0]].shape[0]
+        joined_cols = (
+            layouts_per_group[zg].get_remap()
+            if layouts_per_group is not None and zg in layouts_per_group
+            else None
+        )
+        for ln in layer_names:
+            local_data = batch.layers[ln]
+            out_rows = out_layers[ln][offset : offset + n_rows_group]
+            if joined_cols is None:
+                out_rows[:, : local_data.shape[1]] = local_data
+            else:
+                valid = joined_cols >= 0
+                if valid.all():
+                    out_rows[:, joined_cols] = local_data
+                else:
+                    out_rows[:, joined_cols[valid]] = local_data[:, valid]
+        offset += n_rows_group
+
+    return DenseFeatureBatch(
+        layers=out_layers,
+        n_features=n_features,
+        metadata=_concat_metadata(batches),
+    )
+
+
+def _concat_spatial_tile_batches(
+    batches: "list[tuple[str, SpatialTileBatch]]",
+) -> SpatialTileBatch:
+    layer_names = list(batches[0][1].layers.keys())
+    out_layers: dict[str, list[np.ndarray]] = {ln: [] for ln in layer_names}
+    for _zg, batch in batches:
+        for ln in layer_names:
+            out_layers[ln].extend(batch.layers[ln])
+    return SpatialTileBatch(
+        layers=out_layers,
+        metadata=_concat_metadata(batches),
+    )
 
 
 def remap_sparse_indices_and_values(
