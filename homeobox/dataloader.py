@@ -3,10 +3,9 @@
 :class:`UnimodalHoxDataset` is a pure data-access object: it resolves zarr
 remaps and exposes ``__getitems__`` for batched async I/O.
 
-Designed for the ``query -> UnimodalHoxDataset -> SparseBatch -> collate_fn ->
-GPU`` pipeline.  Reader initialisation is deferred to the worker
-process, making the dataset safely picklable for spawn-based
-multiprocessing.
+Designed for the ``query -> UnimodalHoxDataset -> SparseBatch`` pipeline.
+Reader initialisation is deferred to the worker process, making the dataset
+safely picklable for spawn-based multiprocessing.
 
 Pointer structs and metadata columns are loaded lazily per-batch via
 lance's ``take_row_ids`` API rather than materializing the full obs
@@ -17,7 +16,7 @@ Usage::
     dataset = atlas.query().to_unimodal_dataset("gene_expression", "counts", metadata_columns=["cell_type"])
     loader = make_loader(dataset, batch_size=256, shuffle=True, num_workers=4)
     for batch in loader:
-        X = sparse_to_dense_collate(batch)["X"]
+        ...
 """
 
 import asyncio
@@ -108,16 +107,6 @@ def _build_modality_data(
     )
 
 
-def _single_layer(layers: dict):
-    """Return the sole layer's data, or raise if there isn't exactly one."""
-    if len(layers) != 1:
-        raise ValueError(
-            f"Built-in collate expected exactly one layer, got {list(layers)}. "
-            "Use a custom collate to handle multi-layer batches."
-        )
-    return next(iter(layers.values()))
-
-
 def _select_obs_metadata(obs_pl: pl.DataFrame) -> pl.DataFrame | None:
     """Select non-internal, non-Struct columns to carry as batch metadata."""
     cols = [
@@ -126,36 +115,6 @@ def _select_obs_metadata(obs_pl: pl.DataFrame) -> pl.DataFrame | None:
         if not col.startswith("_") and dtype.base_type() != pl.Struct
     ]
     return obs_pl.select(cols) if cols else None
-
-
-def _metadata_to_tensor_dict(metadata: pl.DataFrame | None) -> dict:
-    """Convert a metadata DataFrame to a dict of tensors (numeric) / numpy arrays (other)."""
-    if metadata is None:
-        return {}
-    import torch
-
-    out: dict = {}
-    for col in metadata.columns:
-        arr = metadata[col].to_numpy()
-        if arr.dtype.kind in ("i", "u", "f"):
-            out[col] = torch.from_numpy(arr)
-        else:
-            out[col] = arr
-    return out
-
-
-def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
-    """Scatter a SparseBatch into a dense float32 torch tensor (n_rows, n_features)."""
-    import torch
-
-    values = _single_layer(batch.layers)
-    n_rows = len(batch.offsets) - 1
-    X = torch.zeros(n_rows, batch.n_features, dtype=torch.float32)
-    if n_rows > 0 and len(batch.indices) > 0:
-        lengths = np.diff(batch.offsets)
-        row_indices = np.repeat(np.arange(n_rows), lengths)
-        X[row_indices, batch.indices] = torch.from_numpy(values.astype(np.float32))
-    return X
 
 
 def _reorder_take_result(result: pl.DataFrame, batch_row_ids: np.ndarray) -> pl.DataFrame:
@@ -635,95 +594,6 @@ class MultimodalHoxDataset(_AsyncDataset):
         state["_loop_thread"] = None
         state["_obs_table"] = None
         return state
-
-
-# ---------------------------------------------------------------------------
-# Collate functions
-# ---------------------------------------------------------------------------
-
-
-def sparse_to_dense_collate(batch: SparseBatch) -> dict:
-    """Convert a SparseBatch to a dense float32 tensor via scatter.
-
-    Returns ``{"X": dense_tensor, **metadata_tensors}``.
-    """
-    return {"X": _sparse_batch_to_dense_tensor(batch), **_metadata_to_tensor_dict(batch.metadata)}
-
-
-def sparse_to_csr_collate(batch: SparseBatch) -> dict:
-    """Convert a SparseBatch to a sparse CSR tensor.
-
-    Returns ``{"X": sparse_csr_tensor, **metadata_tensors}``.
-    """
-    import torch
-
-    values = _single_layer(batch.layers)
-    n_rows = len(batch.offsets) - 1
-    X = torch.sparse_csr_tensor(
-        crow_indices=torch.from_numpy(batch.offsets),
-        col_indices=torch.from_numpy(batch.indices.astype(np.int64)),
-        values=torch.from_numpy(values.astype(np.float32)),
-        size=(n_rows, batch.n_features),
-    )
-    return {"X": X, **_metadata_to_tensor_dict(batch.metadata)}
-
-
-def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
-    """Convert a MultimodalBatch to dense tensors for model consumption.
-
-    Returns::
-
-        {
-            "present": {"gene_expression": bool_tensor, ...},
-            "gene_expression": {"X": float32_tensor},  # (n_present, n_features)
-            "protein_abundance": {"X": float32_tensor},
-            "metadata": {"cell_type": tensor, ...},    # omitted if no metadata
-        }
-
-    For sparse modalities the scatter fill is applied (same as
-    :func:`sparse_to_dense_collate`). Dense feature data is wrapped directly
-    in a tensor. Spatial data is returned as one tensor per tile/crop.
-    """
-    import torch
-
-    result: dict = {}
-
-    result["present"] = {fs: torch.from_numpy(mask) for fs, mask in batch.present.items()}
-
-    for fs, mod_batch in batch.modalities.items():
-        if isinstance(mod_batch, SparseBatch):
-            result[fs] = {"X": _sparse_batch_to_dense_tensor(mod_batch)}
-        elif isinstance(mod_batch, DenseFeatureBatch):
-            result[fs] = {"X": torch.from_numpy(_single_layer(mod_batch.layers))}
-        elif isinstance(mod_batch, SpatialTileBatch):
-            result[fs] = {
-                "X": [
-                    torch.from_numpy(np.ascontiguousarray(x))
-                    for x in _single_layer(mod_batch.layers)
-                ]
-            }
-        else:
-            raise TypeError(f"Unsupported modality batch type: {type(mod_batch).__name__}")
-
-    if batch.metadata is not None:
-        result["metadata"] = _metadata_to_tensor_dict(batch.metadata)
-
-    return result
-
-
-def dense_to_tensor_collate(batch: DenseFeatureBatch | SpatialTileBatch) -> dict:
-    """Convert a dense feature or spatial tile batch to a tensor dict.
-
-    Returns ``{"X": tensor, **metadata_tensors}``.  The tensor preserves the
-    batch's dtype for spatial tiles.
-    """
-    import torch
-
-    if isinstance(batch, SpatialTileBatch):
-        X = [torch.from_numpy(np.ascontiguousarray(x)) for x in _single_layer(batch.layers)]
-    else:
-        X = torch.from_numpy(np.ascontiguousarray(_single_layer(batch.layers)))
-    return {"X": X, **_metadata_to_tensor_dict(batch.metadata)}
 
 
 # ---------------------------------------------------------------------------

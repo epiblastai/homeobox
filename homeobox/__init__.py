@@ -8,9 +8,7 @@ from homeobox.dataloader import (
     SparseBatch,
     SpatialTileBatch,
     UnimodalHoxDataset,
-    dense_to_tensor_collate,
     make_loader,
-    sparse_to_dense_collate,
 )
 from homeobox.fragments.genome_query import GenomeSortedReader, RegionResult
 from homeobox.fragments.peak_matrix import FragmentCounter, GenomicRange
@@ -42,8 +40,6 @@ __all__ = [
     "SpatialTileBatch",
     "MultimodalBatch",
     "make_loader",
-    "sparse_to_dense_collate",
-    "dense_to_tensor_collate",
     "add_from_anndata",
     "add_anndata_batch",
     "add_csc",
