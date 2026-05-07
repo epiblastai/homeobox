@@ -1,4 +1,8 @@
-"""Reconstruction helpers for building AnnData from atlas query results."""
+"""Reconstruction helpers for building AnnData from atlas query results.
+
+Reconstructors are designed to be stateless and exist to provide structured
+endpoints and reconstruction paths with a standardized API.
+"""
 
 from typing import TYPE_CHECKING, Literal
 
@@ -12,7 +16,6 @@ from homeobox.group_specs import get_spec
 from homeobox.read import (
     _group_key_to_zg,
     _prepare_obs_and_groups,
-    _read_dense_boxes,
     _read_sparse_ranges,
     _sync_gather,
 )
@@ -38,7 +41,7 @@ __all__ = [
     "endpoint",
     "SparseCSRReconstructor",
     "SparseGeneExpressionReconstructor",
-    "DenseReconstructor",
+    "DenseFeatureReconstructor",
     "SpatialReconstructor",
     "FeatureCSCReconstructor",
 ]
@@ -137,6 +140,7 @@ class SparseCSRReconstructor(Reconstructor):
     """
 
     required_arrays: list[str] = ["csr/indices"]
+    require_var_df: bool = True
 
     def _remap_features(
         self,
@@ -284,13 +288,10 @@ class SparseCSRReconstructor(Reconstructor):
         )
 
 
-class DenseReconstructor(Reconstructor):
-    """Reconstruct dense data (e.g. protein abundance, image features, image tiles).
+class DenseFeatureReconstructor(Reconstructor):
+    """Reconstruct dense feature data with per-group feature remapping."""
 
-    Exposes both :meth:`as_anndata` (when the feature space has a feature
-    registry) and :meth:`as_array` (raw N-D array preserving full
-    dimensionality).
-    """
+    require_var_df: bool = True
 
     def _remap_features_inplace(
         self,
@@ -398,6 +399,10 @@ class DenseReconstructor(Reconstructor):
             atlas, pf.feature_space, joined_globals, obs_parts, layers_to_read, all_layers
         )
 
+
+class SpatialReconstructor(Reconstructor):
+    """Reconstruct discrete-spatial field-image crops as stacked arrays."""
+
     @endpoint
     def as_array(
         self,
@@ -406,23 +411,10 @@ class DenseReconstructor(Reconstructor):
         pf: PointerField,
         layer: str | None = None,
     ) -> np.ndarray:
-        """Return raw dense data as a NumPy array preserving all dimensions.
+        """Return spatial reads as a single stacked NumPy array.
 
-        Unlike :meth:`as_anndata`, this skips feature remapping, layer
-        stacking, and AnnData assembly. The result keeps the original
-        array dimensionality — e.g. ``(n_rows, C, H, W)`` for 4-D
-        image tiles.
-
-        Parameters
-        ----------
-        atlas:
-            The atlas to read from.
-        obs_pl:
-            Polars DataFrame of obs rows (must include zarr pointer columns).
-        pf:
-            Pointer field info for the feature space.
-        layer:
-            Which layer to read. Defaults to the spec's first required layer.
+        All boxes must produce identical crop shapes. Dense row pointers are
+        rank-1 boxes and are returned as ``(n_rows, *per_row_shape)`` arrays.
         """
         spec = get_spec(pf.feature_space)
         _, layer_array_paths_dict = get_array_paths_to_read(
@@ -431,53 +423,20 @@ class DenseReconstructor(Reconstructor):
         array_name = _single_layer_array_name(layer_array_paths_dict, pf.feature_space)
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return np.empty((0,), dtype=np.float32)
 
-        # Prepare per-group reads and discover per-row shape
-        per_row_shape: tuple[int, ...] | None = None
-        read_tasks = []
-        offsets: list[int] = []
-        offset = 0
-        for key, group_rows in groups:
-            zg = _group_key_to_zg(key)
-            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
-            gr = atlas.get_group_reader(zg, pf.feature_space)
-            reader = gr.get_array_reader(array_name)
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
+        _, all_results = read_arrays_by_group(
+            group_readers=group_readers,
+            groups=groups,
+            spec=spec,
+            array_names=[array_name],
+            read_method="boxes",
+            stack_uniform=True,
+        )
 
-            shape_tail = tuple(reader.shape[1:])
-            if per_row_shape is None:
-                per_row_shape = shape_tail
-                dtype = reader._native_dtype
-            elif shape_tail != per_row_shape:
-                raise ValueError(
-                    f"Shape mismatch across zarr groups for '{pf.feature_space}': "
-                    f"expected per-row shape {per_row_shape}, got {shape_tail} "
-                    f"in group '{zg}'"
-                )
-
-            read_tasks.append(_read_dense_boxes([reader], min_corners, max_corners))
-            offsets.append(offset)
-            offset += len(min_corners)
-
-        n_total_rows = offset
-        if per_row_shape is None:
-            per_row_shape = ()
-            dtype = np.float32
-
-        out = np.empty((n_total_rows, *per_row_shape), dtype=dtype)
-        if n_total_rows == 0:
-            return out
-
-        all_results = _sync_gather(read_tasks)
-
-        for offset, group_results in zip(offsets, all_results, strict=True):
-            arr = group_results[0]
-            out[offset : offset + arr.shape[0]] = arr
-
-        return out
-
-
-class SpatialReconstructor(Reconstructor):
-    """Reconstruct discrete-spatial field-image crops as stacked arrays."""
+        return np.concatenate([group_results[0] for group_results in all_results], axis=0)
 
     @endpoint
     def as_array_list(
@@ -836,6 +795,7 @@ class SparseGeneExpressionReconstructor(Reconstructor):
     """
 
     required_arrays: list[str] = ["csr/indices"]
+    require_var_df: bool = True
 
     def __init__(self) -> None:
         self._csr = SparseCSRReconstructor()

@@ -376,7 +376,12 @@ class FeatureSpaceSpec(BaseModel):
     feature_oriented: ZarrGroupSpec | None = None
 
     @model_validator(mode="after")
-    def _validate_reconstructor_required_arrays(self) -> "FeatureSpaceSpec":
+    def _validate_reconstructor_contract(self) -> "FeatureSpaceSpec":
+        if self.reconstructor.require_var_df and not self.has_var_df:
+            raise ValueError(
+                f"Reconstructor for feature space '{self.feature_space}' requires has_var_df=True"
+            )
+
         declared = [a.array_name for a in self.zarr_group_spec.required_arrays]
         declared_set = set(declared)
         missing = [name for name in self.reconstructor.required_arrays if name not in declared_set]

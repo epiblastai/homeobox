@@ -13,7 +13,11 @@ from homeobox.group_specs import (
     ZarrGroupSpec,
     get_spec,
 )
-from homeobox.reconstruction import SparseCSRReconstructor, SparseGeneExpressionReconstructor
+from homeobox.reconstruction import (
+    DenseFeatureReconstructor,
+    SparseCSRReconstructor,
+    SparseGeneExpressionReconstructor,
+)
 from homeobox.reconstructor_base import Reconstructor
 
 
@@ -61,6 +65,26 @@ def test_sparse_csr_reconstructor_declares_full_required_array_path():
 def test_sparse_gene_expression_reconstructor_declares_full_required_array_path():
     assert SparseGeneExpressionReconstructor.required_arrays == ["csr/indices"]
     assert get_spec("gene_expression").reconstructor.required_arrays == ["csr/indices"]
+
+
+def test_reconstructor_can_require_var_df():
+    with pytest.raises(ValidationError, match="requires has_var_df=True"):
+        FeatureSpaceSpec(
+            feature_space="test_dense_no_var",
+            pointer_type=object,
+            has_var_df=False,
+            reconstructor=DenseFeatureReconstructor(),
+            zarr_group_spec=ZarrGroupSpec(
+                layers=LayersSpec(
+                    required=[ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32])],
+                ),
+            ),
+        )
+
+
+def test_dense_feature_reconstructor_requires_var_df():
+    assert DenseFeatureReconstructor.require_var_df is True
+    assert get_spec("image_features").reconstructor.require_var_df is True
 
 
 def test_layers_validate_exact_shapes_by_default(tmp_path):

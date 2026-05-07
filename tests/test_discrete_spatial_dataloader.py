@@ -485,6 +485,39 @@ def test_multimodal_crops_and_sparse_present_masks(multimodal_crops_and_genes_at
 # ---------------------------------------------------------------------------
 
 
+def test_spatial_reconstructor_as_array_uniform(two_group_uniform_crop_atlas):
+    """as_array returns one stacked ndarray when all crop shapes are uniform."""
+    atlas, images, boxes_per_group = two_group_uniform_crop_atlas
+
+    obs_pl = atlas.query()._materialize_rows()
+    pf = atlas.pointer_fields["image_crops"]
+
+    array = SpatialReconstructor().as_array(atlas, obs_pl, pf)
+
+    total = sum(len(b) for b in boxes_per_group)
+    assert isinstance(array, np.ndarray)
+    assert array.shape == (total, 4, 4)
+    assert array.dtype == np.uint16
+
+    expected_sigs: set[tuple] = set()
+    for image, boxes in zip(images, boxes_per_group, strict=True):
+        for crop in _crops_from(image, boxes):
+            expected_sigs.add(tuple(crop.ravel()))
+    got_sigs = {tuple(crop.ravel()) for crop in array}
+    assert got_sigs == expected_sigs
+
+
+def test_spatial_reconstructor_as_array_ragged_raises(ragged_crop_atlas):
+    """as_array uses stack_uniform=True and rejects heterogeneous crop shapes."""
+    atlas, _images, _boxes = ragged_crop_atlas
+
+    obs_pl = atlas.query()._materialize_rows()
+    pf = atlas.pointer_fields["image_crops"]
+
+    with pytest.raises(RuntimeError, match="stack_uniform"):
+        SpatialReconstructor().as_array(atlas, obs_pl, pf)
+
+
 def test_spatial_reconstructor_as_array_list_ragged(ragged_crop_atlas):
     """as_array_list returns one ndarray per row, preserving native crop shapes."""
     atlas, images, boxes_per_group = ragged_crop_atlas
