@@ -10,11 +10,8 @@ import pytest
 import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.dataloader import (
-    SparseBatch,
-    make_loader,
-    sparse_to_dense_collate,
-)
+from homeobox.batch_types import SparseBatch
+from homeobox.dataloader import make_loader, sparse_to_dense_collate
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
