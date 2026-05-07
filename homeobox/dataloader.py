@@ -43,11 +43,13 @@ from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
+    RowOrderMapping,
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
+    concat_remapped_batches,
     get_array_paths_to_read,
     read_arrays_by_group,
-    remap_sparse_indices_and_values,
+    reorder_batch_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -161,6 +163,32 @@ def _single_layer(layers: dict):
     return next(iter(layers.values()))
 
 
+def _select_obs_metadata(obs_pl: pl.DataFrame) -> pl.DataFrame | None:
+    """Select non-internal, non-Struct columns to carry as batch metadata."""
+    cols = [
+        col
+        for col, dtype in obs_pl.schema.items()
+        if not col.startswith("_") and dtype.base_type() != pl.Struct
+    ]
+    return obs_pl.select(cols) if cols else None
+
+
+def _metadata_to_tensor_dict(metadata: pl.DataFrame | None) -> dict:
+    """Convert a metadata DataFrame to a dict of tensors (numeric) / numpy arrays (other)."""
+    if metadata is None:
+        return {}
+    import torch
+
+    out: dict = {}
+    for col in metadata.columns:
+        arr = metadata[col].to_numpy()
+        if arr.dtype.kind in ("i", "u", "f"):
+            out[col] = torch.from_numpy(arr)
+        else:
+            out[col] = arr
+    return out
+
+
 def _sparse_batch_to_dense_tensor(batch: "SparseBatch"):
     """Scatter a SparseBatch into a dense float32 torch tensor (n_rows, n_features)."""
     import torch
@@ -261,147 +289,39 @@ async def _take_sparse_from_pointers(
     batch_row_ids: np.ndarray,
     mod_data: _ModalityData,
 ) -> SparseBatch:
-    """Fetch a sparse batch from per-row pointer arrays.
-
-    Unlike the old ``_take_sparse`` which indexed into stored arrays,
-    this receives the pointer data directly (loaded from lance per-batch).
-    """
-    [index_array_name] = mod_data.required_array_paths
-    layer_names = list(mod_data.layer_array_paths.keys())
-    layer_paths = list(mod_data.layer_array_paths.values())
-    group_obs_data, results = read_arrays_by_group(
+    """Fetch a sparse batch from per-row pointer arrays."""
+    group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=[index_array_name, *layer_paths],
-        read_method="ranges",
+        required_array_paths=mod_data.required_array_paths,
+        layer_array_paths=mod_data.layer_array_paths,
     )
-    if not group_obs_data:
-        return SparseBatch(
-            indices=np.array([], dtype=np.int32),
-            offsets=np.zeros(len(batch_row_ids) + 1, dtype=np.int64),
-            layers={name: np.array([], dtype=mod_data.layer_dtypes[name]) for name in layer_names},
+    if not group_batches:
+        return SparseBatch.empty(
+            n_rows=len(batch_row_ids),
             n_features=mod_data.n_features,
+            layer_dtypes=mod_data.layer_dtypes,
         )
 
-    obs_parts = []
-    all_indices = []
-    all_values_per_layer: dict[str, list[np.ndarray]] = {name: [] for name in layer_names}
-    all_lengths = []
-    for (zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
-        flat_indices, lengths = group_results[0]
-        flat_values_per_layer = {
-            name: vals for name, (vals, _) in zip(layer_names, group_results[1:], strict=True)
-        }
-        flat_indices, flat_values_per_layer, lengths = remap_sparse_indices_and_values(
-            remapping_array=mod_data.group_readers[zg].get_remap(),
-            flat_indices=flat_indices,
-            flat_values_per_layer=flat_values_per_layer,
-            lengths=lengths,
-        )
-        all_indices.append(flat_indices)
-        for name in layer_names:
-            all_values_per_layer[name].append(flat_values_per_layer[name])
-        all_lengths.append(lengths)
-        obs_parts.append(group_rows)
-
-    flat_indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
-    layers_data = {
-        name: (np.concatenate(parts) if parts else np.array([], dtype=mod_data.layer_dtypes[name]))
-        for name, parts in all_values_per_layer.items()
+    layouts_per_group = {
+        zg: gr.layout_reader
+        for zg, gr in mod_data.group_readers.items()
+        if gr.layout_reader is not None
     }
-    lengths = np.concatenate(all_lengths) if all_lengths else np.array([], dtype=np.int64)
-
-    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
-    np.cumsum(lengths, out=offsets[1:])
-
-    metadata = {
-        col: obs_pl[col].to_numpy()
-        for col, dtype in obs_pl.schema.items()
-        if not col.startswith("_") and dtype.base_type() != pl.Struct
-    }
-    batch = SparseBatch(
-        indices=flat_indices,
-        offsets=offsets,
-        layers=layers_data,
+    batch = concat_remapped_batches(
+        group_batches,
+        layouts_per_group=layouts_per_group or None,
         n_features=mod_data.n_features,
-        metadata=metadata or None,
     )
 
-    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
-    row_id_order = np.argsort(grouped_row_ids, kind="stable")
-    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_sparse_batch_rows(batch, row_perm)
-
-
-def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBatch:
-    """Reorder rows of a SparseBatch; ``perm[i]`` is the source row for output row ``i``."""
-    n_rows = len(perm)
-    sorted_lengths = np.diff(batch.offsets)
-    new_lengths = sorted_lengths[perm]
-    new_offsets = np.zeros(n_rows + 1, dtype=np.int64)
-    np.cumsum(new_lengths, out=new_offsets[1:])
-
-    reordered_metadata = (
-        {col: arr[perm] for col, arr in batch.metadata.items()}
-        if batch.metadata is not None
-        else None
+    mapping = RowOrderMapping(
+        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        target_row_ids=batch_row_ids,
     )
-
-    total = int(new_lengths.sum())
-    if total == 0:
-        return SparseBatch(
-            indices=batch.indices,
-            offsets=new_offsets,
-            layers=batch.layers,
-            n_features=batch.n_features,
-            metadata=reordered_metadata,
-        )
-
-    # Segment-arange gather: for each output row i, collect elements from source row perm[i]
-    src_starts = batch.offsets[:-1][perm]
-    cumlen = np.zeros(n_rows + 1, dtype=np.int64)
-    np.cumsum(new_lengths, out=cumlen[1:])
-    within = np.arange(total, dtype=np.int64) - np.repeat(cumlen[:-1], new_lengths)
-    gather = np.repeat(src_starts, new_lengths) + within
-    return SparseBatch(
-        indices=batch.indices[gather],
-        offsets=new_offsets,
-        layers={name: arr[gather] for name, arr in batch.layers.items()},
-        n_features=batch.n_features,
-        metadata=reordered_metadata,
-    )
-
-
-def _reorder_dense_feature_batch_rows(
-    batch: DenseFeatureBatch, perm: np.ndarray
-) -> DenseFeatureBatch:
-    """Reorder rows of a DenseFeatureBatch; ``perm[i]`` is the source row for output row ``i``."""
-    reordered_metadata = (
-        {col: arr[perm] for col, arr in batch.metadata.items()}
-        if batch.metadata is not None
-        else None
-    )
-    return DenseFeatureBatch(
-        layers={name: arr[perm] for name, arr in batch.layers.items()},
-        n_features=batch.n_features,
-        metadata=reordered_metadata,
-    )
-
-
-def _reorder_spatial_tile_batch_rows(batch: SpatialTileBatch, perm: np.ndarray) -> SpatialTileBatch:
-    """Reorder rows of a SpatialTileBatch; ``perm[i]`` is the source row for output row ``i``."""
-    reordered_metadata = (
-        {col: arr[perm] for col, arr in batch.metadata.items()}
-        if batch.metadata is not None
-        else None
-    )
-    perm_idx = [int(i) for i in perm]
-    return SpatialTileBatch(
-        layers={name: [rows[i] for i in perm_idx] for name, rows in batch.layers.items()},
-        metadata=reordered_metadata,
-    )
+    batch = reorder_batch_rows(batch, mapping)
+    batch.metadata = _select_obs_metadata(batch.metadata)
+    return batch
 
 
 async def _take_dense_feature_from_pointers(
@@ -413,52 +333,41 @@ async def _take_dense_feature_from_pointers(
     """Fetch a dense feature batch from per-row pointer arrays."""
     out_dtype = np.dtype(np.float32)
     layer_names = list(mod_data.layer_array_paths.keys())
-    layer_paths = list(mod_data.layer_array_paths.values())
-    group_obs_data, results = read_arrays_by_group(
+    group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=layer_paths,
-        read_method="boxes",
-        stack_uniform=True,
+        required_array_paths=mod_data.required_array_paths,
+        layer_array_paths=mod_data.layer_array_paths,
     )
-    if not group_obs_data:
-        return DenseFeatureBatch(
-            layers={
-                name: np.zeros((0, mod_data.n_features), dtype=out_dtype) for name in layer_names
-            },
+    if not group_batches:
+        return DenseFeatureBatch.empty(
             n_features=mod_data.n_features,
+            layer_dtypes={name: out_dtype for name in layer_names},
         )
 
-    obs_parts = []
-    data_parts_per_layer: dict[str, list[np.ndarray]] = {name: [] for name in layer_names}
-    for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
-        for name, group_data in zip(layer_names, group_results, strict=True):
-            if group_data.dtype != out_dtype:
-                group_data = group_data.astype(out_dtype)
-            data_parts_per_layer[name].append(group_data)
-        obs_parts.append(group_rows)
-
-    layers_data = {
-        name: np.concatenate(parts, axis=0) for name, parts in data_parts_per_layer.items()
+    layouts_per_group = {
+        zg: gr.layout_reader
+        for zg, gr in mod_data.group_readers.items()
+        if gr.layout_reader is not None
     }
-
-    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    metadata = {
-        col: obs_pl[col].to_numpy()
-        for col, dtype in obs_pl.schema.items()
-        if not col.startswith("_") and dtype.base_type() != pl.Struct
-    }
-    batch = DenseFeatureBatch(
-        layers=layers_data,
+    batch = concat_remapped_batches(
+        group_batches,
+        layouts_per_group=layouts_per_group or None,
         n_features=mod_data.n_features,
-        metadata=metadata or None,
     )
 
-    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
-    row_id_order = np.argsort(grouped_row_ids, kind="stable")
-    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_dense_feature_batch_rows(batch, row_perm)
+    mapping = RowOrderMapping(
+        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        target_row_ids=batch_row_ids,
+    )
+    batch = reorder_batch_rows(batch, mapping)
+    batch.layers = {
+        name: arr if arr.dtype == out_dtype else arr.astype(out_dtype)
+        for name, arr in batch.layers.items()
+    }
+    batch.metadata = _select_obs_metadata(batch.metadata)
+    return batch
 
 
 async def _take_spatial_tile_from_pointers(
@@ -469,47 +378,34 @@ async def _take_spatial_tile_from_pointers(
 ) -> SpatialTileBatch:
     """Fetch a spatial tile/crop batch from per-row pointer arrays."""
     layer_names = list(mod_data.layer_array_paths.keys())
-    layer_paths = list(mod_data.layer_array_paths.values())
-    group_obs_data, results = read_arrays_by_group(
+    group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=layer_paths,
-        read_method="boxes",
-        stack_uniform=False,
+        required_array_paths=mod_data.required_array_paths,
+        layer_array_paths=mod_data.layer_array_paths,
     )
-    if not group_obs_data:
-        return SpatialTileBatch(layers={name: [] for name in layer_names})
+    if not group_batches:
+        return SpatialTileBatch.empty(layer_names=layer_names)
 
-    obs_parts = []
-    layers_data: dict[str, list[np.ndarray]] = {name: [] for name in layer_names}
-    for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
-        for name, group_data in zip(layer_names, group_results, strict=True):
-            if isinstance(group_data, list):
-                rows = group_data
-            else:
-                rows = [group_data[i] for i in range(group_data.shape[0])]
-            target_dtype = mod_data.layer_dtypes[name]
-            layers_data[name].extend(
-                row if row.dtype == target_dtype else row.astype(target_dtype) for row in rows
-            )
-        obs_parts.append(group_rows)
+    batch = concat_remapped_batches(group_batches, layouts_per_group=None, n_features=0)
 
-    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    metadata = {
-        col: obs_pl[col].to_numpy()
-        for col, dtype in obs_pl.schema.items()
-        if not col.startswith("_") and dtype.base_type() != pl.Struct
+    mapping = RowOrderMapping(
+        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        target_row_ids=batch_row_ids,
+    )
+    batch = reorder_batch_rows(batch, mapping)
+    batch.layers = {
+        name: [
+            row
+            if row.dtype == mod_data.layer_dtypes[name]
+            else row.astype(mod_data.layer_dtypes[name])
+            for row in rows
+        ]
+        for name, rows in batch.layers.items()
     }
-    batch = SpatialTileBatch(
-        layers=layers_data,
-        metadata=metadata or None,
-    )
-
-    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
-    row_id_order = np.argsort(grouped_row_ids, kind="stable")
-    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_spatial_tile_batch_rows(batch, row_perm)
+    batch.metadata = _select_obs_metadata(batch.metadata)
+    return batch
 
 
 async def _take_multimodal(
@@ -567,11 +463,9 @@ async def _take_multimodal(
 
     metadata = None
     if metadata_columns:
-        metadata = {
-            col: take_result[col].to_numpy()
-            for col in metadata_columns
-            if col in take_result.columns
-        }
+        present_cols = [col for col in metadata_columns if col in take_result.columns]
+        if present_cols:
+            metadata = take_result.select(present_cols)
 
     return MultimodalBatch(
         n_rows=n_rows,
@@ -933,16 +827,7 @@ def sparse_to_dense_collate(batch: SparseBatch) -> dict:
 
     Returns ``{"X": dense_tensor, **metadata_tensors}``.
     """
-    import torch
-
-    result: dict = {"X": _sparse_batch_to_dense_tensor(batch)}
-    if batch.metadata:
-        for col, arr in batch.metadata.items():
-            if arr.dtype.kind in ("i", "u", "f"):
-                result[col] = torch.from_numpy(arr)
-            else:
-                result[col] = arr
-    return result
+    return {"X": _sparse_batch_to_dense_tensor(batch), **_metadata_to_tensor_dict(batch.metadata)}
 
 
 def sparse_to_csr_collate(batch: SparseBatch) -> dict:
@@ -960,15 +845,7 @@ def sparse_to_csr_collate(batch: SparseBatch) -> dict:
         values=torch.from_numpy(values.astype(np.float32)),
         size=(n_rows, batch.n_features),
     )
-
-    result: dict = {"X": X}
-    if batch.metadata:
-        for col, arr in batch.metadata.items():
-            if arr.dtype.kind in ("i", "u", "f"):
-                result[col] = torch.from_numpy(arr)
-            else:
-                result[col] = arr
-    return result
+    return {"X": X, **_metadata_to_tensor_dict(batch.metadata)}
 
 
 def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
@@ -1008,13 +885,8 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
         else:
             raise TypeError(f"Unsupported modality batch type: {type(mod_batch).__name__}")
 
-    if batch.metadata:
-        result["metadata"] = {}
-        for col, arr in batch.metadata.items():
-            if arr.dtype.kind in ("i", "u", "f"):
-                result["metadata"][col] = torch.from_numpy(arr)
-            else:
-                result["metadata"][col] = arr
+    if batch.metadata is not None:
+        result["metadata"] = _metadata_to_tensor_dict(batch.metadata)
 
     return result
 
@@ -1028,18 +900,10 @@ def dense_to_tensor_collate(batch: DenseFeatureBatch | SpatialTileBatch) -> dict
     import torch
 
     if isinstance(batch, SpatialTileBatch):
-        result: dict = {
-            "X": [torch.from_numpy(np.ascontiguousarray(x)) for x in _single_layer(batch.layers)]
-        }
+        X = [torch.from_numpy(np.ascontiguousarray(x)) for x in _single_layer(batch.layers)]
     else:
-        result = {"X": torch.from_numpy(np.ascontiguousarray(_single_layer(batch.layers)))}
-    if batch.metadata:
-        for col, arr in batch.metadata.items():
-            if arr.dtype.kind in ("i", "u", "f"):
-                result[col] = torch.from_numpy(arr)
-            else:
-                result[col] = arr
-    return result
+        X = torch.from_numpy(np.ascontiguousarray(_single_layer(batch.layers)))
+    return {"X": X, **_metadata_to_tensor_dict(batch.metadata)}
 
 
 # ---------------------------------------------------------------------------

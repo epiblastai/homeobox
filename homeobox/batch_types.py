@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 import numpy as np
+import polars as pl
 
 
 @dataclass
@@ -27,14 +28,31 @@ class SparseBatch:
     n_features:
         Global feature space width (registry size).
     metadata:
-        Optional dict of obs columns as numpy arrays, aligned to rows.
+        Optional polars DataFrame of obs columns, aligned to rows.
     """
 
     indices: np.ndarray
     offsets: np.ndarray
     layers: dict[str, np.ndarray]
     n_features: int
-    metadata: dict[str, np.ndarray] | None = None
+    metadata: pl.DataFrame | None = None
+
+    @classmethod
+    def empty(
+        cls,
+        n_rows: int,
+        n_features: int,
+        layer_dtypes: dict[str, np.dtype],
+        metadata: pl.DataFrame | None = None,
+    ) -> "SparseBatch":
+        """Construct an empty batch with ``n_rows`` rows, each having zero values."""
+        return cls(
+            indices=np.array([], dtype=np.int32),
+            offsets=np.zeros(n_rows + 1, dtype=np.int64),
+            layers={name: np.array([], dtype=dtype) for name, dtype in layer_dtypes.items()},
+            n_features=n_features,
+            metadata=metadata,
+        )
 
 
 @dataclass
@@ -52,12 +70,28 @@ class DenseFeatureBatch:
     n_features:
         Feature space width.
     metadata:
-        Optional dict of obs columns as numpy arrays, aligned to rows.
+        Optional polars DataFrame of obs columns, aligned to rows.
     """
 
     layers: dict[str, np.ndarray]
     n_features: int
-    metadata: dict[str, np.ndarray] | None = None
+    metadata: pl.DataFrame | None = None
+
+    @classmethod
+    def empty(
+        cls,
+        n_features: int,
+        layer_dtypes: dict[str, np.dtype],
+        metadata: pl.DataFrame | None = None,
+    ) -> "DenseFeatureBatch":
+        """Construct an empty batch with zero rows."""
+        return cls(
+            layers={
+                name: np.zeros((0, n_features), dtype=dtype) for name, dtype in layer_dtypes.items()
+            },
+            n_features=n_features,
+            metadata=metadata,
+        )
 
 
 @dataclass
@@ -74,11 +108,23 @@ class SpatialTileBatch:
         ``{layer_name: list_of_ndarrays}``. Each list has one ndarray per row
         in query order.
     metadata:
-        Optional dict of obs columns as numpy arrays, aligned to rows.
+        Optional polars DataFrame of obs columns, aligned to rows.
     """
 
     layers: dict[str, list[np.ndarray]]
-    metadata: dict[str, np.ndarray] | None = None
+    metadata: pl.DataFrame | None = None
+
+    @classmethod
+    def empty(
+        cls,
+        layer_names: list[str],
+        metadata: pl.DataFrame | None = None,
+    ) -> "SpatialTileBatch":
+        """Construct an empty batch with zero rows."""
+        return cls(
+            layers={name: [] for name in layer_names},
+            metadata=metadata,
+        )
 
 
 @dataclass
@@ -94,7 +140,7 @@ class MultimodalBatch:
     n_rows:
         Total rows in the batch (query order).
     metadata:
-        Optional dict of obs columns aligned to ``n_rows`` (query order).
+        Optional polars DataFrame aligned to ``n_rows`` (query order).
     modalities:
         ``{feature_space: SparseBatch | DenseFeatureBatch | SpatialTileBatch}``.
         Each sub-batch has
@@ -104,6 +150,6 @@ class MultimodalBatch:
     """
 
     n_rows: int
-    metadata: dict[str, np.ndarray] | None
+    metadata: pl.DataFrame | None
     modalities: dict[str, "SparseBatch | DenseFeatureBatch | SpatialTileBatch"]
     present: dict[str, np.ndarray]
