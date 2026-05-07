@@ -41,10 +41,7 @@ from homeobox.batch_types import (
 from homeobox.group_reader import GroupReader
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
-from homeobox.read import (
-    _group_key_to_zg,
-    _prepare_obs_and_groups,
-)
+from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
@@ -77,61 +74,35 @@ def _build_present_arrays(
     return present_mask, row_positions
 
 
-def _build_sparse_group_readers(
-    atlas: "RaggedAtlas",
-    groups: GroupBy,
-    spec,
-    wanted_globals_for_fs: np.ndarray | None,
-) -> dict[str, GroupReader]:
-    """Build per-group GroupReader instances for a sparse feature space.
-
-    Resolves each group's remap and applies the optional feature filter.
-    """
-    layouts_per_group = collect_remapped_layout_readers_from_atlas(
-        atlas, groups, spec, wanted_globals=wanted_globals_for_fs
-    )
-    group_readers = collect_group_readers_from_atlas(
-        atlas, groups, spec, layouts_per_group=layouts_per_group, for_worker=True
-    )
-    return group_readers
-
-
-def _build_group_readers(
-    atlas: "RaggedAtlas",
-    groups: GroupBy,
-    feature_space: str,
-) -> dict[str, GroupReader]:
-    """Build per-group readers and matching unique group order."""
-    group_readers: dict[str, GroupReader] = {}
-    for key, _group_rows in groups:
-        zg = _group_key_to_zg(key)
-        group_readers[zg] = GroupReader.for_worker(
-            zarr_group=zg,
-            feature_space=feature_space,
-            store=atlas.store,
-        )
-    return group_readers
-
-
-def _build_sparse_modality_data(
+def _build_modality_data(
     atlas: "RaggedAtlas",
     rows_indexed: pl.DataFrame,
     # TODO: type these
     pf,
-    spec,
+    spec: FeatureSpaceSpec,
     layer: str,
-    wanted_globals_for_fs: np.ndarray | None,
+    wanted_globals: np.ndarray | None,
     n_rows: int,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
-    """Build ``_ModalityData`` for a sparse pointer-field modality.
+    """Build ``_ModalityData`` for any pointer-field modality.
+
+    Spec-driven: structural array paths and the layer path come from
+    :func:`get_array_paths_to_read`; group-reader assembly branches on
+    ``spec.has_var_df`` (feature-registry-backed modalities get remapped
+    layouts, others don't).
 
     Returns ``(filtered_rows, modality_data)`` where *filtered_rows*
     is the DataFrame after empty-row removal (with internal columns
     added).
     """
-    fs = pf.feature_space
+    if wanted_globals is not None and not spec.has_var_df:
+        raise ValueError(
+            f"wanted_globals is only valid for feature spaces with has_var_df=True; "
+            f"feature space '{spec.feature_space}' has has_var_df=False"
+        )
+
+    fs = spec.feature_space
     required_array_paths, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
-    [index_array_name] = required_array_paths
     layer_path = layer_array_paths_dict[layer]
 
     filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
@@ -139,13 +110,25 @@ def _build_sparse_modality_data(
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    group_readers = _build_sparse_group_readers(atlas, groups, spec, wanted_globals_for_fs)
-
-    n_features = (
-        len(wanted_globals_for_fs)
-        if wanted_globals_for_fs is not None
-        else atlas.registry_tables[fs].count_rows()
+    if spec.has_var_df:
+        layouts_per_group = collect_remapped_layout_readers_from_atlas(
+            atlas, groups, spec, wanted_globals=wanted_globals
+        )
+    else:
+        layouts_per_group = None
+    group_readers = collect_group_readers_from_atlas(
+        atlas, groups, spec, layouts_per_group=layouts_per_group, for_worker=True
     )
+
+    if spec.has_var_df:
+        n_features = (
+            len(wanted_globals)
+            if wanted_globals is not None
+            else atlas.registry_tables[fs].count_rows()
+        )
+    else:
+        n_features = 0
+
     if group_readers:
         first_key = list(group_readers.keys())[0]
         layer_dtype = group_readers[first_key].get_array_reader(layer_path)._native_dtype
@@ -153,53 +136,10 @@ def _build_sparse_modality_data(
         layer_dtype = np.dtype(np.float32)
 
     mod_data = _ModalityData(
-        pointer_type=SparseZarrPointer,
+        spec=spec,
         group_readers=group_readers,
         n_features=n_features,
-        index_array_name=index_array_name,
-        layer_path=layer_path,
-        layer_dtype=layer_dtype,
-        present_mask=present_mask,
-        row_positions=row_positions,
-    )
-    return filtered, mod_data
-
-
-def _build_dense_modality_data(
-    atlas: "RaggedAtlas",
-    rows_indexed: pl.DataFrame,
-    # TODO: Should type these
-    pf,
-    spec,
-    layer: str,
-    n_rows: int,
-) -> "tuple[pl.DataFrame, _ModalityData]":
-    """Build ``_ModalityData`` for a spatial tile/crop modality."""
-    fs = pf.feature_space
-    filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
-
-    present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
-    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
-
-    group_readers = _build_group_readers(atlas, groups, fs)
-
-    _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
-    layer_path = layer_array_paths_dict[layer]
-
-    if group_readers:
-        first_key = list(group_readers.keys())[0]
-        reader = group_readers[first_key].get_array_reader(layer_path)
-        layer_dtype = reader._native_dtype
-    else:
-        layer_dtype = np.dtype(np.float32)
-
-    n_features = atlas.registry_tables[fs].count_rows() if spec.has_var_df else 0
-
-    mod_data = _ModalityData(
-        pointer_type=spec.pointer_type,
-        group_readers=group_readers,
-        n_features=n_features,
-        index_array_name="",
+        required_array_paths=list(required_array_paths),
         layer_path=layer_path,
         layer_dtype=layer_dtype,
         present_mask=present_mask,
@@ -277,13 +217,14 @@ class _ModalityData:
     lazily per batch via lance ``take_row_ids``.
     """
 
-    pointer_type: type
+    spec: FeatureSpaceSpec
     group_readers: dict[str, GroupReader]
-    # This is the full size of the feature registry for the data
-    # modality, unless specific features are provided by wanted_globals
+    # Full size of the feature registry, unless wanted_globals filtered it; 0
+    # when ``spec.has_var_df`` is False (e.g. spatial tiles have no registry).
     n_features: int
-    # Can we keep `spec` or just feature_space instead
-    index_array_name: str  # sparse only; "" for dense
+    # Structural array paths from spec.reconstructor.required_arrays; consumers
+    # that depend on a single index array (e.g. sparse readers) assert len == 1.
+    required_array_paths: list[str]
     layer_path: str  # full zarr path, e.g. "csr/layers/counts" or "layers/raw"
     layer_dtype: np.dtype
     # TODO: Multimodal fields; maybe move to a separate class that inherits
@@ -310,11 +251,12 @@ async def _take_sparse_from_pointers(
     Unlike the old ``_take_sparse`` which indexed into stored arrays,
     this receives the pointer data directly (loaded from lance per-batch).
     """
+    [index_array_name] = mod_data.required_array_paths
     group_obs_data, results = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=[mod_data.index_array_name, mod_data.layer_path],
+        array_names=[index_array_name, mod_data.layer_path],
         read_method="ranges",
     )
     if not group_obs_data:
@@ -556,7 +498,8 @@ async def _take_multimodal(
         # Extract pointers for ALL batch rows for this modality
         pointer_df = take_result[pf_name].struct.unnest()
         zg_series = pointer_df["zarr_group"]
-        if mod_data.pointer_type is DiscreteSpatialPointer:
+        pointer_type = mod_data.spec.pointer_type
+        if pointer_type is DiscreteSpatialPointer:
             batch_present = (zg_series.is_not_null() & (zg_series != "")).to_numpy()
         else:
             batch_present = zg_series.is_not_null().to_numpy()
@@ -567,12 +510,12 @@ async def _take_multimodal(
         # Extract pointers only for present rows
         present_take = take_result[present_indices.tolist()]
         present_row_ids = present_take["_rowid"].to_numpy().astype(np.uint64, copy=False)
-        obs_pl, groups = _prepare_obs_and_groups(present_take, mod_data.pointer_type, pf_name)
+        obs_pl, groups = _prepare_obs_and_groups(present_take, pointer_type, pf_name)
         assert len(obs_pl) == len(present_take)
 
-        if mod_data.pointer_type is SparseZarrPointer:
+        if pointer_type is SparseZarrPointer:
             tasks.append(_take_sparse_from_pointers(groups, specs[fs], present_row_ids, mod_data))
-        elif mod_data.pointer_type is DenseZarrPointer and specs[fs].has_var_df:
+        elif pointer_type is DenseZarrPointer and specs[fs].has_var_df:
             tasks.append(
                 _take_dense_feature_from_pointers(groups, specs[fs], present_row_ids, mod_data)
             )
@@ -666,25 +609,15 @@ class UnimodalHoxDataset(_AsyncDataset):
         # Build modality data (filters empty rows, builds remaps & readers)
         rows_indexed = obs_pl.with_row_index("_orig_idx")
 
-        if self.spec.pointer_type is SparseZarrPointer:
-            filtered, self._mod_data = _build_sparse_modality_data(
-                atlas,
-                rows_indexed,
-                pf,
-                self.spec,
-                layer,
-                wanted_globals,
-                obs_pl.height,
-            )
-        else:
-            filtered, self._mod_data = _build_dense_modality_data(
-                atlas,
-                rows_indexed,
-                pf,
-                self.spec,
-                layer,
-                obs_pl.height,
-            )
+        filtered, self._mod_data = _build_modality_data(
+            atlas,
+            rows_indexed,
+            pf,
+            self.spec,
+            layer,
+            wanted_globals,
+            obs_pl.height,
+        )
 
         self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
         self._n_rows = len(self._row_ids)
@@ -879,20 +812,10 @@ class MultimodalHoxDataset(_AsyncDataset):
             self._specs[fn] = spec
             layer = layers.get(fn, "counts")
 
-            if spec.pointer_type is SparseZarrPointer:
-                wg = wanted_globals.get(fn) if wanted_globals is not None else None
-                _, modality_data[fn] = _build_sparse_modality_data(
-                    atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
-                )
-            else:
-                _, modality_data[fn] = _build_dense_modality_data(
-                    atlas,
-                    rows_indexed,
-                    pf,
-                    spec,
-                    layer,
-                    self._n_rows,
-                )
+            wg = wanted_globals.get(fn) if wanted_globals is not None else None
+            _, modality_data[fn] = _build_modality_data(
+                atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
+            )
 
         self._modality_data = modality_data
         self._n_features = {fn: modality_data[fn].n_features for fn in field_names}
