@@ -343,7 +343,13 @@ def test_dense_feature_dataset_returns_dense_feature_batch(single_group_dense_fe
     data = batch.layers["ctrl_standardized"]
     assert data.shape == (4, 3)
     assert data.dtype == np.float32
-    np.testing.assert_array_equal(data, expected)
+    # Output columns are scattered into the global registry index space, so
+    # compute the expected matrix from the layout's local->global remap rather
+    # than comparing to the raw input X.
+    remap = atlas.get_group_reader("ds/image_features", "image_features").get_remap()
+    expected_remapped = np.zeros_like(expected)
+    expected_remapped[:, remap] = expected
+    np.testing.assert_array_equal(data, expected_remapped)
     assert batch.metadata is not None
     assert batch.metadata["tissue"].to_list() == ["tissue_0", "tissue_1", "tissue_0", "tissue_1"]
 

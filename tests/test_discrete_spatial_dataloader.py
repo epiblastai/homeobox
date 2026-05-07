@@ -26,7 +26,6 @@ from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.pointer_types import DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.reconstruction import SpatialReconstructor
-from homeobox.reconstructor_base import Reconstructor
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
@@ -40,16 +39,15 @@ from homeobox.schema import (
 # ---------------------------------------------------------------------------
 
 # Register a discrete-spatial spec for tests. Pointer-type dispatch in the
-# dataloader requires the feature space to resolve to a registered spec.
-# A no-endpoint Reconstructor() is sufficient: the dataloader builds its own
-# SpatialTileBatch and never calls the reconstructor.
+# dataloader requires the feature space to resolve to a registered spec, and
+# read_arrays_by_group dispatches on the reconstructor's read_method.
 if "image_crops" not in registered_feature_spaces():
     register_spec(
         FeatureSpaceSpec(
             feature_space="image_crops",
             pointer_type=DiscreteSpatialPointer,
             has_var_df=False,
-            reconstructor=Reconstructor(),
+            reconstructor=SpatialReconstructor(),
             zarr_group_spec=ZarrGroupSpec(
                 layers=LayersSpec(
                     required=[
@@ -512,13 +510,13 @@ def test_spatial_reconstructor_as_array_uniform(two_group_uniform_crop_atlas):
 
 
 def test_spatial_reconstructor_as_array_ragged_raises(ragged_crop_atlas):
-    """as_array uses stack_uniform=True and rejects heterogeneous crop shapes."""
+    """as_array stacks per-row tiles and rejects heterogeneous crop shapes."""
     atlas, _images, _boxes = ragged_crop_atlas
 
     obs_pl = atlas.query()._materialize_rows()
     pf = atlas.pointer_fields["image_crops"]
 
-    with pytest.raises(RuntimeError, match="stack_uniform"):
+    with pytest.raises(ValueError, match="same shape"):
         SpatialReconstructor().as_array(atlas, obs_pl, pf)
 
 

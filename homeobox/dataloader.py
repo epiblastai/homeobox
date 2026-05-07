@@ -44,8 +44,6 @@ from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, Spa
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     RowOrderMapping,
-    _reorder_dense_feature_batch_rows,  # transitional: until dense take is refactored
-    _reorder_spatial_tile_batch_rows,  # transitional: until spatial take is refactored
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
     concat_remapped_batches,
@@ -335,47 +333,41 @@ async def _take_dense_feature_from_pointers(
     """Fetch a dense feature batch from per-row pointer arrays."""
     out_dtype = np.dtype(np.float32)
     layer_names = list(mod_data.layer_array_paths.keys())
-    layer_paths = list(mod_data.layer_array_paths.values())
-    group_obs_data, results = read_arrays_by_group(
+    group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=layer_paths,
-        read_method="boxes",
-        stack_uniform=True,
+        required_array_paths=mod_data.required_array_paths,
+        layer_array_paths=mod_data.layer_array_paths,
     )
-    if not group_obs_data:
-        return DenseFeatureBatch(
-            layers={
-                name: np.zeros((0, mod_data.n_features), dtype=out_dtype) for name in layer_names
-            },
+    if not group_batches:
+        return DenseFeatureBatch.empty(
             n_features=mod_data.n_features,
+            layer_dtypes={name: out_dtype for name in layer_names},
         )
 
-    obs_parts = []
-    data_parts_per_layer: dict[str, list[np.ndarray]] = {name: [] for name in layer_names}
-    for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
-        for name, group_data in zip(layer_names, group_results, strict=True):
-            if group_data.dtype != out_dtype:
-                group_data = group_data.astype(out_dtype)
-            data_parts_per_layer[name].append(group_data)
-        obs_parts.append(group_rows)
-
-    layers_data = {
-        name: np.concatenate(parts, axis=0) for name, parts in data_parts_per_layer.items()
+    layouts_per_group = {
+        zg: gr.layout_reader
+        for zg, gr in mod_data.group_readers.items()
+        if gr.layout_reader is not None
     }
-
-    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    batch = DenseFeatureBatch(
-        layers=layers_data,
+    batch = concat_remapped_batches(
+        group_batches,
+        layouts_per_group=layouts_per_group or None,
         n_features=mod_data.n_features,
-        metadata=_select_obs_metadata(obs_pl),
     )
 
-    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
-    row_id_order = np.argsort(grouped_row_ids, kind="stable")
-    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_dense_feature_batch_rows(batch, row_perm)
+    mapping = RowOrderMapping(
+        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        target_row_ids=batch_row_ids,
+    )
+    batch = reorder_batch_rows(batch, mapping)
+    batch.layers = {
+        name: arr if arr.dtype == out_dtype else arr.astype(out_dtype)
+        for name, arr in batch.layers.items()
+    }
+    batch.metadata = _select_obs_metadata(batch.metadata)
+    return batch
 
 
 async def _take_spatial_tile_from_pointers(
@@ -386,42 +378,34 @@ async def _take_spatial_tile_from_pointers(
 ) -> SpatialTileBatch:
     """Fetch a spatial tile/crop batch from per-row pointer arrays."""
     layer_names = list(mod_data.layer_array_paths.keys())
-    layer_paths = list(mod_data.layer_array_paths.values())
-    group_obs_data, results = read_arrays_by_group(
+    group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
-        array_names=layer_paths,
-        read_method="boxes",
-        stack_uniform=False,
+        required_array_paths=mod_data.required_array_paths,
+        layer_array_paths=mod_data.layer_array_paths,
     )
-    if not group_obs_data:
-        return SpatialTileBatch(layers={name: [] for name in layer_names})
+    if not group_batches:
+        return SpatialTileBatch.empty(layer_names=layer_names)
 
-    obs_parts = []
-    layers_data: dict[str, list[np.ndarray]] = {name: [] for name in layer_names}
-    for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
-        for name, group_data in zip(layer_names, group_results, strict=True):
-            if isinstance(group_data, list):
-                rows = group_data
-            else:
-                rows = [group_data[i] for i in range(group_data.shape[0])]
-            target_dtype = mod_data.layer_dtypes[name]
-            layers_data[name].extend(
-                row if row.dtype == target_dtype else row.astype(target_dtype) for row in rows
-            )
-        obs_parts.append(group_rows)
+    batch = concat_remapped_batches(group_batches, layouts_per_group=None, n_features=0)
 
-    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    batch = SpatialTileBatch(
-        layers=layers_data,
-        metadata=_select_obs_metadata(obs_pl),
+    mapping = RowOrderMapping(
+        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
+        target_row_ids=batch_row_ids,
     )
-
-    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
-    row_id_order = np.argsort(grouped_row_ids, kind="stable")
-    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_spatial_tile_batch_rows(batch, row_perm)
+    batch = reorder_batch_rows(batch, mapping)
+    batch.layers = {
+        name: [
+            row
+            if row.dtype == mod_data.layer_dtypes[name]
+            else row.astype(mod_data.layer_dtypes[name])
+            for row in rows
+        ]
+        for name, rows in batch.layers.items()
+    }
+    batch.metadata = _select_obs_metadata(batch.metadata)
+    return batch
 
 
 async def _take_multimodal(
