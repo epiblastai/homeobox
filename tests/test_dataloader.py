@@ -11,7 +11,7 @@ import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.batch_types import DenseFeatureBatch, SparseBatch
-from homeobox.dataloader import dense_to_tensor_collate, make_loader, sparse_to_dense_collate
+from homeobox.dataloader import make_loader
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
@@ -353,10 +353,6 @@ def test_dense_feature_dataset_returns_dense_feature_batch(single_group_dense_fe
     assert batch.metadata is not None
     assert batch.metadata["tissue"].to_list() == ["tissue_0", "tissue_1", "tissue_0", "tissue_1"]
 
-    pytest.importorskip("torch")
-    tensor_batch = dense_to_tensor_collate(batch)
-    assert tuple(tensor_batch["X"].shape) == (4, 3)
-
 
 def test_unimodal_dataset_empty(two_group_atlas):
     """UnimodalHoxDataset handles empty query results."""
@@ -547,50 +543,6 @@ def test_no_metadata(two_group_atlas):
     )
     batch = ds.__getitems__(list(range(min(10, ds.n_rows))))
     assert batch.metadata is None
-
-
-# ---------------------------------------------------------------------------
-# Tests: collate functions
-# ---------------------------------------------------------------------------
-
-
-def test_sparse_to_dense_collate(single_group_atlas):
-    """sparse_to_dense_collate produces correct dense tensor."""
-    pytest.importorskip("torch")
-    ds = (
-        single_group_atlas.query()
-        .feature_spaces("gene_expression")
-        .to_unimodal_dataset("gene_expression")
-    )
-    batch = ds.__getitems__(list(range(10)))
-
-    result = sparse_to_dense_collate(batch)
-    X = result["X"]
-
-    assert X.shape == (10, 5)
-    assert X.dtype.is_floating_point
-
-    # Verify round-trip: dense -> CSR -> compare with original batch
-    for i in range(10):
-        s, e = batch.offsets[i], batch.offsets[i + 1]
-        for j in range(s, e):
-            assert X[i, batch.indices[j]].item() == pytest.approx(batch.layers["counts"][j])
-
-
-def test_collate_with_metadata(two_group_atlas):
-    """Collate functions pass through metadata as tensors."""
-    pytest.importorskip("torch")
-    ds = (
-        two_group_atlas.query()
-        .feature_spaces("gene_expression")
-        .to_unimodal_dataset("gene_expression", metadata_columns=["tissue"])
-    )
-    batch = ds.__getitems__(list(range(10)))
-
-    result = sparse_to_dense_collate(batch)
-    assert "X" in result
-    # tissue is string dtype, so it stays as numpy array
-    assert "tissue" in result
 
 
 # ---------------------------------------------------------------------------
