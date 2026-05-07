@@ -9,7 +9,7 @@ The reconstructor is responsible for:
 - Remapping per-group local feature indices to the global feature space
 - Assembling the final `AnnData` with obs, var, and X (and any additional layers)
 
-Homeobox ships three built-in reconstructors. Most users will pick one of them when defining a custom `ZarrGroupSpec`; implementing a custom reconstructor from scratch is rarely needed.
+Homeobox ships several built-in reconstructors. Most users will pick one of them when defining a custom `ZarrGroupSpec`; implementing a custom reconstructor from scratch is rarely needed.
 
 ---
 
@@ -69,17 +69,17 @@ For union queries, cells from groups that don't measure a given feature simply h
 
 When `wanted_globals` is provided and the number of queried cells exceeds the number of requested features, the reconstructor automatically delegates to `FeatureCSCReconstructor`. This heuristic — cells outnumber features — identifies the regime where CSC reads are cheaper: reading one column at a time across many cells costs less I/O than reading many full cell rows and then slicing. The delegation is transparent; you do not need to configure anything.
 
-### `DenseReconstructor`
+### `DenseFeatureReconstructor`
 
-**Use for:** dense assays — protein abundance (CITE-seq ADT), image feature vectors, log-normalized expression where all values are non-zero (e.g., after HVG selection and normalization), any data stored as a 2D float array.
+**Use for:** dense feature assays with a feature registry — protein abundance (CITE-seq ADT), image feature vectors, log-normalized expression where all values are non-zero (e.g., after HVG selection and normalization), any feature-oriented data stored as a 2D dense array. Specs using this reconstructor must set `has_var_df=True`.
 
 ```python
-from homeobox.reconstruction import DenseReconstructor
+from homeobox.reconstruction import DenseFeatureReconstructor
 
 ZarrGroupSpec(
     feature_space="protein_abundance",
     pointer_type=DenseZarrPointer,
-    reconstructor=DenseReconstructor(),
+    reconstructor=DenseFeatureReconstructor(),
     ...
 )
 ```
@@ -118,7 +118,7 @@ When `wanted_globals` is not provided, `FeatureCSCReconstructor` delegates entir
 | Data type | Reconstructor | Notes |
 |---|---|---|
 | Sparse counts (gene expression, ATAC) | `SparseCSRReconstructor` | Default choice for sparse assays |
-| Dense float arrays (protein, embeddings, log-normalized HVGs) | `DenseReconstructor` | Required for `DenseZarrPointer` feature spaces |
+| Dense feature arrays (protein, embeddings, log-normalized HVGs) | `DenseFeatureReconstructor` | Requires `has_var_df=True` |
 | Sparse + frequent feature-filtered queries | `FeatureCSCReconstructor` | Requires `add_csc()` on groups; falls back gracefully per group |
 
 Use `FeatureCSCReconstructor` instead of `SparseCSRReconstructor` when:
@@ -201,6 +201,6 @@ Lower-level helper used by `_load_remaps_and_features`. Computes the union or in
 ## Imports
 
 ```python
-from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
+from homeobox.reconstruction import SparseCSRReconstructor, DenseFeatureReconstructor, FeatureCSCReconstructor
 from homeobox.protocols import Reconstructor
 ```

@@ -8,7 +8,7 @@ from homeobox.group_specs import (
     register_spec, get_spec, registered_feature_spaces,
 )
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
-from homeobox.reconstruction import SparseCSRReconstructor, DenseReconstructor, FeatureCSCReconstructor
+from homeobox.reconstruction import SparseCSRReconstructor, DenseFeatureReconstructor, FeatureCSCReconstructor
 ```
 
 ---
@@ -70,10 +70,10 @@ A string that must be unique across the spec registry. This value is used as the
 
 ### `reconstructor`
 
-A `Reconstructor` protocol instance. Controls how data is assembled back into an AnnData at query time. The three built-in options are:
+A `Reconstructor` protocol instance. Controls how data is assembled back into query results. Common built-in options are:
 
 - `SparseCSRReconstructor()` — for sparse assays stored in CSR layout. Reads byte ranges from `csr/indices` and the corresponding layer array, then scatter-gathers into the global feature space.
-- `DenseReconstructor()` — for dense assays. Reads row slices from a dense 2-D array and scatters into the global feature space.
+- `DenseFeatureReconstructor()` — for dense feature assays with `has_var_df=True`. Reads row slices from a dense 2-D array and scatters into the global feature space.
 - `FeatureCSCReconstructor()` — for feature-filtered queries on sparse data. Requires that `add_csc()` has been called on the group; reads from `csc/indices` instead of `csr/indices`, enabling efficient column extraction without touching all cell rows.
 
 See the Reconstructors page for guidance on choosing between these.
@@ -124,7 +124,7 @@ FeatureSpaceSpec(
     feature_space="image_features",
     pointer_type=DenseZarrPointer,
     has_var_df=True,
-    reconstructor=DenseReconstructor(),
+    reconstructor=DenseFeatureReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
             required=[ArraySpec(array_name="raw", ndim=2, allowed_dtypes=[np.float32])],
@@ -151,14 +151,14 @@ This example registers a `lognorm_rna` space for dense log-normalized RNA-seq da
 from homeobox.group_specs import (
     ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
 )
-from homeobox.reconstruction import DenseReconstructor
+from homeobox.reconstruction import DenseFeatureReconstructor
 from homeobox.pointer_types import DenseZarrPointer
 
 LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
     pointer_type=DenseZarrPointer,
     has_var_df=True,
-    reconstructor=DenseReconstructor(),
+    reconstructor=DenseFeatureReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
             required=[ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32])],

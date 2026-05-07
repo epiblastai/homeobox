@@ -23,7 +23,7 @@ from homeobox.pointer_types import (
     SparseZarrPointer,
 )
 from homeobox.reconstruction import (
-    DenseReconstructor,
+    DenseFeatureReconstructor,
     SparseGeneExpressionReconstructor,
     SpatialReconstructor,
 )
@@ -107,7 +107,7 @@ IMAGE_FEATURES_SPEC = FeatureSpaceSpec(
     feature_space="image_features",
     pointer_type=DenseZarrPointer,
     has_var_df=True,
-    reconstructor=DenseReconstructor(),
+    reconstructor=DenseFeatureReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
             required=[
@@ -130,7 +130,7 @@ PROTEIN_ABUNDANCE_SPEC = FeatureSpaceSpec(
     feature_space="protein_abundance",
     pointer_type=DenseZarrPointer,
     has_var_df=True,
-    reconstructor=DenseReconstructor(),
+    reconstructor=DenseFeatureReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
             required=[ArraySpec(array_name="counts", ndim=2, allowed_dtypes=[np.uint32])],

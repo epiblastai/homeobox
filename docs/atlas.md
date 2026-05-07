@@ -70,14 +70,14 @@ import numpy as np
 from homeobox.group_specs import (
     ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
 )
-from homeobox.reconstruction import DenseReconstructor
+from homeobox.reconstruction import DenseFeatureReconstructor
 from homeobox.pointer_types import DenseZarrPointer
 
 LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
     pointer_type=DenseZarrPointer,    # each cell stores a row index, not a byte range
     has_var_df=True,                  # this space has a feature registry + _feature_layouts rows
-    reconstructor=DenseReconstructor(),
+    reconstructor=DenseFeatureReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
             required=[ArraySpec(array_name="log_normalized", ndim=2, allowed_dtypes=[np.float32])],

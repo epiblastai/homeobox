@@ -439,7 +439,7 @@ class AtlasQuery:
             # TODO: Might make sense to not just have `endpoint` but `default_endpoint`
             # instead. That specifies what the natural preferred type is. This isn't perfect
             # when there are cases where a reconstructor isn't oriented toward 1 specific feature
-            # space (i.e., DenseReconstructor can be for image tiles or image features).
+            # space (i.e., SpatialReconstructor can be for image tiles or image crops).
             # Dispatch to the appropriate endpoint:
             # fragments first (modality-native), then raw array for var-less
             # dense feature spaces, otherwise an AnnData.
