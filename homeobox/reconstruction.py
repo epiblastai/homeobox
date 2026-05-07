@@ -13,7 +13,7 @@ import polars as pl
 import scipy.sparse as sp
 
 from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
-from homeobox.group_specs import get_spec
+from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
     _group_key_to_zg,
     _prepare_obs_and_groups,
@@ -21,10 +21,12 @@ from homeobox.read import (
     _sync_gather,
 )
 from homeobox.reconstruction_functional import (
+    cast_batch_layers_to_dtypes,
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
     concat_remapped_batches,
     get_array_paths_to_read,
+    get_layer_maximal_dtypes,
     read_arrays_by_group,
 )
 from homeobox.reconstructor_base import Reconstructor, endpoint
@@ -132,6 +134,14 @@ def _single_layer_array_name(layer_array_paths_dict: dict[str, str], feature_spa
     return next(iter(layer_array_paths_dict.values()))
 
 
+def _layer_dtypes_for_names(
+    spec: FeatureSpaceSpec,
+    layer_names: list[str],
+) -> dict[str, np.dtype]:
+    maximal_layer_dtypes = get_layer_maximal_dtypes(spec)
+    return {name: maximal_layer_dtypes[name] for name in layer_names}
+
+
 class SparseCSRReconstructor(Reconstructor):
     """Reconstruct sparse CSR data across zarr groups.
 
@@ -167,36 +177,6 @@ class SparseCSRReconstructor(Reconstructor):
             n_features=local_n_features,
             metadata=group_rows,
         )
-
-    def _remap_features(
-        self,
-        *,
-        zg: str,
-        flat_indices: np.ndarray,
-        lengths: np.ndarray,
-        n_rows_group: int,
-        group_remap_to_joined: dict[str, np.ndarray],
-        feature_join: Literal["union", "intersection"],
-        wanted_globals: np.ndarray | None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
-        """Map local sparse feature indices into the joined feature space."""
-        if zg in group_remap_to_joined:
-            joined_remap = group_remap_to_joined[zg]
-            joined_indices = joined_remap[flat_indices.astype(np.intp)]
-        else:
-            joined_indices = flat_indices.astype(np.int32)
-
-        if (
-            feature_join == "intersection" or wanted_globals is not None
-        ) and zg in group_remap_to_joined:
-            keep_mask = joined_indices >= 0
-            joined_indices = joined_indices[keep_mask]
-            row_ids = np.repeat(np.arange(n_rows_group), lengths)
-            lengths = np.bincount(row_ids[keep_mask], minlength=n_rows_group).astype(np.int64)
-        else:
-            keep_mask = None
-
-        return joined_indices, lengths, keep_mask
 
     def as_anndata(
         self,
@@ -241,6 +221,7 @@ class SparseCSRReconstructor(Reconstructor):
         spec = get_spec(pf.feature_space)
         required_array_paths, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
         layer_names = list(layer_array_paths.keys())
+        layer_dtypes = _layer_dtypes_for_names(spec, layer_names)
 
         pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
@@ -267,6 +248,9 @@ class SparseCSRReconstructor(Reconstructor):
             required_array_paths=required_array_paths,
             layer_array_paths=layer_array_paths,
         )
+        group_batches = [
+            (zg, cast_batch_layers_to_dtypes(batch, layer_dtypes)) for zg, batch in group_batches
+        ]
         batch = concat_remapped_batches(
             group_batches,
             layouts_per_group=layouts_per_group,
@@ -328,6 +312,7 @@ class DenseFeatureReconstructor(Reconstructor):
         spec = get_spec(pf.feature_space)
         required_array_paths, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
         layer_names = list(layer_array_paths.keys())
+        layer_dtypes = _layer_dtypes_for_names(spec, layer_names)
 
         pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
@@ -354,6 +339,9 @@ class DenseFeatureReconstructor(Reconstructor):
             required_array_paths=required_array_paths,
             layer_array_paths=layer_array_paths,
         )
+        group_batches = [
+            (zg, cast_batch_layers_to_dtypes(batch, layer_dtypes)) for zg, batch in group_batches
+        ]
         batch = concat_remapped_batches(
             group_batches,
             layouts_per_group=layouts_per_group,
@@ -395,7 +383,7 @@ class SpatialReconstructor(Reconstructor):
         obs_pl: pl.DataFrame,
         pf: PointerField,
         layer: str | None,
-    ) -> tuple[list[np.ndarray] | None, str]:
+    ) -> tuple[list[np.ndarray] | None, str, np.dtype]:
         """Read one spatial layer across all groups and concat per-row tiles.
 
         Returns ``(rows_or_None, layer_name)`` where ``rows_or_None`` is the
@@ -407,10 +395,11 @@ class SpatialReconstructor(Reconstructor):
         )
         _single_layer_array_name(layer_array_paths, pf.feature_space)
         layer_name = next(iter(layer_array_paths.keys()))
+        layer_dtype = _layer_dtypes_for_names(spec, [layer_name])[layer_name]
 
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return None, layer_name
+            return None, layer_name, layer_dtype
 
         group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
         group_batches = read_arrays_by_group(
@@ -420,8 +409,13 @@ class SpatialReconstructor(Reconstructor):
             required_array_paths=required_array_paths,
             layer_array_paths=layer_array_paths,
         )
+        group_batches = [
+            (zg, cast_batch_layers_to_dtypes(batch, {layer_name: layer_dtype}))
+            for zg, batch in group_batches
+        ]
         batch = concat_remapped_batches(group_batches, layouts_per_group=None, n_features=0)
-        return batch.layers[layer_name], layer_name
+        rows = batch.layers[layer_name]
+        return rows, layer_name, layer_dtype
 
     @endpoint
     def as_array(
@@ -436,9 +430,9 @@ class SpatialReconstructor(Reconstructor):
         All boxes must produce identical crop shapes. Dense row pointers are
         rank-1 boxes and are returned as ``(n_rows, *per_row_shape)`` arrays.
         """
-        rows, _layer_name = self._read_concat_single_layer(atlas, obs_pl, pf, layer)
+        rows, _layer_name, layer_dtype = self._read_concat_single_layer(atlas, obs_pl, pf, layer)
         if rows is None:
-            return np.empty((0,), dtype=np.float32)
+            return np.empty((0,), dtype=layer_dtype)
         return np.stack(rows, axis=0)
 
     @endpoint
@@ -466,7 +460,7 @@ class SpatialReconstructor(Reconstructor):
         layer:
             Which layer to read. Defaults to the spec's only required layer.
         """
-        rows, _layer_name = self._read_concat_single_layer(atlas, obs_pl, pf, layer)
+        rows, _layer_name, _layer_dtype = self._read_concat_single_layer(atlas, obs_pl, pf, layer)
         return rows if rows is not None else []
 
 
@@ -609,6 +603,7 @@ def _build_coo_to_csr(
     n_total_rows: int,
     n_features: int,
     layers_to_read: list[str],
+    layer_dtypes: dict[str, np.dtype],
 ) -> dict[str, sp.csr_matrix]:
     """Concatenate accumulated COO parts and convert to per-layer CSR matrices."""
     rows = np.concatenate(rows_parts) if rows_parts else np.array([], dtype=np.int64)
@@ -617,7 +612,11 @@ def _build_coo_to_csr(
     stacked: dict[str, sp.csr_matrix] = {}
     for ln in layers_to_read:
         vals_list = layer_vals_parts[ln]
-        vals = np.concatenate(vals_list) if vals_list else np.array([], dtype=np.float32)
+        vals = (
+            np.concatenate(vals_list).astype(layer_dtypes[ln], copy=False)
+            if vals_list
+            else np.array([], dtype=layer_dtypes[ln])
+        )
         stacked[ln] = sp.coo_matrix((vals, (rows, cols)), shape=(n_total_rows, n_features)).tocsr()
 
     return stacked
@@ -670,6 +669,7 @@ class FeatureCSCReconstructor(Reconstructor):
         n_features = len(wanted_globals)
         _, layer_array_paths_dict = get_array_paths_to_read(spec, layer_overrides)
         layers_to_read = list(layer_array_paths_dict.keys())
+        layer_dtypes = _layer_dtypes_for_names(spec, layers_to_read)
 
         layouts_per_group, _ = collect_remapped_layout_readers_from_atlas(
             atlas,
@@ -758,6 +758,7 @@ class FeatureCSCReconstructor(Reconstructor):
             row_offset,
             n_features,
             layers_to_read,
+            layer_dtypes,
         )
 
         return _assemble_anndata(

@@ -24,7 +24,7 @@ class SparseBatch:
         int64, CSR-style indptr (length = n_rows + 1).
     layers:
         ``{layer_name: values_array}``. Each values array uses the layer's
-        native dtype and is aligned to ``indices``.
+        resolved dtype and is aligned to ``indices``.
     n_features:
         Global feature space width (registry size).
     metadata:

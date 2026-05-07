@@ -28,8 +28,61 @@ ReadersByZarrGroup = NewType("ReadersByZarrGroup", dict[str, GroupReader])
 LayoutsByZarrGroup = NewType("LayoutsByZarrGroup", dict[str, LayoutReader])
 LayoutsByLayoutUid = NewType("LayoutsByLayoutUid", dict[str, LayoutReader])
 
-# TODO: Add a dtype resolution function for making placeholder arrays
-# and doing casting appropriately without loss
+
+def _maximal_dtype_for_allowed_dtypes(allowed_dtypes: list[np.dtype]) -> np.dtype:
+    """Resolve the least dtype that can represent all allowed numeric dtypes."""
+    if not allowed_dtypes:
+        raise ValueError("allowed_dtypes must contain at least one dtype")
+
+    dtypes = [np.dtype(dtype) for dtype in allowed_dtypes]
+    unsupported = [str(dtype) for dtype in dtypes if dtype.kind not in "biuf"]
+    if unsupported:
+        raise TypeError(f"Only bool, integer, and float dtypes are supported: {unsupported}")
+
+    return np.result_type(*dtypes)
+
+
+def get_layer_maximal_dtypes(spec: FeatureSpaceSpec) -> dict[str, np.dtype]:
+    """Return the maximal dtype for each declared layer in ``spec``.
+
+    The returned dtype is the smallest NumPy dtype that can represent every
+    dtype allowed by the layer spec. For example, ``float32`` with ``uint16``
+    stays ``float32``, while ``float32`` with ``uint32`` promotes to
+    ``float64``.
+    """
+    return {
+        layer_name: _maximal_dtype_for_allowed_dtypes(layer_spec.allowed_dtypes)
+        for layer_name, layer_spec in spec.zarr_group_spec.layers.array_specs_by_name.items()
+    }
+
+
+def cast_batch_layers_to_dtypes(
+    batch: "GroupBatch",
+    layer_dtypes: dict[str, np.dtype],
+) -> "GroupBatch":
+    """Cast a batch's layer arrays in place to the requested per-layer dtypes."""
+    if isinstance(batch, SparseBatch | DenseFeatureBatch):
+        batch.layers = {
+            name: arr
+            if arr.dtype == layer_dtypes[name]
+            else arr.astype(layer_dtypes[name], copy=False)
+            for name, arr in batch.layers.items()
+        }
+        return batch
+
+    if isinstance(batch, SpatialTileBatch):
+        batch.layers = {
+            name: [
+                row
+                if row.dtype == layer_dtypes[name]
+                else row.astype(layer_dtypes[name], copy=False)
+                for row in rows
+            ]
+            for name, rows in batch.layers.items()
+        }
+        return batch
+
+    raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
 
 
 def get_array_paths_to_read(

@@ -44,10 +44,12 @@ from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, Spa
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     RowOrderMapping,
+    cast_batch_layers_to_dtypes,
     collect_group_readers_from_atlas,
     collect_remapped_layout_readers_from_atlas,
     concat_remapped_batches,
     get_array_paths_to_read,
+    get_layer_maximal_dtypes,
     read_arrays_by_group,
     reorder_batch_rows,
 )
@@ -131,14 +133,8 @@ def _build_modality_data(
     else:
         n_features = 0
 
-    if group_readers:
-        first_reader = next(iter(group_readers.values()))
-        layer_dtypes = {
-            name: first_reader.get_array_reader(path)._native_dtype
-            for name, path in layer_array_paths.items()
-        }
-    else:
-        layer_dtypes = {name: np.dtype(np.float32) for name in layer_array_paths}
+    maximal_layer_dtypes = get_layer_maximal_dtypes(spec)
+    layer_dtypes = {name: maximal_layer_dtypes[name] for name in layer_array_paths}
 
     mod_data = _ModalityData(
         spec=spec,
@@ -269,7 +265,7 @@ class _ModalityData:
     required_array_paths: list[str]
     # ``{layer_name: full zarr path}`` (e.g. ``{"counts": "csr/layers/counts"}``).
     layer_array_paths: dict[str, str]
-    layer_dtypes: dict[str, np.dtype]  # layer_name -> native dtype
+    layer_dtypes: dict[str, np.dtype]  # layer_name -> spec maximal dtype
     # TODO: Multimodal fields; maybe move to a separate class that inherits
     present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
     row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
@@ -303,6 +299,10 @@ async def _take_sparse_from_pointers(
             n_features=mod_data.n_features,
             layer_dtypes=mod_data.layer_dtypes,
         )
+    group_batches = [
+        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
+        for zg, batch in group_batches
+    ]
 
     layouts_per_group = {
         zg: gr.layout_reader
@@ -331,8 +331,6 @@ async def _take_dense_feature_from_pointers(
     mod_data: _ModalityData,
 ) -> DenseFeatureBatch:
     """Fetch a dense feature batch from per-row pointer arrays."""
-    out_dtype = np.dtype(np.float32)
-    layer_names = list(mod_data.layer_array_paths.keys())
     group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
@@ -343,8 +341,12 @@ async def _take_dense_feature_from_pointers(
     if not group_batches:
         return DenseFeatureBatch.empty(
             n_features=mod_data.n_features,
-            layer_dtypes={name: out_dtype for name in layer_names},
+            layer_dtypes=mod_data.layer_dtypes,
         )
+    group_batches = [
+        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
+        for zg, batch in group_batches
+    ]
 
     layouts_per_group = {
         zg: gr.layout_reader
@@ -362,10 +364,6 @@ async def _take_dense_feature_from_pointers(
         target_row_ids=batch_row_ids,
     )
     batch = reorder_batch_rows(batch, mapping)
-    batch.layers = {
-        name: arr if arr.dtype == out_dtype else arr.astype(out_dtype)
-        for name, arr in batch.layers.items()
-    }
     batch.metadata = _select_obs_metadata(batch.metadata)
     return batch
 
@@ -387,6 +385,10 @@ async def _take_spatial_tile_from_pointers(
     )
     if not group_batches:
         return SpatialTileBatch.empty(layer_names=layer_names)
+    group_batches = [
+        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
+        for zg, batch in group_batches
+    ]
 
     batch = concat_remapped_batches(group_batches, layouts_per_group=None, n_features=0)
 
@@ -395,15 +397,6 @@ async def _take_spatial_tile_from_pointers(
         target_row_ids=batch_row_ids,
     )
     batch = reorder_batch_rows(batch, mapping)
-    batch.layers = {
-        name: [
-            row
-            if row.dtype == mod_data.layer_dtypes[name]
-            else row.astype(mod_data.layer_dtypes[name])
-            for row in rows
-        ]
-        for name, rows in batch.layers.items()
-    }
     batch.metadata = _select_obs_metadata(batch.metadata)
     return batch
 
