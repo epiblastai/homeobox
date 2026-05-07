@@ -292,7 +292,6 @@ async def _take_sparse_from_pointers(
     mod_data: _ModalityData,
 ) -> SparseBatch:
     """Fetch a sparse batch from per-row pointer arrays."""
-    layer_names = list(mod_data.layer_array_paths.keys())
     group_batches = read_arrays_by_group(
         mod_data.group_readers,
         groups,
@@ -301,11 +300,10 @@ async def _take_sparse_from_pointers(
         layer_array_paths=mod_data.layer_array_paths,
     )
     if not group_batches:
-        return SparseBatch(
-            indices=np.array([], dtype=np.int32),
-            offsets=np.zeros(len(batch_row_ids) + 1, dtype=np.int64),
-            layers={name: np.array([], dtype=mod_data.layer_dtypes[name]) for name in layer_names},
+        return SparseBatch.empty(
+            n_rows=len(batch_row_ids),
             n_features=mod_data.n_features,
+            layer_dtypes=mod_data.layer_dtypes,
         )
 
     layouts_per_group = {
