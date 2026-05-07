@@ -15,10 +15,8 @@ from homeobox.read import (
     _read_sparse_ranges,
     _sync_gather,
 )
-from homeobox.reconstruction import (
-    _build_obs_df,
-    _load_remaps_and_features,
-)
+from homeobox.reconstruction import _build_obs_df
+from homeobox.reconstruction_functional import collect_remapped_layout_readers_from_atlas
 from homeobox.reconstructor_base import Reconstructor, endpoint
 
 if TYPE_CHECKING:
@@ -99,6 +97,7 @@ class IntervalReconstructor(Reconstructor):
         FragmentResult
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
+        pointer_cols = list(atlas.pointer_fields.keys())
         obs_pl_original = obs_pl
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
@@ -108,16 +107,18 @@ class IntervalReconstructor(Reconstructor):
                 lengths=np.array([], dtype=np.uint16),
                 offsets=np.zeros(obs_pl_original.height + 1, dtype=np.int64),
                 chrom_names=[],
-                obs=_build_obs_df(obs_pl_original),
+                obs=_build_obs_df(obs_pl_original, pointer_cols),
             )
 
         # Build unified chromosome space across groups
-        joined_globals, group_remap_to_joined, _ = _load_remaps_and_features(
+        layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
             atlas,
             groups,
             spec,
             feature_join="union",
+            return_joined_globals=True,
         )
+        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
         chrom_names = _resolve_chrom_names(atlas, spec.feature_space, joined_globals)
 
         # Array names from spec (chromosomes, starts, lengths)
@@ -176,7 +177,7 @@ class IntervalReconstructor(Reconstructor):
         np.cumsum(all_row_lengths, out=offsets[1:])
 
         obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl)
+        obs = _build_obs_df(obs_pl, pointer_cols)
 
         return FragmentResult(
             chromosomes=chromosomes,

@@ -181,7 +181,6 @@ Loads the per-group local-to-global remap arrays from `_feature_layouts` and com
 
 - `joined_globals` — sorted array of unique global indices in the output feature space.
 - `group_remap_to_joined` — `{zarr_group: positions_array}` where `positions[local_i]` is the column in the joined-space output matrix. For intersection or `wanted_globals` mode, local features not in the joined space are mapped to `-1`.
-- `n_features` — length of `joined_globals`.
 
 When `wanted_globals` is set, the union/intersection step is skipped and the returned `joined_globals` is exactly `wanted_globals`.
 
