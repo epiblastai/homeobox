@@ -256,7 +256,7 @@ def test_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas)
     """List mode returns per-cell arrays when zarr groups have different tile shapes."""
     atlas, all_tiles = variable_shape_tile_atlas
 
-    ds = atlas.query().to_unimodal_dataset("image_tiles", stack_dense=False)
+    ds = atlas.query().to_unimodal_dataset("image_tiles")
     batch = ds.__getitems__(list(range(7)))
 
     assert isinstance(batch, SpatialTileBatch)
@@ -280,10 +280,10 @@ def test_tile_dataset_variable_group_shapes_default_list_mode(variable_shape_til
 
 
 def test_multimodal_tile_dataset_variable_group_shapes_list_mode(variable_shape_tile_atlas):
-    """Multimodal datasets can opt into list-backed variable-size tile batches."""
+    """Multimodal datasets return list-backed variable-size tile batches."""
     atlas, _ = variable_shape_tile_atlas
 
-    ds = atlas.query().to_multimodal_dataset(["image_tiles"], stack_dense=False)
+    ds = atlas.query().to_multimodal_dataset(["image_tiles"])
     batch = ds.__getitems__(list(range(7)))
     tile_batch = batch.modalities["image_tiles"]
 

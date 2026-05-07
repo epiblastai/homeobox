@@ -304,7 +304,7 @@ def test_unimodal_uniform_two_groups(two_group_uniform_crop_atlas):
 def test_unimodal_ragged_shapes(ragged_crop_atlas):
     atlas, _images, _boxes = ragged_crop_atlas
 
-    ds = atlas.query().to_unimodal_dataset("image_crops", stack_dense=False)
+    ds = atlas.query().to_unimodal_dataset("image_crops")
     batch = ds.__getitems__(list(range(6)))
 
     assert isinstance(batch, SpatialTileBatch)
@@ -318,7 +318,7 @@ def test_unimodal_ragged_round_trip(ragged_crop_atlas):
     image = images[0]
     boxes = boxes_per_group[0]
 
-    ds = atlas.query().to_unimodal_dataset("image_crops", stack_dense=False)
+    ds = atlas.query().to_unimodal_dataset("image_crops")
     batch = ds.__getitems__(list(range(len(boxes))))
 
     expected = _crops_from(image, boxes)

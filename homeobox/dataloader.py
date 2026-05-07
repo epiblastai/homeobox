@@ -303,9 +303,6 @@ class UnimodalHoxDataset(_AsyncDataset):
         When set, :attr:`n_features` reflects the filtered count and
         batch ``indices`` are bounded by that value.  Only valid for
         sparse feature spaces with a feature registry.
-    stack_dense:
-        Deprecated for spatial modalities; spatial batches are always returned
-        as one ndarray per row.
     """
 
     def __init__(
@@ -317,7 +314,6 @@ class UnimodalHoxDataset(_AsyncDataset):
         layer_overrides: list[str] | None = None,
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
-        stack_dense: bool = True,
     ) -> None:
         pf = atlas.pointer_fields[field_name]
         self.spec = get_spec(pf.feature_space)
@@ -476,9 +472,6 @@ class MultimodalHoxDataset(_AsyncDataset):
     wanted_globals:
         Optional ``{field_name: sorted int64 array}`` of global feature
         indices to keep per modality.
-    stack_dense:
-        Deprecated for spatial modalities; spatial batches are always returned
-        as one ndarray per row.
     """
 
     def __init__(
@@ -489,7 +482,6 @@ class MultimodalHoxDataset(_AsyncDataset):
         layer_overrides: dict[str, list[str] | None] | None = None,
         metadata_columns: list[str] | None = None,
         wanted_globals: dict[str, np.ndarray] | None = None,
-        stack_dense: bool | dict[str, bool] = True,
     ) -> None:
         self._field_names = field_names
         self._n_rows = obs_pl.height
