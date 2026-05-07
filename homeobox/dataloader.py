@@ -43,7 +43,6 @@ from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.read import (
     _group_key_to_zg,
-    _prepare_discrete_spatial_obs,
     _prepare_obs_and_groups,
 )
 from homeobox.reconstruction_functional import (
@@ -212,7 +211,7 @@ def _build_dense_feature_modality_data(
     return filtered, mod_data
 
 
-def _build_spatial_tile_modality_data(
+def _build_spatial_modality_data(
     atlas: "RaggedAtlas",
     rows_indexed: pl.DataFrame,
     # TODO: Should type these
@@ -221,7 +220,7 @@ def _build_spatial_tile_modality_data(
     layer: str,
     n_rows: int,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
-    """Build ``_ModalityData`` for a dense zarr spatial/tile modality."""
+    """Build ``_ModalityData`` for a spatial tile/crop modality."""
     fs = pf.feature_space
     filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
 
@@ -232,69 +231,16 @@ def _build_spatial_tile_modality_data(
 
     _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
     layer_path = layer_array_paths_dict[layer]
-    per_row_shape: tuple[int, ...] | None = None
 
     if group_readers:
         first_key = list(group_readers.keys())[0]
         reader = group_readers[first_key].get_array_reader(layer_path)
         layer_dtype = reader._native_dtype
-        per_row_shape = tuple(reader.shape[1:])
-        n_features = int(np.prod(per_row_shape)) if per_row_shape else 0
-    else:
-        layer_dtype = np.dtype(np.float32)
-        n_features = 0
-
-    mod_data = _ModalityData(
-        pointer_type=DenseZarrPointer,
-        group_readers=group_readers,
-        n_features=n_features,
-        index_array_name="",
-        layer_path=layer_path,
-        layer_dtype=layer_dtype,
-        present_mask=present_mask,
-        row_positions=row_positions,
-        per_row_shape=per_row_shape,
-        stack_dense=False,
-    )
-    return filtered, mod_data
-
-
-def _build_discrete_spatial_modality_data(
-    atlas: "RaggedAtlas",
-    rows_indexed: pl.DataFrame,
-    pf,
-    spec,
-    layer: str,
-    n_rows: int,
-) -> "tuple[pl.DataFrame, _ModalityData]":
-    """Build ``_ModalityData`` for a DiscreteSpatial pointer-field modality.
-
-    Crops are read via ``BatchAsyncArray.read_boxes`` and returned as one
-    ndarray per row.
-    """
-    fs = pf.feature_space
-    filtered, groups, _box_rank = _prepare_discrete_spatial_obs(rows_indexed, pf)
-
-    present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
-    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
-
-    group_readers = _build_group_readers(atlas, groups, fs)
-
-    _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
-    layer_path = layer_array_paths_dict[layer]
-    per_row_shape: tuple[int, ...] | None = None
-
-    if group_readers:
-        first_key = list(group_readers.keys())[0]
-        reader = group_readers[first_key].get_array_reader(layer_path)
-        layer_dtype = reader._native_dtype
-        trailing = tuple(reader.shape[_box_rank:])
-        per_row_shape = trailing or None
     else:
         layer_dtype = np.dtype(np.float32)
 
     mod_data = _ModalityData(
-        pointer_type=DiscreteSpatialPointer,
+        pointer_type=spec.pointer_type,
         group_readers=group_readers,
         n_features=0,
         index_array_name="",
@@ -302,8 +248,6 @@ def _build_discrete_spatial_modality_data(
         layer_dtype=layer_dtype,
         present_mask=present_mask,
         row_positions=row_positions,
-        per_row_shape=per_row_shape,
-        stack_dense=False,
     )
     return filtered, mod_data
 
@@ -389,9 +333,6 @@ class _ModalityData:
     # TODO: Multimodal fields; maybe move to a separate class that inherits
     present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
     row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
-    # I never liked this, can is be removed
-    per_row_shape: tuple[int, ...] | None = None  # (C, H, W) for tiles; None for sparse/2D dense
-    stack_dense: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -535,7 +476,6 @@ def _reorder_spatial_tile_batch_rows(batch: SpatialTileBatch, perm: np.ndarray) 
     return SpatialTileBatch(
         data=[batch.data[int(i)] for i in perm],
         metadata=reordered_metadata,
-        per_row_shape=batch.per_row_shape,
     )
 
 
@@ -607,10 +547,7 @@ async def _take_spatial_tile_from_pointers(
         stack_uniform=False,
     )
     if not group_obs_data:
-        return SpatialTileBatch(
-            data=[],
-            per_row_shape=mod_data.per_row_shape,
-        )
+        return SpatialTileBatch(data=[])
 
     obs_parts = []
     data: list[np.ndarray] = []
@@ -635,7 +572,6 @@ async def _take_spatial_tile_from_pointers(
     batch = SpatialTileBatch(
         data=data,
         metadata=metadata or None,
-        per_row_shape=mod_data.per_row_shape,
     )
 
     grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
@@ -784,17 +720,10 @@ class UnimodalHoxDataset(_AsyncDataset):
                 wanted_globals,
                 obs_pl.height,
             )
-        elif self.spec.pointer_type is DiscreteSpatialPointer:
-            filtered, self._mod_data = _build_discrete_spatial_modality_data(
-                atlas,
-                rows_indexed,
-                pf,
-                self.spec,
-                layer,
-                obs_pl.height,
-            )
-        elif self.spec.pointer_type is DenseZarrPointer and not self.spec.has_var_df:
-            filtered, self._mod_data = _build_spatial_tile_modality_data(
+        elif self.spec.pointer_type is DiscreteSpatialPointer or (
+            self.spec.pointer_type is DenseZarrPointer and not self.spec.has_var_df
+        ):
+            filtered, self._mod_data = _build_spatial_modality_data(
                 atlas,
                 rows_indexed,
                 pf,
@@ -835,11 +764,6 @@ class UnimodalHoxDataset(_AsyncDataset):
     @property
     def n_features(self) -> int:
         return self._mod_data.n_features
-
-    @property
-    def per_row_shape(self) -> tuple[int, ...] | None:
-        """Per-row array shape, or ``None`` for flat/sparse feature spaces."""
-        return self._mod_data.per_row_shape
 
     def __len__(self) -> int:
         return self._n_rows
@@ -1015,17 +939,10 @@ class MultimodalHoxDataset(_AsyncDataset):
                 _, modality_data[fn] = _build_sparse_modality_data(
                     atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
                 )
-            elif spec.pointer_type is DiscreteSpatialPointer:
-                _, modality_data[fn] = _build_discrete_spatial_modality_data(
-                    atlas,
-                    rows_indexed,
-                    pf,
-                    spec,
-                    layer,
-                    self._n_rows,
-                )
-            elif spec.pointer_type is DenseZarrPointer and not spec.has_var_df:
-                _, modality_data[fn] = _build_spatial_tile_modality_data(
+            elif spec.pointer_type is DiscreteSpatialPointer or (
+                spec.pointer_type is DenseZarrPointer and not spec.has_var_df
+            ):
+                _, modality_data[fn] = _build_spatial_modality_data(
                     atlas,
                     rows_indexed,
                     pf,

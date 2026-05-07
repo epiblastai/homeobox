@@ -169,15 +169,13 @@ def test_tile_dataset_shapes(single_group_tile_atlas):
     ds = atlas.query().to_unimodal_dataset("image_tiles")
 
     assert ds.n_rows == 10
-    assert ds.per_row_shape == (3, 8, 8)
-    assert ds.n_features == 3 * 8 * 8  # product of per_row_shape
+    assert ds.n_features == 0
 
     batch = ds.__getitems__(list(range(10)))
     assert isinstance(batch, SpatialTileBatch)
     assert len(batch.data) == 10
     assert all(tile.shape == (3, 8, 8) for tile in batch.data)
     assert all(tile.dtype == np.uint16 for tile in batch.data)
-    assert batch.per_row_shape == (3, 8, 8)
 
 
 def test_tile_dataset_multi_group(two_group_tile_atlas):

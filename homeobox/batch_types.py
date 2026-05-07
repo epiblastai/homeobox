@@ -67,13 +67,10 @@ class SpatialTileBatch:
         One ndarray per row, in query order.
     metadata:
         Optional dict of obs columns as numpy arrays, aligned to rows.
-    per_row_shape:
-        Optional source per-row shape when statically known.
     """
 
     data: list[np.ndarray]
     metadata: dict[str, np.ndarray] | None = None
-    per_row_shape: tuple[int, ...] | None = None
 
 
 @dataclass

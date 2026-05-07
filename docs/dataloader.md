@@ -33,7 +33,7 @@ print(dataset.n_cells)     # number of cells in the query result
 print(dataset.n_features)  # width of the feature space (global index range)
 ```
 
-`n_features` reflects the full global feature index for the selected feature space, not just the features present in the filtered cells. This ensures that feature indices are stable across training runs and dataset subsets, which matters when a model's input layer is tied to a fixed vocabulary.
+For sparse and dense feature datasets, `n_features` reflects the full global feature index for the selected feature space, not just the features present in the filtered cells. This ensures that feature indices are stable across training runs and dataset subsets, which matters when a model's input layer is tied to a fixed vocabulary. Spatial datasets do not have a feature axis, so `n_features` is `0`.
 
 ### Feature-filtered datasets
 

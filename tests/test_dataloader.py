@@ -336,7 +336,6 @@ def test_dense_feature_dataset_returns_dense_feature_batch(single_group_dense_fe
 
     assert ds.n_rows == 4
     assert ds.n_features == 3
-    assert ds.per_row_shape is None
 
     batch = ds.__getitems__(list(range(4)))
     assert isinstance(batch, DenseFeatureBatch)
