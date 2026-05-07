@@ -21,7 +21,7 @@ from homeobox.read import (
     _sync_gather,
 )
 from homeobox.reconstruction_functional import (
-    collect_group_readers_from_atlas,
+    build_feature_read_plan,
     collect_remapped_layout_readers_from_atlas,
     finalize_grouped_read,
     get_array_paths_to_read,
@@ -158,49 +158,34 @@ def _read_joined_feature_batch(
 ]:
     """Shared sparse/dense ``as_anndata`` pipeline up through concat.
 
-    Resolves the per-group readers, reads the structural and layer arrays,
-    and concatenates into a single joined-feature-space batch in zarr-group
-    order. ``batch`` is ``None`` when the query has no rows or the joined
-    feature space is empty — the caller should return an obs-only AnnData
-    via :func:`_build_obs_only_anndata`.
+    Resolves a :class:`FeatureReadPlan`, reads the structural and layer
+    arrays, and concatenates into a single joined-feature-space batch in
+    zarr-group order. ``batch`` is ``None`` when the query has no rows or
+    the joined feature space is empty — the caller should return an
+    obs-only AnnData via :func:`_build_obs_only_anndata`.
     """
     spec = get_spec(pf.feature_space)
-    required_array_paths, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
-    layer_names = list(layer_array_paths.keys())
-    layer_dtypes = _layer_dtypes_for_names(spec, layer_names)
-
     pointer_cols = list(atlas.pointer_fields.keys())
     obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
-    if obs_pl.is_empty():
-        return None, np.empty(0, dtype=np.int32), layer_names, obs_pl, pointer_cols
 
-    layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
+    if obs_pl.is_empty():
+        _, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
+        return None, np.empty(0, dtype=np.int32), list(layer_array_paths), obs_pl, pointer_cols
+
+    plan = build_feature_read_plan(
         atlas,
         groups,
-        spec,
+        pf,
+        layer_overrides=layer_overrides,
         feature_join=feature_join,
         wanted_globals=wanted_globals,
-        return_joined_globals=True,
     )
-    n_features = len(joined_globals)
-    if n_features == 0:
-        return None, joined_globals, layer_names, obs_pl, pointer_cols
+    if plan.n_features == 0:
+        return None, plan.joined_globals, plan.layer_names, obs_pl, pointer_cols
 
-    group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
-    group_batches = read_arrays_by_group(
-        group_readers=group_readers,
-        groups=groups,
-        spec=spec,
-        required_array_paths=required_array_paths,
-        layer_array_paths=layer_array_paths,
-    )
-    batch = finalize_grouped_read(
-        group_batches,
-        layouts_per_group=layouts_per_group,
-        n_features=n_features,
-        layer_dtypes=layer_dtypes,
-    )
-    return batch, joined_globals, layer_names, obs_pl, pointer_cols
+    group_batches = read_arrays_by_group(plan, groups)
+    batch = finalize_grouped_read(plan, group_batches)
+    return batch, plan.joined_globals, plan.layer_names, obs_pl, pointer_cols
 
 
 class SparseCSRReconstructor(Reconstructor):
@@ -426,9 +411,8 @@ class SpatialReconstructor(Reconstructor):
         concatenated per-row tile list, or ``None`` if no rows match.
         """
         spec = get_spec(pf.feature_space)
-        required_array_paths, layer_array_paths = get_array_paths_to_read(
-            spec, [layer] if layer is not None else None
-        )
+        layer_overrides = [layer] if layer is not None else None
+        _, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
         _single_layer_array_name(layer_array_paths, pf.feature_space)
         layer_name = next(iter(layer_array_paths.keys()))
         layer_dtype = _layer_dtypes_for_names(spec, [layer_name])[layer_name]
@@ -437,20 +421,9 @@ class SpatialReconstructor(Reconstructor):
         if obs_pl.is_empty():
             return None, layer_name, layer_dtype
 
-        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
-        group_batches = read_arrays_by_group(
-            group_readers=group_readers,
-            groups=groups,
-            spec=spec,
-            required_array_paths=required_array_paths,
-            layer_array_paths=layer_array_paths,
-        )
-        batch = finalize_grouped_read(
-            group_batches,
-            layouts_per_group=None,
-            n_features=0,
-            layer_dtypes={layer_name: layer_dtype},
-        )
+        plan = build_feature_read_plan(atlas, groups, pf, layer_overrides=layer_overrides)
+        group_batches = read_arrays_by_group(plan, groups)
+        batch = finalize_grouped_read(plan, group_batches)
         rows = batch.layers[layer_name]
         return rows, layer_name, layer_dtype
 
