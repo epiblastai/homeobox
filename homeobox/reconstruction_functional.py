@@ -1,5 +1,5 @@
 import functools
-from typing import TYPE_CHECKING, Literal, NamedTuple, NewType
+from typing import TYPE_CHECKING, Literal, NamedTuple, NewType, TypeAlias
 
 import numpy as np
 import polars as pl
@@ -7,8 +7,6 @@ from polars.dataframe.group_by import GroupBy
 
 from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
 from homeobox.group_reader import GroupReader, LayoutReader
-
-# TODO: Can we wrap any of these in TYPE_CHECKING
 from homeobox.group_specs import FeatureSpaceSpec
 from homeobox.read import (
     _apply_wanted_globals_remap,
@@ -18,7 +16,7 @@ from homeobox.read import (
     _sync_gather,
 )
 
-GroupBatch = "SparseBatch | DenseFeatureBatch | SpatialTileBatch"
+GroupBatch: TypeAlias = SparseBatch | DenseFeatureBatch | SpatialTileBatch
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
@@ -57,9 +55,9 @@ def get_layer_maximal_dtypes(spec: FeatureSpaceSpec) -> dict[str, np.dtype]:
 
 
 def cast_batch_layers_to_dtypes(
-    batch: "GroupBatch",
+    batch: GroupBatch,
     layer_dtypes: dict[str, np.dtype],
-) -> "GroupBatch":
+) -> GroupBatch:
     """Cast a batch's layer arrays in place to the requested per-layer dtypes."""
     if isinstance(batch, SparseBatch | DenseFeatureBatch):
         batch.layers = {
@@ -209,7 +207,7 @@ def read_arrays_by_group(
     spec: FeatureSpaceSpec,
     required_array_paths: list[str],
     layer_array_paths: dict[str, str],
-) -> "list[tuple[str, GroupBatch]]":
+) -> list[tuple[str, GroupBatch]]:
     """Read per-group arrays and package each group as a local-space batch.
 
     Schedules async reads (ranges or boxes, per
@@ -268,13 +266,13 @@ def read_arrays_by_group(
 
 
 def finalize_grouped_read(
-    group_batches: "list[tuple[str, GroupBatch]]",
+    group_batches: list[tuple[str, GroupBatch]],
     *,
     layouts_per_group: LayoutsByZarrGroup | None,
     n_features: int,
     layer_dtypes: dict[str, np.dtype],
     target_row_ids: np.ndarray | None = None,
-) -> "GroupBatch":
+) -> GroupBatch:
     """Cast, concat-remap, and (optionally) reorder per-group batches.
 
     Bundles the post-:func:`read_arrays_by_group` pipeline shared by the
@@ -300,11 +298,11 @@ def finalize_grouped_read(
 
 
 def concat_remapped_batches(
-    batches: "list[tuple[str, GroupBatch]]",
+    batches: list[tuple[str, GroupBatch]],
     *,
     layouts_per_group: LayoutsByZarrGroup | None,
     n_features: int,
-) -> "GroupBatch":
+) -> GroupBatch:
     """Remap each per-group local-space batch into the joined feature space and concat.
 
     All batches must be the same concrete type (matches the output of a single
@@ -348,7 +346,7 @@ def concat_remapped_batches(
     raise TypeError(f"Unsupported batch type: {type(first_batch).__name__}")
 
 
-def _concat_metadata(batches: "list[tuple[str, GroupBatch]]") -> pl.DataFrame | None:
+def _concat_metadata(batches: list[tuple[str, GroupBatch]]) -> pl.DataFrame | None:
     parts = [b.metadata for _zg, b in batches if b.metadata is not None]
     if not parts:
         return None
@@ -487,9 +485,9 @@ def _compute_row_perm(mapping: RowOrderMapping) -> np.ndarray:
 
 
 def reorder_batch_rows(
-    batch: "GroupBatch",
+    batch: GroupBatch,
     mapping: RowOrderMapping,
-) -> "GroupBatch":
+) -> GroupBatch:
     """Reorder a batch's rows according to *mapping*. Dispatches by batch type.
 
     Operates only on the batch's row-aligned arrays — it does not inspect
