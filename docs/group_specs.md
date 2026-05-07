@@ -45,10 +45,14 @@ The pointer type declared in the spec must match the pointer field types used in
 |---|---|---|
 | `prefix` | `str` | Path prefix before `layers/`. Empty string means `"layers/"` at the group root; `"csr"` means `"csr/layers/"`. |
 | `match_shape_of` | `str \| None` | When set, every array in the layers subgroup must have the same shape as the sibling array named here (resolved relative to the parent group). |
+| `axis_order` | `tuple[str, ...] \| None` | Optional axis names used to interpret layer shapes. Homeobox defines `SPATIAL_AXIS_ORDER = ("T", "C", "Z", "Y", "X")` and `IMAGE_TILE_AXIS_ORDER = ("N", "C", "Y", "X")`. Lower-rank arrays are interpreted as suffixes of the declared order, e.g. `("Y", "X")`, `("Z", "Y", "X")`, `("C", "Z", "Y", "X")`. |
+| `shape_mismatch_axes` | `tuple[str, ...]` | Axis names that may differ between layer arrays. Empty by default, which requires exact shape equality. For spatial images this can be `("C",)` to allow different channel counts while keeping all other dimensions identical. |
 | `required` | `list[str]` | Layer names that must exist in the layers subgroup. Also used as the default layers to read at query time. |
 | `allowed` | `list[str]` | Whitelist of valid layer names for ingestion validation. |
 
 The `path` property returns the resolved layers path: `f"{prefix}/layers"` if `prefix` is non-empty, otherwise `"layers"`.
+
+Layer arrays must normally have identical shapes. When `shape_mismatch_axes` is set, arrays must still have the same rank, and only the named axes may differ. For the spatial `TCZYX` convention, a 3-D array is interpreted as `ZYX`, not `CYX`, so channel variability is available only for 4-D `CZYX` and 5-D `TCZYX` arrays.
 
 ---
 
@@ -84,7 +88,7 @@ See the Reconstructors page for guidance on choosing between these.
 
 ### `layers`
 
-`LayersSpec`. Declares the layers subgroup: its path prefix, shape constraints, required layers, and allowed layers. The `layers.path` property resolves the full subgroup path (e.g. `"csr/layers"` or `"layers"`). `layers.required` lists the layer names loaded by default at query time. `layers.allowed` is a whitelist for ingestion validation — attempting to ingest a layer whose name is not in this list raises an error.
+`LayersSpec`. Declares the layers subgroup: its path prefix, shape constraints, axis convention, required layers, and allowed layers. The `layers.path` property resolves the full subgroup path (e.g. `"csr/layers"` or `"layers"`). `layers.required` lists the layer names loaded by default at query time. `layers.allowed` is a whitelist for ingestion validation — attempting to ingest a layer whose name is not in this list raises an error.
 
 ---
 

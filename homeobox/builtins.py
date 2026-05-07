@@ -9,14 +9,24 @@ import numpy as np
 from homeobox.codecs.bitpacking import BitpackingCodec
 from homeobox.fragments.reconstruction import IntervalReconstructor
 from homeobox.group_specs import (
+    IMAGE_TILE_AXIS_ORDER,
+    SPATIAL_AXIS_ORDER,
     ArraySpec,
     FeatureSpaceSpec,
     LayersSpec,
     ZarrGroupSpec,
     register_spec,
 )
-from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
-from homeobox.reconstruction import DenseReconstructor, SparseGeneExpressionReconstructor
+from homeobox.pointer_types import (
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
+    SparseZarrPointer,
+)
+from homeobox.reconstruction import (
+    DenseReconstructor,
+    SparseGeneExpressionReconstructor,
+    SpatialReconstructor,
+)
 
 # ---------------------------------------------------------------------------
 # Gene expression (CSR primary, optional CSC feature-oriented copy)
@@ -217,6 +227,7 @@ IMAGE_TILES_SPEC = FeatureSpaceSpec(
     reconstructor=DenseReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
+            axis_order=IMAGE_TILE_AXIS_ORDER,
             required=[
                 ArraySpec(
                     array_name="raw", ndim=4, allowed_dtypes=[np.float32, np.uint8, np.uint16]
@@ -231,6 +242,49 @@ IMAGE_TILES_SPEC = FeatureSpaceSpec(
     ),
 )
 
+# ---------------------------------------------------------------------------
+# Discrete images: Large single scale images stored in Zarr. Should prefer
+# image_tiles when working with lots of smaller images of the same shape.
+# DISCRETE_IMAGE_SPEC can be a better choice when images are 2,000 pixels per
+# dimension or larger. If working with many large 2D images of the same size
+# it's possible to stack them in Z and to create pointers appropriately. This can
+# help to make shard sizes larger and therefore more efficient to read from.
+# ---------------------------------------------------------------------------
+
+DISCRETE_IMAGE_SPEC = FeatureSpaceSpec(
+    feature_space="discrete_image",
+    pointer_type=DiscreteSpatialPointer,
+    has_var_df=False,
+    reconstructor=SpatialReconstructor(),
+    zarr_group_spec=ZarrGroupSpec(
+        layers=LayersSpec(
+            axis_order=SPATIAL_AXIS_ORDER,
+            shape_mismatch_axes=("C",),
+            required=[
+                ArraySpec(
+                    array_name="raw",
+                    min_ndim=2,
+                    max_ndim=5,
+                    allowed_dtypes=[np.float32, np.uint8, np.uint16],
+                ),
+            ],
+            allowed=[
+                ArraySpec(
+                    array_name="raw",
+                    min_ndim=2,
+                    max_ndim=5,
+                    allowed_dtypes=[np.float32, np.uint8, np.uint16],
+                ),
+                ArraySpec(
+                    array_name="semantic_masks", min_ndim=2, max_ndim=5, allowed_dtypes=[np.bool_]
+                ),
+                ArraySpec(
+                    array_name="instance_masks", min_ndim=2, max_ndim=5, allowed_dtypes=[np.uint32]
+                ),
+            ],
+        ),
+    ),
+)
 
 for _spec in [
     GENE_EXPRESSION_SPEC,
@@ -238,5 +292,6 @@ for _spec in [
     PROTEIN_ABUNDANCE_SPEC,
     CHROMATIN_ACCESSIBILITY_SPEC,
     IMAGE_TILES_SPEC,
+    DISCRETE_IMAGE_SPEC,
 ]:
     register_spec(_spec)

@@ -25,6 +25,7 @@ from homeobox.group_specs import (
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.pointer_types import DiscreteSpatialPointer, SparseZarrPointer
+from homeobox.reconstruction import SpatialReconstructor
 from homeobox.reconstructor_base import Reconstructor
 from homeobox.schema import (
     DatasetSchema,
@@ -477,3 +478,62 @@ def test_multimodal_crops_and_sparse_present_masks(multimodal_crops_and_genes_at
     expected = {tuple(image[y0:y1, x0:x1].ravel()) for (y0, x0, y1, x1) in crop_only_boxes}
     got = {tuple(crops.data[i].ravel()) for i in range(2)}
     assert got == expected
+
+
+# ---------------------------------------------------------------------------
+# SpatialReconstructor.as_array_list
+# ---------------------------------------------------------------------------
+
+
+def test_spatial_reconstructor_as_array_list_ragged(ragged_crop_atlas):
+    """as_array_list returns one ndarray per row, preserving native crop shapes."""
+    atlas, images, boxes_per_group = ragged_crop_atlas
+    image = images[0]
+    boxes = boxes_per_group[0]
+
+    obs_pl = atlas.query()._materialize_rows()
+    pf = atlas.pointer_fields["image_crops"]
+
+    arrays = SpatialReconstructor().as_array_list(atlas, obs_pl, pf)
+
+    assert isinstance(arrays, list)
+    assert len(arrays) == len(boxes)
+    assert all(isinstance(a, np.ndarray) for a in arrays)
+    assert all(a.dtype == np.uint16 for a in arrays)
+
+    expected = _crops_from(image, boxes)
+    expected_sigs = {(c.shape, tuple(c.ravel())) for c in expected}
+    got_sigs = {(a.shape, tuple(a.ravel())) for a in arrays}
+    assert got_sigs == expected_sigs
+
+
+def test_spatial_reconstructor_as_array_list_two_groups(two_group_uniform_crop_atlas):
+    """Results from multiple zarr groups are concatenated into one flat list."""
+    atlas, images, boxes_per_group = two_group_uniform_crop_atlas
+
+    obs_pl = atlas.query()._materialize_rows()
+    pf = atlas.pointer_fields["image_crops"]
+
+    arrays = SpatialReconstructor().as_array_list(atlas, obs_pl, pf)
+
+    total = sum(len(b) for b in boxes_per_group)
+    assert len(arrays) == total
+    assert all(a.shape == (4, 4) for a in arrays)
+
+    expected_sigs: set[tuple] = set()
+    for image, boxes in zip(images, boxes_per_group, strict=True):
+        for crop in _crops_from(image, boxes):
+            expected_sigs.add((crop.shape, tuple(crop.ravel())))
+    got_sigs = {(a.shape, tuple(a.ravel())) for a in arrays}
+    assert got_sigs == expected_sigs
+
+
+def test_spatial_reconstructor_as_array_list_empty(ragged_crop_atlas):
+    """Empty obs_pl returns an empty list (no group reads attempted)."""
+    atlas, _images, _boxes = ragged_crop_atlas
+
+    obs_pl = atlas.query()._materialize_rows().head(0)
+    pf = atlas.pointer_fields["image_crops"]
+
+    arrays = SpatialReconstructor().as_array_list(atlas, obs_pl, pf)
+    assert arrays == []
