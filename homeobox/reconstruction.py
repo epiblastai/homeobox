@@ -508,7 +508,7 @@ def _prepare_csc_group(
     present_local = np.flatnonzero(effective_remap >= 0).astype(np.int64)
     feat_col_indices = effective_remap[present_local].astype(np.int64)
 
-    indptr = gr.get_csc_indptr()
+    indptr = np.asarray(gr.zarr_group_handle["csc/indptr"][:])
     starts = indptr[present_local].astype(np.int64)
     ends = indptr[present_local + 1].astype(np.int64)
 
@@ -652,12 +652,6 @@ class FeatureCSCReconstructor(Reconstructor):
         for key, group_rows in groups:
             zg = _group_key_to_zg(key)
             gr = group_readers[zg]
-            if not gr.has_csc:
-                raise ValueError(
-                    f"Group '{zg}' has no CSC copy for feature space "
-                    f"'{spec.feature_space}'; run add_csc on this group "
-                    f"or use SparseCSRReconstructor."
-                )
             info, coro = _prepare_csc_group(gr, layouts_per_group[zg], group_rows, csc_layer_paths)
             group_info.append(info)
             read_coroutines.append(coro)
@@ -789,6 +783,7 @@ class SparseGeneExpressionReconstructor(Reconstructor):
             return False
         for key, _ in groups:
             zg = _group_key_to_zg(key)
-            if not atlas.get_group_reader(zg, spec.feature_space).has_csc:
+            gr = atlas.get_group_reader(zg, spec.feature_space)
+            if not spec.has_feature_oriented_copy(gr.zarr_group_handle):
                 return False
         return True
