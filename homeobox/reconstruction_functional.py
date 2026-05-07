@@ -73,13 +73,12 @@ def collect_group_readers_from_atlas(
     for key, _group_rows in groups:
         zg = _group_key_to_zg(key)
         if for_worker:
+            layout_reader = layouts_per_group[zg] if layouts_per_group is not None else None
             group_readers[zg] = GroupReader.for_worker(
                 zarr_group=zg,
                 feature_space=spec.feature_space,
                 store=atlas.store,
-                # TODO: Consider a better error if zg isn't present.
-                # Are we sure it will always be present?
-                layout_reader=layouts_per_group[zg],
+                layout_reader=layout_reader,
             )
         else:
             group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)

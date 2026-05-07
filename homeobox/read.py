@@ -9,11 +9,7 @@ from polars.dataframe.group_by import GroupBy
 from zarr.core.sync import sync
 
 from homeobox.batch_array import BatchAsyncArray
-from homeobox.pointer_types import (
-    DiscreteSpatialPointer,
-    ZarrPointer,
-)
-from homeobox.schema import PointerField
+from homeobox.pointer_types import ZarrPointer
 
 
 def _prepare_obs_and_groups(
@@ -37,28 +33,6 @@ def _group_key_to_zg(key: Any) -> str:
             raise ValueError(f"Expected single-column group key, got {key!r}")
         return cast(str, key[0])
     return cast(str, key)
-
-
-def _prepare_discrete_spatial_obs(
-    obs_pl: pl.DataFrame,
-    pf: PointerField,
-) -> tuple[pl.DataFrame, GroupBy, int]:
-    """Prepare discrete-spatial obs, group rows by zarr group, validate box rank.
-
-    Returns ``(filtered_df, grouped_rows, box_rank)``. All rows in the filtered
-    set must share the same box rank ``k``; ``k`` is returned so callers can
-    preallocate ``(B, k)`` corner arrays. ``k`` is ``0`` when the filtered set
-    is empty. See :meth:`DiscreteSpatialPointer.prepare_obs` for the column
-    contract.
-    """
-    obs_pl, groups = _prepare_obs_and_groups(obs_pl, DiscreteSpatialPointer, pf.field_name)
-    if obs_pl.is_empty():
-        return obs_pl, groups, 0
-
-    min_corners, _ = DiscreteSpatialPointer.to_boxes(obs_pl)
-    box_rank = min_corners.shape[1]
-
-    return obs_pl, groups, box_rank
 
 
 def _apply_wanted_globals_remap(remap: np.ndarray, wanted_globals: np.ndarray) -> np.ndarray:

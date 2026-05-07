@@ -33,7 +33,7 @@ print(dataset.n_cells)     # number of cells in the query result
 print(dataset.n_features)  # width of the feature space (global index range)
 ```
 
-`n_features` reflects the full global feature index for the selected feature space, not just the features present in the filtered cells. This ensures that feature indices are stable across training runs and dataset subsets, which matters when a model's input layer is tied to a fixed vocabulary.
+For sparse and dense feature datasets, `n_features` reflects the full global feature index for the selected feature space, not just the features present in the filtered cells. This ensures that feature indices are stable across training runs and dataset subsets, which matters when a model's input layer is tied to a fixed vocabulary. Spatial datasets do not have a feature axis, so `n_features` is `0`.
 
 ### Feature-filtered datasets
 
@@ -75,11 +75,11 @@ dataset = (
 
 Batches are `MultimodalBatch` objects with the following fields:
 
-- `modalities: dict[str, SparseBatch | DenseBatch]` — one entry per pointer field, keyed by field_name
+- `modalities: dict[str, SparseBatch | DenseFeatureBatch | SpatialTileBatch]` — one entry per pointer field, keyed by field_name
 - `present: dict[str, np.ndarray]` — boolean array of shape `(n_cells,)` indicating which cells have data for each modality
 - `metadata: dict[str, np.ndarray] | None` — requested metadata columns, one array per column
 
-A cell that is absent for a modality still occupies a row in that modality's data array; the row will be zeros. The `present` mask lets downstream code distinguish true zeros from missing measurements.
+Sub-batches contain only rows where that modality is present. The `present` mask maps those modality-local rows back to the full batch.
 
 ---
 
@@ -214,7 +214,8 @@ from homeobox.dataloader import (
     CellDataset,
     MultimodalCellDataset,
     SparseBatch,
-    DenseBatch,
+    DenseFeatureBatch,
+    SpatialTileBatch,
     MultimodalBatch,
     sparse_to_dense_collate,
     sparse_to_csr_collate,

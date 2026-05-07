@@ -12,7 +12,7 @@ import scipy.sparse as sp
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.batch_types import DenseBatch, MultimodalBatch, SparseBatch
+from homeobox.batch_types import MultimodalBatch, SparseBatch, SpatialTileBatch
 from homeobox.feature_layouts import reindex_registry
 from homeobox.group_specs import (
     ArraySpec,
@@ -42,7 +42,7 @@ from homeobox.schema import (
 # Register a discrete-spatial spec for tests. Pointer-type dispatch in the
 # dataloader requires the feature space to resolve to a registered spec.
 # A no-endpoint Reconstructor() is sufficient: the dataloader builds its own
-# DenseBatch and never calls the reconstructor.
+# SpatialTileBatch and never calls the reconstructor.
 if "image_crops" not in registered_feature_spaces():
     register_spec(
         FeatureSpaceSpec(
@@ -263,9 +263,10 @@ def test_unimodal_uniform_shapes(uniform_crop_atlas):
     assert ds.n_rows == 8
 
     batch = ds.__getitems__(list(range(8)))
-    assert isinstance(batch, DenseBatch)
-    assert batch.data.shape == (8, 4, 4)
-    assert batch.data.dtype == np.uint16
+    assert isinstance(batch, SpatialTileBatch)
+    assert len(batch.layers["raw"]) == 8
+    assert all(crop.shape == (4, 4) for crop in batch.layers["raw"])
+    assert all(crop.dtype == np.uint16 for crop in batch.layers["raw"])
 
 
 def test_unimodal_uniform_round_trip(uniform_crop_atlas):
@@ -278,7 +279,7 @@ def test_unimodal_uniform_round_trip(uniform_crop_atlas):
 
     expected = _crops_from(image, boxes)
     # Lance ordering may differ from insertion order; compare as sets of pixel signatures.
-    got_set = {tuple(batch.data[i].ravel()) for i in range(batch.data.shape[0])}
+    got_set = {tuple(crop.ravel()) for crop in batch.layers["raw"]}
     expected_set = {tuple(c.ravel()) for c in expected}
     assert got_set == expected_set
 
@@ -290,14 +291,15 @@ def test_unimodal_uniform_two_groups(two_group_uniform_crop_atlas):
     assert ds.n_rows == 9
 
     batch = ds.__getitems__(list(range(9)))
-    assert isinstance(batch, DenseBatch)
-    assert batch.data.shape == (9, 4, 4)
+    assert isinstance(batch, SpatialTileBatch)
+    assert len(batch.layers["raw"]) == 9
+    assert all(crop.shape == (4, 4) for crop in batch.layers["raw"])
 
     expected_set: set[tuple[int, ...]] = set()
     for image, boxes in zip(images, boxes_per_group, strict=True):
         for crop in _crops_from(image, boxes):
             expected_set.add(tuple(crop.ravel()))
-    got_set = {tuple(batch.data[i].ravel()) for i in range(batch.data.shape[0])}
+    got_set = {tuple(crop.ravel()) for crop in batch.layers["raw"]}
     assert got_set == expected_set
 
 
@@ -307,11 +309,10 @@ def test_unimodal_ragged_shapes(ragged_crop_atlas):
     ds = atlas.query().to_unimodal_dataset("image_crops", stack_dense=False)
     batch = ds.__getitems__(list(range(6)))
 
-    assert isinstance(batch, DenseBatch)
-    assert isinstance(batch.data, list)
-    assert len(batch.data) == 6
+    assert isinstance(batch, SpatialTileBatch)
+    assert len(batch.layers["raw"]) == 6
     expected_shapes = {(4, 4), (6, 4), (4, 8), (8, 6), (8, 6), (3, 5)}
-    assert {crop.shape for crop in batch.data} == expected_shapes
+    assert {crop.shape for crop in batch.layers["raw"]} == expected_shapes
 
 
 def test_unimodal_ragged_round_trip(ragged_crop_atlas):
@@ -323,18 +324,20 @@ def test_unimodal_ragged_round_trip(ragged_crop_atlas):
     batch = ds.__getitems__(list(range(len(boxes))))
 
     expected = _crops_from(image, boxes)
-    got_sigs = {(crop.shape, tuple(crop.ravel())) for crop in batch.data}
+    got_sigs = {(crop.shape, tuple(crop.ravel())) for crop in batch.layers["raw"]}
     expected_sigs = {(crop.shape, tuple(crop.ravel())) for crop in expected}
     assert got_sigs == expected_sigs
 
 
-def test_unimodal_ragged_stack_dense_raises(ragged_crop_atlas):
-    """stack_dense=True with non-uniform crops surfaces the read_boxes error."""
+def test_unimodal_ragged_default_list_mode(ragged_crop_atlas):
+    """Default spatial batches are list-backed, so ragged crops work."""
     atlas, _images, _boxes = ragged_crop_atlas
 
-    ds = atlas.query().to_unimodal_dataset("image_crops")  # stack_dense=True default
-    with pytest.raises(RuntimeError, match="stack_uniform"):
-        ds.__getitems__(list(range(6)))
+    ds = atlas.query().to_unimodal_dataset("image_crops")
+    batch = ds.__getitems__(list(range(6)))
+    assert isinstance(batch, SpatialTileBatch)
+    expected_shapes = {(4, 4), (6, 4), (4, 8), (8, 6), (8, 6), (3, 5)}
+    assert {crop.shape for crop in batch.layers["raw"]} == expected_shapes
 
 
 def test_unimodal_metadata_passthrough(uniform_crop_atlas):
@@ -472,11 +475,12 @@ def test_multimodal_crops_and_sparse_present_masks(multimodal_crops_and_genes_at
 
     crops = batch.modalities["image_crops"]
     genes = batch.modalities["gene_expression"]
-    assert isinstance(crops, DenseBatch)
+    assert isinstance(crops, SpatialTileBatch)
     assert isinstance(genes, SparseBatch)
-    assert crops.data.shape == (2, 4, 4)
+    assert len(crops.layers["raw"]) == 2
+    assert all(crop.shape == (4, 4) for crop in crops.layers["raw"])
     expected = {tuple(image[y0:y1, x0:x1].ravel()) for (y0, x0, y1, x1) in crop_only_boxes}
-    got = {tuple(crops.data[i].ravel()) for i in range(2)}
+    got = {tuple(crop.ravel()) for crop in crops.layers["raw"]}
     assert got == expected
 
 
