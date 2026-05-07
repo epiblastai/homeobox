@@ -379,7 +379,7 @@ def test_unimodal_dataset_shares_layout_remaps(shared_layout_atlas):
         .to_unimodal_dataset("gene_expression")
     )
 
-    readers = list(ds._mod_data.group_readers.values())
+    readers = list(ds._mod_data.plan.group_readers.values())
     assert len(readers) == 2
     assert readers[0].layout_reader is readers[1].layout_reader
     assert readers[0].get_remap() is readers[1].get_remap()
@@ -395,7 +395,7 @@ def test_unimodal_dataset_shares_filtered_layout_remaps(shared_layout_atlas):
         .to_unimodal_dataset("gene_expression")
     )
 
-    readers = list(ds._mod_data.group_readers.values())
+    readers = list(ds._mod_data.plan.group_readers.values())
     assert len(readers) == 2
     assert readers[0].layout_reader is readers[1].layout_reader
     assert readers[0].get_remap() is readers[1].get_remap()

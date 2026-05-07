@@ -9,6 +9,7 @@ from homeobox.group_reader import LayoutReader
 from homeobox.group_specs import ArraySpec, FeatureSpaceSpec, LayersSpec, ZarrGroupSpec, get_spec
 from homeobox.pointer_types import DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.reconstruction_functional import (
+    FeatureReadPlan,
     RowOrderMapping,
     concat_remapped_batches,
     get_array_paths_to_read,
@@ -248,13 +249,17 @@ def test_read_arrays_by_group_dispatches_ranges_per_group():
         reconstructor=_FakeSparseReconstructor(),
     )
 
-    batches = read_arrays_by_group(
-        group_readers,
-        obs.group_by("_zg", maintain_order=True),
-        spec,
-        ["csr/indices"],
-        {"counts": "csr/layers/counts"},
+    plan = FeatureReadPlan(
+        spec=spec,
+        required_array_paths=["csr/indices"],
+        layer_array_paths={"counts": "csr/layers/counts"},
+        layer_dtypes={"counts": np.dtype(np.int32)},
+        n_features=0,
+        joined_globals=None,
+        group_readers=group_readers,
+        layouts_per_group=None,
     )
+    batches = read_arrays_by_group(plan, obs.group_by("_zg", maintain_order=True))
 
     assert [zg for zg, _ in batches] == ["g0", "g1"]
     np.testing.assert_array_equal(g0_idx.range_calls[0][0], np.array([1, 4]))
@@ -290,13 +295,17 @@ def test_read_arrays_by_group_dispatches_boxes_with_stack_uniform_from_reconstru
         reconstructor=_FakeBoxReconstructor(),
     )
 
-    batches = read_arrays_by_group(
-        group_readers,
-        obs.group_by("_zg", maintain_order=True),
-        spec,
-        [],
-        {"raw": "layers/raw"},
+    plan = FeatureReadPlan(
+        spec=spec,
+        required_array_paths=[],
+        layer_array_paths={"raw": "layers/raw"},
+        layer_dtypes={"raw": np.dtype(np.int32)},
+        n_features=0,
+        joined_globals=None,
+        group_readers=group_readers,
+        layouts_per_group=None,
     )
+    batches = read_arrays_by_group(plan, obs.group_by("_zg", maintain_order=True))
 
     assert [zg for zg, _ in batches] == ["g0", "g1"]
     # stack_uniform is read off the reconstructor (False), forwarded to read_boxes.

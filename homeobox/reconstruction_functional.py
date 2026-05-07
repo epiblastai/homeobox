@@ -1,5 +1,6 @@
 import functools
-from typing import TYPE_CHECKING, Literal, NamedTuple, NewType
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Literal, NamedTuple, NewType, TypeAlias
 
 import numpy as np
 import polars as pl
@@ -7,9 +8,7 @@ from polars.dataframe.group_by import GroupBy
 
 from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
 from homeobox.group_reader import GroupReader, LayoutReader
-
-# TODO: Can we wrap any of these in TYPE_CHECKING
-from homeobox.group_specs import FeatureSpaceSpec
+from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
     _apply_wanted_globals_remap,
     _group_key_to_zg,
@@ -18,10 +17,11 @@ from homeobox.read import (
     _sync_gather,
 )
 
-GroupBatch = "SparseBatch | DenseFeatureBatch | SpatialTileBatch"
+GroupBatch: TypeAlias = SparseBatch | DenseFeatureBatch | SpatialTileBatch
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
+    from homeobox.schema import PointerField
 
 ArrayPath = NewType("ArrayPath", str)
 ReadersByZarrGroup = NewType("ReadersByZarrGroup", dict[str, GroupReader])
@@ -57,9 +57,9 @@ def get_layer_maximal_dtypes(spec: FeatureSpaceSpec) -> dict[str, np.dtype]:
 
 
 def cast_batch_layers_to_dtypes(
-    batch: "GroupBatch",
+    batch: GroupBatch,
     layer_dtypes: dict[str, np.dtype],
-) -> "GroupBatch":
+) -> GroupBatch:
     """Cast a batch's layer arrays in place to the requested per-layer dtypes."""
     if isinstance(batch, SparseBatch | DenseFeatureBatch):
         batch.layers = {
@@ -203,13 +203,133 @@ def collect_remapped_layout_readers_from_atlas(
         return layouts_per_group
 
 
-def read_arrays_by_group(
-    group_readers: ReadersByZarrGroup,
+@dataclass(frozen=True)
+class FeatureReadPlan:
+    """Immutable per-feature-space I/O plan for a fixed set of zarr groups.
+
+    Bundles the spec, resolved array paths, layer dtypes, joined-feature-space
+    width, per-group readers, and per-group remap layouts. Built once via
+    :func:`build_feature_read_plan` and consumed by :func:`read_arrays_by_group`
+    and :func:`finalize_grouped_read`.
+
+    Attributes
+    ----------
+    spec:
+        Feature-space spec resolved from the pointer field.
+    required_array_paths:
+        Structural array paths required by the reconstructor (e.g.
+        ``["csr/indices"]``).
+    layer_array_paths:
+        ``{layer_name: full_zarr_path}`` for every layer to be read.
+    layer_dtypes:
+        Per-layer maximal numpy dtype.
+    n_features:
+        Joined feature-space width. ``len(joined_globals)`` when joining was
+        requested, the registry size otherwise, and ``0`` when
+        ``has_var_df`` is False.
+    joined_globals:
+        Sorted int32 array of joined global feature indices when
+        ``feature_join`` or ``wanted_globals`` was supplied; ``None`` when
+        the plan reads against the full registry or has no var_df.
+    group_readers:
+        Per-zarr-group readers in group iteration order. Workers receive
+        worker-local readers with remapped layouts pre-attached.
+    layouts_per_group:
+        Per-zarr-group ``LayoutReader``s that map local feature indices into
+        the joined feature space; ``None`` when ``has_var_df`` is False.
+    """
+
+    spec: FeatureSpaceSpec
+    required_array_paths: list[str]
+    layer_array_paths: dict[str, ArrayPath]
+    layer_dtypes: dict[str, np.dtype]
+    n_features: int
+    joined_globals: np.ndarray | None
+    group_readers: ReadersByZarrGroup
+    layouts_per_group: LayoutsByZarrGroup | None
+
+    @property
+    def layer_names(self) -> list[str]:
+        return list(self.layer_array_paths.keys())
+
+
+def build_feature_read_plan(
+    atlas: "RaggedAtlas",
     groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    required_array_paths: list[str],
-    layer_array_paths: dict[str, str],
-) -> "list[tuple[str, GroupBatch]]":
+    pf: "PointerField",
+    *,
+    layer_overrides: list[str] | None = None,
+    feature_join: Literal["union", "intersection"] | None = None,
+    wanted_globals: np.ndarray | None = None,
+    for_worker: bool = False,
+) -> FeatureReadPlan:
+    """Resolve a :class:`FeatureReadPlan` for *groups* under *pf*.
+
+    ``feature_join`` is reconstruction-specific (``"union"``/``"intersection"``
+    across groups) and is invalid for the dataloader path, which fixes the
+    feature space at dataset init time via either ``wanted_globals`` or the
+    full registry width.
+
+    ``for_worker=True`` returns picklable worker-local :class:`GroupReader`
+    instances with the remapped :class:`LayoutReader` pre-attached so they
+    survive spawn-based multiprocessing.
+    """
+    spec = get_spec(pf.feature_space)
+    required_array_paths, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
+    maximal_layer_dtypes = get_layer_maximal_dtypes(spec)
+    layer_dtypes = {name: maximal_layer_dtypes[name] for name in layer_array_paths}
+
+    if spec.has_var_df:
+        if feature_join is not None or wanted_globals is not None:
+            layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
+                atlas,
+                groups,
+                spec,
+                feature_join=feature_join,
+                wanted_globals=wanted_globals,
+                return_joined_globals=True,
+            )
+            n_features = len(joined_globals)
+        else:
+            layouts_per_group = collect_remapped_layout_readers_from_atlas(
+                atlas, groups, spec, return_joined_globals=False
+            )
+            joined_globals = None
+            n_features = atlas.registry_tables[spec.feature_space].count_rows()
+    else:
+        if feature_join is not None or wanted_globals is not None:
+            raise ValueError(
+                f"feature_join and wanted_globals are not valid for feature space "
+                f"'{spec.feature_space}' which has has_var_df=False"
+            )
+        layouts_per_group = None
+        joined_globals = None
+        n_features = 0
+
+    group_readers = collect_group_readers_from_atlas(
+        atlas,
+        groups,
+        spec,
+        layouts_per_group=layouts_per_group if for_worker else None,
+        for_worker=for_worker,
+    )
+
+    return FeatureReadPlan(
+        spec=spec,
+        required_array_paths=list(required_array_paths),
+        layer_array_paths=dict(layer_array_paths),
+        layer_dtypes=layer_dtypes,
+        n_features=n_features,
+        joined_globals=joined_globals,
+        group_readers=group_readers,
+        layouts_per_group=layouts_per_group,
+    )
+
+
+def read_arrays_by_group(
+    plan: FeatureReadPlan,
+    groups: GroupBy,
+) -> list[tuple[str, GroupBatch]]:
     """Read per-group arrays and package each group as a local-space batch.
 
     Schedules async reads (ranges or boxes, per
@@ -218,28 +338,28 @@ def read_arrays_by_group(
     :meth:`Reconstructor.build_group_batch`. Each returned batch lives in the
     group's local feature space — sparse indices and dense feature columns
     have not been remapped to the joined registry yet. Use
-    :func:`concat_remapped_batches` to remap and merge into a single
-    joined-space batch.
+    :func:`finalize_grouped_read` to cast, remap, concat, and optionally
+    reorder into a single joined-space batch.
 
     Each batch's ``metadata`` is the full group obs DataFrame, including
     internal ``_``-prefixed columns. Filter at the call site if needed.
     """
-    reconstructor = spec.reconstructor
-    layer_names = list(layer_array_paths.keys())
-    array_paths = list(required_array_paths) + list(layer_array_paths.values())
+    reconstructor = plan.spec.reconstructor
+    layer_names = plan.layer_names
+    array_paths = list(plan.required_array_paths) + list(plan.layer_array_paths.values())
 
     read_tasks = []
     group_meta: list[tuple[str, pl.DataFrame]] = []
 
     for key, group_rows in groups:
         zg = _group_key_to_zg(key)
-        readers = [group_readers[zg].get_array_reader(an) for an in array_paths]
+        readers = [plan.group_readers[zg].get_array_reader(an) for an in array_paths]
 
         if reconstructor.read_method == "ranges":
-            starts, ends = spec.pointer_type.to_ranges(group_rows)
+            starts, ends = plan.spec.pointer_type.to_ranges(group_rows)
             read_tasks.append(_read_sparse_ranges(readers, starts, ends))
         elif reconstructor.read_method == "boxes":
-            min_corners, max_corners = spec.pointer_type.to_boxes(group_rows)
+            min_corners, max_corners = plan.spec.pointer_type.to_boxes(group_rows)
             read_tasks.append(
                 _read_dense_boxes(
                     readers,
@@ -261,18 +381,52 @@ def read_arrays_by_group(
     return [
         (
             zg,
-            reconstructor.build_group_batch(group_readers[zg], group_rows, layer_names, results),
+            reconstructor.build_group_batch(
+                plan.group_readers[zg], group_rows, layer_names, results
+            ),
         )
         for (zg, group_rows), results in zip(group_meta, all_results, strict=True)
     ]
 
 
+def finalize_grouped_read(
+    plan: FeatureReadPlan,
+    group_batches: list[tuple[str, GroupBatch]],
+    *,
+    target_row_ids: np.ndarray | None = None,
+) -> GroupBatch:
+    """Cast, concat-remap, and (optionally) reorder per-group batches.
+
+    Bundles the post-:func:`read_arrays_by_group` pipeline shared by the
+    dataloader take path and the reconstructor ``as_anndata`` paths. When
+    ``target_row_ids`` is provided the output is reordered to match it
+    (dataloader path); otherwise the batch keeps the zarr-group order
+    produced by the read (reconstructor path).
+    """
+    cast_batches = [
+        (zg, cast_batch_layers_to_dtypes(batch, plan.layer_dtypes)) for zg, batch in group_batches
+    ]
+    batch = concat_remapped_batches(
+        cast_batches,
+        layouts_per_group=plan.layouts_per_group,
+        n_features=plan.n_features,
+    )
+    if target_row_ids is not None:
+        source_row_ids = (
+            batch.metadata["_rowid"].to_numpy().astype(target_row_ids.dtype, copy=False)
+        )
+        batch = reorder_batch_rows(
+            batch, RowOrderMapping(source_row_ids=source_row_ids, target_row_ids=target_row_ids)
+        )
+    return batch
+
+
 def concat_remapped_batches(
-    batches: "list[tuple[str, GroupBatch]]",
+    batches: list[tuple[str, GroupBatch]],
     *,
     layouts_per_group: LayoutsByZarrGroup | None,
     n_features: int,
-) -> "GroupBatch":
+) -> GroupBatch:
     """Remap each per-group local-space batch into the joined feature space and concat.
 
     All batches must be the same concrete type (matches the output of a single
@@ -316,7 +470,7 @@ def concat_remapped_batches(
     raise TypeError(f"Unsupported batch type: {type(first_batch).__name__}")
 
 
-def _concat_metadata(batches: "list[tuple[str, GroupBatch]]") -> pl.DataFrame | None:
+def _concat_metadata(batches: list[tuple[str, GroupBatch]]) -> pl.DataFrame | None:
     parts = [b.metadata for _zg, b in batches if b.metadata is not None]
     if not parts:
         return None
@@ -455,9 +609,9 @@ def _compute_row_perm(mapping: RowOrderMapping) -> np.ndarray:
 
 
 def reorder_batch_rows(
-    batch: "GroupBatch",
+    batch: GroupBatch,
     mapping: RowOrderMapping,
-) -> "GroupBatch":
+) -> GroupBatch:
     """Reorder a batch's rows according to *mapping*. Dispatches by batch type.
 
     Operates only on the batch's row-aligned arrays — it does not inspect
@@ -555,8 +709,6 @@ def remap_sparse_indices_and_values(
     return remapped_indices, flat_values_per_layer, lengths
 
 
-# TODO: Better to build this from unique layouts than from
-# unique groups
 def _remap_layouts_to_joint_space(
     layout_readers: LayoutsByLayoutUid,
     join: Literal["union", "intersection"] = "union",

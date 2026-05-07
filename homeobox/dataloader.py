@@ -38,20 +38,14 @@ from homeobox.batch_types import (
     SparseBatch,
     SpatialTileBatch,
 )
-from homeobox.group_reader import GroupReader
-from homeobox.group_specs import FeatureSpaceSpec, get_spec
-from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
+from homeobox.group_specs import get_spec
+from homeobox.pointer_types import DiscreteSpatialPointer
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
-    RowOrderMapping,
-    cast_batch_layers_to_dtypes,
-    collect_group_readers_from_atlas,
-    collect_remapped_layout_readers_from_atlas,
-    concat_remapped_batches,
-    get_array_paths_to_read,
-    get_layer_maximal_dtypes,
+    FeatureReadPlan,
+    build_feature_read_plan,
+    finalize_grouped_read,
     read_arrays_by_group,
-    reorder_batch_rows,
 )
 
 # ---------------------------------------------------------------------------
@@ -81,72 +75,37 @@ def _build_present_arrays(
 def _build_modality_data(
     atlas: "RaggedAtlas",
     rows_indexed: pl.DataFrame,
-    # TODO: type these
     pf,
-    spec: FeatureSpaceSpec,
     layer_overrides: list[str] | None,
     wanted_globals: np.ndarray | None,
     n_rows: int,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
     """Build ``_ModalityData`` for any pointer-field modality.
 
-    Spec-driven: structural array paths and the layer paths come from
-    :func:`get_array_paths_to_read`; group-reader assembly branches on
-    ``spec.has_var_df`` (feature-registry-backed modalities get remapped
-    layouts, others don't). When ``layer_overrides`` is None, all required
-    layers from the spec are read.
-
-    Returns ``(filtered_rows, modality_data)`` where *filtered_rows*
-    is the DataFrame after empty-row removal (with internal columns
-    added).
+    Filters empty rows once, then resolves the per-feature-space I/O plan
+    (worker-local readers, remapped layouts, joined feature width) via
+    :func:`build_feature_read_plan`. Returns
+    ``(filtered_rows, modality_data)`` where *filtered_rows* is the
+    DataFrame after empty-row removal (with internal columns added) and
+    *modality_data* wraps the plan plus multimodal presence arrays.
     """
-    if wanted_globals is not None and not spec.has_var_df:
-        raise ValueError(
-            f"wanted_globals is only valid for feature spaces with has_var_df=True; "
-            f"feature space '{spec.feature_space}' has has_var_df=False"
-        )
-
-    fs = spec.feature_space
-    required_array_paths, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
-
+    spec = get_spec(pf.feature_space)
     filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
 
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    if spec.has_var_df:
-        layouts_per_group = collect_remapped_layout_readers_from_atlas(
-            atlas, groups, spec, wanted_globals=wanted_globals
-        )
-    else:
-        layouts_per_group = None
-    group_readers = collect_group_readers_from_atlas(
-        atlas, groups, spec, layouts_per_group=layouts_per_group, for_worker=True
+    plan = build_feature_read_plan(
+        atlas,
+        groups,
+        pf,
+        layer_overrides=layer_overrides,
+        wanted_globals=wanted_globals,
+        for_worker=True,
     )
-
-    if spec.has_var_df:
-        n_features = (
-            len(wanted_globals)
-            if wanted_globals is not None
-            else atlas.registry_tables[fs].count_rows()
-        )
-    else:
-        n_features = 0
-
-    maximal_layer_dtypes = get_layer_maximal_dtypes(spec)
-    layer_dtypes = {name: maximal_layer_dtypes[name] for name in layer_array_paths}
-
-    mod_data = _ModalityData(
-        spec=spec,
-        group_readers=group_readers,
-        n_features=n_features,
-        required_array_paths=list(required_array_paths),
-        layer_array_paths=dict(layer_array_paths),
-        layer_dtypes=layer_dtypes,
-        present_mask=present_mask,
-        row_positions=row_positions,
+    return filtered, _ModalityData(
+        plan=plan, present_mask=present_mask, row_positions=row_positions
     )
-    return filtered, mod_data
 
 
 def _single_layer(layers: dict):
@@ -245,30 +204,22 @@ def _identity_collate(x):
     return x
 
 
-# TODO: This should be a frozen dataclass
-@dataclass
+@dataclass(frozen=True)
 class _ModalityData:
-    """Pre-computed per-modality metadata for UnimodalHoxDataset and MultimodalHoxDataset.
+    """Per-modality state for UnimodalHoxDataset and MultimodalHoxDataset.
 
-    Built at ``__init__`` time; all fields are picklable.  Does NOT store
-    per-row pointer arrays (starts/ends/groups_np) — those are loaded
-    lazily per batch via lance ``take_row_ids``.
+    Wraps the picklable :class:`FeatureReadPlan` and adds the
+    multimodal-only presence arrays. Does NOT store per-row pointer arrays
+    (starts/ends/groups_np) — those are loaded lazily per batch via lance
+    ``take_row_ids``.
     """
 
-    spec: FeatureSpaceSpec
-    group_readers: dict[str, GroupReader]
-    # Full size of the feature registry, unless wanted_globals filtered it; 0
-    # when ``spec.has_var_df`` is False (e.g. spatial tiles have no registry).
-    n_features: int
-    # Structural array paths from spec.reconstructor.required_arrays; consumers
-    # that depend on a single index array (e.g. sparse readers) assert len == 1.
-    required_array_paths: list[str]
-    # ``{layer_name: full zarr path}`` (e.g. ``{"counts": "csr/layers/counts"}``).
-    layer_array_paths: dict[str, str]
-    layer_dtypes: dict[str, np.dtype]  # layer_name -> spec maximal dtype
-    # TODO: Multimodal fields; maybe move to a separate class that inherits
-    present_mask: np.ndarray | None = None  # bool, (n_total_rows,); None for UnimodalHoxDataset
-    row_positions: np.ndarray | None = None  # int64, (n_total_rows,); None for UnimodalHoxDataset
+    plan: FeatureReadPlan
+    # Multimodal-only: ``present_mask[i]`` is True if row *i* has this
+    # modality; ``row_positions[i]`` is the index into the modality's
+    # present-row arrays (or -1 if absent). Both ``None`` for unimodal.
+    present_mask: np.ndarray | None = None
+    row_positions: np.ndarray | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -276,127 +227,28 @@ class _ModalityData:
 # ---------------------------------------------------------------------------
 
 
-# TODO: This is assuming that just because a pointer is sparse, that it also
-# has layers. This is true for gene_expression but not necessarily a fundamental
-# feature of sparse data.
-async def _take_sparse_from_pointers(
+async def _take_from_pointers(
     groups: GroupBy,
-    spec: FeatureSpaceSpec,
     batch_row_ids: np.ndarray,
-    mod_data: _ModalityData,
-) -> SparseBatch:
-    """Fetch a sparse batch from per-row pointer arrays."""
-    group_batches = read_arrays_by_group(
-        mod_data.group_readers,
-        groups,
-        spec=spec,
-        required_array_paths=mod_data.required_array_paths,
-        layer_array_paths=mod_data.layer_array_paths,
-    )
+    plan: FeatureReadPlan,
+) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    """Fetch a batch from per-row pointer arrays.
+
+    Pointer-type-agnostic: the spec's reconstructor handles batch construction
+    (per-group via :meth:`Reconstructor.build_group_batch`, and the empty case
+    via :meth:`Reconstructor.build_empty_batch`), so the same flow works for
+    sparse CSR, dense feature, and spatial tile pointers.
+    """
+    group_batches = read_arrays_by_group(plan, groups)
     if not group_batches:
-        return SparseBatch.empty(
+        return plan.spec.reconstructor.build_empty_batch(
             n_rows=len(batch_row_ids),
-            n_features=mod_data.n_features,
-            layer_dtypes=mod_data.layer_dtypes,
+            n_features=plan.n_features,
+            layer_dtypes=plan.layer_dtypes,
+            layer_names=plan.layer_names,
         )
-    group_batches = [
-        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
-        for zg, batch in group_batches
-    ]
 
-    layouts_per_group = {
-        zg: gr.layout_reader
-        for zg, gr in mod_data.group_readers.items()
-        if gr.layout_reader is not None
-    }
-    batch = concat_remapped_batches(
-        group_batches,
-        layouts_per_group=layouts_per_group or None,
-        n_features=mod_data.n_features,
-    )
-
-    mapping = RowOrderMapping(
-        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
-        target_row_ids=batch_row_ids,
-    )
-    batch = reorder_batch_rows(batch, mapping)
-    batch.metadata = _select_obs_metadata(batch.metadata)
-    return batch
-
-
-async def _take_dense_feature_from_pointers(
-    groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    batch_row_ids: np.ndarray,
-    mod_data: _ModalityData,
-) -> DenseFeatureBatch:
-    """Fetch a dense feature batch from per-row pointer arrays."""
-    group_batches = read_arrays_by_group(
-        mod_data.group_readers,
-        groups,
-        spec=spec,
-        required_array_paths=mod_data.required_array_paths,
-        layer_array_paths=mod_data.layer_array_paths,
-    )
-    if not group_batches:
-        return DenseFeatureBatch.empty(
-            n_features=mod_data.n_features,
-            layer_dtypes=mod_data.layer_dtypes,
-        )
-    group_batches = [
-        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
-        for zg, batch in group_batches
-    ]
-
-    layouts_per_group = {
-        zg: gr.layout_reader
-        for zg, gr in mod_data.group_readers.items()
-        if gr.layout_reader is not None
-    }
-    batch = concat_remapped_batches(
-        group_batches,
-        layouts_per_group=layouts_per_group or None,
-        n_features=mod_data.n_features,
-    )
-
-    mapping = RowOrderMapping(
-        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
-        target_row_ids=batch_row_ids,
-    )
-    batch = reorder_batch_rows(batch, mapping)
-    batch.metadata = _select_obs_metadata(batch.metadata)
-    return batch
-
-
-async def _take_spatial_tile_from_pointers(
-    groups: GroupBy,
-    spec: FeatureSpaceSpec,
-    batch_row_ids: np.ndarray,
-    mod_data: _ModalityData,
-) -> SpatialTileBatch:
-    """Fetch a spatial tile/crop batch from per-row pointer arrays."""
-    layer_names = list(mod_data.layer_array_paths.keys())
-    group_batches = read_arrays_by_group(
-        mod_data.group_readers,
-        groups,
-        spec=spec,
-        required_array_paths=mod_data.required_array_paths,
-        layer_array_paths=mod_data.layer_array_paths,
-    )
-    if not group_batches:
-        return SpatialTileBatch.empty(layer_names=layer_names)
-    group_batches = [
-        (zg, cast_batch_layers_to_dtypes(batch, mod_data.layer_dtypes))
-        for zg, batch in group_batches
-    ]
-
-    batch = concat_remapped_batches(group_batches, layouts_per_group=None, n_features=0)
-
-    mapping = RowOrderMapping(
-        source_row_ids=batch.metadata["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False),
-        target_row_ids=batch_row_ids,
-    )
-    batch = reorder_batch_rows(batch, mapping)
+    batch = finalize_grouped_read(plan, group_batches, target_row_ids=batch_row_ids)
     batch.metadata = _select_obs_metadata(batch.metadata)
     return batch
 
@@ -404,7 +256,6 @@ async def _take_spatial_tile_from_pointers(
 async def _take_multimodal(
     take_result: pl.DataFrame,
     modality_data: dict[str, _ModalityData],
-    specs: dict[str, FeatureSpaceSpec],
     pointer_fields: dict[str, str],
     metadata_columns: list[str] | None,
 ) -> MultimodalBatch:
@@ -421,7 +272,7 @@ async def _take_multimodal(
         # Extract pointers for ALL batch rows for this modality
         pointer_df = take_result[pf_name].struct.unnest()
         zg_series = pointer_df["zarr_group"]
-        pointer_type = mod_data.spec.pointer_type
+        pointer_type = mod_data.plan.spec.pointer_type
         if pointer_type is DiscreteSpatialPointer:
             batch_present = (zg_series.is_not_null() & (zg_series != "")).to_numpy()
         else:
@@ -436,16 +287,7 @@ async def _take_multimodal(
         obs_pl, groups = _prepare_obs_and_groups(present_take, pointer_type, pf_name)
         assert len(obs_pl) == len(present_take)
 
-        if pointer_type is SparseZarrPointer:
-            tasks.append(_take_sparse_from_pointers(groups, specs[fs], present_row_ids, mod_data))
-        elif pointer_type is DenseZarrPointer and specs[fs].has_var_df:
-            tasks.append(
-                _take_dense_feature_from_pointers(groups, specs[fs], present_row_ids, mod_data)
-            )
-        else:
-            tasks.append(
-                _take_spatial_tile_from_pointers(groups, specs[fs], present_row_ids, mod_data)
-            )
+        tasks.append(_take_from_pointers(groups, present_row_ids, mod_data.plan))
         task_fs.append(fs)
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
@@ -533,7 +375,6 @@ class UnimodalHoxDataset(_AsyncDataset):
             atlas,
             rows_indexed,
             pf,
-            self.spec,
             layer_overrides,
             wanted_globals,
             obs_pl.height,
@@ -561,7 +402,7 @@ class UnimodalHoxDataset(_AsyncDataset):
 
     @property
     def n_features(self) -> int:
-        return self._mod_data.n_features
+        return self._mod_data.plan.n_features
 
     def __len__(self) -> int:
         return self._n_rows
@@ -599,17 +440,7 @@ class UnimodalHoxDataset(_AsyncDataset):
             .to_polars()
         )
 
-        # 2. Reorder to match input order (take_row_ids sorts by _rowid)
-        take_result = _reorder_take_result(take_result, batch_row_ids)
-
-        # 3. Extract pointer data and dispatch async read
-        if self._pointer_type is SparseZarrPointer:
-            take_fn = _take_sparse_from_pointers
-        elif self._pointer_type is DenseZarrPointer and self.spec.has_var_df:
-            take_fn = _take_dense_feature_from_pointers
-        else:
-            take_fn = _take_spatial_tile_from_pointers
-
+        # 2. Extract pointer data and dispatch async read
         # This is safe because we already filtered at __init__, that
         # guarantees that this op will not drop any rows from take_result
         obs_pl, groups = _prepare_obs_and_groups(
@@ -618,7 +449,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         # Sanity check
         assert len(obs_pl) == len(take_result)
         future = asyncio.run_coroutine_threadsafe(
-            take_fn(groups, self.spec, batch_row_ids, self._mod_data),
+            _take_from_pointers(groups, batch_row_ids, self._mod_data.plan),
             self._loop,
         )
         return future.result()
@@ -719,7 +550,6 @@ class MultimodalHoxDataset(_AsyncDataset):
         # Map field_name -> pointer field name (identical here, kept for parity
         # with lance take() call shape).
         self._pointer_fields: dict[str, str] = {}
-        self._specs: dict[str, FeatureSpaceSpec] = {}
 
         # Attach row indices so we can track original positions after per-modality filters
         rows_indexed = obs_pl.with_row_index("_orig_idx")
@@ -729,17 +559,15 @@ class MultimodalHoxDataset(_AsyncDataset):
         for fn in field_names:
             pf = atlas.pointer_fields[fn]
             self._pointer_fields[fn] = pf.field_name
-            spec = get_spec(pf.feature_space)
-            self._specs[fn] = spec
             field_layer_overrides = layer_overrides.get(fn) if layer_overrides is not None else None
 
             wg = wanted_globals.get(fn) if wanted_globals is not None else None
             _, modality_data[fn] = _build_modality_data(
-                atlas, rows_indexed, pf, spec, field_layer_overrides, wg, self._n_rows
+                atlas, rows_indexed, pf, field_layer_overrides, wg, self._n_rows
             )
 
         self._modality_data = modality_data
-        self._n_features = {fn: modality_data[fn].n_features for fn in field_names}
+        self._n_features = {fn: modality_data[fn].plan.n_features for fn in field_names}
 
         # Worker-local state — initialized lazily in _ensure_initialized()
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -782,7 +610,6 @@ class MultimodalHoxDataset(_AsyncDataset):
             _take_multimodal(
                 take_result,
                 self._modality_data,
-                self._specs,
                 self._pointer_fields,
                 self._metadata_columns,
             ),
