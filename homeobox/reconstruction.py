@@ -524,7 +524,7 @@ def _prepare_csc_group(
 
     info = {
         "group_rows": group_rows,
-        "feat_col_indices": feat_col_indices.tolist(),
+        "feat_col_indices": feat_col_indices,
         "zr_to_rank": zr_to_rank,
     }
     return info, coro
@@ -534,66 +534,30 @@ def _assemble_csc_coo_entries(
     flat_indices: np.ndarray,
     lengths: np.ndarray,
     layer_results: list[tuple[np.ndarray, np.ndarray]],
-    feat_col_indices: list[int],
+    feat_col_indices: np.ndarray,
     zr_to_rank: np.ndarray,
     row_offset: int,
     layers_to_read: list[str],
-) -> tuple[list[np.ndarray], list[np.ndarray], dict[str, list[np.ndarray]]]:
-    """Filter CSC read results to only queried rows, produce COO components."""
-    rows_parts: list[np.ndarray] = []
-    cols_parts: list[np.ndarray] = []
-    layer_vals_parts: dict[str, list[np.ndarray]] = {ln: [] for ln in layers_to_read}
+) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Filter one group's CSC read into ``(rows, cols, layer_vals)`` COO arrays.
 
-    offset = 0
-    for length, col_idx in zip(lengths, feat_col_indices, strict=True):
-        if length == 0:
-            offset += length
-            continue
-        zr_seg = flat_indices[offset : offset + length].astype(np.int64)
-        # Two-step: numpy & doesn't short-circuit, so indexing zr_to_rank
-        # with out-of-bounds zr_seg values would raise even if the bounds
-        # mask would have excluded them.
-        in_bounds = zr_seg < len(zr_to_rank)
-        valid_mask = in_bounds.copy()
-        valid_mask[in_bounds] = zr_to_rank[zr_seg[in_bounds]] >= 0
-        kept_zr = zr_seg[valid_mask]
-        if len(kept_zr) > 0:
-            ranks = zr_to_rank[kept_zr]
-            rows_parts.append((row_offset + ranks).astype(np.int64))
-            cols_parts.append(np.full(len(kept_zr), col_idx, dtype=np.int64))
-            for ln_i, ln in enumerate(layers_to_read):
-                flat_vals, _ = layer_results[ln_i]
-                val_seg = flat_vals[offset : offset + length]
-                layer_vals_parts[ln].append(val_seg[valid_mask])
-        offset += length
+    Each entry in ``flat_indices`` is a CSC row index (``zarr_row``). Map each
+    to the queried-row rank via ``zr_to_rank`` (``-1`` for rows not in the
+    query) and tag it with its output column position by repeating
+    ``feat_col_indices`` according to per-column ``lengths``.
+    """
+    cols_per_entry = np.repeat(feat_col_indices, lengths)
 
-    return rows_parts, cols_parts, layer_vals_parts
+    zr = flat_indices.astype(np.int64, copy=False)
+    ranks = np.full(zr.shape, -1, dtype=np.int64)
+    in_bounds = zr < len(zr_to_rank)
+    ranks[in_bounds] = zr_to_rank[zr[in_bounds]]
+    valid = ranks >= 0
 
-
-def _build_coo_to_csr(
-    rows_parts: list[np.ndarray],
-    cols_parts: list[np.ndarray],
-    layer_vals_parts: dict[str, list[np.ndarray]],
-    n_total_rows: int,
-    n_features: int,
-    layers_to_read: list[str],
-    layer_dtypes: dict[str, np.dtype],
-) -> dict[str, sp.csr_matrix]:
-    """Concatenate accumulated COO parts and convert to per-layer CSR matrices."""
-    rows = np.concatenate(rows_parts) if rows_parts else np.array([], dtype=np.int64)
-    cols = np.concatenate(cols_parts) if cols_parts else np.array([], dtype=np.int64)
-
-    stacked: dict[str, sp.csr_matrix] = {}
-    for ln in layers_to_read:
-        vals_list = layer_vals_parts[ln]
-        vals = (
-            np.concatenate(vals_list).astype(layer_dtypes[ln], copy=False)
-            if vals_list
-            else np.array([], dtype=layer_dtypes[ln])
-        )
-        stacked[ln] = sp.coo_matrix((vals, (rows, cols)), shape=(n_total_rows, n_features)).tocsr()
-
-    return stacked
+    rows = ranks[valid] + row_offset
+    cols = cols_per_entry[valid].astype(np.int64)
+    layer_vals = {ln: layer_results[i][0][valid] for i, ln in enumerate(layers_to_read)}
+    return rows, cols, layer_vals
 
 
 class FeatureCSCReconstructor(Reconstructor):
@@ -668,36 +632,37 @@ class FeatureCSCReconstructor(Reconstructor):
         row_offset = 0
 
         for info, group_results in zip(group_info, all_results, strict=True):
-            group_rows = info["group_rows"]
             flat_indices, lengths = group_results[0]
-            layer_results = group_results[1:]
-
             r, c, lv = _assemble_csc_coo_entries(
                 flat_indices,
                 lengths,
-                layer_results,
+                group_results[1:],
                 info["feat_col_indices"],
                 info["zr_to_rank"],
                 row_offset,
                 layers_to_read,
             )
-            rows_parts.extend(r)
-            cols_parts.extend(c)
+            rows_parts.append(r)
+            cols_parts.append(c)
             for ln in layers_to_read:
-                layer_vals_parts[ln].extend(lv[ln])
+                layer_vals_parts[ln].append(lv[ln])
 
-            obs_parts.append(group_rows)
-            row_offset += group_rows.height
+            obs_parts.append(info["group_rows"])
+            row_offset += info["group_rows"].height
 
-        stacked = _build_coo_to_csr(
-            rows_parts,
-            cols_parts,
-            layer_vals_parts,
-            row_offset,
-            len(wanted_globals),
-            layers_to_read,
-            layer_dtypes,
-        )
+        rows = np.concatenate(rows_parts)
+        cols = np.concatenate(cols_parts)
+        shape = (row_offset, len(wanted_globals))
+        stacked = {
+            ln: sp.coo_matrix(
+                (
+                    np.concatenate(layer_vals_parts[ln]).astype(layer_dtypes[ln], copy=False),
+                    (rows, cols),
+                ),
+                shape=shape,
+            ).tocsr()
+            for ln in layers_to_read
+        }
 
         return _assemble_anndata(
             atlas, pf.feature_space, wanted_globals, obs_parts, layers_to_read, stacked
