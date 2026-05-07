@@ -6,12 +6,13 @@ import pytest
 
 from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
 from homeobox.group_reader import LayoutReader
-from homeobox.group_specs import FeatureSpaceSpec, LayersSpec, ZarrGroupSpec, get_spec
+from homeobox.group_specs import ArraySpec, FeatureSpaceSpec, LayersSpec, ZarrGroupSpec, get_spec
 from homeobox.pointer_types import DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.reconstruction_functional import (
     RowOrderMapping,
     concat_remapped_batches,
     get_array_paths_to_read,
+    get_layer_maximal_dtypes,
     read_arrays_by_group,
     remap_sparse_indices_and_values,
     reorder_batch_rows,
@@ -131,6 +132,51 @@ def test_get_array_paths_to_read_rejects_specs_with_nothing_to_read():
 
     with pytest.raises(Exception, match="cannot both be empty"):
         get_array_paths_to_read(spec)
+
+
+def test_get_layer_maximal_dtypes_uses_declared_layer_specs():
+    dtypes = get_layer_maximal_dtypes(get_spec("gene_expression"))
+
+    assert dtypes == {
+        "counts": np.dtype(np.uint32),
+        "log_normalized": np.dtype(np.float32),
+        "tpm": np.dtype(np.float32),
+    }
+
+
+def test_get_layer_maximal_dtypes_promotes_mixed_float_and_int_without_integer_loss():
+    spec = FeatureSpaceSpec(
+        feature_space="mixed",
+        pointer_type=object,
+        reconstructor=Reconstructor(),
+        zarr_group_spec=ZarrGroupSpec(
+            layers=LayersSpec(
+                allowed=[
+                    ArraySpec(
+                        array_name="uint16_image",
+                        ndim=2,
+                        allowed_dtypes=[np.float32, np.uint16],
+                    ),
+                    ArraySpec(
+                        array_name="uint32_values",
+                        ndim=1,
+                        allowed_dtypes=[np.float32, np.uint32],
+                    ),
+                    ArraySpec(
+                        array_name="signed_unsigned",
+                        ndim=1,
+                        allowed_dtypes=[np.int32, np.uint32],
+                    ),
+                ],
+            )
+        ),
+    )
+
+    dtypes = get_layer_maximal_dtypes(spec)
+
+    assert dtypes["uint16_image"] == np.dtype(np.float32)
+    assert dtypes["uint32_values"] == np.dtype(np.float64)
+    assert dtypes["signed_unsigned"] == np.dtype(np.int64)
 
 
 def test_remap_sparse_indices_and_values_filters_missing_features_per_row():
