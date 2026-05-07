@@ -561,7 +561,7 @@ class AtlasQuery:
 
         Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
         this returns a :class:`~homeobox.dataloader.UnimodalHoxDataset` that yields
-        lightweight :class:`~homeobox.dataloader.SparseBatch` or
+        lightweight :class:`~homeobox.batch_types.SparseBatch` or
         :class:`~homeobox.dataloader.DenseBatch` objects via
         :meth:`~homeobox.dataloader.UnimodalHoxDataset.__getitems__`.
 

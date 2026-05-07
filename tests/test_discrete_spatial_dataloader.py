@@ -12,7 +12,7 @@ import scipy.sparse as sp
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.dataloader import DenseBatch, MultimodalBatch, SparseBatch
+from homeobox.batch_types import DenseBatch, MultimodalBatch, SparseBatch
 from homeobox.feature_layouts import reindex_registry
 from homeobox.group_specs import (
     ArraySpec,
