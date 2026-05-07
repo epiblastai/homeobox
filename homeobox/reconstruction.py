@@ -513,7 +513,7 @@ def _prepare_csc_group(
     starts = indptr[present_local].astype(np.int64)
     ends = indptr[present_local + 1].astype(np.int64)
 
-    zarr_rows_arr, _ = pointer_type.to_feature_oriented_ranges(group_rows)
+    zarr_rows_arr = group_rows["_zarr_row"].to_numpy().astype(np.int64)
     max_zr = int(zarr_rows_arr.max()) + 1 if len(zarr_rows_arr) > 0 else 0
     zr_to_rank = np.full(max_zr, -1, dtype=np.int64)
     zr_to_rank[zarr_rows_arr] = np.arange(len(zarr_rows_arr), dtype=np.int64)

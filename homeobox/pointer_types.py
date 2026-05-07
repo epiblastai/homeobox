@@ -52,16 +52,6 @@ class SparseZarrPointer(LanceModel):
         return starts, ends
 
     @classmethod
-    def to_feature_oriented_ranges(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-        """Return axis-0 read ranges for access to a feature-oriented copy of the data."""
-        _require_prepared_columns(
-            obs_pl, ("_zarr_row",), cls.__name__, "to_feature_oriented_ranges"
-        )
-        starts = obs_pl["_zarr_row"].to_numpy().astype(np.int64)
-        ends = starts + 1
-        return starts, ends
-
-    @classmethod
     def to_boxes(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
         raise NotImplementedError(f"{cls.__name__} does not define bounding-box reads")
 
