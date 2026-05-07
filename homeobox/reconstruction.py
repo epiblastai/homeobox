@@ -1,4 +1,8 @@
-"""Reconstruction helpers for building AnnData from atlas query results."""
+"""Reconstruction helpers for building AnnData from atlas query results.
+
+Reconstructors are designed to be stateless and exist to provide structured
+endpoints and reconstruction paths with a standardized API.
+"""
 
 from typing import TYPE_CHECKING, Literal
 
@@ -478,6 +482,41 @@ class DenseReconstructor(Reconstructor):
 
 class SpatialReconstructor(Reconstructor):
     """Reconstruct discrete-spatial field-image crops as stacked arrays."""
+
+    @endpoint
+    def as_array(
+        self,
+        atlas: "RaggedAtlas",
+        obs_pl: pl.DataFrame,
+        pf: PointerField,
+        layer: str | None = None,
+    ) -> np.ndarray:
+        """Return spatial reads as a single stacked NumPy array.
+
+        All boxes must produce identical crop shapes. Dense row pointers are
+        rank-1 boxes and are returned as ``(n_rows, *per_row_shape)`` arrays.
+        """
+        spec = get_spec(pf.feature_space)
+        _, layer_array_paths_dict = get_array_paths_to_read(
+            spec, [layer] if layer is not None else None
+        )
+        array_name = _single_layer_array_name(layer_array_paths_dict, pf.feature_space)
+
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return np.empty((0,), dtype=np.float32)
+
+        group_readers = collect_group_readers_from_atlas(atlas, groups, spec)
+        _, all_results = read_arrays_by_group(
+            group_readers=group_readers,
+            groups=groups,
+            spec=spec,
+            array_names=[array_name],
+            read_method="boxes",
+            stack_uniform=True,
+        )
+
+        return np.concatenate([group_results[0] for group_results in all_results], axis=0)
 
     @endpoint
     def as_array_list(
