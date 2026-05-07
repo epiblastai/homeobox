@@ -561,8 +561,9 @@ class AtlasQuery:
 
         Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
         this returns a :class:`~homeobox.dataloader.UnimodalHoxDataset` that yields
-        lightweight :class:`~homeobox.batch_types.SparseBatch` or
-        :class:`~homeobox.dataloader.DenseBatch` objects via
+        lightweight :class:`~homeobox.batch_types.SparseBatch`,
+        :class:`~homeobox.batch_types.DenseFeatureBatch`, or
+        :class:`~homeobox.batch_types.SpatialTileBatch` objects via
         :meth:`~homeobox.dataloader.UnimodalHoxDataset.__getitems__`.
 
         Use :func:`~homeobox.dataloader.make_loader` to wrap the dataset
@@ -578,9 +579,8 @@ class AtlasQuery:
         metadata_columns:
             Obs column names to include as metadata on each batch.
         stack_dense:
-            Whether dense batches should be stacked into a single ndarray. Set
-            to ``False`` to return one array per row, which allows variable-size
-            image tiles.
+            Deprecated for spatial modalities; spatial batches are always
+            returned as one ndarray per row.
 
         Notes
         -----
@@ -647,9 +647,8 @@ class AtlasQuery:
         metadata_columns:
             Obs column names to include as metadata on each batch.
         stack_dense:
-            Whether dense batches should be stacked into a single ndarray.
-            May be a single bool for all dense modalities or a mapping by
-            field name, e.g. ``{"image_tiles": False}``.
+            Deprecated for spatial modalities; spatial batches are always
+            returned as one ndarray per row.
         """
         from homeobox.dataloader import MultimodalHoxDataset
         from homeobox.group_specs import get_spec

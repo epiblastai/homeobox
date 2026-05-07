@@ -34,23 +34,44 @@ class SparseBatch:
 
 
 @dataclass
-class DenseBatch:
-    """Dense batch for ML training.
+class DenseFeatureBatch:
+    """Dense feature batch for ML training.
 
-    Represents a batch of rows as dense arrays. Only rows that have this
-    modality are included (no fill values).
+    Represents a batch of rows as a dense feature matrix. Only rows that
+    have this modality are included (no fill values).
 
     Attributes
     ----------
     data:
-        Stacked ndarray with leading row axis, or one ndarray per row when
-        dense stacking is disabled. Rows/items are in query order.
+        Stacked ndarray with leading row axis. Rows/items are in query order.
     n_features:
         Feature space width.
     """
 
-    data: np.ndarray | list[np.ndarray]
+    data: np.ndarray
     n_features: int
+    metadata: dict[str, np.ndarray] | None = None
+
+
+@dataclass
+class SpatialTileBatch:
+    """Spatial tile/crop batch for ML training.
+
+    Represents a batch of spatial arrays as one ndarray per row. Spatial
+    batches are always list-backed so uniform and ragged reads expose the
+    same shape contract.
+
+    Attributes
+    ----------
+    data:
+        One ndarray per row, in query order.
+    metadata:
+        Optional dict of obs columns as numpy arrays, aligned to rows.
+    per_row_shape:
+        Optional source per-row shape when statically known.
+    """
+
+    data: list[np.ndarray]
     metadata: dict[str, np.ndarray] | None = None
     per_row_shape: tuple[int, ...] | None = None
 
@@ -70,7 +91,8 @@ class MultimodalBatch:
     metadata:
         Optional dict of obs columns aligned to ``n_rows`` (query order).
     modalities:
-        ``{feature_space: SparseBatch | DenseBatch}``. Each sub-batch has
+        ``{feature_space: SparseBatch | DenseFeatureBatch | SpatialTileBatch}``.
+        Each sub-batch has
         ``present[fs].sum()`` rows in query order.
     present:
         ``{feature_space: bool ndarray}``, shape ``(n_rows,)`` per modality.
@@ -78,5 +100,5 @@ class MultimodalBatch:
 
     n_rows: int
     metadata: dict[str, np.ndarray] | None
-    modalities: dict[str, "SparseBatch | DenseBatch"]
+    modalities: dict[str, "SparseBatch | DenseFeatureBatch | SpatialTileBatch"]
     present: dict[str, np.ndarray]

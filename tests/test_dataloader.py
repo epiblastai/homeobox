@@ -10,12 +10,12 @@ import pytest
 import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.batch_types import SparseBatch
-from homeobox.dataloader import make_loader, sparse_to_dense_collate
+from homeobox.batch_types import DenseFeatureBatch, SparseBatch
+from homeobox.dataloader import dense_to_tensor_collate, make_loader, sparse_to_dense_collate
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
-from homeobox.pointer_types import SparseZarrPointer
+from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
@@ -37,10 +37,19 @@ class GeneFeatureSchema(FeatureBaseSchema):
     gene_name: str
 
 
+class ImageFeatureSchema(FeatureBaseSchema):
+    channel: str
+
+
 class TestCellSchema(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = PointerField.declare(
         feature_space="gene_expression"
     )
+    tissue: str | None = None
+
+
+class DenseFeatureCellSchema(HoxBaseSchema):
+    image_features: DenseZarrPointer | None = PointerField.declare(feature_space="image_features")
     tissue: str | None = None
 
 
@@ -165,6 +174,53 @@ def single_group_atlas(tmp_path):
 
 
 @pytest.fixture
+def single_group_dense_feature_atlas(tmp_path):
+    """Atlas with one dense feature zarr group."""
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
+    atlas = RaggedAtlas.create(
+        db_uri=atlas_dir,
+        obs_table_name="cells",
+        obs_schema=DenseFeatureCellSchema,
+        store=store,
+        registry_schemas={"image_features": ImageFeatureSchema},
+        dataset_table_name="datasets",
+        dataset_schema=DatasetSchema,
+    )
+
+    feature_uids = [f"feature_{i}" for i in range(3)]
+    feature_records = [
+        ImageFeatureSchema(uid=uid, channel=f"ch_{i}") for i, uid in enumerate(feature_uids)
+    ]
+    atlas.register_features("image_features", feature_records)
+    reindex_registry(atlas._registry_tables["image_features"])
+
+    X = np.arange(12, dtype=np.float32).reshape(4, 3)
+    obs = {"tissue": [f"tissue_{i % 2}" for i in range(4)]}
+    var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
+    adata = ad.AnnData(X=X, obs=obs, var=var)
+    adata = align_obs_to_schema(adata, DenseFeatureCellSchema)
+    add_from_anndata(
+        atlas,
+        adata,
+        field_name="image_features",
+        zarr_layer="ctrl_standardized",
+        dataset_record=DatasetSchema(
+            zarr_group="ds/image_features",
+            feature_space="image_features",
+            n_rows=4,
+        ),
+    )
+
+    atlas.snapshot()
+    return (
+        RaggedAtlas.checkout_latest(atlas_dir, DenseFeatureCellSchema, store=store),
+        X,
+    )
+
+
+@pytest.fixture
 def shared_layout_atlas(tmp_path):
     """Atlas with 2 zarr groups that share the same feature layout."""
     atlas_dir = str(tmp_path / "atlas")
@@ -266,6 +322,33 @@ def test_unimodal_dataset_drop_last(two_group_atlas):
     batches = [ds.__getitems__(idxs) for idxs in _iter_indices(ds.n_rows, 10, drop_last=True)]
     assert len(batches) == 3  # 35 // 10
     assert all(len(b.offsets) - 1 == 10 for b in batches)
+
+
+def test_dense_feature_dataset_returns_dense_feature_batch(single_group_dense_feature_atlas):
+    """Dense feature datasets yield DenseFeatureBatch, not SpatialTileBatch."""
+    atlas, expected = single_group_dense_feature_atlas
+
+    ds = atlas.query().to_unimodal_dataset(
+        "image_features",
+        layer="ctrl_standardized",
+        metadata_columns=["tissue"],
+    )
+
+    assert ds.n_rows == 4
+    assert ds.n_features == 3
+    assert ds.per_row_shape is None
+
+    batch = ds.__getitems__(list(range(4)))
+    assert isinstance(batch, DenseFeatureBatch)
+    assert batch.n_features == 3
+    assert batch.data.shape == (4, 3)
+    assert batch.data.dtype == np.float32
+    np.testing.assert_array_equal(batch.data, expected)
+    assert batch.metadata is not None
+    assert batch.metadata["tissue"].tolist() == ["tissue_0", "tissue_1", "tissue_0", "tissue_1"]
+
+    tensor_batch = dense_to_tensor_collate(batch)
+    assert tuple(tensor_batch["X"].shape) == (4, 3)
 
 
 def test_unimodal_dataset_empty(two_group_atlas):

@@ -32,7 +32,12 @@ from polars.dataframe.group_by import GroupBy
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
-from homeobox.batch_types import DenseBatch, MultimodalBatch, SparseBatch
+from homeobox.batch_types import (
+    DenseFeatureBatch,
+    MultimodalBatch,
+    SparseBatch,
+    SpatialTileBatch,
+)
 from homeobox.group_reader import GroupReader
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
@@ -161,7 +166,7 @@ def _build_sparse_modality_data(
     return filtered, mod_data
 
 
-def _build_dense_modality_data(
+def _build_dense_feature_modality_data(
     atlas: "RaggedAtlas",
     rows_indexed: pl.DataFrame,
     # TODO: Should type these
@@ -169,9 +174,8 @@ def _build_dense_modality_data(
     spec,
     layer: str,
     n_rows: int,
-    stack_dense: bool = True,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
-    """Build ``_ModalityData`` for a dense pointer-field modality.
+    """Build ``_ModalityData`` for a dense feature pointer-field modality.
 
     Returns ``(filtered_rows, modality_data)`` where *filtered_rows*
     is the DataFrame after empty-row removal.
@@ -182,9 +186,48 @@ def _build_dense_modality_data(
     present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
     present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
 
-    # TODO: This is setup for image tiles, which have no var space
-    # If we try to load other dense modalities, like protein abundance
-    # we won't have remapping.
+    group_readers = _build_group_readers(atlas, groups, fs)
+
+    _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
+    layer_path = layer_array_paths_dict[layer]
+
+    if group_readers:
+        first_key = list(group_readers.keys())[0]
+        reader = group_readers[first_key].get_array_reader(layer_path)
+        layer_dtype = reader._native_dtype
+    else:
+        layer_dtype = np.dtype(np.float32)
+    n_features = atlas.registry_tables[fs].count_rows()
+
+    mod_data = _ModalityData(
+        pointer_type=DenseZarrPointer,
+        group_readers=group_readers,
+        n_features=n_features,
+        index_array_name="",
+        layer_path=layer_path,
+        layer_dtype=layer_dtype,
+        present_mask=present_mask,
+        row_positions=row_positions,
+    )
+    return filtered, mod_data
+
+
+def _build_spatial_tile_modality_data(
+    atlas: "RaggedAtlas",
+    rows_indexed: pl.DataFrame,
+    # TODO: Should type these
+    pf,
+    spec,
+    layer: str,
+    n_rows: int,
+) -> "tuple[pl.DataFrame, _ModalityData]":
+    """Build ``_ModalityData`` for a dense zarr spatial/tile modality."""
+    fs = pf.feature_space
+    filtered, groups = _prepare_obs_and_groups(rows_indexed, spec.pointer_type, pf.field_name)
+
+    present_indices = filtered["_orig_idx"].to_numpy().astype(np.int64)
+    present_mask, row_positions = _build_present_arrays(present_indices, n_rows)
+
     group_readers = _build_group_readers(atlas, groups, fs)
 
     _, layer_array_paths_dict = get_array_paths_to_read(spec, [layer])
@@ -195,14 +238,11 @@ def _build_dense_modality_data(
         first_key = list(group_readers.keys())[0]
         reader = group_readers[first_key].get_array_reader(layer_path)
         layer_dtype = reader._native_dtype
-        if spec.has_var_df:
-            n_features = atlas.registry_tables[fs].count_rows()
-        else:
-            per_row_shape = tuple(reader.shape[1:])
-            n_features = int(np.prod(per_row_shape)) if per_row_shape else 0
+        per_row_shape = tuple(reader.shape[1:])
+        n_features = int(np.prod(per_row_shape)) if per_row_shape else 0
     else:
         layer_dtype = np.dtype(np.float32)
-        n_features = atlas.registry_tables[fs].count_rows() if spec.has_var_df else 0
+        n_features = 0
 
     mod_data = _ModalityData(
         pointer_type=DenseZarrPointer,
@@ -214,7 +254,7 @@ def _build_dense_modality_data(
         present_mask=present_mask,
         row_positions=row_positions,
         per_row_shape=per_row_shape,
-        stack_dense=stack_dense,
+        stack_dense=False,
     )
     return filtered, mod_data
 
@@ -226,14 +266,11 @@ def _build_discrete_spatial_modality_data(
     spec,
     layer: str,
     n_rows: int,
-    *,
-    stack_dense: bool = True,
 ) -> "tuple[pl.DataFrame, _ModalityData]":
     """Build ``_ModalityData`` for a DiscreteSpatial pointer-field modality.
 
-    Crops are read via ``BatchAsyncArray.read_boxes``. ``stack_dense=True``
-    requires uniform crop shapes and yields a stacked ``(B, *crop_shape)``
-    ndarray; ``False`` yields a list of per-row ndarrays.
+    Crops are read via ``BatchAsyncArray.read_boxes`` and returned as one
+    ndarray per row.
     """
     fs = pf.feature_space
     filtered, groups, _box_rank = _prepare_discrete_spatial_obs(rows_indexed, pf)
@@ -266,7 +303,7 @@ def _build_discrete_spatial_modality_data(
         present_mask=present_mask,
         row_positions=row_positions,
         per_row_shape=per_row_shape,
-        stack_dense=stack_dense,
+        stack_dense=False,
     )
     return filtered, mod_data
 
@@ -472,79 +509,69 @@ def _reorder_sparse_batch_rows(batch: SparseBatch, perm: np.ndarray) -> SparseBa
     )
 
 
-def _reorder_dense_batch_rows(batch: DenseBatch, perm: np.ndarray) -> DenseBatch:
-    """Reorder rows of a DenseBatch; ``perm[i]`` is the source row for output row ``i``."""
+def _reorder_dense_feature_batch_rows(
+    batch: DenseFeatureBatch, perm: np.ndarray
+) -> DenseFeatureBatch:
+    """Reorder rows of a DenseFeatureBatch; ``perm[i]`` is the source row for output row ``i``."""
     reordered_metadata = (
         {col: arr[perm] for col, arr in batch.metadata.items()}
         if batch.metadata is not None
         else None
     )
-    if isinstance(batch.data, list):
-        data = [batch.data[int(i)] for i in perm]
-    else:
-        data = batch.data[perm]
-    return DenseBatch(
-        data=data,
+    return DenseFeatureBatch(
+        data=batch.data[perm],
         n_features=batch.n_features,
+        metadata=reordered_metadata,
+    )
+
+
+def _reorder_spatial_tile_batch_rows(batch: SpatialTileBatch, perm: np.ndarray) -> SpatialTileBatch:
+    """Reorder rows of a SpatialTileBatch; ``perm[i]`` is the source row for output row ``i``."""
+    reordered_metadata = (
+        {col: arr[perm] for col, arr in batch.metadata.items()}
+        if batch.metadata is not None
+        else None
+    )
+    return SpatialTileBatch(
+        data=[batch.data[int(i)] for i in perm],
         metadata=reordered_metadata,
         per_row_shape=batch.per_row_shape,
     )
 
 
-async def _take_dense_from_pointers(
+async def _take_dense_feature_from_pointers(
     groups: GroupBy,
     spec: FeatureSpaceSpec,
     batch_row_ids: np.ndarray,
     mod_data: _ModalityData,
-) -> DenseBatch:
-    """Fetch a dense batch from per-row pointer arrays."""
-    if mod_data.pointer_type is DenseZarrPointer and mod_data.per_row_shape is None:
-        row_shape = (mod_data.n_features,)
-        out_dtype = np.dtype(np.float32)
-    else:
-        row_shape = mod_data.per_row_shape or ()
-        out_dtype = mod_data.layer_dtype
-
+) -> DenseFeatureBatch:
+    """Fetch a dense feature batch from per-row pointer arrays."""
+    out_dtype = np.dtype(np.float32)
     group_obs_data, results = read_arrays_by_group(
         mod_data.group_readers,
         groups,
         spec=spec,
         array_names=[mod_data.layer_path],
         read_method="boxes",
-        stack_uniform=mod_data.stack_dense,
+        stack_uniform=True,
     )
     if not group_obs_data:
-        data: np.ndarray | list[np.ndarray]
-        if mod_data.pointer_type is DiscreteSpatialPointer:
-            data = []
-        elif mod_data.stack_dense:
-            data = np.zeros((0, *row_shape), dtype=out_dtype)
-        else:
-            data = []
-        return DenseBatch(
-            data=data,
+        return DenseFeatureBatch(
+            data=np.zeros((0, mod_data.n_features), dtype=out_dtype),
             n_features=mod_data.n_features,
-            per_row_shape=mod_data.per_row_shape,
         )
 
     obs_parts = []
     data_parts = []
     for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
         group_data = group_results[0]
-        if isinstance(group_data, list):
-            group_data = [
-                row if row.dtype == out_dtype else row.astype(out_dtype) for row in group_data
-            ]
-        elif group_data.dtype != out_dtype:
+        if group_data.dtype != out_dtype:
             group_data = group_data.astype(out_dtype)
 
         obs_parts.append(group_rows)
         data_parts.append(group_data)
 
-    if mod_data.stack_dense:
-        data = np.concatenate(data_parts, axis=0)
-    else:
-        data = [row for group_data in data_parts for row in group_data]
+    data = np.concatenate(data_parts, axis=0)
 
     obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
     metadata = {
@@ -552,9 +579,61 @@ async def _take_dense_from_pointers(
         for col, dtype in obs_pl.schema.items()
         if not col.startswith("_") and dtype.base_type() != pl.Struct
     }
-    batch = DenseBatch(
+    batch = DenseFeatureBatch(
         data=data,
         n_features=mod_data.n_features,
+        metadata=metadata or None,
+    )
+
+    grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
+    row_id_order = np.argsort(grouped_row_ids, kind="stable")
+    row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
+    return _reorder_dense_feature_batch_rows(batch, row_perm)
+
+
+async def _take_spatial_tile_from_pointers(
+    groups: GroupBy,
+    spec: FeatureSpaceSpec,
+    batch_row_ids: np.ndarray,
+    mod_data: _ModalityData,
+) -> SpatialTileBatch:
+    """Fetch a spatial tile/crop batch from per-row pointer arrays."""
+    group_obs_data, results = read_arrays_by_group(
+        mod_data.group_readers,
+        groups,
+        spec=spec,
+        array_names=[mod_data.layer_path],
+        read_method="boxes",
+        stack_uniform=False,
+    )
+    if not group_obs_data:
+        return SpatialTileBatch(
+            data=[],
+            per_row_shape=mod_data.per_row_shape,
+        )
+
+    obs_parts = []
+    data: list[np.ndarray] = []
+    for (_zg, group_rows), group_results in zip(group_obs_data, results, strict=True):
+        group_data = group_results[0]
+        if isinstance(group_data, list):
+            rows = group_data
+        else:
+            rows = [group_data[i] for i in range(group_data.shape[0])]
+        data.extend(
+            row if row.dtype == mod_data.layer_dtype else row.astype(mod_data.layer_dtype)
+            for row in rows
+        )
+        obs_parts.append(group_rows)
+
+    obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
+    metadata = {
+        col: obs_pl[col].to_numpy()
+        for col, dtype in obs_pl.schema.items()
+        if not col.startswith("_") and dtype.base_type() != pl.Struct
+    }
+    batch = SpatialTileBatch(
+        data=data,
         metadata=metadata or None,
         per_row_shape=mod_data.per_row_shape,
     )
@@ -562,7 +641,7 @@ async def _take_dense_from_pointers(
     grouped_row_ids = obs_pl["_rowid"].to_numpy().astype(batch_row_ids.dtype, copy=False)
     row_id_order = np.argsort(grouped_row_ids, kind="stable")
     row_perm = row_id_order[np.searchsorted(grouped_row_ids[row_id_order], batch_row_ids)]
-    return _reorder_dense_batch_rows(batch, row_perm)
+    return _reorder_spatial_tile_batch_rows(batch, row_perm)
 
 
 async def _take_multimodal(
@@ -601,13 +680,19 @@ async def _take_multimodal(
 
         if mod_data.pointer_type is SparseZarrPointer:
             tasks.append(_take_sparse_from_pointers(groups, specs[fs], present_row_ids, mod_data))
+        elif mod_data.pointer_type is DenseZarrPointer and specs[fs].has_var_df:
+            tasks.append(
+                _take_dense_feature_from_pointers(groups, specs[fs], present_row_ids, mod_data)
+            )
         else:
-            tasks.append(_take_dense_from_pointers(groups, specs[fs], present_row_ids, mod_data))
+            tasks.append(
+                _take_spatial_tile_from_pointers(groups, specs[fs], present_row_ids, mod_data)
+            )
         task_fs.append(fs)
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
 
-    modalities: dict[str, SparseBatch | DenseBatch] = {}
+    modalities: dict[str, SparseBatch | DenseFeatureBatch | SpatialTileBatch] = {}
     for fs, result in zip(task_fs, results, strict=True):
         modalities[fs] = result
 
@@ -662,9 +747,8 @@ class UnimodalHoxDataset(_AsyncDataset):
         batch ``indices`` are bounded by that value.  Only valid for
         sparse feature spaces with a feature registry.
     stack_dense:
-        Whether dense batches should be stacked into a single ndarray. Set
-        to ``False`` to return one array per row, which allows variable-size
-        image tiles.
+        Deprecated for spatial modalities; spatial batches are always returned
+        as one ndarray per row.
     """
 
     def __init__(
@@ -708,17 +792,24 @@ class UnimodalHoxDataset(_AsyncDataset):
                 self.spec,
                 layer,
                 obs_pl.height,
-                stack_dense=stack_dense,
             )
-        else:
-            filtered, self._mod_data = _build_dense_modality_data(
+        elif self.spec.pointer_type is DenseZarrPointer and not self.spec.has_var_df:
+            filtered, self._mod_data = _build_spatial_tile_modality_data(
                 atlas,
                 rows_indexed,
                 pf,
                 self.spec,
                 layer,
                 obs_pl.height,
-                stack_dense=stack_dense,
+            )
+        else:
+            filtered, self._mod_data = _build_dense_feature_modality_data(
+                atlas,
+                rows_indexed,
+                pf,
+                self.spec,
+                layer,
+                obs_pl.height,
             )
 
         self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
@@ -753,14 +844,17 @@ class UnimodalHoxDataset(_AsyncDataset):
     def __len__(self) -> int:
         return self._n_rows
 
-    def __getitems__(self, row_indices: list[int]) -> "SparseBatch | DenseBatch":
+    def __getitems__(
+        self, row_indices: list[int]
+    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
         """Fetch a batch of rows by index.
 
         Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
         indices (PyTorch >= 2.0 ``__getitems__`` protocol).
 
-        Returns :class:`SparseBatch` for sparse feature spaces or
-        :class:`DenseBatch` for dense feature spaces (including image tiles).
+        Returns :class:`SparseBatch` for sparse feature spaces,
+        :class:`DenseFeatureBatch` for dense feature spaces, or
+        :class:`SpatialTileBatch` for spatial arrays.
 
         Parameters
         ----------
@@ -789,8 +883,10 @@ class UnimodalHoxDataset(_AsyncDataset):
         # 3. Extract pointer data and dispatch async read
         if self._pointer_type is SparseZarrPointer:
             take_fn = _take_sparse_from_pointers
+        elif self._pointer_type is DenseZarrPointer and self.spec.has_var_df:
+            take_fn = _take_dense_feature_from_pointers
         else:
-            take_fn = _take_dense_from_pointers
+            take_fn = _take_spatial_tile_from_pointers
 
         # This is safe because we already filtered at __init__, that
         # guarantees that this op will not drop any rows from take_result
@@ -805,7 +901,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         )
         return future.result()
 
-    def __getitem__(self, idx: int) -> "SparseBatch | DenseBatch":
+    def __getitem__(self, idx: int) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
         """Fetch a single row as a batch."""
         return self.__getitems__([idx])
 
@@ -867,8 +963,8 @@ class MultimodalHoxDataset(_AsyncDataset):
         Optional ``{field_name: sorted int64 array}`` of global feature
         indices to keep per modality.
     stack_dense:
-        Whether dense batches should be stacked into a single ndarray. May be
-        a single bool for all dense modalities or a mapping by field name.
+        Deprecated for spatial modalities; spatial batches are always returned
+        as one ndarray per row.
     """
 
     def __init__(
@@ -920,9 +1016,6 @@ class MultimodalHoxDataset(_AsyncDataset):
                     atlas, rows_indexed, pf, spec, layer, wg, self._n_rows
                 )
             elif spec.pointer_type is DiscreteSpatialPointer:
-                stack_dense_for_field = (
-                    stack_dense.get(fn, True) if isinstance(stack_dense, dict) else stack_dense
-                )
                 _, modality_data[fn] = _build_discrete_spatial_modality_data(
                     atlas,
                     rows_indexed,
@@ -930,20 +1023,24 @@ class MultimodalHoxDataset(_AsyncDataset):
                     spec,
                     layer,
                     self._n_rows,
-                    stack_dense=stack_dense_for_field,
                 )
-            else:
-                stack_dense_for_field = (
-                    stack_dense.get(fn, True) if isinstance(stack_dense, dict) else stack_dense
-                )
-                _, modality_data[fn] = _build_dense_modality_data(
+            elif spec.pointer_type is DenseZarrPointer and not spec.has_var_df:
+                _, modality_data[fn] = _build_spatial_tile_modality_data(
                     atlas,
                     rows_indexed,
                     pf,
                     spec,
                     layer,
                     self._n_rows,
-                    stack_dense=stack_dense_for_field,
+                )
+            else:
+                _, modality_data[fn] = _build_dense_feature_modality_data(
+                    atlas,
+                    rows_indexed,
+                    pf,
+                    spec,
+                    layer,
+                    self._n_rows,
                 )
 
         self._modality_data = modality_data
@@ -1078,8 +1175,8 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
         }
 
     For sparse modalities the scatter fill is applied (same as
-    :func:`sparse_to_dense_collate`).  For dense modalities the data array
-    is wrapped directly in a tensor.
+    :func:`sparse_to_dense_collate`). Dense feature data is wrapped directly
+    in a tensor. Spatial data is returned as one tensor per tile/crop.
     """
     import torch
 
@@ -1090,10 +1187,12 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
     for fs, mod_batch in batch.modalities.items():
         if isinstance(mod_batch, SparseBatch):
             result[fs] = {"X": _sparse_batch_to_dense_tensor(mod_batch)}
-        elif isinstance(mod_batch.data, list):
+        elif isinstance(mod_batch, DenseFeatureBatch):
+            result[fs] = {"X": torch.from_numpy(mod_batch.data)}
+        elif isinstance(mod_batch, SpatialTileBatch):
             result[fs] = {"X": [torch.from_numpy(np.ascontiguousarray(x)) for x in mod_batch.data]}
         else:
-            result[fs] = {"X": torch.from_numpy(mod_batch.data)}
+            raise TypeError(f"Unsupported modality batch type: {type(mod_batch).__name__}")
 
     if batch.metadata:
         result["metadata"] = {}
@@ -1106,15 +1205,15 @@ def multimodal_to_dense_collate(batch: MultimodalBatch) -> dict:
     return result
 
 
-def dense_to_tensor_collate(batch: DenseBatch) -> dict:
-    """Convert a DenseBatch to a tensor dict.
+def dense_to_tensor_collate(batch: DenseFeatureBatch | SpatialTileBatch) -> dict:
+    """Convert a dense feature or spatial tile batch to a tensor dict.
 
     Returns ``{"X": tensor, **metadata_tensors}``.  The tensor preserves the
-    batch's native dtype (e.g. ``uint16`` for image tiles).
+    batch's dtype for spatial tiles.
     """
     import torch
 
-    if isinstance(batch.data, list):
+    if isinstance(batch, SpatialTileBatch):
         result: dict = {"X": [torch.from_numpy(np.ascontiguousarray(x)) for x in batch.data]}
     else:
         result = {"X": torch.from_numpy(np.ascontiguousarray(batch.data))}
