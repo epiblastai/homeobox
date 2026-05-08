@@ -203,6 +203,31 @@ def collect_remapped_layout_readers_from_atlas(
         return layouts_per_group
 
 
+def materialize_layout_readers_for_worker(
+    layouts_per_group: LayoutsByZarrGroup | None,
+) -> LayoutsByZarrGroup | None:
+    """Return remap-backed layout readers safe to pickle into workers.
+
+    Atlas-owned ``LayoutReader`` instances may carry LanceDB table handles for
+    lazy loading. Dataloader workers only need the resolved remap, so replace
+    each unique layout with a ``LayoutReader.from_remap`` copy while preserving
+    shared identity for groups that use the same layout.
+    """
+    if layouts_per_group is None:
+        return None
+
+    materialized_by_layout_uid: dict[str | None, LayoutReader] = {}
+    materialized_per_group: dict[str, LayoutReader] = {}
+    for zg, layout in layouts_per_group.items():
+        layout_uid = layout.layout_uid
+        materialized = materialized_by_layout_uid.get(layout_uid)
+        if materialized is None:
+            materialized = LayoutReader.from_remap(layout_uid, layout.get_remap())
+            materialized_by_layout_uid[layout_uid] = materialized
+        materialized_per_group[zg] = materialized
+    return LayoutsByZarrGroup(materialized_per_group)
+
+
 @dataclass(frozen=True)
 class FeatureReadPlan:
     """Immutable per-feature-space I/O plan for a fixed set of zarr groups.
@@ -305,6 +330,9 @@ def build_feature_read_plan(
         layouts_per_group = None
         joined_globals = None
         n_features = 0
+
+    if for_worker:
+        layouts_per_group = materialize_layout_readers_for_worker(layouts_per_group)
 
     group_readers = collect_group_readers_from_atlas(
         atlas,
