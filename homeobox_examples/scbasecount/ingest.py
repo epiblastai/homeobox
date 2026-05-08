@@ -5,7 +5,6 @@ Usage:
         --h5ad /path/to/SRX12345.h5ad \
         --atlas-dir ./atlas/scbasecount \
         --sample-metadata ./data/scbasecount/sample_metadata.parquet \
-        --no-csc
 """
 
 import argparse
