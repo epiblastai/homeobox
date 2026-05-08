@@ -1,6 +1,7 @@
 """Tests for homeobox.dataloader."""
 
 import os
+import pickle
 
 import anndata as ad
 import numpy as np
@@ -581,3 +582,25 @@ def test_lazy_metadata_round_trip(two_group_atlas):
 # ---------------------------------------------------------------------------
 # Tests: DataLoader integration
 # ---------------------------------------------------------------------------
+
+
+def test_unimodal_dataset_pickle_round_trip_after_initialization(two_group_atlas):
+    """UnimodalHoxDataset remains usable after pickle round-trip."""
+    ds = (
+        two_group_atlas.query()
+        .feature_spaces("gene_expression")
+        .to_unimodal_dataset("gene_expression", metadata_columns=["uid"])
+    )
+
+    initialized_batch = ds.__getitems__([0, 1, 2])
+    assert isinstance(initialized_batch, SparseBatch)
+
+    loaded = pickle.loads(pickle.dumps(ds))
+    batch = loaded.__getitems__([0, 1, 2])
+
+    assert isinstance(batch, SparseBatch)
+    assert batch.metadata is not None
+    assert batch.metadata["uid"].to_list() == initialized_batch.metadata["uid"].to_list()
+    assert len(batch.offsets) == 4
+    assert len(batch.indices) == batch.offsets[-1]
+    assert len(batch.layers["counts"]) == batch.offsets[-1]
