@@ -1,6 +1,9 @@
 """Roundtrip tests for chromatin fragment ingestion + genome-sorted querying."""
 
+import os
+
 import numpy as np
+import obstore
 import polars as pl
 import pytest
 import zarr
@@ -48,7 +51,7 @@ def _ingest(group: zarr.Group, fragments: pl.DataFrame) -> list[str]:
 def test_genome_sorted_validates_against_feature_oriented_spec():
     """Ingestion writes a layout that satisfies CHROMATIN_ACCESSIBILITY_SPEC.feature_oriented."""
     fragments = _make_fragments(500)
-    root = zarr.open_group(zarr.storage.MemoryStore(), mode="w")
+    root = zarr.open_group(zarr.storage.ObjectStore(obstore.store.MemoryStore()), mode="w")
     group = root.create_group("frag_group")
     _ingest(group, fragments)
 
@@ -68,10 +71,14 @@ def test_genome_sorted_validates_against_feature_oriented_spec():
         ("chr1", 99_000, 200_000),
     ],
 )
-def test_query_region_matches_polars_filter(chrom: str, start: int, end: int):
+def test_query_region_matches_polars_filter(tmp_path, chrom: str, start: int, end: int):
     """GenomeSortedReader returns the same fragments as a brute-force polars filter."""
     fragments = _make_fragments(1_000)
-    root = zarr.open_group(zarr.storage.MemoryStore(), mode="w")
+    store_dir = str(tmp_path / "zarr_store")
+    os.makedirs(store_dir, exist_ok=True)
+    root = zarr.open_group(
+        zarr.storage.ObjectStore(obstore.store.LocalStore(prefix=store_dir)), mode="w"
+    )
     group = root.create_group("frag_group")
     chrom_order = _ingest(group, fragments)
 
@@ -90,7 +97,7 @@ def test_query_region_matches_polars_filter(chrom: str, start: int, end: int):
 def test_query_region_compressors_come_from_spec():
     """The genome_sorted arrays use the codecs declared on the spec, not hardcoded ones."""
     fragments = _make_fragments(200)
-    root = zarr.open_group(zarr.storage.MemoryStore(), mode="w")
+    root = zarr.open_group(zarr.storage.ObjectStore(obstore.store.MemoryStore()), mode="w")
     group = root.create_group("frag_group")
     _ingest(group, fragments)
 
@@ -99,7 +106,7 @@ def test_query_region_compressors_come_from_spec():
     chrom_offsets = group["genome_sorted/chrom_offsets"][:]
     n = int(chrom_offsets[-1])
     assert group["genome_sorted/cell_ids"].shape == (n,)
-    assert group["genome_sorted/starts"].shape == (n,)
-    assert group["genome_sorted/lengths"].shape == (n,)
+    assert group["genome_sorted/layers/starts"].shape == (n,)
+    assert group["genome_sorted/layers/lengths"].shape == (n,)
     # lengths uses uint16 by default (matches input dtype passed through)
-    assert group["genome_sorted/lengths"].dtype == np.uint16
+    assert group["genome_sorted/layers/lengths"].dtype == np.uint16

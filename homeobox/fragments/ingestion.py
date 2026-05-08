@@ -12,8 +12,8 @@ Cell-sorted (per-cell access via ``SparseZarrPointer``):
 Genome-sorted (fast genomic range queries):
 
 - ``genome_sorted/cell_ids`` (uint32)
-- ``genome_sorted/starts`` (uint32)
-- ``genome_sorted/lengths`` (uint16)
+- ``genome_sorted/layers/starts`` (uint32)
+- ``genome_sorted/layers/lengths`` (uint16)
 - ``genome_sorted/chrom_offsets`` (int64)
 - ``genome_sorted/end_max`` (uint32)
 """
@@ -434,11 +434,11 @@ def write_genome_sorted_arrays(
         group, "genome_sorted/cell_ids", (n_fragments,), chunks=chunk_shape, shards=shard_shape
     )
     zarr_starts = gs_spec.create_array(
-        group, "genome_sorted/starts", (n_fragments,), chunks=chunk_shape, shards=shard_shape
+        group, "starts", (n_fragments,), chunks=chunk_shape, shards=shard_shape
     )
     zarr_lengths = gs_spec.create_array(
         group,
-        "genome_sorted/lengths",
+        "lengths",
         (n_fragments,),
         dtype=lengths.dtype,
         chunks=chunk_shape,
