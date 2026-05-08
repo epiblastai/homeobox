@@ -7,20 +7,14 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from homeobox.group_specs import FeatureSpaceSpec
+from homeobox.batch_types import SparseBatch
 from homeobox.obs_alignment import PointerField
-from homeobox.read import (
-    _group_key_to_zg,
-    _prepare_obs_and_groups,
-    _read_sparse_ranges,
-    _sync_gather,
-)
-from homeobox.reconstruction import _build_obs_df
-from homeobox.reconstruction_functional import collect_remapped_layout_readers_from_atlas
+from homeobox.reconstruction import _build_obs_df, _read_joined_feature_batch
 from homeobox.reconstructor_base import Reconstructor, endpoint
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
+    from homeobox.group_reader import GroupReader
 
 
 @dataclass
@@ -68,7 +62,53 @@ class IntervalReconstructor(Reconstructor):
     lengths) with sparse pointers giving per-row ranges. This data cannot
     be represented as a row-by-feature AnnData matrix; the only endpoint
     is :meth:`as_fragments`.
+
+    Internally drives the standard
+    :func:`build_feature_read_plan` → :func:`read_arrays_by_group` →
+    :func:`finalize_grouped_read` pipeline by treating
+    ``cell_sorted/chromosomes`` as the structural feature-pointing array
+    (analogous to ``csr/indices``) and ``starts``/``lengths`` as layers.
+    The resulting :class:`SparseBatch` is unpacked into a
+    :class:`FragmentResult`.
     """
+
+    required_arrays: list[str] = ["cell_sorted/chromosomes"]
+    require_var_df: bool = True
+    read_method = "ranges"
+
+    def build_empty_batch(
+        self,
+        *,
+        n_rows: int,
+        n_features: int,
+        layer_dtypes: dict[str, np.dtype],
+        layer_names: list[str],
+    ) -> SparseBatch:
+        return SparseBatch.empty(n_rows=n_rows, n_features=n_features, layer_dtypes=layer_dtypes)
+
+    def build_group_batch(
+        self,
+        group_reader: "GroupReader",
+        group_rows: pl.DataFrame,
+        layer_names: list[str],
+        results: list,
+    ) -> SparseBatch:
+        flat_indices, lengths = results[0]
+        offsets = np.zeros(len(lengths) + 1, dtype=np.int64)
+        np.cumsum(lengths, out=offsets[1:])
+        layers = {ln: vals for ln, (vals, _lengths) in zip(layer_names, results[1:], strict=True)}
+        local_n_features = (
+            len(group_reader.layout_reader.get_remap())
+            if group_reader.layout_reader is not None
+            else 0
+        )
+        return SparseBatch(
+            indices=flat_indices,
+            offsets=offsets,
+            layers=layers,
+            n_features=local_n_features,
+            metadata=group_rows,
+        )
 
     @endpoint
     def as_fragments(
@@ -76,9 +116,11 @@ class IntervalReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        spec: FeatureSpaceSpec,
     ) -> FragmentResult:
         """Read cell-sorted fragment arrays and return raw intervals.
+
+        NOTE: as_fragments does not preserve the order of ``obs_pl``. Rows
+        are contiguous by zarr_group instead.
 
         Parameters
         ----------
@@ -89,101 +131,36 @@ class IntervalReconstructor(Reconstructor):
             accessibility zarr pointer column).
         pf:
             Pointer field info for chromatin_accessibility.
-        spec:
-            The ``CHROMATIN_ACCESSIBILITY_SPEC`` feature-space spec.
 
         Returns
         -------
         FragmentResult
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
-        pointer_cols = list(atlas.pointer_fields.keys())
-        obs_pl_original = obs_pl
-        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
-        if obs_pl.is_empty():
+        batch, joined_globals, _layer_names, obs_pl, pointer_cols = _read_joined_feature_batch(
+            atlas,
+            obs_pl,
+            pf,
+            layer_overrides=None,
+            feature_join="union",
+            wanted_globals=None,
+        )
+        if batch is None:
             return FragmentResult(
                 chromosomes=np.array([], dtype=np.uint8),
                 starts=np.array([], dtype=np.uint32),
                 lengths=np.array([], dtype=np.uint16),
-                offsets=np.zeros(obs_pl_original.height + 1, dtype=np.int64),
+                offsets=np.zeros(1, dtype=np.int64),
                 chrom_names=[],
-                obs=_build_obs_df(obs_pl_original, pointer_cols),
+                obs=_build_obs_df(obs_pl, pointer_cols),
             )
 
-        # Build unified chromosome space across groups
-        layouts_per_group, joined_globals = collect_remapped_layout_readers_from_atlas(
-            atlas,
-            groups,
-            spec,
-            feature_join="union",
-            return_joined_globals=True,
-        )
-        group_remap_to_joined = {zg: layout.get_remap() for zg, layout in layouts_per_group.items()}
-        chrom_names = _resolve_chrom_names(atlas, spec.feature_space, joined_globals)
-
-        # Array names from spec (chromosomes, starts, lengths)
-        array_names = [a.array_name for a in spec.zarr_group_spec.required_arrays]
-
-        # Prepare per-group readers and ranges
-        group_data: list[tuple[str, pl.DataFrame, np.ndarray, np.ndarray, list]] = []
-        for key, group_rows in groups:
-            zg = _group_key_to_zg(key)
-            starts, ends = spec.pointer_type.to_ranges(group_rows)
-            gr = atlas.get_group_reader(zg, spec.feature_space)
-            readers = [gr.get_array_reader(name) for name in array_names]
-            group_data.append((zg, group_rows, starts, ends, readers))
-
-        # Dispatch all groups concurrently
-        all_results = _sync_gather(
-            [
-                _read_sparse_ranges(readers, starts, ends)
-                for _, _, starts, ends, readers in group_data
-            ]
-        )
-
-        # Assemble across groups
-        chrom_parts: list[np.ndarray] = []
-        start_parts: list[np.ndarray] = []
-        length_parts: list[np.ndarray] = []
-        row_length_parts: list[np.ndarray] = []
-        obs_parts: list[pl.DataFrame] = []
-
-        for (zg, group_rows, _, _, _), group_results in zip(group_data, all_results, strict=True):
-            # group_results: [(flat_data, per_row_lengths), ...] for each array
-            # All 3 arrays share the same ranges so per_row_lengths are identical
-            chroms_flat, row_lengths = group_results[0]
-            starts_flat, _ = group_results[1]
-            lengths_flat, _ = group_results[2]
-
-            # Remap local chromosome indices to unified positions
-            if zg in group_remap_to_joined:
-                joined_remap = group_remap_to_joined[zg]
-                chroms_flat = joined_remap[chroms_flat.astype(np.intp)].astype(np.uint8)
-
-            chrom_parts.append(chroms_flat)
-            start_parts.append(starts_flat)
-            length_parts.append(lengths_flat)
-            row_length_parts.append(row_lengths)
-            obs_parts.append(group_rows)
-
-        # Concatenate flat arrays
-        chromosomes = np.concatenate(chrom_parts)
-        starts_out = np.concatenate(start_parts)
-        lengths_out = np.concatenate(length_parts)
-
-        # Build CSR-style offsets from per-row fragment counts
-        all_row_lengths = np.concatenate(row_length_parts)
-        offsets = np.zeros(len(all_row_lengths) + 1, dtype=np.int64)
-        np.cumsum(all_row_lengths, out=offsets[1:])
-
-        obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-        obs = _build_obs_df(obs_pl, pointer_cols)
-
+        chrom_names = _resolve_chrom_names(atlas, pf.feature_space, joined_globals)
         return FragmentResult(
-            chromosomes=chromosomes,
-            starts=starts_out,
-            lengths=lengths_out,
-            offsets=offsets,
+            chromosomes=batch.indices.astype(np.uint8, copy=False),
+            starts=batch.layers["starts"],
+            lengths=batch.layers["lengths"],
+            offsets=batch.offsets,
             chrom_names=chrom_names,
-            obs=obs,
+            obs=_build_obs_df(batch.metadata, pointer_cols),
         )

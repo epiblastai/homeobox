@@ -6,14 +6,14 @@ and writes the parallel zarr arrays expected by ``CHROMATIN_ACCESSIBILITY_SPEC``
 Cell-sorted (per-cell access via ``SparseZarrPointer``):
 
 - ``cell_sorted/chromosomes`` (uint8)
-- ``cell_sorted/starts`` (uint32)
-- ``cell_sorted/lengths`` (uint16)
+- ``cell_sorted/layers/starts`` (uint32)
+- ``cell_sorted/layers/lengths`` (uint16)
 
 Genome-sorted (fast genomic range queries):
 
 - ``genome_sorted/cell_ids`` (uint32)
-- ``genome_sorted/starts`` (uint32)
-- ``genome_sorted/lengths`` (uint16)
+- ``genome_sorted/layers/starts`` (uint32)
+- ``genome_sorted/layers/lengths`` (uint16)
 - ``genome_sorted/chrom_offsets`` (int64)
 - ``genome_sorted/end_max`` (uint32)
 """
@@ -214,8 +214,8 @@ def write_fragment_arrays(
 ) -> None:
     """Write the three parallel fragment arrays to a zarr group.
 
-    Creates arrays at ``cell_sorted/chromosomes``, ``cell_sorted/starts``,
-    and ``cell_sorted/lengths``, matching the layout expected by
+    Creates arrays at ``cell_sorted/chromosomes``, ``cell_sorted/layers/starts``,
+    and ``cell_sorted/layers/lengths``, matching the layout expected by
     ``CHROMATIN_ACCESSIBILITY_SPEC`` and ``IntervalReconstructor``.
 
     Parameters
@@ -249,14 +249,14 @@ def write_fragment_arrays(
     )
     zarr_starts = spec.zarr_group_spec.create_array(
         group,
-        "cell_sorted/starts",
+        "starts",
         (n_fragments,),
         chunks=chunk_shape,
         shards=shard_shape,
     )
     zarr_lengths = spec.zarr_group_spec.create_array(
         group,
-        "cell_sorted/lengths",
+        "lengths",
         (n_fragments,),
         dtype=lengths.dtype,
         chunks=chunk_shape,
@@ -434,11 +434,11 @@ def write_genome_sorted_arrays(
         group, "genome_sorted/cell_ids", (n_fragments,), chunks=chunk_shape, shards=shard_shape
     )
     zarr_starts = gs_spec.create_array(
-        group, "genome_sorted/starts", (n_fragments,), chunks=chunk_shape, shards=shard_shape
+        group, "starts", (n_fragments,), chunks=chunk_shape, shards=shard_shape
     )
     zarr_lengths = gs_spec.create_array(
         group,
-        "genome_sorted/lengths",
+        "lengths",
         (n_fragments,),
         dtype=lengths.dtype,
         chunks=chunk_shape,

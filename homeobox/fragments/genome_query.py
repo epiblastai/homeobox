@@ -1,45 +1,17 @@
 """Genomic range queries on genome-sorted chromatin accessibility fragments."""
 
 from dataclasses import dataclass
-from typing import Protocol
 
 import numpy as np
 import zarr
 
-from homeobox.batch_array import BatchArray
+from homeobox.batch_array import BatchAsyncArray
 from homeobox.group_specs import get_spec
+from homeobox.read import _read_sparse_ranges, _sync_gather
 
 _FEATURE_SPACE = "chromatin_accessibility"
 
 _END_MAX_BLOCK_SIZE = 128
-
-
-class _RangeReader(Protocol):
-    def read_range(self, start: int, end: int) -> np.ndarray: ...
-
-
-# TODO: Why the fallback?
-class _ZarrSliceReader:
-    """Fallback reader using plain zarr slicing."""
-
-    def __init__(self, arr: zarr.Array) -> None:
-        self._arr = arr
-
-    def read_range(self, start: int, end: int) -> np.ndarray:
-        return self._arr[start:end]
-
-
-class _BatchRangeReader:
-    """Reader using RustBatchReader for fast batched I/O."""
-
-    def __init__(self, arr: zarr.Array) -> None:
-        self._ba = BatchArray.from_array(arr)
-
-    def read_range(self, start: int, end: int) -> np.ndarray:
-        s = np.array([start], dtype=np.int64)
-        e = np.array([end], dtype=np.int64)
-        data, _ = self._ba.read_ranges(s, e)
-        return data
 
 
 @dataclass
@@ -118,8 +90,9 @@ class GenomeSortedReader:
     """Read interface for genome-sorted fragment data.
 
     Loads the small index arrays (``chrom_offsets``, ``end_max``) eagerly
-    and lazily creates ``BatchArray`` readers for the large arrays on
-    first query.
+    and resolves the three large per-fragment arrays (``cell_ids``,
+    ``starts``, ``lengths``) from the ``feature_oriented`` spec for the
+    chromatin accessibility feature space.
 
     Parameters
     ----------
@@ -136,38 +109,18 @@ class GenomeSortedReader:
                 f"Feature space '{_FEATURE_SPACE}' has no feature_oriented spec; "
                 "cannot read genome-sorted fragments."
             )
-        # Mirrors the CSC convention: every required array is named
-        # "<subgroup>/<leaf>" (e.g. "genome_sorted/cell_ids"), so the leaf
-        # after the first slash is a stable lookup key for callers.
-        self._paths = {
-            name.split("/", 1)[1]: name for name in (a.array_name for a in spec.required_arrays)
-        }
-        self._group = group
+
         self._chrom_names = list(chrom_names)
         self._chrom_to_idx = {name: i for i, name in enumerate(chrom_names)}
-        self._chrom_offsets: np.ndarray = group[self._paths["chrom_offsets"]][:]
-        self._end_max: np.ndarray = group[self._paths["end_max"]][:]
+        self._chrom_offsets: np.ndarray = group["genome_sorted/chrom_offsets"][:]
+        self._end_max: np.ndarray = group["genome_sorted/end_max"][:]
 
-        # Lazy readers
-        self._reader_cell_ids: _RangeReader | None = None
-        self._reader_starts: _RangeReader | None = None
-        self._reader_lengths: _RangeReader | None = None
-
-    def _make_reader(self, arr: zarr.Array) -> _RangeReader:
-        try:
-            store = arr.store
-            if hasattr(store, "store"):
-                return _BatchRangeReader(arr)
-        except Exception:
-            pass
-        return _ZarrSliceReader(arr)
-
-    def _ensure_readers(self) -> tuple[_RangeReader, _RangeReader, _RangeReader]:
-        if self._reader_cell_ids is None:
-            self._reader_cell_ids = self._make_reader(self._group[self._paths["cell_ids"]])
-            self._reader_starts = self._make_reader(self._group[self._paths["starts"]])
-            self._reader_lengths = self._make_reader(self._group[self._paths["lengths"]])
-        return self._reader_cell_ids, self._reader_starts, self._reader_lengths
+        layers_path = spec.find_layers_path()
+        self._readers = [
+            BatchAsyncArray.from_array(group["genome_sorted/cell_ids"]),
+            BatchAsyncArray.from_array(group[f"{layers_path}/starts"]),
+            BatchAsyncArray.from_array(group[f"{layers_path}/lengths"]),
+        ]
 
     @property
     def chrom_names(self) -> list[str]:
@@ -216,11 +169,10 @@ class GenomeSortedReader:
                 chrom_name=chrom_name,
             )
 
-        r_cell_ids, r_starts, r_lengths = self._ensure_readers()
-
-        raw_cell_ids = r_cell_ids.read_range(begin_idx, end_idx)
-        raw_starts = r_starts.read_range(begin_idx, end_idx)
-        raw_lengths = r_lengths.read_range(begin_idx, end_idx)
+        starts_arr = np.array([begin_idx], dtype=np.int64)
+        ends_arr = np.array([end_idx], dtype=np.int64)
+        results = _sync_gather([_read_sparse_ranges(self._readers, starts_arr, ends_arr)])[0]
+        raw_cell_ids, raw_starts, raw_lengths = (data for data, _ in results)
 
         # Filter: keep fragments where frag_end > start AND frag_start < end
         frag_ends = raw_starts.astype(np.int64) + raw_lengths.astype(np.int64)

@@ -157,20 +157,25 @@ PROTEIN_ABUNDANCE_SPEC = FeatureSpaceSpec(
 CHROMATIN_ACCESSIBILITY_CELL_SORTED = ZarrGroupSpec(
     required_arrays=[
         ArraySpec(array_name="cell_sorted/chromosomes", ndim=1, allowed_dtypes=[np.uint8]),
-        ArraySpec(
-            array_name="cell_sorted/starts",
-            ndim=1,
-            allowed_dtypes=[np.uint32],
-            compressors=BitpackingCodec(transform="delta"),
-        ),
-        ArraySpec(
-            array_name="cell_sorted/lengths",
-            ndim=1,
-            allowed_dtypes=[np.uint16, np.uint32],
-            compressors=BitpackingCodec(transform="none"),
-        ),
     ],
-    layers=LayersSpec(),
+    layers=LayersSpec(
+        prefix="cell_sorted",
+        match_shape_of="cell_sorted/chromosomes",
+        required=[
+            ArraySpec(
+                array_name="starts",
+                ndim=1,
+                allowed_dtypes=[np.uint32],
+                compressors=BitpackingCodec(transform="delta"),
+            ),
+            ArraySpec(
+                array_name="lengths",
+                ndim=1,
+                allowed_dtypes=[np.uint16, np.uint32],
+                compressors=BitpackingCodec(transform="none"),
+            ),
+        ],
+    ),
 )
 
 CHROMATIN_ACCESSIBILITY_GENOME_SORTED = ZarrGroupSpec(
@@ -179,18 +184,6 @@ CHROMATIN_ACCESSIBILITY_GENOME_SORTED = ZarrGroupSpec(
             array_name="genome_sorted/cell_ids",
             ndim=1,
             allowed_dtypes=[np.uint32],
-            compressors=BitpackingCodec(transform="none"),
-        ),
-        ArraySpec(
-            array_name="genome_sorted/starts",
-            ndim=1,
-            allowed_dtypes=[np.uint32],
-            compressors=BitpackingCodec(transform="delta"),
-        ),
-        ArraySpec(
-            array_name="genome_sorted/lengths",
-            ndim=1,
-            allowed_dtypes=[np.uint16, np.uint32],
             compressors=BitpackingCodec(transform="none"),
         ),
         ArraySpec(
@@ -204,7 +197,24 @@ CHROMATIN_ACCESSIBILITY_GENOME_SORTED = ZarrGroupSpec(
             allowed_dtypes=[np.uint32],
         ),
     ],
-    layers=LayersSpec(),
+    layers=LayersSpec(
+        prefix="genome_sorted",
+        match_shape_of="genome_sorted/cell_ids",
+        required=[
+            ArraySpec(
+                array_name="starts",
+                ndim=1,
+                allowed_dtypes=[np.uint32],
+                compressors=BitpackingCodec(transform="delta"),
+            ),
+            ArraySpec(
+                array_name="lengths",
+                ndim=1,
+                allowed_dtypes=[np.uint16, np.uint32],
+                compressors=BitpackingCodec(transform="none"),
+            ),
+        ],
+    ),
 )
 
 CHROMATIN_ACCESSIBILITY_SPEC = FeatureSpaceSpec(

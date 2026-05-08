@@ -320,7 +320,7 @@ class ZarrGroupSpec(BaseModel):
         """Create a zarr array under ``fs_group`` driven by this spec.
 
         ``name`` is either the ``array_name`` of an entry in
-        ``required_arrays`` (e.g. ``"csr/indices"``, ``"cell_sorted/starts"``)
+        ``required_arrays`` (e.g. ``"csr/indices"``, ``"cell_sorted/chromosomes"``)
         or the name of a layer (e.g. ``"counts"``). Intermediate groups —
         including the layers path like ``"csr/layers"`` — are auto-created
         via ``require_group``. The dtype, ndim constraints, and compressor on the
