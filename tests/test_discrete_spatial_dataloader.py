@@ -483,45 +483,38 @@ def test_multimodal_crops_and_sparse_present_masks(multimodal_crops_and_genes_at
 
 
 # ---------------------------------------------------------------------------
-# SpatialReconstructor.as_array_list
+# SpatialReconstructor.as_spatial_batch
 # ---------------------------------------------------------------------------
 
 
-def test_spatial_reconstructor_as_array_uniform(two_group_uniform_crop_atlas):
-    """as_array returns one stacked ndarray when all crop shapes are uniform."""
+def test_spatial_reconstructor_as_spatial_batch_uniform(two_group_uniform_crop_atlas):
+    """Uniform crops can be stacked from the per-row layer list."""
     atlas, images, boxes_per_group = two_group_uniform_crop_atlas
 
     obs_pl = atlas.query()._materialize_rows()
     pf = atlas.pointer_fields["image_crops"]
 
-    array = SpatialReconstructor().as_array(atlas, obs_pl, pf)
+    batch = SpatialReconstructor().as_spatial_batch(atlas, obs_pl, pf)
 
     total = sum(len(b) for b in boxes_per_group)
-    assert isinstance(array, np.ndarray)
-    assert array.shape == (total, 4, 4)
-    assert array.dtype == np.float32
+    assert list(batch.layers.keys()) == ["raw"]
+    rows = batch.layers["raw"]
+    assert len(rows) == total
+    assert all(r.shape == (4, 4) and r.dtype == np.float32 for r in rows)
+
+    stacked = np.stack(rows, axis=0)
+    assert stacked.shape == (total, 4, 4)
 
     expected_sigs: set[tuple] = set()
     for image, boxes in zip(images, boxes_per_group, strict=True):
         for crop in _crops_from(image, boxes):
             expected_sigs.add(tuple(crop.ravel()))
-    got_sigs = {tuple(crop.ravel()) for crop in array}
+    got_sigs = {tuple(r.ravel()) for r in rows}
     assert got_sigs == expected_sigs
 
 
-def test_spatial_reconstructor_as_array_ragged_raises(ragged_crop_atlas):
-    """as_array stacks per-row tiles and rejects heterogeneous crop shapes."""
-    atlas, _images, _boxes = ragged_crop_atlas
-
-    obs_pl = atlas.query()._materialize_rows()
-    pf = atlas.pointer_fields["image_crops"]
-
-    with pytest.raises(ValueError, match="same shape"):
-        SpatialReconstructor().as_array(atlas, obs_pl, pf)
-
-
-def test_spatial_reconstructor_as_array_list_ragged(ragged_crop_atlas):
-    """as_array_list returns one ndarray per row, preserving crop shapes."""
+def test_spatial_reconstructor_as_spatial_batch_ragged(ragged_crop_atlas):
+    """Ragged crops keep their native shapes inside the layer list."""
     atlas, images, boxes_per_group = ragged_crop_atlas
     image = images[0]
     boxes = boxes_per_group[0]
@@ -529,46 +522,48 @@ def test_spatial_reconstructor_as_array_list_ragged(ragged_crop_atlas):
     obs_pl = atlas.query()._materialize_rows()
     pf = atlas.pointer_fields["image_crops"]
 
-    arrays = SpatialReconstructor().as_array_list(atlas, obs_pl, pf)
+    batch = SpatialReconstructor().as_spatial_batch(atlas, obs_pl, pf)
 
-    assert isinstance(arrays, list)
-    assert len(arrays) == len(boxes)
-    assert all(isinstance(a, np.ndarray) for a in arrays)
-    assert all(a.dtype == np.float32 for a in arrays)
+    rows = batch.layers["raw"]
+    assert isinstance(rows, list)
+    assert len(rows) == len(boxes)
+    assert all(isinstance(a, np.ndarray) for a in rows)
+    assert all(a.dtype == np.float32 for a in rows)
 
     expected = _crops_from(image, boxes)
     expected_sigs = {(c.shape, tuple(c.ravel())) for c in expected}
-    got_sigs = {(a.shape, tuple(a.ravel())) for a in arrays}
+    got_sigs = {(a.shape, tuple(a.ravel())) for a in rows}
     assert got_sigs == expected_sigs
 
 
-def test_spatial_reconstructor_as_array_list_two_groups(two_group_uniform_crop_atlas):
-    """Results from multiple zarr groups are concatenated into one flat list."""
+def test_spatial_reconstructor_as_spatial_batch_two_groups(two_group_uniform_crop_atlas):
+    """Results from multiple zarr groups are concatenated into one flat layer list."""
     atlas, images, boxes_per_group = two_group_uniform_crop_atlas
 
     obs_pl = atlas.query()._materialize_rows()
     pf = atlas.pointer_fields["image_crops"]
 
-    arrays = SpatialReconstructor().as_array_list(atlas, obs_pl, pf)
+    batch = SpatialReconstructor().as_spatial_batch(atlas, obs_pl, pf)
 
+    rows = batch.layers["raw"]
     total = sum(len(b) for b in boxes_per_group)
-    assert len(arrays) == total
-    assert all(a.shape == (4, 4) for a in arrays)
+    assert len(rows) == total
+    assert all(a.shape == (4, 4) for a in rows)
 
     expected_sigs: set[tuple] = set()
     for image, boxes in zip(images, boxes_per_group, strict=True):
         for crop in _crops_from(image, boxes):
             expected_sigs.add((crop.shape, tuple(crop.ravel())))
-    got_sigs = {(a.shape, tuple(a.ravel())) for a in arrays}
+    got_sigs = {(a.shape, tuple(a.ravel())) for a in rows}
     assert got_sigs == expected_sigs
 
 
-def test_spatial_reconstructor_as_array_list_empty(ragged_crop_atlas):
-    """Empty obs_pl returns an empty list (no group reads attempted)."""
+def test_spatial_reconstructor_as_spatial_batch_empty(ragged_crop_atlas):
+    """Empty obs_pl returns an empty batch (no group reads attempted)."""
     atlas, _images, _boxes = ragged_crop_atlas
 
     obs_pl = atlas.query()._materialize_rows().head(0)
     pf = atlas.pointer_fields["image_crops"]
 
-    arrays = SpatialReconstructor().as_array_list(atlas, obs_pl, pf)
-    assert arrays == []
+    batch = SpatialReconstructor().as_spatial_batch(atlas, obs_pl, pf)
+    assert batch.layers["raw"] == []

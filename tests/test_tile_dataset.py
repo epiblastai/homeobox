@@ -220,8 +220,9 @@ def test_tile_dataset_round_trip(single_group_tile_atlas):
     ds = atlas.query().to_unimodal_dataset("image_tiles", metadata_columns=["uid"])
     batch = ds.__getitems__(list(range(10)))
 
-    # Get tiles via query.to_array for comparison
-    tiles_ref, obs_ref = atlas.query().to_array(field_name="image_tiles")
+    # Get tiles via query.to_spatial_batch for comparison
+    ref_batch = atlas.query().to_spatial_batch(field_name="image_tiles")
+    tiles_ref = np.stack(ref_batch.layers["raw"], axis=0)
 
     # Both should match the original zarr data
     assert tiles_ref.shape == original_tiles.shape
@@ -311,7 +312,7 @@ def test_tile_to_anndata_raises_with_endpoint_hint(single_group_tile_atlas):
     msg = str(exc.value)
     assert "image_tiles" in msg
     assert "as_anndata" in msg
-    assert "as_array" in msg
+    assert "as_spatial_batch" in msg
 
 
 def test_tile_to_fragments_raises_with_endpoint_hint(single_group_tile_atlas):
@@ -323,4 +324,4 @@ def test_tile_to_fragments_raises_with_endpoint_hint(single_group_tile_atlas):
 
     msg = str(exc.value)
     assert "as_fragments" in msg
-    assert "as_array" in msg
+    assert "as_spatial_batch" in msg

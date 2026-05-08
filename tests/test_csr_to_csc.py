@@ -218,8 +218,8 @@ class TestAddCsc:
         assert list(adata_csr.obs_names) == list(adata_csc.obs_names)
 
 
-def test_to_array_on_gene_expression_raises_with_endpoint_hint(tmp_path):
-    """to_array on a sparse feature space surfaces a helpful endpoint error."""
+def test_to_spatial_batch_on_gene_expression_raises_with_endpoint_hint(tmp_path):
+    """to_spatial_batch on a sparse feature space surfaces a helpful endpoint error."""
     import pytest
 
     atlas, _, _ = _create_atlas_with_data(tmp_path, n_obs=10, n_vars=5)
@@ -228,9 +228,9 @@ def test_to_array_on_gene_expression_raises_with_endpoint_hint(tmp_path):
     reader = RaggedAtlas.checkout_latest(atlas.db_uri, TestCellSchema, store=store)
 
     with pytest.raises(TypeError) as exc:
-        reader.query().to_array("gene_expression")
+        reader.query().to_spatial_batch("gene_expression")
 
     msg = str(exc.value)
     assert "gene_expression" in msg
-    assert "as_array" in msg
+    assert "as_spatial_batch" in msg
     assert "as_anndata" in msg
