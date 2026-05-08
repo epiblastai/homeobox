@@ -124,16 +124,6 @@ def _assemble_anndata(
 # ---------------------------------------------------------------------------
 
 
-def _single_layer_array_name(layer_array_paths_dict: dict[str, str], feature_space: str) -> str:
-    if len(layer_array_paths_dict) != 1:
-        raise ValueError(
-            f"Reconstructor for '{feature_space}' expects exactly one layer to read; "
-            f"resolved {len(layer_array_paths_dict)}: {list(layer_array_paths_dict)}. "
-            f"Pass an explicit `layer=` argument."
-        )
-    return next(iter(layer_array_paths_dict.values()))
-
-
 def _layer_dtypes_for_names(
     spec: FeatureSpaceSpec,
     layer_names: list[str],
@@ -399,66 +389,23 @@ class SpatialReconstructor(Reconstructor):
             metadata=group_rows,
         )
 
-    def _read_concat_single_layer(
-        self,
-        atlas: "RaggedAtlas",
-        obs_pl: pl.DataFrame,
-        pf: PointerField,
-        layer: str | None,
-    ) -> tuple[list[np.ndarray] | None, str, np.dtype]:
-        """Read one spatial layer across all groups and concat per-row tiles.
-
-        Returns ``(rows_or_None, layer_name)`` where ``rows_or_None`` is the
-        concatenated per-row tile list, or ``None`` if no rows match.
-        """
-        spec = get_spec(pf.feature_space)
-        layer_overrides = [layer] if layer is not None else None
-        _, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
-        _single_layer_array_name(layer_array_paths, pf.feature_space)
-        layer_name = next(iter(layer_array_paths.keys()))
-        layer_dtype = _layer_dtypes_for_names(spec, [layer_name])[layer_name]
-
-        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
-        if obs_pl.is_empty():
-            return None, layer_name, layer_dtype
-
-        plan = build_feature_read_plan(atlas, groups, pf, layer_overrides=layer_overrides)
-        group_batches = read_arrays_by_group(plan, groups)
-        batch = finalize_grouped_read(plan, group_batches)
-        rows = batch.layers[layer_name]
-        return rows, layer_name, layer_dtype
-
     @endpoint
-    def as_array(
+    def as_spatial_batch(
         self,
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        layer: str | None = None,
-    ) -> np.ndarray:
-        """Return spatial reads as a single stacked NumPy array.
+        layer_overrides: list[str] | None = None,
+    ) -> SpatialTileBatch:
+        """Return spatial reads as a :class:`SpatialTileBatch`.
 
-        All boxes must produce identical crop shapes. Dense row pointers are
-        rank-1 boxes and are returned as ``(n_rows, *per_row_shape)`` arrays.
-        """
-        rows, _layer_name, layer_dtype = self._read_concat_single_layer(atlas, obs_pl, pf, layer)
-        if rows is None:
-            return np.empty((0,), dtype=layer_dtype)
-        return np.stack(rows, axis=0)
+        The batch is always list-backed: each requested layer maps to one
+        ndarray per obs row, preserving native crop shapes. Callers that
+        need a stacked array can ``np.stack(batch.layers[layer_name], axis=0)``
+        when crops share a uniform shape.
 
-    @endpoint
-    def as_array_list(
-        self,
-        atlas: "RaggedAtlas",
-        obs_pl: pl.DataFrame,
-        pf: PointerField,
-        layer: str | None = None,
-    ) -> list[np.ndarray]:
-        """Return one ndarray per obs row, preserving each crop's native shape.
-
-        Crops from discrete-spatial pointers can have heterogeneous shapes,
-        so they cannot be stacked. Results are concatenated in zarr-group
-        order (rows are not aligned to the original ``obs_pl`` row order).
+        Rows are concatenated in zarr-group order (not aligned to the
+        original ``obs_pl`` row order).
 
         Parameters
         ----------
@@ -468,11 +415,20 @@ class SpatialReconstructor(Reconstructor):
             Polars DataFrame of obs rows (must include zarr pointer columns).
         pf:
             Pointer field info for the feature space.
-        layer:
-            Which layer to read. Defaults to the spec's only required layer.
+        layer_overrides:
+            Which layers to read. Defaults to the spec's required layers.
         """
-        rows, _layer_name, _layer_dtype = self._read_concat_single_layer(atlas, obs_pl, pf, layer)
-        return rows if rows is not None else []
+        spec = get_spec(pf.feature_space)
+        _, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
+        layer_names = list(layer_array_paths.keys())
+
+        obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
+        if obs_pl.is_empty():
+            return SpatialTileBatch.empty(layer_names=layer_names)
+
+        plan = build_feature_read_plan(atlas, groups, pf, layer_overrides=layer_overrides)
+        group_batches = read_arrays_by_group(plan, groups)
+        return finalize_grouped_read(plan, group_batches)
 
 
 def _csc_layer_paths(

@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     import anndata as ad
     import mudata as mu
 
+    from homeobox.batch_types import SpatialTileBatch
     from homeobox.fragments.reconstruction import FragmentResult
 
 
@@ -22,7 +23,7 @@ class MultimodalResult:
 
     - ``AnnData`` (gene expression, protein abundance, image features)
     - ``FragmentResult`` (chromatin accessibility)
-    - ``np.ndarray`` (image tiles — preserves full dimensionality)
+    - ``SpatialTileBatch`` (image tiles, image crops — preserves native shapes)
 
     Parameters
     ----------
@@ -37,7 +38,7 @@ class MultimodalResult:
     """
 
     obs: pd.DataFrame
-    mod: dict[str, "ad.AnnData | FragmentResult | np.ndarray"] = field(default_factory=dict)
+    mod: dict[str, "ad.AnnData | FragmentResult | SpatialTileBatch"] = field(default_factory=dict)
     present: dict[str, np.ndarray] = field(default_factory=dict)
 
     @property
@@ -45,7 +46,7 @@ class MultimodalResult:
         """Total number of rows across all modalities."""
         return len(self.obs)
 
-    def __getitem__(self, field_name: str) -> "ad.AnnData | FragmentResult | np.ndarray":
+    def __getitem__(self, field_name: str) -> "ad.AnnData | FragmentResult | SpatialTileBatch":
         return self.mod[field_name]
 
     def __contains__(self, field_name: str) -> bool:
@@ -54,6 +55,7 @@ class MultimodalResult:
     def __repr__(self) -> str:
         import anndata as ad
 
+        from homeobox.batch_types import SpatialTileBatch
         from homeobox.fragments.reconstruction import FragmentResult
 
         lines = [f"MultimodalResult with {self.n_rows} rows, {len(self.mod)} modalities:"]
@@ -66,9 +68,10 @@ class MultimodalResult:
                 n_frags = int(data.offsets[-1]) if len(data.offsets) > 0 else 0
                 shape_str = f"{n_present} rows, {n_frags:,} fragments"
                 type_str = "FragmentResult"
-            elif isinstance(data, np.ndarray):
-                shape_str = " x ".join(str(d) for d in data.shape)
-                type_str = "ndarray"
+            elif isinstance(data, SpatialTileBatch):
+                layer_names = ", ".join(data.layers.keys())
+                shape_str = f"{n_present} rows, layers=[{layer_names}]"
+                type_str = "SpatialTileBatch"
             else:
                 shape_str = str(type(data).__name__)
                 type_str = type(data).__name__
@@ -80,7 +83,7 @@ class MultimodalResult:
     def to_mudata(self) -> "mu.MuData":
         """Convert AnnData-compatible modalities into a MuData object.
 
-        Modalities that are not AnnData (e.g. FragmentResult, ndarray)
+        Modalities that are not AnnData (e.g. FragmentResult, SpatialTileBatch)
         are silently dropped with a warning.
         """
         import anndata as ad

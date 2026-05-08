@@ -30,7 +30,7 @@ class Reconstructor:
     """Base class for reconstructors.
 
     Subclasses implement one or more endpoint methods (decorated with
-    :func:`endpoint`) such as ``as_anndata``, ``as_array``, or
+    :func:`endpoint`) such as ``as_anndata``, ``as_spatial_batch``, or
     ``as_fragments``. Class attributes declare spec-level requirements
     validated by :class:`homeobox.group_specs.FeatureSpaceSpec`.
 

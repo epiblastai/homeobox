@@ -195,15 +195,19 @@ class TestDualCycleRoundTrip:
         for key in result.mod:
             assert result.present[key].all()
 
-        np.testing.assert_array_equal(result.mod["cycle1_image_tiles"], cycle1)
-        np.testing.assert_array_equal(result.mod["cycle2_image_tiles"], cycle2)
+        arr1 = np.stack(result.mod["cycle1_image_tiles"].layers["raw"], axis=0)
+        arr2 = np.stack(result.mod["cycle2_image_tiles"].layers["raw"], axis=0)
+        np.testing.assert_array_equal(arr1, cycle1)
+        np.testing.assert_array_equal(arr2, cycle2)
 
-    def test_to_array_by_field_name(self, dual_cycle_atlas):
+    def test_to_spatial_batch_by_field_name(self, dual_cycle_atlas):
         atlas, cycle1, cycle2 = dual_cycle_atlas
 
-        arr1, _ = atlas.query().to_array(field_name="cycle1_image_tiles")
-        arr2, _ = atlas.query().to_array(field_name="cycle2_image_tiles")
+        batch1 = atlas.query().to_spatial_batch(field_name="cycle1_image_tiles")
+        batch2 = atlas.query().to_spatial_batch(field_name="cycle2_image_tiles")
 
+        arr1 = np.stack(batch1.layers["raw"], axis=0)
+        arr2 = np.stack(batch2.layers["raw"], axis=0)
         np.testing.assert_array_equal(arr1, cycle1)
         np.testing.assert_array_equal(arr2, cycle2)
 
@@ -211,7 +215,8 @@ class TestDualCycleRoundTrip:
         atlas, cycle1, _ = dual_cycle_atlas
         result = atlas.query().select_fields("cycle1_image_tiles").to_multimodal()
         assert set(result.mod.keys()) == {"cycle1_image_tiles"}
-        np.testing.assert_array_equal(result.mod["cycle1_image_tiles"], cycle1)
+        arr1 = np.stack(result.mod["cycle1_image_tiles"].layers["raw"], axis=0)
+        np.testing.assert_array_equal(arr1, cycle1)
 
     def test_schemaless_open_uses_arrow_metadata(self, tmp_path, dual_cycle_atlas):
         """Opening an atlas without obs_schema recovers both pointer fields."""

@@ -5,9 +5,9 @@ from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     import mudata as mu
-    import pandas
     from lancedb.query import LanceQueryBuilder
 
+    from homeobox.batch_types import SpatialTileBatch
     from homeobox.dataloader import MultimodalHoxDataset, UnimodalHoxDataset
     from homeobox.fragments.reconstruction import FragmentResult
     from homeobox.multimodal import MultimodalResult
@@ -402,7 +402,8 @@ class AtlasQuery:
 
         - AnnData for matrix-based modalities (gene expression, protein abundance, etc.)
         - :class:`~homeobox.fragments.reconstruction.FragmentResult` for chromatin accessibility
-        - :class:`numpy.ndarray` for raw dense arrays without feature annotations (image tiles)
+        - :class:`~homeobox.batch_types.SpatialTileBatch` for spatial fields without
+          feature annotations (image tiles, image crops)
 
         Returns
         -------
@@ -419,8 +420,10 @@ class AtlasQuery:
         if obs_pl.is_empty():
             return MultimodalResult(obs=obs)
 
+        from homeobox.batch_types import SpatialTileBatch
+
         active_pfs = self._active_pointer_fields()
-        mod: dict[str, ad.AnnData | np.ndarray] = {}
+        mod: dict[str, ad.AnnData | SpatialTileBatch] = {}
         present: dict[str, np.ndarray] = {}
 
         for pf in active_pfs.values():
@@ -441,12 +444,17 @@ class AtlasQuery:
             # when there are cases where a reconstructor isn't oriented toward 1 specific feature
             # space (i.e., SpatialReconstructor can be for image tiles or image crops).
             # Dispatch to the appropriate endpoint:
-            # fragments first (modality-native), then raw array for var-less
-            # dense feature spaces, otherwise an AnnData.
+            # fragments first (modality-native), then a SpatialTileBatch for
+            # var-less spatial feature spaces, otherwise an AnnData.
             if "as_fragments" in endpoints:
                 result = reconstructor.as_fragments(self._atlas, obs_pl, pf, spec)
-            elif "as_array" in endpoints and not spec.has_var_df:
-                result = reconstructor.as_array(self._atlas, obs_pl, pf)
+            elif "as_spatial_batch" in endpoints and not spec.has_var_df:
+                result = reconstructor.as_spatial_batch(
+                    self._atlas,
+                    obs_pl,
+                    pf,
+                    layer_overrides=self._layer_overrides.get(pf.feature_space),
+                )
             else:
                 result = self._reconstruct_single_space_anndata(obs_pl, pf)
 
@@ -476,39 +484,36 @@ class AtlasQuery:
         obs_pl = self._materialize_rows()
         return spec.reconstructor.as_fragments(self._atlas, obs_pl, pf, spec)
 
-    def to_array(self, field_name: str) -> "tuple[np.ndarray, pandas.DataFrame]":
-        """Reconstruct a single dense pointer field as a raw array.
+    def to_spatial_batch(self, field_name: str) -> "SpatialTileBatch":
+        """Reconstruct a single spatial pointer field as a :class:`SpatialTileBatch`.
 
-        Returns the full-dimensionality array (e.g. 4D for image tiles)
-        alongside the obs DataFrame for present rows.
+        The batch is always list-backed: each layer holds one ndarray per
+        present row, preserving native crop shapes. Callers that need a
+        stacked array can ``np.stack(batch.layers[layer_name], axis=0)``
+        when crops share a uniform shape.
 
         Parameters
         ----------
         field_name
             Pointer-field attribute name whose feature_space exposes an
-            ``as_array`` endpoint (e.g. dense modalities like image tiles).
-
-        Returns
-        -------
-        (array, obs)
-            The raw NumPy array and a DataFrame of obs metadata for the
-            rows present in this modality.
+            ``as_spatial_batch`` endpoint (e.g. image tiles, image crops).
         """
-        from homeobox.reconstruction import _build_obs_df
-
         pf = self._atlas.pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
         endpoints = spec.valid_endpoints()
-        if "as_array" not in endpoints:
+        if "as_spatial_batch" not in endpoints:
             raise TypeError(
                 f"Field '{field_name}' (feature_space='{pf.feature_space}') does not "
-                f"support as_array. Valid endpoints: {endpoints}"
+                f"support as_spatial_batch. Valid endpoints: {endpoints}"
             )
 
         obs_pl = self._materialize_rows()
-        array = spec.reconstructor.as_array(self._atlas, obs_pl, pf)
-        obs = _build_obs_df(obs_pl, self.pointer_field_names)
-        return array, obs
+        return spec.reconstructor.as_spatial_batch(
+            self._atlas,
+            obs_pl,
+            pf,
+            layer_overrides=self._layer_overrides.get(pf.feature_space),
+        )
 
     def to_batches(self, batch_size: int = 1024) -> Iterator[ad.AnnData]:
         """Stream results as AnnData batches.
