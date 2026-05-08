@@ -555,7 +555,6 @@ class AtlasQuery:
         field_name: str,
         layer_overrides: list[str] | None = None,
         metadata_columns: list[str] | None = None,
-        stack_dense: bool = True,
     ) -> "UnimodalHoxDataset":
         """Create a UnimodalHoxDataset for fast ML training iteration.
 
@@ -578,9 +577,6 @@ class AtlasQuery:
             When ``None``, all required layers from the spec are read.
         metadata_columns:
             Obs column names to include as metadata on each batch.
-        stack_dense:
-            Deprecated for spatial modalities; spatial batches are always
-            returned as one ndarray per row.
 
         Notes
         -----
@@ -615,7 +611,6 @@ class AtlasQuery:
             layer_overrides=layer_overrides,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
-            stack_dense=stack_dense,
         )
 
     def to_multimodal_dataset(
@@ -623,7 +618,6 @@ class AtlasQuery:
         field_names: list[str],
         layer_overrides: dict[str, list[str] | None] | None = None,
         metadata_columns: list[str] | None = None,
-        stack_dense: bool | dict[str, bool] = True,
     ) -> "MultimodalHoxDataset":
         """Create a MultimodalHoxDataset for within-row multimodal training.
 
@@ -645,9 +639,6 @@ class AtlasQuery:
             from the spec.
         metadata_columns:
             Obs column names to include as metadata on each batch.
-        stack_dense:
-            Deprecated for spatial modalities; spatial batches are always
-            returned as one ndarray per row.
         """
         from homeobox.dataloader import MultimodalHoxDataset
         from homeobox.group_specs import get_spec
@@ -677,7 +668,6 @@ class AtlasQuery:
             layer_overrides=layer_overrides,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
-            stack_dense=stack_dense,
         )
 
     # -- Reconstruction internals -------------------------------------------
