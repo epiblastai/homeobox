@@ -1,5 +1,5 @@
 import homeobox.builtins  # noqa: F401  # register built-in specs
-import homeobox.codecs.bitpacking  # noqa: F401  # register bitpacking codec
+import homeobox.codecs  # noqa: F401  # register bitpacking codec
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
     DenseFeatureBatch,
