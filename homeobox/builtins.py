@@ -6,7 +6,7 @@ user code defines schema subclasses or runs queries.
 
 import numpy as np
 
-from homeobox.codecs.bitpacking import BitpackingCodec
+from homeobox.codecs import BitpackingCodec
 from homeobox.fragments.reconstruction import IntervalReconstructor
 from homeobox.group_specs import (
     IMAGE_TILE_AXIS_ORDER,
