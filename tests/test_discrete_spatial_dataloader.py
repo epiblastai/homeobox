@@ -1,6 +1,7 @@
 """Tests for UnimodalHoxDataset / MultimodalHoxDataset with DiscreteSpatialPointer."""
 
 import os
+import pickle
 
 import anndata as ad
 import numpy as np
@@ -480,6 +481,32 @@ def test_multimodal_crops_and_sparse_present_masks(multimodal_crops_and_genes_at
     expected = {tuple(image[y0:y1, x0:x1].ravel()) for (y0, x0, y1, x1) in crop_only_boxes}
     got = {tuple(crop.ravel()) for crop in crops.layers["raw"]}
     assert got == expected
+
+
+def test_multimodal_dataset_pickle_round_trip_after_initialization(
+    multimodal_crops_and_genes_atlas,
+):
+    """MultimodalHoxDataset remains usable after pickle round-trip."""
+    atlas, _image, _crop_only_boxes = multimodal_crops_and_genes_atlas
+    ds = atlas.query().to_multimodal_dataset(
+        ["image_crops", "gene_expression"],
+        metadata_columns=["cell_type"],
+    )
+
+    initialized_batch = ds.__getitems__([0, 1, 2, 3])
+    assert isinstance(initialized_batch, MultimodalBatch)
+
+    loaded = pickle.loads(pickle.dumps(ds))
+    batch = loaded.__getitems__([0, 1, 2, 3])
+
+    assert isinstance(batch, MultimodalBatch)
+    assert batch.n_rows == 4
+    assert batch.metadata is not None
+    assert batch.metadata["cell_type"].to_list() == ["A", "B", "C", "D"]
+    assert int(batch.present["gene_expression"].sum()) == 2
+    assert int(batch.present["image_crops"].sum()) == 2
+    assert isinstance(batch.modalities["gene_expression"], SparseBatch)
+    assert isinstance(batch.modalities["image_crops"], SpatialTileBatch)
 
 
 # ---------------------------------------------------------------------------
