@@ -51,12 +51,15 @@ io = [
     "gcsfs",
     "s3fs",
 ]
+spatial = [
+    "spatialdata",
+]
 ai = [
     "anthropic",
     "pydantic-ai-slim",
 ]
 all = [
-    "homeobox[ml,viz,io,ai]",
+    "homeobox[ml,viz,io,spatial,ai]",
     "duckdb",
 ]
 examples = [

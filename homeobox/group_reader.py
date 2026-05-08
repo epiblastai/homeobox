@@ -210,6 +210,16 @@ class GroupReader:
             self._array_reader_cache[array_name] = reader
         return reader
 
+    def get_coordinate_transform(self, resolution_name: str) -> np.ndarray:
+        """Return the affine matrix mapping ``array_name`` voxels to physical space.
+
+        ``array_name`` is a multiscales dataset path (e.g. ``"s0"``).
+        Requires the optional ``spatial`` extra (spatialdata).
+        """
+        from homeobox.spatial_util import load_ngff_transforms
+
+        return load_ngff_transforms(self.zarr_group_handle, resolution_name)
+
     def _ensure_initialized(self) -> None:
         """Open the zarr group handle lazily if not yet done."""
         if self._zarr_group_handle is None:
