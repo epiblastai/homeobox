@@ -28,7 +28,7 @@ import pyarrow as pa
 import tiledbsoma
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.codecs.bitpacking import BitpackingCodec
+from homeobox.codecs import BitpackingCodec
 from homeobox.ingestion import add_csc
 from homeobox.obs_alignment import PointerFieldInfo, _schema_obs_fields
 from homeobox.schema import make_uid
