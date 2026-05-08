@@ -22,6 +22,7 @@ def _prepare_obs_and_groups(
     See the concrete pointer type's ``prepare_obs`` method for the column
     contract.
     """
+    # TODO: Investigate, should prepare_obs support an option to not filter null values?
     obs_pl = pointer_type.prepare_obs(obs_pl, column_name)
     return obs_pl, obs_pl.group_by("_zg")
 
@@ -73,7 +74,7 @@ async def _read_dense_boxes(
     min_corners: np.ndarray,
     max_corners: np.ndarray,
     *,
-    stack_uniform: bool = True,
+    stack_uniform: bool = False,
 ) -> list[np.ndarray | list[np.ndarray]]:
     """Read multiple arrays concurrently with shared bounding boxes.
 

@@ -140,6 +140,9 @@ class DiscreteSpatialPointer(LanceModel):
                 f"min_corner lengths {min_lens}, max_corner lengths {max_lens}"
             )
 
+        # TODO: Assumes all boxes have the same dimensionality. Cannot mix 2D, 3D, and 4D yet.
+        # Could update the group reader to strip padding dimensions, if they exist. Could use
+        # -1 as sentinel values and strip.
         box_rank = int(min_lens[0])
         if box_rank < 1:
             raise ValueError(f"{cls.__name__}.to_boxes requires box rank >= 1, got {box_rank}")
