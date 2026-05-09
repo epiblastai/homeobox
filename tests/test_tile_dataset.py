@@ -115,7 +115,7 @@ def _make_tile_atlas(
         }
 
         table = pa.table(columns, schema=arrow_schema)
-        atlas.obs_table.add(table)
+        atlas.add_obs_records(table)
 
     atlas.snapshot()
     atlas = RaggedAtlas.checkout_latest(

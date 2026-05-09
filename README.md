@@ -163,7 +163,7 @@ rows = [
     )
     for i in range(n_cells)
 ]
-atlas.obs_table.add(rows)
+atlas.add_obs_records(rows)
 
 atlas.optimize()
 atlas.snapshot()

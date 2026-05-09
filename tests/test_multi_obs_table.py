@@ -7,6 +7,7 @@ import anndata as ad
 import numpy as np
 import obstore
 import polars as pl
+import pyarrow as pa
 import pytest
 import scipy.sparse as sp
 
@@ -288,3 +289,101 @@ def test_add_from_anndata_requires_obs_table_name_when_field_shared(tmp_path):
             zarr_layer="counts",
             dataset_record=_ds(adata, "cells/ds1"),
         )
+
+
+# ---------------------------------------------------------------------------
+# Blessed obs-write path + stale-handle guard
+# ---------------------------------------------------------------------------
+
+
+def _build_bare_atlas(tmp_path, schemas: dict[str, type[HoxBaseSchema]]):
+    """Atlas with the given obs schemas but no rows / datasets / zarr writes."""
+    atlas_dir = str(tmp_path / "atlas")
+    os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+    store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
+    atlas = RaggedAtlas.create(
+        db_uri=atlas_dir,
+        obs_schemas=schemas,
+        store=store,
+        registry_schemas={"gene_expression": GeneFeatureSchema},
+        dataset_table_name="datasets",
+        dataset_schema=DatasetSchema,
+    )
+    return atlas, atlas_dir, store
+
+
+def _empty_obs_arrow(schema_cls: type[HoxBaseSchema], uids: list[str]) -> pa.Table:
+    """Build a pa.Table conforming to ``schema_cls`` with null pointer columns."""
+    return pa.Table.from_pylist(
+        [{"uid": u, "dataset_uid": "", "gene_expression": None} for u in uids],
+        schema=schema_cls.to_arrow_schema(),
+    )
+
+
+def test_add_obs_records_with_arrow_table_round_trips(tmp_path):
+    atlas, atlas_dir, store = _build_bare_atlas(tmp_path, {"cells": CellSchema})
+    arrow = _empty_obs_arrow(CellSchema, ["c1", "c2", "c3"])
+
+    atlas.add_obs_records(arrow)
+
+    atlas.snapshot()
+    checked = RaggedAtlas.checkout_latest(atlas_dir, obs_schemas={"cells": CellSchema}, store=store)
+    assert checked.obs_table.count_rows() == 3
+
+
+def test_add_obs_records_requires_obs_table_name_when_ambiguous(tmp_path):
+    atlas, *_ = _build_bare_atlas(tmp_path, {"cells": CellSchema, "nuclei": NucleusSchema})
+    arrow = _empty_obs_arrow(CellSchema, ["c1"])
+    with pytest.raises(ValueError, match="Pass obs_table_name"):
+        atlas.add_obs_records(arrow)
+
+
+def test_add_obs_records_targets_named_table(tmp_path):
+    atlas, atlas_dir, store = _build_bare_atlas(
+        tmp_path, {"cells": CellSchema, "nuclei": NucleusSchema}
+    )
+    atlas.add_obs_records(_empty_obs_arrow(CellSchema, ["c1", "c2"]), obs_table_name="cells")
+    atlas.add_obs_records(_empty_obs_arrow(NucleusSchema, ["n1"]), obs_table_name="nuclei")
+
+    atlas.snapshot()
+    checked = RaggedAtlas.checkout_latest(
+        atlas_dir,
+        obs_schemas={"cells": CellSchema, "nuclei": NucleusSchema},
+        store=store,
+    )
+    assert checked.obs_tables["cells"].count_rows() == 2
+    assert checked.obs_tables["nuclei"].count_rows() == 1
+
+
+def test_snapshot_refuses_when_held_handle_is_stale(tmp_path):
+    """Writing through a fresh handle leaves the held handle stale; snapshot must refuse."""
+    atlas, atlas_dir, store = _build_bare_atlas(tmp_path, {"cells": CellSchema})
+
+    # Footgun: bypass the held handle and write through a fresh one.
+    fresh = atlas.db.open_table("cells")
+    fresh.add(_empty_obs_arrow(CellSchema, ["c1", "c2"]))
+    assert atlas._obs_tables["cells"].version != fresh.version
+
+    with pytest.raises(RuntimeError) as excinfo:
+        atlas.snapshot()
+    msg = str(excinfo.value)
+    assert "snapshot() refused" in msg
+    assert "cells" in msg
+    assert "atlas.refresh()" in msg
+
+    atlas.refresh()
+    assert atlas._obs_tables["cells"].version == fresh.version
+
+    atlas.snapshot()
+    checked = RaggedAtlas.checkout_latest(atlas_dir, obs_schemas={"cells": CellSchema}, store=store)
+    assert checked.obs_table.count_rows() == 2
+
+
+def test_snapshot_clean_when_writes_use_blessed_path(tmp_path):
+    """Writes via add_obs_records keep the held handle in sync — no refresh needed."""
+    atlas, atlas_dir, store = _build_bare_atlas(tmp_path, {"cells": CellSchema})
+    atlas.add_obs_records(_empty_obs_arrow(CellSchema, ["c1"]))
+    atlas.snapshot()  # must not raise
+
+    checked = RaggedAtlas.checkout_latest(atlas_dir, obs_schemas={"cells": CellSchema}, store=store)
+    assert checked.obs_table.count_rows() == 1

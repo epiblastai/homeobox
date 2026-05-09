@@ -372,7 +372,8 @@ def _build_row_arrow_table(
     Returns
     -------
     pa.Table
-        Arrow table matching the row schema, ready for ``obs_table.add()``.
+        Arrow table matching the row schema, ready for
+        ``atlas.add_obs_records()``.
     """
     n_rows = len(obs_df)
     obs_schema = atlas.obs_schemas[obs_table_name]
@@ -473,7 +474,7 @@ def insert_obs_records(
     int
         Number of rows inserted.
     """
-    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     pointer_fields = atlas.pointer_fields_for(name)
     pointer_field = pointer_fields[field_name]
 
@@ -485,7 +486,7 @@ def insert_obs_records(
         pointer_data={pointer_field.field_name: pointer_struct},
         obs_table_name=name,
     )
-    table.add(arrow_table)
+    atlas.add_obs_records(arrow_table, obs_table_name=name)
     return len(obs_df)
 
 
@@ -680,7 +681,7 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
-    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     obs_schema = atlas.obs_schemas[name]
     if obs_schema is None:
         raise ValueError(
@@ -785,7 +786,7 @@ def add_anndata_batch(
         pointer_data={pointer_field.field_name: pointer_struct},
         obs_table_name=name,
     )
-    table.add(arrow_table)
+    atlas.add_obs_records(arrow_table, obs_table_name=name)
     return n_rows
 
 
@@ -904,7 +905,7 @@ def add_coo_batch(
     int
         Number of cells ingested.
     """
-    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     obs_schema = atlas.obs_schemas[name]
     if obs_schema is None:
         raise ValueError(
@@ -1126,7 +1127,7 @@ def add_coo_batch(
             columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)
 
     arrow_table = pa.table(columns, schema=arrow_schema)
-    table.add(arrow_table)
+    atlas.add_obs_records(arrow_table, obs_table_name=name)
     return n_rows
 
 

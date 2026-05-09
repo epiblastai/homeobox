@@ -3,6 +3,7 @@
 import json
 import os
 from collections import OrderedDict, defaultdict
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -477,7 +478,13 @@ class RaggedAtlas:
     # TODO: I think we should remove this and stick to `obs_tables` instead
     @property
     def obs_table(self) -> lancedb.table.Table:
-        """The obs table, when the atlas has exactly one. Raises otherwise."""
+        """The obs table, when the atlas has exactly one. Raises otherwise.
+
+        Read-only consumers can use the returned handle freely. For writes,
+        prefer :meth:`add_obs_records` — calling ``.add(...)`` on a fresh
+        handle obtained via ``atlas.db.open_table(name)`` would leave this
+        held handle stale and cause :meth:`snapshot` to refuse.
+        """
         _, table = self._resolve_obs_table()
         return table
 
@@ -496,7 +503,12 @@ class RaggedAtlas:
     # would be convenient
     @property
     def obs_tables(self) -> dict[str, lancedb.table.Table]:
-        """All obs tables, keyed by obs_table_name."""
+        """All obs tables, keyed by obs_table_name.
+
+        For writes, prefer :meth:`add_obs_records` so the held handle stays
+        in sync with the on-disk version (otherwise :meth:`snapshot` will
+        refuse with a stale-handle error).
+        """
         return self._obs_tables
 
     @property
@@ -551,6 +563,40 @@ class RaggedAtlas:
         )
         self._dataset_table.add(arrow_table)
 
+    def add_obs_records(
+        self,
+        records: pa.Table | list[HoxBaseSchema],
+        *,
+        obs_table_name: str | None = None,
+    ) -> None:
+        """Append rows to an obs table via the atlas's held handle.
+
+        Always prefer this over ``atlas.obs_table.add(...)`` or
+        ``atlas.db.open_table(name).add(...)``. A fresh handle commits a
+        new on-disk version that the atlas's held handle never observes,
+        so ``snapshot()`` would record a stale version. ``add_obs_records``
+        routes through ``self._obs_tables[name]`` so the held handle stays
+        in sync.
+        """
+        name, table = self._resolve_obs_table(obs_table_name)
+        if isinstance(records, pa.Table):
+            arrow = records
+        else:
+            if not records:
+                return
+            schema_cls = self._obs_schemas.get(name)
+            if schema_cls is None:
+                raise ValueError(
+                    f"Cannot convert HoxBaseSchema records for obs table {name!r}: "
+                    "no schema was supplied at open() time. Pass a pa.Table instead, "
+                    f"or reopen the atlas with obs_schemas={{{name!r}: YourSchema}}."
+                )
+            arrow = pa.Table.from_pylist(
+                [r.model_dump() for r in records],
+                schema=schema_cls.to_arrow_schema(),
+            )
+        table.add(arrow)
+
     def find_datasets(
         self,
         zarr_group: str,
@@ -581,6 +627,29 @@ class RaggedAtlas:
     def invalidate_group_reader(self, zarr_group: str, feature_space: str) -> None:
         """Drop the cached GroupReader for ``(zarr_group, feature_space)``."""
         self._group_readers.pop((zarr_group, feature_space), None)
+
+    def _iter_managed_tables(self) -> Iterator[lancedb.table.Table]:
+        """Yield every LanceDB table the atlas tracks for snapshotting.
+
+        ``_version_table`` is intentionally excluded: ``snapshot()`` is its
+        only writer, so it cannot drift relative to itself.
+        """
+        yield from self._obs_tables.values()
+        yield self._dataset_table
+        yield from self._registry_tables.values()
+        yield self._feature_layouts_table
+
+    def refresh(self) -> None:
+        """Advance every held LanceDB table handle to the latest on-disk version.
+
+        Call this after writes that bypassed the atlas's held handles —
+        e.g. another process committed, or in-process code used
+        ``atlas.db.open_table(...)`` instead of the blessed
+        ``add_obs_records`` / ``register_*`` paths. ``snapshot()`` raises
+        if any handle is stale; ``refresh()`` clears that.
+        """
+        for table in self._iter_managed_tables():
+            table.checkout_latest()
 
     # -- Query entry point --------------------------------------------------
 
@@ -1008,22 +1077,25 @@ class RaggedAtlas:
         """Record a consistent snapshot of all table versions.
 
         Returns the new atlas version number (0-indexed, monotonically increasing).
-        Raises ``ValueError`` if the atlas was created without a version table, or if
-        validation errors are found.
-
+        Raises ``ValueError`` if validation errors are found, or ``RuntimeError``
+        if any held table handle is behind the on-disk state (call
+        :meth:`refresh` and retry).
         """
-        # TODO: Standardize the record-writing path. `snapshot()` reads
-        # `self.obs_table.version` / `self._dataset_table.version` from the
-        # handles this atlas holds; writes via a fresh `atlas.db.open_table(name).add(...)`
-        # advance the on-disk version without advancing these handles, so the
-        # snapshot silently records the pre-write versions and `checkout_latest`
-        # reopens an empty-looking atlas. This has not bitten in practice
-        # because the usual workflow is multiple writer processes followed by
-        # opening a fresh atlas and calling snapshot — which guarantees every
-        # held handle is at the latest version. For single-process / notebook
-        # workflows it is a footgun. Options: expose `add_obs_records` /
-        # `add_dataset_records` / `add_feature_records` as the blessed path, or
-        # detect version drift here and raise with a pointer to those methods.
+        stale: list[tuple[str, int, int]] = []
+        for table in self._iter_managed_tables():
+            held = table.version
+            fresh = self.db.open_table(table.name).version
+            if held != fresh:
+                stale.append((table.name, held, fresh))
+        if stale:
+            details = "\n".join(f"  • {name}: held=v{h}, on-disk=v{f}" for name, h, f in stale)
+            raise RuntimeError(
+                "snapshot() refused: the following table handles are behind "
+                "the on-disk state, likely because writes have been performed "
+                "since the tables on this atlas were opened. Call atlas.refresh() and retry."
+                + details
+            )
+
         errors = self.validate()
         if errors:
             raise ValueError(

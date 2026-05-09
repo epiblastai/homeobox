@@ -178,7 +178,7 @@ def dual_cycle_atlas(tmp_path):
         "cycle2_image_tiles": _build_pointer_struct("image_tiles", cycle2_group, n_cells),
         "cell_type": pa.array([f"t{i % 2}" for i in range(n_cells)], type=pa.string()),
     }
-    atlas.obs_table.add(pa.table(columns, schema=arrow_schema))
+    atlas.add_obs_records(pa.table(columns, schema=arrow_schema))
     atlas.snapshot()
 
     atlas = RaggedAtlas.checkout_latest(

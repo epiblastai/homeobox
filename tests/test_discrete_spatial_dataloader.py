@@ -189,7 +189,7 @@ def _make_crop_atlas(
             "cell_type": pa.array(types, type=pa.string()),
         }
 
-        atlas.obs_table.add(pa.table(columns, schema=arrow_schema))
+        atlas.add_obs_records(pa.table(columns, schema=arrow_schema))
 
     atlas.snapshot()
     return (
@@ -445,7 +445,7 @@ def multimodal_crops_and_genes_atlas(tmp_path):
         "gene_expression": null_sparse,
         "cell_type": pa.array(["C", "D"], type=pa.string()),
     }
-    atlas.obs_table.add(pa.table(cols, schema=arrow_schema))
+    atlas.add_obs_records(pa.table(cols, schema=arrow_schema))
 
     atlas.snapshot()
     return (
