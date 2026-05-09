@@ -372,18 +372,13 @@ class RaggedAtlas:
 
     # -- Store helpers ------------------------------------------------------
 
-    # TODO: Remove field_name as an argument, must provide `obs_table_name` if
-    # more than 1 obs table
     def _resolve_obs_table(
         self,
-        field_name: str | None = None,
         obs_table_name: str | None = None,
     ) -> tuple[str, lancedb.table.Table]:
         """Resolve a (obs_table_name, obs_table) pair.
 
         - If ``obs_table_name`` is given, use it (must exist).
-        - Else if ``field_name`` is given, look up the obs table that declares
-          it. Pointer-field names are globally unique across the atlas.
         - Else, only valid when exactly one obs table is registered.
         """
         if obs_table_name is not None:
@@ -393,26 +388,12 @@ class RaggedAtlas:
                 )
             return obs_table_name, self._obs_tables[obs_table_name]
 
-        if field_name is not None:
-            tables = self._field_to_tables.get(field_name)
-            if not tables:
-                raise KeyError(
-                    f"No obs table declares pointer field {field_name!r}. "
-                    f"Known pointer fields: {sorted(self._pointer_fields)}"
-                )
-            if len(tables) == 1:
-                return tables[0], self._obs_tables[tables[0]]
-            raise ValueError(
-                f"Pointer field {field_name!r} is declared in obs tables "
-                f"{sorted(tables)}. Pass obs_table_name= to disambiguate."
-            )
-
         if len(self._obs_tables) == 1:
             name = next(iter(self._obs_tables))
             return name, self._obs_tables[name]
         raise ValueError(
             f"Atlas has multiple obs tables ({sorted(self._obs_tables)}); "
-            "pass obs_table_name= to select one."
+            "Pass obs_table_name= to select one."
         )
 
     # TODO: Can't recall why we need to specify feature_space

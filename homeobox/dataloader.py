@@ -317,7 +317,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         *,
         obs_table_name: str | None = None,
     ) -> None:
-        name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+        name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
         pf = atlas.pointer_fields_for(name)[field_name]
         self.spec = get_spec(pf.feature_space)
 
@@ -493,10 +493,6 @@ class MultimodalHoxDataset(_AsyncDataset):
         self._metadata_columns = metadata_columns
 
         # Resolve the bound obs table (all field_names must come from it).
-        # TODO: Why are we allowing this instead of mandating obs_table_name is provided
-        # in the case that there is more than 1 valid table? Shouldn't try to infer it.
-        if obs_table_name is None and field_names:
-            obs_table_name, _ = atlas._resolve_obs_table(field_name=field_names[0])
         name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
         atlas_pointer_fields = atlas.pointer_fields_for(name)
 

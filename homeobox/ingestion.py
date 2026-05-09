@@ -465,16 +465,15 @@ def insert_obs_records(
     zarr_row_offset
         Offset for ``zarr_row`` values (cumulative obs count).
     obs_table_name
-        Which obs table to insert into. May be ``None`` when ``field_name``
-        is unique across all obs tables, or when the atlas has only one.
+        Which obs table to insert into. May be ``None`` only when the atlas
+        has exactly one obs table.
 
     Returns
     -------
     int
         Number of rows inserted.
     """
-    # TODO: obs_table_name should be mandatory, unless there's only a single table
-    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     pointer_fields = atlas.pointer_fields_for(name)
     pointer_field = pointer_fields[field_name]
 
@@ -681,7 +680,7 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
-    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     obs_schema = atlas.obs_schemas[name]
     if obs_schema is None:
         raise ValueError(
@@ -905,7 +904,7 @@ def add_coo_batch(
     int
         Number of cells ingested.
     """
-    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     obs_schema = atlas.obs_schemas[name]
     if obs_schema is None:
         raise ValueError(
@@ -1194,7 +1193,7 @@ def add_csc(
         If no rows or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     pointer_fields = atlas.pointer_fields_for(name)
     pointer_field = pointer_fields[field_name]
     feature_space = pointer_field.feature_space
