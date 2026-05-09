@@ -73,8 +73,7 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=FragmentCellSchema,
+        obs_schemas={"cells": FragmentCellSchema},
         store=store,
         registry_schemas={"chromatin_accessibility": ChromosomeFeatureSchema},
         dataset_table_name="datasets",
@@ -136,7 +135,9 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
         }
         for i, barcode in enumerate(cell_ids)
     }
-    return RaggedAtlas.checkout_latest(atlas_dir, FragmentCellSchema, store=store), expected
+    return RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": FragmentCellSchema}, store=store
+    ), expected
 
 
 def test_genome_sorted_validates_against_feature_oriented_spec():

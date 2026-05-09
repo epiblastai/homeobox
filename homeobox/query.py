@@ -26,8 +26,12 @@ from homeobox.util import sql_escape
 class AtlasQuery:
     """Fluent query builder for reading rows from a RaggedAtlas."""
 
-    def __init__(self, atlas: RaggedAtlas) -> None:
+    def __init__(self, atlas: RaggedAtlas, obs_table_name: str | None = None) -> None:
         self._atlas = atlas
+        name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+        self._obs_table_name = name
+        self._obs_table = table
+        self._pointer_fields = atlas.pointer_fields_for(name)
         self._search_query: np.ndarray | list[float] | str | None = None
         self._search_kwargs: dict = {}
         self._where_clause: str | None = None
@@ -44,7 +48,12 @@ class AtlasQuery:
 
     @property
     def pointer_field_names(self) -> list[str]:
-        return list(self._atlas.pointer_fields.keys())
+        return list(self._pointer_fields.keys())
+
+    @property
+    def obs_table_name(self) -> str:
+        """Name of the obs table this query targets."""
+        return self._obs_table_name
 
     def search(
         self,
@@ -132,7 +141,7 @@ class AtlasQuery:
         ``feature_space`` matches is included. Use :meth:`select_fields` for
         exact-field selection when multiple fields share a feature space.
         """
-        known = {pf.feature_space for pf in self._atlas.pointer_fields.values()}
+        known = {pf.feature_space for pf in self._pointer_fields.values()}
         unknown = set(spaces) - known
         if unknown:
             raise ValueError(
@@ -149,7 +158,7 @@ class AtlasQuery:
         multiple columns in the same feature space (e.g. ``cycle1_image_tiles``
         and ``cycle2_image_tiles``).
         """
-        known = set(self._atlas.pointer_fields.keys())
+        known = set(self._pointer_fields.keys())
         unknown = set(field_names) - known
         if unknown:
             raise ValueError(
@@ -189,7 +198,7 @@ class AtlasQuery:
 
     def _build_base_query(self) -> "LanceQueryBuilder":
         """Build a query with search, where, and limit applied (no column selection)."""
-        q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
+        q = self._obs_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._offset_n is not None:
@@ -206,7 +215,7 @@ class AtlasQuery:
         """Build a LanceDB query from the current state."""
         q = self._build_base_query()
         if self._select_columns is not None:
-            pointer_cols = list(self._atlas.pointer_fields.keys())
+            pointer_cols = list(self._pointer_fields.keys())
             columns = list(dict.fromkeys(self._select_columns + pointer_cols))
             q = q.select(columns)
         return q
@@ -234,13 +243,13 @@ class AtlasQuery:
             return self._drop_score(self._materialize_balanced_for_dataset())
 
         q = self._build_base_query().with_row_id(True)
-        pointer_cols = list(self._atlas.pointer_fields.keys())
+        pointer_cols = list(self._pointer_fields.keys())
         q = q.select(pointer_cols)
         return self._drop_score(q.to_polars())
 
     def _discover_balanced_groups(self, column: str) -> list:
         """Discover unique values of *column* across all matching rows."""
-        q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
+        q = self._obs_table.search(self._search_query, **self._search_kwargs)
         if self._where_clause is not None:
             q = q.where(self._where_clause)
         if self._search_query is not None:
@@ -257,12 +266,12 @@ class AtlasQuery:
         unique_values = self._discover_balanced_groups(column)
         n_groups = len(unique_values)
         if n_groups == 0:
-            pointer_cols = list(self._atlas.pointer_fields.keys())
+            pointer_cols = list(self._pointer_fields.keys())
             q = self._build_base_query().with_row_id(True).select(pointer_cols)
             return q.to_polars().head(0)
 
         per_group = self._balanced_limit_n // n_groups
-        pointer_cols = list(self._atlas.pointer_fields.keys())
+        pointer_cols = list(self._pointer_fields.keys())
 
         frames: list[pl.DataFrame] = []
         for val in unique_values:
@@ -273,7 +282,7 @@ class AtlasQuery:
             else:
                 combined = group_filter
 
-            q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
+            q = self._obs_table.search(self._search_query, **self._search_kwargs)
             q = q.where(combined).limit(per_group).with_row_id(True)
             q = q.select(pointer_cols)
             frames.append(q.to_polars())
@@ -302,10 +311,10 @@ class AtlasQuery:
             else:
                 combined = group_filter
 
-            q = self._atlas.obs_table.search(self._search_query, **self._search_kwargs)
+            q = self._obs_table.search(self._search_query, **self._search_kwargs)
             q = q.where(combined).limit(per_group)
             if self._select_columns is not None:
-                pointer_cols = list(self._atlas.pointer_fields.keys())
+                pointer_cols = list(self._pointer_fields.keys())
                 columns = list(dict.fromkeys(self._select_columns + pointer_cols))
                 q = q.select(columns)
             frames.append(q.to_polars())
@@ -314,7 +323,7 @@ class AtlasQuery:
 
     def _active_pointer_fields(self) -> dict[str, PointerField]:
         """Return pointer fields filtered by ``feature_spaces`` / ``select_fields``."""
-        pfs = self._atlas.pointer_fields
+        pfs = self._pointer_fields
         if self._field_names is not None:
             return {k: pfs[k] for k in self._field_names}
         if self._feature_spaces is not None:
@@ -343,7 +352,7 @@ class AtlasQuery:
 
         if group_by is None:
             # Fetch only a single cheap column to count rows
-            any_col = self._atlas.obs_table.schema.names[0]
+            any_col = self._obs_table.schema.names[0]
             return len(q.select([any_col]).to_arrow())
 
         cols = [group_by] if isinstance(group_by, str) else list(group_by)
@@ -447,7 +456,12 @@ class AtlasQuery:
             # fragments first (modality-native), then a SpatialTileBatch for
             # var-less spatial feature spaces, otherwise an AnnData.
             if "as_fragments" in endpoints:
-                result = reconstructor.as_fragments(self._atlas, obs_pl, pf, spec)
+                result = reconstructor.as_fragments(
+                    self._atlas,
+                    obs_pl,
+                    pf,
+                    pointer_field_names=self.pointer_field_names,
+                )
             elif "as_spatial_batch" in endpoints and not spec.has_var_df:
                 result = reconstructor.as_spatial_batch(
                     self._atlas,
@@ -472,7 +486,7 @@ class AtlasQuery:
             Pointer-field attribute name whose feature_space exposes an
             ``as_fragments`` endpoint (e.g. chromatin accessibility).
         """
-        pf = self._atlas.pointer_fields[field_name]
+        pf = self._pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
         endpoints = spec.valid_endpoints()
         if "as_fragments" not in endpoints:
@@ -482,7 +496,12 @@ class AtlasQuery:
             )
 
         obs_pl = self._materialize_rows()
-        return spec.reconstructor.as_fragments(self._atlas, obs_pl, pf, spec)
+        return spec.reconstructor.as_fragments(
+            self._atlas,
+            obs_pl,
+            pf,
+            pointer_field_names=self.pointer_field_names,
+        )
 
     def to_spatial_batch(self, field_name: str) -> "SpatialTileBatch":
         """Reconstruct a single spatial pointer field as a :class:`SpatialTileBatch`.
@@ -498,7 +517,7 @@ class AtlasQuery:
             Pointer-field attribute name whose feature_space exposes an
             ``as_spatial_batch`` endpoint (e.g. image tiles, image crops).
         """
-        pf = self._atlas.pointer_fields[field_name]
+        pf = self._pointer_fields[field_name]
         spec = get_spec(pf.feature_space)
         endpoints = spec.valid_endpoints()
         if "as_spatial_batch" not in endpoints:
@@ -594,7 +613,7 @@ class AtlasQuery:
         from homeobox.dataloader import UnimodalHoxDataset
         from homeobox.group_specs import get_spec
 
-        pf = self._atlas.pointer_fields[field_name]
+        pf = self._pointer_fields[field_name]
         feature_space = pf.feature_space
         spec = get_spec(feature_space)
 
@@ -616,6 +635,7 @@ class AtlasQuery:
             layer_overrides=layer_overrides,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
+            obs_table_name=self._obs_table_name,
         )
 
     def to_multimodal_dataset(
@@ -650,7 +670,7 @@ class AtlasQuery:
 
         obs_pl = self._materialize_rows_for_dataset()
 
-        resolved_pfs = {fn: self._atlas.pointer_fields[fn] for fn in field_names}
+        resolved_pfs = {fn: self._pointer_fields[fn] for fn in field_names}
 
         wanted_globals: dict[str, np.ndarray] | None = None
         for fn, pf in resolved_pfs.items():
@@ -673,6 +693,7 @@ class AtlasQuery:
             layer_overrides=layer_overrides,
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
+            obs_table_name=self._obs_table_name,
         )
 
     # -- Reconstruction internals -------------------------------------------
@@ -707,4 +728,5 @@ class AtlasQuery:
             layer_overrides=self._layer_overrides.get(pf.feature_space),
             feature_join=self._feature_join,
             wanted_globals=wanted_globals,
+            pointer_field_names=self.pointer_field_names,
         )

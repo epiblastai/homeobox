@@ -48,8 +48,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
     store = obstore.store.LocalStore(prefix=str(tmp_path))
     atlas = RaggedAtlas.create(
         db_uri=db_uri,
-        obs_table_name="cells",
-        obs_schema=TestCellSchema,
+        obs_schemas={"cells": TestCellSchema},
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -201,14 +200,18 @@ class TestAddCsc:
 
         # Before add_csc: SparseGeneExpressionReconstructor falls back to the CSR path.
         atlas.snapshot()
-        reader = RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
+        reader = RaggedAtlas.checkout_latest(
+            db_uri, obs_schemas={"cells": TestCellSchema}, store=store
+        )
         adata_csr = (
             reader.query().features(wanted_uids, feature_space="gene_expression").to_anndata()
         )
 
         add_csc(atlas, zarr_group, field_name="gene_expression", layer_name="counts")
         atlas.snapshot()
-        reader_csc = RaggedAtlas.checkout_latest(db_uri, TestCellSchema, store=store)
+        reader_csc = RaggedAtlas.checkout_latest(
+            db_uri, obs_schemas={"cells": TestCellSchema}, store=store
+        )
         adata_csc = (
             reader_csc.query().features(wanted_uids, feature_space="gene_expression").to_anndata()
         )
@@ -225,7 +228,9 @@ def test_to_spatial_batch_on_gene_expression_raises_with_endpoint_hint(tmp_path)
     atlas, _, _ = _create_atlas_with_data(tmp_path, n_obs=10, n_vars=5)
     atlas.snapshot()
     store = obstore.store.LocalStore(prefix=str(tmp_path))
-    reader = RaggedAtlas.checkout_latest(atlas.db_uri, TestCellSchema, store=store)
+    reader = RaggedAtlas.checkout_latest(
+        atlas.db_uri, obs_schemas={"cells": TestCellSchema}, store=store
+    )
 
     with pytest.raises(TypeError) as exc:
         reader.query().to_spatial_batch("gene_expression")

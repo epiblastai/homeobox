@@ -57,8 +57,7 @@ def _make_tile_atlas(
 
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=TileCellSchema,
+        obs_schemas={"cells": TileCellSchema},
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
@@ -119,7 +118,9 @@ def _make_tile_atlas(
         atlas.obs_table.add(table)
 
     atlas.snapshot()
-    atlas = RaggedAtlas.checkout_latest(atlas_dir, TileCellSchema, store=store)
+    atlas = RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": TileCellSchema}, store=store
+    )
     return atlas, all_tiles
 
 

@@ -350,6 +350,7 @@ def _build_row_arrow_table(
     *,
     dataset_uid: str,
     pointer_data: dict[str, pa.StructArray],
+    obs_table_name: str,
 ) -> pa.Table:
     """Build an Arrow table of row records ready for insertion.
 
@@ -364,6 +365,9 @@ def _build_row_arrow_table(
     pointer_data
         ``{pointer_field_name: pa.StructArray}`` for pointer fields that
         have real data. All other pointer fields are zero-filled.
+    obs_table_name
+        Which obs table this batch is being built for; selects which
+        ``HoxBaseSchema`` and pointer-field set to use.
 
     Returns
     -------
@@ -371,8 +375,15 @@ def _build_row_arrow_table(
         Arrow table matching the row schema, ready for ``obs_table.add()``.
     """
     n_rows = len(obs_df)
-    arrow_schema = atlas.obs_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas.obs_schema)
+    obs_schema = atlas.obs_schemas[obs_table_name]
+    if obs_schema is None:
+        raise ValueError(
+            f"Atlas was opened without a schema for obs table {obs_table_name!r}. "
+            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+        )
+    arrow_schema = obs_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(obs_schema)
+    pointer_fields = atlas.pointer_fields_for(obs_table_name)
 
     columns: dict[str, pa.Array] = {
         "uid": pa.array([make_uid() for _ in range(n_rows)], type=pa.string()),
@@ -380,7 +391,7 @@ def _build_row_arrow_table(
     }
 
     # Fill pointer fields — real data where provided, null-fill otherwise
-    for pf_name in atlas.pointer_fields:
+    for pf_name in pointer_fields:
         if pf_name in pointer_data:
             columns[pf_name] = pointer_data[pf_name]
         else:
@@ -429,6 +440,7 @@ def insert_obs_records(
     starts: np.ndarray,
     ends: np.ndarray,
     zarr_row_offset: int = 0,
+    obs_table_name: str | None = None,
 ) -> int:
     """Insert obs records into the atlas obs table.
 
@@ -452,18 +464,19 @@ def insert_obs_records(
         Per-obs start/end offsets into the flat zarr arrays.
     zarr_row_offset
         Offset for ``zarr_row`` values (cumulative obs count).
+    obs_table_name
+        Which obs table to insert into. May be ``None`` when ``field_name``
+        is unique across all obs tables, or when the atlas has only one.
 
     Returns
     -------
     int
         Number of rows inserted.
     """
-    if field_name not in atlas.pointer_fields:
-        raise ValueError(
-            f"No pointer field named '{field_name}'. "
-            f"Available: {sorted(atlas.pointer_fields.keys())}"
-        )
-    pointer_field = atlas.pointer_fields[field_name]
+    # TODO: obs_table_name should be mandatory, unless there's only a single table
+    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    pointer_fields = atlas.pointer_fields_for(name)
+    pointer_field = pointer_fields[field_name]
 
     pointer_struct = _make_sparse_pointer(zarr_group, starts, ends, zarr_row_offset)
     arrow_table = _build_row_arrow_table(
@@ -471,8 +484,9 @@ def insert_obs_records(
         obs_df,
         dataset_uid=dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
+        obs_table_name=name,
     )
-    atlas.obs_table.add(arrow_table)
+    table.add(arrow_table)
     return len(obs_df)
 
 
@@ -620,6 +634,7 @@ def add_anndata_batch(
     dataset_record: DatasetSchema,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
+    obs_table_name: str | None = None,
 ) -> int:
     """Ingest an AnnData into the atlas using batched zarr writes.
 
@@ -666,18 +681,16 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
-    if atlas.obs_schema is None:
+    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    obs_schema = atlas.obs_schemas[name]
+    if obs_schema is None:
         raise ValueError(
-            "Cannot ingest data into an atlas opened without an obs schema. "
-            "Provide obs_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+            f"Cannot ingest into obs table {name!r}: opened without an obs schema. "
+            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    if field_name not in atlas.pointer_fields:
-        raise ValueError(
-            f"Schema {atlas.obs_schema.__name__} has no pointer field "
-            f"named '{field_name}'. Available: {sorted(atlas.pointer_fields.keys())}"
-        )
-    pointer_field: PointerField = atlas.pointer_fields[field_name]
+    pointer_fields = atlas.pointer_fields_for(name)
+    pointer_field: PointerField = pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
@@ -690,7 +703,7 @@ def add_anndata_batch(
             f"'{feature_space}'. Allowed: {spec.zarr_group_spec.layers.allowed_names}"
         )
 
-    obs_errors = validate_obs_columns(adata.obs, atlas.obs_schema)
+    obs_errors = validate_obs_columns(adata.obs, obs_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
 
@@ -771,8 +784,9 @@ def add_anndata_batch(
         adata.obs,
         dataset_uid=dataset_record.dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
+        obs_table_name=name,
     )
-    atlas.obs_table.add(arrow_table)
+    table.add(arrow_table)
     return n_rows
 
 
@@ -785,6 +799,7 @@ def add_from_anndata(
     dataset_record: DatasetSchema,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
+    obs_table_name: str | None = None,
 ) -> int:
     """Convenience wrapper around :func:`add_anndata_batch`.
 
@@ -805,6 +820,7 @@ def add_from_anndata(
         dataset_record=dataset_record,
         chunk_shape=chunk_shape,
         shard_shape=shard_shape,
+        obs_table_name=obs_table_name,
     )
 
 
@@ -827,6 +843,7 @@ def add_coo_batch(
     value_dtype: np.dtype | None = None,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
+    obs_table_name: str | None = None,
 ) -> int:
     """Ingest a cell-sorted COO triplet matrix into the atlas via streaming.
 
@@ -888,18 +905,16 @@ def add_coo_batch(
     int
         Number of cells ingested.
     """
-    if atlas.obs_schema is None:
+    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    obs_schema = atlas.obs_schemas[name]
+    if obs_schema is None:
         raise ValueError(
-            "Cannot ingest data into an atlas opened without a cell schema. "
-            "Provide obs_schema= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+            f"Cannot ingest into obs table {name!r}: opened without a cell schema. "
+            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    if field_name not in atlas.pointer_fields:
-        raise ValueError(
-            f"Schema {atlas.obs_schema.__name__} has no pointer field "
-            f"named '{field_name}'. Available: {sorted(atlas.pointer_fields.keys())}"
-        )
-    pointer_field: PointerField = atlas.pointer_fields[field_name]
+    pointer_fields = atlas.pointer_fields_for(name)
+    pointer_field: PointerField = pointer_fields[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
     if spec.pointer_type is not SparseZarrPointer:
@@ -917,7 +932,7 @@ def add_coo_batch(
             f"Allowed: {spec.zarr_group_spec.layers.allowed_names}"
         )
 
-    obs_errors = validate_obs_columns(obs_df, atlas.obs_schema)
+    obs_errors = validate_obs_columns(obs_df, obs_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
@@ -1046,8 +1061,8 @@ def add_coo_batch(
     # -----------------------------------------------------------------------
     # Insert obs records
     # -----------------------------------------------------------------------
-    arrow_schema = atlas.obs_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(atlas.obs_schema)
+    arrow_schema = obs_schema.to_arrow_schema()
+    schema_fields = _schema_obs_fields(obs_schema)
 
     pointer_struct = pa.StructArray.from_arrays(
         [
@@ -1066,7 +1081,7 @@ def add_coo_batch(
     }
 
     # Zero-fill other pointer fields
-    for other_pf_name, other_pf in atlas.pointer_fields.items():
+    for other_pf_name, other_pf in pointer_fields.items():
         if other_pf_name == pointer_field.field_name:
             continue
         other_spec = get_spec(other_pf.feature_space)
@@ -1112,7 +1127,7 @@ def add_coo_batch(
             columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)
 
     arrow_table = pa.table(columns, schema=arrow_schema)
-    atlas.obs_table.add(arrow_table)
+    table.add(arrow_table)
     return n_rows
 
 
@@ -1144,6 +1159,8 @@ def add_csc(
     layer_name: str = "counts",
     chunk_size: int = _CHUNK_ELEMS,
     shard_size: int = _SHARD_ELEMS,
+    *,
+    obs_table_name: str | None = None,
 ) -> None:
     """Read existing CSR group and write CSC alongside it.
 
@@ -1177,12 +1194,9 @@ def add_csc(
         If no rows or no dataset record are found for this group, or if
         ``zarr_row`` is not sequential.
     """
-    if field_name not in atlas.pointer_fields:
-        raise ValueError(
-            f"No pointer field named '{field_name}'. "
-            f"Available: {sorted(atlas.pointer_fields.keys())}"
-        )
-    pointer_field = atlas.pointer_fields[field_name]
+    name, table = atlas._resolve_obs_table(field_name=field_name, obs_table_name=obs_table_name)
+    pointer_fields = atlas.pointer_fields_for(name)
+    pointer_field = pointer_fields[field_name]
     feature_space = pointer_field.feature_space
 
     # Look up layout_uid for this zarr_group + feature_space
@@ -1198,7 +1212,7 @@ def add_csc(
 
     # Query all rows in this zarr group via the specified pointer column
     obs_df = (
-        atlas.obs_table.search()
+        table.search()
         .where(f"{field_name}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
         .select([field_name])
         .to_polars()

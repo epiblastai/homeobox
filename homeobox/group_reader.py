@@ -123,6 +123,7 @@ class GroupReader:
         zarr_group_handle: zarr.Group | None = None,
     ) -> None:
         self.zarr_group = zarr_group
+        # TODO: Do we need this feature_space argument/attribute?
         self.feature_space = feature_space
         self._store = store
         self._layout_reader = layout_reader

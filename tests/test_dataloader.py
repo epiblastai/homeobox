@@ -81,8 +81,7 @@ def two_group_atlas(tmp_path):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=TestCellSchema,
+        obs_schemas={"cells": TestCellSchema},
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -129,7 +128,9 @@ def two_group_atlas(tmp_path):
     )
 
     atlas.snapshot()
-    return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
+    return RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": TestCellSchema}, store=store
+    )
 
 
 @pytest.fixture
@@ -140,8 +141,7 @@ def single_group_atlas(tmp_path):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=TestCellSchema,
+        obs_schemas={"cells": TestCellSchema},
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -171,7 +171,9 @@ def single_group_atlas(tmp_path):
     )
 
     atlas.snapshot()
-    return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
+    return RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": TestCellSchema}, store=store
+    )
 
 
 @pytest.fixture
@@ -182,8 +184,7 @@ def single_group_dense_feature_atlas(tmp_path):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=DenseFeatureCellSchema,
+        obs_schemas={"cells": DenseFeatureCellSchema},
         store=store,
         registry_schemas={"image_features": ImageFeatureSchema},
         dataset_table_name="datasets",
@@ -216,7 +217,9 @@ def single_group_dense_feature_atlas(tmp_path):
 
     atlas.snapshot()
     return (
-        RaggedAtlas.checkout_latest(atlas_dir, DenseFeatureCellSchema, store=store),
+        RaggedAtlas.checkout_latest(
+            atlas_dir, obs_schemas={"cells": DenseFeatureCellSchema}, store=store
+        ),
         X,
     )
 
@@ -229,8 +232,7 @@ def shared_layout_atlas(tmp_path):
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=TestCellSchema,
+        obs_schemas={"cells": TestCellSchema},
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -261,7 +263,9 @@ def shared_layout_atlas(tmp_path):
         )
 
     atlas.snapshot()
-    return RaggedAtlas.checkout_latest(atlas_dir, TestCellSchema, store=store)
+    return RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": TestCellSchema}, store=store
+    )
 
 
 # ---------------------------------------------------------------------------

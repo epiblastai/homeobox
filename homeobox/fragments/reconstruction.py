@@ -116,6 +116,8 @@ class IntervalReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
+        *,
+        pointer_field_names: list[str],
     ) -> FragmentResult:
         """Read cell-sorted fragment arrays and return raw intervals.
 
@@ -131,6 +133,8 @@ class IntervalReconstructor(Reconstructor):
             accessibility zarr pointer column).
         pf:
             Pointer field info for chromatin_accessibility.
+        pointer_field_names:
+            Names of the pointer columns on the bound obs table.
 
         Returns
         -------
@@ -144,6 +148,7 @@ class IntervalReconstructor(Reconstructor):
             layer_overrides=None,
             feature_join="union",
             wanted_globals=None,
+            pointer_field_names=pointer_field_names,
         )
         if batch is None:
             return FragmentResult(

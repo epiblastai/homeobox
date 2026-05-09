@@ -136,8 +136,8 @@ class RaggedAtlas:
     def __init__(
         self,
         db: lancedb.DBConnection,
-        obs_table: lancedb.table.Table,
-        obs_schema: type[HoxBaseSchema] | None,
+        obs_tables: dict[str, lancedb.table.Table],
+        obs_schemas: dict[str, type[HoxBaseSchema] | None],
         root: zarr.Group,
         registry_tables: dict[str, lancedb.table.Table],
         dataset_table: lancedb.table.Table,
@@ -149,19 +149,39 @@ class RaggedAtlas:
         # directly, use create, open or checkout classmethods instead.
         self.db = db
         self._db_uri = db.uri
-        self.obs_table = obs_table
-        self._obs_schema = obs_schema
+        self._obs_tables = obs_tables
+        self._obs_schemas: dict[str, type[HoxBaseSchema] | None] = {
+            name: obs_schemas.get(name) for name in obs_tables
+        }
         self._root = root
         self._store = root.store.store
-        # Pointer fields are keyed by the Python attribute name on the schema
-        # class (``field_name``), which is unique per class. Multiple keys may
-        # share the same ``feature_space`` when a schema declares several
-        # columns in the same modality.
-        self._pointer_fields: dict[str, PointerField]
-        if obs_schema is not None:
-            self._pointer_fields = _extract_pointer_fields(obs_schema)
-        else:
-            self._pointer_fields = _infer_pointer_fields_from_arrow(obs_table.schema)
+        # Pointer-field names may repeat across obs tables when the declarations
+        # match (same feature_space). The shared PointerField is stored once;
+        # _field_to_tables records every table that exposes that field.
+        # Conflicting declarations of the same name (different feature_space)
+        # raise at construction.
+        self._pointer_fields: dict[str, PointerField] = {}
+        self._field_to_tables: dict[str, list[str]] = {}
+        for tbl_name, table in obs_tables.items():
+            schema = self._obs_schemas.get(tbl_name)
+            if schema is not None:
+                pfs = _extract_pointer_fields(schema)
+            else:
+                pfs = _infer_pointer_fields_from_arrow(table.schema)
+
+            for fn, pf in pfs.items():
+                existing = self._pointer_fields.get(fn)
+                if existing is None:
+                    self._pointer_fields[fn] = pf
+                elif existing != pf:
+                    other = self._field_to_tables[fn][0]
+                    raise ValueError(
+                        f"Pointer field {fn!r} is declared with conflicting "
+                        f"definitions in obs tables {other!r} ({existing}) and "
+                        f"{tbl_name!r} ({pf})."
+                    )
+                self._field_to_tables.setdefault(fn, []).append(tbl_name)
+
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
@@ -186,8 +206,7 @@ class RaggedAtlas:
     def create(
         cls,
         db_uri: str,
-        obs_table_name: str,
-        obs_schema: type[HoxBaseSchema],
+        obs_schemas: dict[str, type[HoxBaseSchema]],
         dataset_table_name: str,
         dataset_schema: type[DatasetSchema],
         *,
@@ -202,10 +221,11 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI (local path or remote).
-        obs_table_name:
-            Name for the obs table.
-        obs_schema:
-            A :class:`HoxBaseSchema` subclass declaring the pointer fields.
+        obs_schemas:
+            Mapping of ``{obs_table_name: HoxBaseSchema subclass}`` declaring
+            one or more obs tables and their pointer-field schemas. Each obs
+            table is independent; pointer fields are keyed by
+            ``(obs_table_name, field_name)`` internally.
         dataset_table_name:
             Name for the dataset metadata table.
         dataset_schema:
@@ -221,9 +241,13 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
+        if not obs_schemas:
+            raise ValueError("obs_schemas must contain at least one obs table.")
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
-        obs_table = db.create_table(obs_table_name, schema=obs_schema)
+        obs_tables: dict[str, lancedb.table.Table] = {}
+        for name, schema_cls in obs_schemas.items():
+            obs_tables[name] = db.create_table(name, schema=schema_cls)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
         registry_tables: dict[str, lancedb.table.Table] = {}
@@ -241,8 +265,8 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            obs_table=obs_table,
-            obs_schema=obs_schema,
+            obs_tables=obs_tables,
+            obs_schemas=dict(obs_schemas),
             root=root,
             registry_tables=registry_tables,
             dataset_table=dataset_table,
@@ -254,8 +278,8 @@ class RaggedAtlas:
     def open(
         cls,
         db_uri: str,
-        obs_table_name: str,
-        obs_schema: type[HoxBaseSchema] | None = None,
+        obs_table_names: list[str] | None = None,
+        obs_schemas: dict[str, type[HoxBaseSchema] | None] | None = None,
         dataset_table_name: str = "datasets",
         *,
         store: obstore.store.ObjectStore,
@@ -269,11 +293,13 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI.
-        obs_table_name:
-            Name of the obs table.
-        obs_schema:
-            The schema class.  If ``None``, pointer fields are inferred
-            from the obs table's Arrow schema (sufficient for read-only use).
+        obs_table_names:
+            Names of the obs tables to open. For single-obs-table atlases pass
+            a one-element list.
+        obs_schemas:
+            Optional mapping of ``{obs_table_name: schema_cls | None}``. For
+            tables with no entry, pointer fields are inferred from the obs
+            table's Arrow schema (sufficient for read-only use).
         dataset_table_name:
             Name of the dataset metadata table.
         store:
@@ -288,9 +314,23 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
+        if obs_table_names is None:
+            if not obs_schemas:
+                raise ValueError(
+                    "open() requires obs_table_names or obs_schemas to identify "
+                    "which obs tables to open."
+                )
+            obs_table_names = list(obs_schemas)
+        if not obs_table_names:
+            raise ValueError("obs_table_names must contain at least one name.")
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
-        obs_table = db.open_table(obs_table_name)
+        obs_tables = {name: db.open_table(name) for name in obs_table_names}
+        # TODO: I'm confused by this? Shouldn't we be assering that obs_tables and obs_schemas
+        # have identical keys? Is there a case where we wouldn't want that?
+        obs_schemas_full: dict[str, type[HoxBaseSchema] | None] = {
+            name: (obs_schemas or {}).get(name) for name in obs_table_names
+        }
         dataset_table = db.open_table(dataset_table_name)
 
         if registry_tables is None:
@@ -318,8 +358,8 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            obs_table=obs_table,
-            obs_schema=obs_schema,
+            obs_tables=obs_tables,
+            obs_schemas=obs_schemas_full,
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
@@ -329,14 +369,50 @@ class RaggedAtlas:
 
     # -- Store helpers ------------------------------------------------------
 
-    def _pointer_fields_for(self, feature_space: str) -> list[PointerField]:
-        """Return all pointer fields that reference *feature_space*.
+    # TODO: Remove field_name as an argument, must provide `obs_table_name` if
+    # more than 1 obs table
+    def _resolve_obs_table(
+        self,
+        field_name: str | None = None,
+        obs_table_name: str | None = None,
+    ) -> tuple[str, lancedb.table.Table]:
+        """Resolve a (obs_table_name, obs_table) pair.
 
-        A schema may declare multiple pointer columns in the same feature
-        space (e.g. ``cycle1_image_tiles``, ``cycle2_image_tiles``).
+        - If ``obs_table_name`` is given, use it (must exist).
+        - Else if ``field_name`` is given, look up the obs table that declares
+          it. Pointer-field names are globally unique across the atlas.
+        - Else, only valid when exactly one obs table is registered.
         """
-        return [pf for pf in self._pointer_fields.values() if pf.feature_space == feature_space]
+        if obs_table_name is not None:
+            if obs_table_name not in self._obs_tables:
+                raise KeyError(
+                    f"Unknown obs table {obs_table_name!r}. Available: {sorted(self._obs_tables)}"
+                )
+            return obs_table_name, self._obs_tables[obs_table_name]
 
+        if field_name is not None:
+            tables = self._field_to_tables.get(field_name)
+            if not tables:
+                raise KeyError(
+                    f"No obs table declares pointer field {field_name!r}. "
+                    f"Known pointer fields: {sorted(self._pointer_fields)}"
+                )
+            if len(tables) == 1:
+                return tables[0], self._obs_tables[tables[0]]
+            raise ValueError(
+                f"Pointer field {field_name!r} is declared in obs tables "
+                f"{sorted(tables)}. Pass obs_table_name= to disambiguate."
+            )
+
+        if len(self._obs_tables) == 1:
+            name = next(iter(self._obs_tables))
+            return name, self._obs_tables[name]
+        raise ValueError(
+            f"Atlas has multiple obs tables ({sorted(self._obs_tables)}); "
+            "pass obs_table_name= to select one."
+        )
+
+    # TODO: Can't recall why we need to specify feature_space
     def get_group_reader(self, zarr_group: str, feature_space: str) -> "GroupReader":
         """Return (cached) GroupReader for the given zarr_group + feature_space.
 
@@ -353,6 +429,8 @@ class RaggedAtlas:
 
         datasets_df = (
             self._dataset_table.search()
+            # TODO: I don't think that specifying the feature_space is necessary
+            # this is probably legacy. Each zarr_group is exactly 1 feature space, always
             .where(
                 f"zarr_group = '{sql_escape(zarr_group)}' AND feature_space = '{sql_escape(feature_space)}'",
                 prefilter=True,
@@ -400,7 +478,8 @@ class RaggedAtlas:
                 lines.append(f"    {field.name}: {field.type}")
 
         lines.append("Atlas tables:")
-        _fmt_table("Obs table", self.obs_table)
+        for name, table in self._obs_tables.items():
+            _fmt_table(f"Obs table [{name}]", table)
         _fmt_table("Dataset table", self._dataset_table)
         for fs, reg_table in sorted(self._registry_tables.items()):
             _fmt_table(f"Registry [{fs}]", reg_table)
@@ -411,15 +490,57 @@ class RaggedAtlas:
 
     # -- Public accessors ---------------------------------------------------
 
+    # TODO: I think we should remove this and stick to `obs_tables` instead
+    @property
+    def obs_table(self) -> lancedb.table.Table:
+        """The obs table, when the atlas has exactly one. Raises otherwise."""
+        _, table = self._resolve_obs_table()
+        return table
+
+    # TODO: I think we should remove this and stick to `obs_schemas` instead
     @property
     def obs_schema(self) -> type[HoxBaseSchema] | None:
-        """Obs schema class, or ``None`` if the atlas was opened without one."""
-        return self._obs_schema
+        """Obs schema class for the atlas's single obs table.
+
+        Raises if the atlas has multiple obs tables; use ``obs_schemas`` for
+        the full mapping in that case.
+        """
+        name, _ = self._resolve_obs_table()
+        return self._obs_schemas[name]
+
+    # TODO: Tiny, but an `obs_table_names` property that just returns the keys
+    # would be convenient
+    @property
+    def obs_tables(self) -> dict[str, lancedb.table.Table]:
+        """All obs tables, keyed by obs_table_name."""
+        return self._obs_tables
+
+    @property
+    def obs_schemas(self) -> dict[str, type[HoxBaseSchema] | None]:
+        """All obs schemas, keyed by obs_table_name (value may be ``None``)."""
+        return self._obs_schemas
 
     @property
     def pointer_fields(self) -> dict[str, PointerField]:
-        """Pointer fields declared on the obs schema, keyed by field name."""
+        """Flat ``{field_name: PointerField}`` view across all obs tables.
+
+        Pointer fields with the same name in multiple obs tables collapse to a
+        single entry — they are required to share the same definition (same
+        feature_space). Use :meth:`pointer_fields_for` to get a per-table view.
+        """
         return self._pointer_fields
+
+    def pointer_fields_for(self, obs_table_name: str) -> dict[str, PointerField]:
+        """Return the pointer-field mapping for a specific obs table."""
+        if obs_table_name not in self._obs_tables:
+            raise KeyError(
+                f"Unknown obs table {obs_table_name!r}. Available: {sorted(self._obs_tables)}"
+            )
+        return {
+            fn: self._pointer_fields[fn]
+            for fn, tables in self._field_to_tables.items()
+            if obs_table_name in tables
+        }
 
     @property
     def registry_tables(self) -> dict[str, lancedb.table.Table]:
@@ -479,18 +600,25 @@ class RaggedAtlas:
 
     # -- Query entry point --------------------------------------------------
 
-    def query(self) -> "AtlasQuery":
-        """Start building a query against this atlas."""
+    def query(self, obs_table_name: str | None = None) -> "AtlasQuery":
+        """Start building a query against one of this atlas's obs tables.
+
+        Parameters
+        ----------
+        obs_table_name:
+            Which obs table to query. May be ``None`` only when the atlas has
+            exactly one obs table.
+        """
         from homeobox.query import AtlasQuery
 
         if self._checked_out_version is None:
             raise RuntimeError(
                 "query() is only available on a versioned atlas. "
                 "After ingestion, call atlas.snapshot() then "
-                "RaggedAtlas.checkout(db_uri, version, schema, store) to pin to a "
+                "RaggedAtlas.checkout(db_uri, version, obs_schemas, store) to pin to a "
                 "validated snapshot. For convenience, use RaggedAtlas.checkout_latest(...)."
             )
-        return AtlasQuery(self)
+        return AtlasQuery(self, obs_table_name=obs_table_name)
 
     # -- Feature registration -----------------------------------------------
 
@@ -616,7 +744,8 @@ class RaggedAtlas:
         updated indices to ``_feature_layouts`` via
         :func:`~homeobox.feature_layouts.sync_layouts_global_index`.
         """
-        self.obs_table.optimize()
+        for table in self._obs_tables.values():
+            table.optimize()
         self._dataset_table.optimize()
         self._deduplicate_new_rows(
             self._feature_layouts_table, subset=["layout_uid", "feature_uid"]
@@ -927,19 +1056,36 @@ class RaggedAtlas:
         registry_names = {fs: t.name for fs, t in self._registry_tables.items()}
         registry_versions = {fs: t.version for fs, t in self._registry_tables.items()}
 
+        obs_table_versions = json.dumps({n: t.version for n, t in self._obs_tables.items()})
+        total_rows = sum(t.count_rows() for t in self._obs_tables.values())
+
         record = AtlasVersionRecord(
             version=next_version,
-            obs_table_name=self.obs_table.name,
-            obs_table_version=self.obs_table.version,
+            obs_table_versions=obs_table_versions,
             dataset_table_name=self._dataset_table.name,
             dataset_table_version=self._dataset_table.version,
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
             feature_layouts_table_version=self._feature_layouts_table.version,
-            total_rows=self.obs_table.count_rows(),
+            total_rows=total_rows,
         )
         self._version_table.add([record])
         return next_version
+
+    @staticmethod
+    def _read_obs_tables_from_record(
+        db: lancedb.DBConnection, row: dict, *, restore: bool = False
+    ) -> dict[str, lancedb.table.Table]:
+        """Open + checkout (and optionally restore) the obs tables for a snapshot row."""
+        versions: dict[str, int] = json.loads(row["obs_table_versions"])
+        out: dict[str, lancedb.table.Table] = {}
+        for tbl_name, version in versions.items():
+            t = db.open_table(tbl_name)
+            t.checkout(version)
+            if restore:
+                t.restore()
+            out[tbl_name] = t
+        return out
 
     @classmethod
     def list_versions(
@@ -972,7 +1118,7 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         version: int,
-        obs_schema: type[HoxBaseSchema] | None = None,
+        obs_schemas: dict[str, type[HoxBaseSchema] | None] | None = None,
         store: obstore.store.ObjectStore | None = None,
         *,
         store_kwargs: dict | None = None,
@@ -986,9 +1132,10 @@ class RaggedAtlas:
             LanceDB connection URI.
         version:
             Atlas version number (as returned by :meth:`snapshot`).
-        obs_schema:
-            The schema class used when the atlas was created.  If ``None``,
-            pointer fields are inferred from the obs table's Arrow schema.
+        obs_schemas:
+            Optional ``{obs_table_name: schema_cls | None}`` mapping. For tables
+            with no entry, pointer fields are inferred from the obs table's
+            Arrow schema (sufficient for read-only use).
         store:
             An obstore ObjectStore for zarr I/O.  If ``None``, constructed
             from ``db_uri`` using the ``{atlas_root}/zarr_store`` convention.
@@ -1015,8 +1162,10 @@ class RaggedAtlas:
         if store is None:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
-        obs_table = db.open_table(row["obs_table_name"])
-        obs_table.checkout(row["obs_table_version"])
+        obs_tables = cls._read_obs_tables_from_record(db, row)
+        resolved_schemas: dict[str, type[HoxBaseSchema] | None] = {
+            name: (obs_schemas or {}).get(name) for name in obs_tables
+        }
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1036,8 +1185,8 @@ class RaggedAtlas:
 
         atlas = cls(
             db=db,
-            obs_table=obs_table,
-            obs_schema=obs_schema,
+            obs_tables=obs_tables,
+            obs_schemas=resolved_schemas,
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
@@ -1052,7 +1201,7 @@ class RaggedAtlas:
         cls,
         db_uri: str,
         version: int,
-        obs_schema: type[HoxBaseSchema] | None = None,
+        obs_schemas: dict[str, type[HoxBaseSchema] | None] | None = None,
         store: obstore.store.ObjectStore | None = None,
         *,
         store_kwargs: dict | None = None,
@@ -1074,9 +1223,8 @@ class RaggedAtlas:
             LanceDB connection URI.
         version:
             Atlas version number to restore to (as returned by :meth:`snapshot`).
-        obs_schema:
-            The schema class used when the atlas was created.  If ``None``,
-            pointer fields are inferred from the obs table's Arrow schema.
+        obs_schemas:
+            Optional ``{obs_table_name: schema_cls | None}`` mapping.
         store:
             An obstore ObjectStore for zarr I/O.  If ``None``, constructed
             from ``db_uri`` using the ``{atlas_root}/zarr_store`` convention.
@@ -1102,10 +1250,10 @@ class RaggedAtlas:
         if store is None:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
-        # Restore each table to its snapshot version
-        obs_table = db.open_table(row["obs_table_name"])
-        obs_table.checkout(row["obs_table_version"])
-        obs_table.restore()
+        obs_tables = cls._read_obs_tables_from_record(db, row, restore=True)
+        resolved_schemas: dict[str, type[HoxBaseSchema] | None] = {
+            name: (obs_schemas or {}).get(name) for name in obs_tables
+        }
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1128,8 +1276,8 @@ class RaggedAtlas:
 
         return cls(
             db=db,
-            obs_table=obs_table,
-            obs_schema=obs_schema,
+            obs_tables=obs_tables,
+            obs_schemas=resolved_schemas,
             root=root,
             registry_tables=resolved_registries,
             dataset_table=dataset_table,
@@ -1141,7 +1289,7 @@ class RaggedAtlas:
     def checkout_latest(
         cls,
         db_uri: str,
-        obs_schema: type[HoxBaseSchema] | None = None,
+        obs_schemas: dict[str, type[HoxBaseSchema] | None] | None = None,
         store: obstore.store.ObjectStore | None = None,
         *,
         store_kwargs: dict | None = None,
@@ -1156,9 +1304,8 @@ class RaggedAtlas:
         ----------
         db_uri:
             LanceDB connection URI.
-        obs_schema:
-            The schema class used when the atlas was created.  If ``None``,
-            pointer fields are inferred from the obs table's Arrow schema.
+        obs_schemas:
+            Optional ``{obs_table_name: schema_cls | None}`` mapping.
         store:
             An obstore ObjectStore for zarr I/O.  If ``None``, reconstructed
             from the version record or inferred from ``db_uri``.
@@ -1181,7 +1328,7 @@ class RaggedAtlas:
         return cls.checkout(
             db_uri,
             version=latest_version,
-            obs_schema=obs_schema,
+            obs_schemas=obs_schemas,
             store=store,
             store_kwargs=store_kwargs,
             version_table_name=version_table_name,
@@ -1195,8 +1342,7 @@ class RaggedAtlas:
 
 def create_or_open_atlas(
     atlas_path: str,
-    obs_table_name: str,
-    obs_schema: type[HoxBaseSchema],
+    obs_schemas: dict[str, type[HoxBaseSchema]],
     dataset_table_name: str,
     dataset_schema: type[DatasetSchema],
     *,
@@ -1218,10 +1364,9 @@ def create_or_open_atlas(
     atlas_path:
         Root directory or URI for the atlas.  Local paths and ``s3://``
         URIs are both supported.
-    obs_table_name:
-        Name for the obs table.
-    obs_schema:
-        A :class:`HoxBaseSchema` subclass declaring the pointer fields.
+    obs_schemas:
+        Mapping of ``{obs_table_name: HoxBaseSchema subclass}`` declaring one
+        or more obs tables and their pointer-field schemas.
     dataset_table_name:
         Name for the dataset metadata table.
     dataset_schema:
@@ -1235,6 +1380,8 @@ def create_or_open_atlas(
         when constructing the zarr store (e.g. ``region``,
         ``skip_signature``, ``credential_provider``).
     """
+    if not obs_schemas:
+        raise ValueError("obs_schemas must contain at least one obs table.")
     atlas_path = atlas_path.rstrip("/")
     is_local = not atlas_path.startswith(("s3://", "gs://", "az://"))
 
@@ -1251,7 +1398,17 @@ def create_or_open_atlas(
     db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
     existing_tables = set(db.list_tables().tables)
 
-    if obs_table_name in existing_tables:
+    obs_names = list(obs_schemas)
+    present = [n for n in obs_names if n in existing_tables]
+    missing = [n for n in obs_names if n not in existing_tables]
+    if present and missing:
+        raise ValueError(
+            f"Atlas at {atlas_path!r} is in a mixed state: obs tables {present} "
+            f"already exist but {missing} do not. Either drop the existing tables "
+            "or remove the missing ones from obs_schemas."
+        )
+
+    if present:
         # Explicitly pass registry table names so open() doesn't rely on
         # the datasets table (which may be empty for a freshly-initialised atlas).
         registry_tables = {
@@ -1259,8 +1416,8 @@ def create_or_open_atlas(
         }
         return RaggedAtlas.open(
             db_uri=db_uri,
-            obs_table_name=obs_table_name,
-            obs_schema=obs_schema,
+            obs_table_names=obs_names,
+            obs_schemas=dict(obs_schemas),
             dataset_table_name=dataset_table_name,
             store=store,
             registry_tables=registry_tables,
@@ -1270,8 +1427,7 @@ def create_or_open_atlas(
     else:
         return RaggedAtlas.create(
             db_uri=db_uri,
-            obs_table_name=obs_table_name,
-            obs_schema=obs_schema,
+            obs_schemas=dict(obs_schemas),
             dataset_table_name=dataset_table_name,
             dataset_schema=dataset_schema,
             store=store,

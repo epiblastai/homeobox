@@ -140,8 +140,7 @@ def dual_cycle_atlas(tmp_path):
 
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=DualCycleTileSchema,
+        obs_schemas={"cells": DualCycleTileSchema},
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
@@ -182,7 +181,9 @@ def dual_cycle_atlas(tmp_path):
     atlas.obs_table.add(pa.table(columns, schema=arrow_schema))
     atlas.snapshot()
 
-    atlas = RaggedAtlas.checkout_latest(atlas_dir, DualCycleTileSchema, store=store)
+    atlas = RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": DualCycleTileSchema}, store=store
+    )
     return atlas, cycle1, cycle2
 
 
@@ -227,8 +228,7 @@ class TestDualCycleRoundTrip:
 
         reopened = RaggedAtlas.open(
             db_uri=db_uri,
-            obs_table_name=atlas.obs_table.name,
-            obs_schema=None,
+            obs_table_names=[atlas.obs_table.name],
             store=store,
         )
         assert set(reopened._pointer_fields.keys()) == {

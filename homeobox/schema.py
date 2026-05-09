@@ -376,10 +376,9 @@ class AtlasVersionRecord(LanceModel):
     ----------
     version:
         Monotonically increasing snapshot version number.
-    obs_table_name:
-        Name of the HoxBaseSchema Lance table.
-    obs_table_version:
-        Lance version of the HoxBaseSchema table at snapshot time.
+    obs_table_versions:
+        JSON-encoded mapping of ``{obs_table_name: version_int}`` covering every
+        obs table in the atlas at snapshot time.
     dataset_table_name:
         Name of the datasets Lance table.
     dataset_table_version:
@@ -397,8 +396,7 @@ class AtlasVersionRecord(LanceModel):
     """
 
     version: int
-    obs_table_name: str
-    obs_table_version: int
+    obs_table_versions: str
     dataset_table_name: str
     dataset_table_version: int
     registry_table_names: str

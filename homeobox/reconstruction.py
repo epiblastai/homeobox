@@ -106,10 +106,11 @@ def _assemble_anndata(
     obs_parts: list[pl.DataFrame],
     layers_to_read: list[str],
     stacked: dict[str, "sp.csr_matrix | np.ndarray"],
+    pointer_field_names: list[str],
 ) -> ad.AnnData:
     """Build final AnnData from stacked layer data, obs parts, and registry."""
     obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    obs = _build_obs_df(obs_pl, list(atlas.pointer_fields.keys()))
+    obs = _build_obs_df(obs_pl, pointer_field_names)
     var = _build_var(atlas, feature_space, joined_globals)
 
     first_layer = layers_to_read[0]
@@ -140,6 +141,7 @@ def _read_joined_feature_batch(
     *,
     feature_join: Literal["union", "intersection"] | None,
     wanted_globals: np.ndarray | None,
+    pointer_field_names: list[str],
 ) -> tuple[
     "SparseBatch | DenseFeatureBatch | None",
     np.ndarray,
@@ -156,7 +158,7 @@ def _read_joined_feature_batch(
     obs-only AnnData via :func:`_build_obs_only_anndata`.
     """
     spec = get_spec(pf.feature_space)
-    pointer_cols = list(atlas.pointer_fields.keys())
+    pointer_cols = list(pointer_field_names)
     obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
 
     if obs_pl.is_empty():
@@ -233,6 +235,8 @@ class SparseCSRReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
+        *,
+        pointer_field_names: list[str],
     ) -> ad.AnnData:
         """Reconstruct an AnnData object from sparse CSR zarr groups.
 
@@ -260,6 +264,9 @@ class SparseCSRReconstructor(Reconstructor):
         wanted_globals:
             If provided, pin the output feature space to these global indices.
             Overrides *feature_join*.
+        pointer_field_names:
+            Names of the pointer columns on the bound obs table; used to drop
+            these from the reconstructed AnnData's obs DataFrame.
         """
         if wanted_globals is not None:
             # wanted_globals overrides feature_join, so turn it off
@@ -272,6 +279,7 @@ class SparseCSRReconstructor(Reconstructor):
             layer_overrides,
             feature_join=feature_join,
             wanted_globals=wanted_globals,
+            pointer_field_names=pointer_field_names,
         )
         if batch is None:
             return _build_obs_only_anndata(obs_pl, pointer_cols)
@@ -287,7 +295,13 @@ class SparseCSRReconstructor(Reconstructor):
         }
 
         return _assemble_anndata(
-            atlas, pf.feature_space, joined_globals, [batch.metadata], layer_names, stacked
+            atlas,
+            pf.feature_space,
+            joined_globals,
+            [batch.metadata],
+            layer_names,
+            stacked,
+            pointer_field_names,
         )
 
 
@@ -332,6 +346,8 @@ class DenseFeatureReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
+        *,
+        pointer_field_names: list[str],
     ) -> ad.AnnData:
         if wanted_globals is not None and feature_join != "union":
             raise ValueError(
@@ -346,12 +362,19 @@ class DenseFeatureReconstructor(Reconstructor):
             layer_overrides,
             feature_join=None if wanted_globals is not None else feature_join,
             wanted_globals=wanted_globals,
+            pointer_field_names=pointer_field_names,
         )
         if batch is None:
             return _build_obs_only_anndata(obs_pl, pointer_cols)
 
         return _assemble_anndata(
-            atlas, pf.feature_space, joined_globals, [batch.metadata], layer_names, batch.layers
+            atlas,
+            pf.feature_space,
+            joined_globals,
+            [batch.metadata],
+            layer_names,
+            batch.layers,
+            pointer_field_names,
         )
 
 
@@ -541,6 +564,8 @@ class FeatureCSCReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
+        *,
+        pointer_field_names: list[str],
     ) -> ad.AnnData:
         if wanted_globals is None:
             raise ValueError(
@@ -554,7 +579,7 @@ class FeatureCSCReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        pointer_cols = list(atlas.pointer_fields.keys())
+        pointer_cols = list(pointer_field_names)
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
             return _build_obs_only_anndata(obs_pl, pointer_cols)
@@ -621,7 +646,13 @@ class FeatureCSCReconstructor(Reconstructor):
         }
 
         return _assemble_anndata(
-            atlas, pf.feature_space, wanted_globals, obs_parts, layers_to_read, stacked
+            atlas,
+            pf.feature_space,
+            wanted_globals,
+            obs_parts,
+            layers_to_read,
+            stacked,
+            pointer_field_names,
         )
 
 
@@ -676,6 +707,8 @@ class SparseGeneExpressionReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
+        *,
+        pointer_field_names: list[str],
     ) -> ad.AnnData:
         spec = get_spec(pf.feature_space)
         impl = (
@@ -683,7 +716,15 @@ class SparseGeneExpressionReconstructor(Reconstructor):
             if self._should_use_csc(atlas, obs_pl, pf, spec, wanted_globals)
             else self._csr
         )
-        return impl.as_anndata(atlas, obs_pl, pf, layer_overrides, feature_join, wanted_globals)
+        return impl.as_anndata(
+            atlas,
+            obs_pl,
+            pf,
+            layer_overrides,
+            feature_join,
+            wanted_globals,
+            pointer_field_names=pointer_field_names,
+        )
 
     def _should_use_csc(
         self,

@@ -58,8 +58,7 @@ def _make_atlas(tmp_path) -> RaggedAtlas:
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=TestCellSchema,
+        obs_schemas={"cells": TestCellSchema},
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -152,8 +151,7 @@ class TestSnapshot:
         # Create a valid atlas first so the cell table exists.
         RaggedAtlas.create(
             db_uri=atlas_dir,
-            obs_table_name="cells",
-            obs_schema=TestCellSchema,
+            obs_schemas={"cells": TestCellSchema},
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
@@ -163,8 +161,7 @@ class TestSnapshot:
         with pytest.raises(ValueError, match="not found"):
             RaggedAtlas.open(
                 db_uri=atlas_dir,
-                obs_table_name="cells",
-                obs_schema=TestCellSchema,
+                obs_schemas={"cells": TestCellSchema},
                 dataset_table_name="datasets",
                 store=store,
                 registry_tables={"gene_expression": "gene_expression_registry"},
@@ -178,8 +175,7 @@ class TestSnapshot:
         store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
         atlas = RaggedAtlas.create(
             db_uri=atlas_dir,
-            obs_table_name="cells",
-            obs_schema=TestCellSchema,
+            obs_schemas={"cells": TestCellSchema},
             store=store,
             registry_schemas={"gene_expression": GeneFeatureSchema},
             dataset_table_name="datasets",
@@ -266,7 +262,7 @@ class TestCheckout:
         old = RaggedAtlas.checkout(
             db_uri=atlas_dir,
             version=0,
-            obs_schema=TestCellSchema,
+            obs_schemas={"cells": TestCellSchema},
             store=store,
         )
         assert old.obs_table.count_rows() == 20
@@ -297,7 +293,7 @@ class TestCheckout:
         new = RaggedAtlas.checkout(
             db_uri=atlas_dir,
             version=1,
-            obs_schema=TestCellSchema,
+            obs_schemas={"cells": TestCellSchema},
             store=store,
         )
         assert new.obs_table.count_rows() == 35
@@ -319,7 +315,7 @@ class TestCheckout:
             RaggedAtlas.checkout(
                 db_uri=atlas_dir,
                 version=99,
-                obs_schema=TestCellSchema,
+                obs_schemas={"cells": TestCellSchema},
                 store=store,
             )
 
@@ -358,7 +354,7 @@ class TestCheckout:
         pinned = RaggedAtlas.checkout(
             db_uri=atlas_dir,
             version=0,
-            obs_schema=TestCellSchema,
+            obs_schemas={"cells": TestCellSchema},
             store=store,
         )
         gr = pinned.get_group_reader("ds1/gene_expression", "gene_expression")
@@ -389,8 +385,8 @@ class TestSchemalessCheckout:
             store=store,
         )
         assert checked.obs_table.count_rows() == 20
-        assert "gene_expression" in checked._pointer_fields
-        assert checked._obs_schema is None
+        assert "gene_expression" in checked.pointer_fields
+        assert all(v is None for v in checked._obs_schemas.values())
 
     def test_checkout_latest_without_schema(self, tmp_path):
         atlas_dir, store = self._make_snapshotted_atlas(tmp_path)
@@ -399,7 +395,7 @@ class TestSchemalessCheckout:
             store=store,
         )
         assert checked.obs_table.count_rows() == 20
-        assert "gene_expression" in checked._pointer_fields
+        assert "gene_expression" in checked.pointer_fields
 
     def test_query_works_without_schema(self, tmp_path):
         atlas_dir, store = self._make_snapshotted_atlas(tmp_path)
@@ -506,11 +502,11 @@ class TestOpenDefaults:
 
         reopened = RaggedAtlas.open(
             db_uri=atlas_dir,
-            obs_table_name="cells",
+            obs_table_names=["cells"],
             store=store,
         )
         assert reopened.obs_table.count_rows() == 5
-        assert "gene_expression" in reopened._pointer_fields
+        assert "gene_expression" in reopened.pointer_fields
         assert "gene_expression" in reopened._registry_tables
 
 
@@ -531,8 +527,7 @@ class TestBackwardCompat:
         with pytest.raises(ValueError, match="not found"):
             RaggedAtlas.open(
                 db_uri=atlas_dir,
-                obs_table_name="cells",
-                obs_schema=TestCellSchema,
+                obs_schemas={"cells": TestCellSchema},
                 dataset_table_name="datasets",
                 store=store,
                 registry_tables={"gene_expression": "gene_expression_registry"},
