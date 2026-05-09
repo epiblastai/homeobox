@@ -314,8 +314,11 @@ class UnimodalHoxDataset(_AsyncDataset):
         layer_overrides: list[str] | None = None,
         metadata_columns: list[str] | None = None,
         wanted_globals: np.ndarray | None = None,
+        *,
+        obs_table_name: str | None = None,
     ) -> None:
-        pf = atlas.pointer_fields[field_name]
+        name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+        pf = atlas.pointer_fields_for(name)[field_name]
         self.spec = get_spec(pf.feature_space)
 
         # Store the obstore ObjectStore (picklable via __getnewargs_ex__)
@@ -341,8 +344,8 @@ class UnimodalHoxDataset(_AsyncDataset):
         self._metadata_columns = metadata_columns
         self._lance_info = (
             atlas.db_uri,
-            atlas.obs_table.name,
-            atlas.obs_table.version,
+            table.name,
+            table.version,
             getattr(atlas.db, "storage_options", None),
         )
 
@@ -482,16 +485,22 @@ class MultimodalHoxDataset(_AsyncDataset):
         layer_overrides: dict[str, list[str] | None] | None = None,
         metadata_columns: list[str] | None = None,
         wanted_globals: dict[str, np.ndarray] | None = None,
+        *,
+        obs_table_name: str | None = None,
     ) -> None:
         self._field_names = field_names
         self._n_rows = obs_pl.height
         self._metadata_columns = metadata_columns
 
+        # Resolve the bound obs table (all field_names must come from it).
+        name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+        atlas_pointer_fields = atlas.pointer_fields_for(name)
+
         # Store lance info for lazy table reconstruction in workers
         self._lance_info = (
             atlas.db_uri,
-            atlas.obs_table.name,
-            atlas.obs_table.version,
+            table.name,
+            table.version,
             getattr(atlas.db, "storage_options", None),
         )
 
@@ -508,7 +517,7 @@ class MultimodalHoxDataset(_AsyncDataset):
         modality_data: dict[str, _ModalityData] = {}
 
         for fn in field_names:
-            pf = atlas.pointer_fields[fn]
+            pf = atlas_pointer_fields[fn]
             self._pointer_fields[fn] = pf.field_name
             field_layer_overrides = layer_overrides.get(fn) if layer_overrides is not None else None
 

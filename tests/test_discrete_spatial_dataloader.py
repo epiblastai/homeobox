@@ -136,8 +136,7 @@ def _make_crop_atlas(
 
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=CropCellSchema,
+        obs_schemas={"cells": CropCellSchema},
         store=store,
         registry_schemas={},
         dataset_table_name="datasets",
@@ -194,7 +193,7 @@ def _make_crop_atlas(
 
     atlas.snapshot()
     return (
-        RaggedAtlas.checkout_latest(atlas_dir, CropCellSchema, store=store),
+        RaggedAtlas.checkout_latest(atlas_dir, obs_schemas={"cells": CropCellSchema}, store=store),
         images,
         boxes_per_group,
     )
@@ -368,8 +367,7 @@ def multimodal_crops_and_genes_atlas(tmp_path):
 
     atlas = RaggedAtlas.create(
         db_uri=atlas_dir,
-        obs_table_name="cells",
-        obs_schema=CropAndGeneCellSchema,
+        obs_schemas={"cells": CropAndGeneCellSchema},
         store=store,
         registry_schemas={"gene_expression": GeneFeatureSchema},
         dataset_table_name="datasets",
@@ -451,7 +449,9 @@ def multimodal_crops_and_genes_atlas(tmp_path):
 
     atlas.snapshot()
     return (
-        RaggedAtlas.checkout_latest(atlas_dir, CropAndGeneCellSchema, store=store),
+        RaggedAtlas.checkout_latest(
+            atlas_dir, obs_schemas={"cells": CropAndGeneCellSchema}, store=store
+        ),
         image,
         crop_only_boxes,
     )
