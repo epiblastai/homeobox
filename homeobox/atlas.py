@@ -314,23 +314,26 @@ class RaggedAtlas:
             Extra keyword arguments forwarded to ``lancedb.connect`` as
             ``storage_options`` (e.g. ``region``, ``skip_signature``).
         """
+        if obs_table_names is None and not obs_schemas:
+            raise ValueError(
+                "open() requires obs_table_names or obs_schemas to identify "
+                "which obs tables to open."
+            )
         if obs_table_names is None:
-            if not obs_schemas:
-                raise ValueError(
-                    "open() requires obs_table_names or obs_schemas to identify "
-                    "which obs tables to open."
-                )
             obs_table_names = list(obs_schemas)
+        if obs_schemas is None:
+            obs_schemas = {name: None for name in obs_table_names}
+        if set(obs_schemas) != set(obs_table_names):
+            raise ValueError(
+                f"obs_table_names ({sorted(obs_table_names)}) and obs_schemas "
+                f"({sorted(obs_schemas)}) must have identical keys."
+            )
         if not obs_table_names:
             raise ValueError("obs_table_names must contain at least one name.")
         db_uri = _resolve_db_uri(db_uri)
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         obs_tables = {name: db.open_table(name) for name in obs_table_names}
-        # TODO: I'm confused by this? Shouldn't we be assering that obs_tables and obs_schemas
-        # have identical keys? Is there a case where we wouldn't want that?
-        obs_schemas_full: dict[str, type[HoxBaseSchema] | None] = {
-            name: (obs_schemas or {}).get(name) for name in obs_table_names
-        }
+        obs_schemas_full: dict[str, type[HoxBaseSchema] | None] = dict(obs_schemas)
         dataset_table = db.open_table(dataset_table_name)
 
         if registry_tables is None:
@@ -1163,9 +1166,14 @@ class RaggedAtlas:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
         obs_tables = cls._read_obs_tables_from_record(db, row)
-        resolved_schemas: dict[str, type[HoxBaseSchema] | None] = {
-            name: (obs_schemas or {}).get(name) for name in obs_tables
-        }
+        if obs_schemas is None:
+            obs_schemas = {name: None for name in obs_tables}
+        if set(obs_schemas) != set(obs_tables):
+            raise ValueError(
+                f"obs_schemas keys {sorted(obs_schemas)} do not match the obs "
+                f"tables recorded in the snapshot ({sorted(obs_tables)})."
+            )
+        resolved_schemas: dict[str, type[HoxBaseSchema] | None] = dict(obs_schemas)
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
@@ -1251,9 +1259,14 @@ class RaggedAtlas:
             store = _derive_store_from_db_uri(db_uri, **(store_kwargs or {}))
 
         obs_tables = cls._read_obs_tables_from_record(db, row, restore=True)
-        resolved_schemas: dict[str, type[HoxBaseSchema] | None] = {
-            name: (obs_schemas or {}).get(name) for name in obs_tables
-        }
+        if obs_schemas is None:
+            obs_schemas = {name: None for name in obs_tables}
+        if set(obs_schemas) != set(obs_tables):
+            raise ValueError(
+                f"obs_schemas keys {sorted(obs_schemas)} do not match the obs "
+                f"tables recorded in the snapshot ({sorted(obs_tables)})."
+            )
+        resolved_schemas: dict[str, type[HoxBaseSchema] | None] = dict(obs_schemas)
 
         dataset_table = db.open_table(row["dataset_table_name"])
         dataset_table.checkout(row["dataset_table_version"])
