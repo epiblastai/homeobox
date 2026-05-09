@@ -211,9 +211,9 @@ class GroupReader:
         return reader
 
     def get_coordinate_transform(self, resolution_name: str) -> np.ndarray:
-        """Return the affine matrix mapping ``array_name`` voxels to physical space.
+        """Return the affine matrix mapping ``resolution_name`` voxels to physical space.
 
-        ``array_name`` is a multiscales dataset path (e.g. ``"s0"``).
+        ``resolution_name`` is a multiscales dataset path (e.g. ``"s0"``).
         Requires the optional ``spatial`` extra (spatialdata).
         """
         from homeobox.spatial_util import load_ngff_transforms

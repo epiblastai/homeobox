@@ -174,5 +174,84 @@ class DiscreteSpatialPointer(LanceModel):
         return self
 
 
+class PhysicalSpatialPointer(LanceModel):
+    pointer_type_name: ClassVar[str] = "physical_spatial"
+
+    # An OME-Zarr group with multiscales metadata
+    zarr_group: str | None = None
+    # Corners are in physical space coordinates
+    min_corner: list[float] | None = None
+    max_corner: list[float] | None = None
+
+    @classmethod
+    def prepare_obs(cls, obs_pl: pl.DataFrame, column_name: str) -> pl.DataFrame:
+        """Unnest DiscreteSpatial pointer struct, alias internal columns, drop empty rows.
+
+        Adds ``_zg``, ``_min_corner``, ``_max_corner`` (the latter two as
+        ``List[Int64]``).
+        """
+        struct_df = obs_pl[column_name].struct.unnest()
+        obs_pl = obs_pl.with_columns(
+            struct_df["zarr_group"].alias("_zg"),
+            struct_df["min_corner"].alias("_min_corner"),
+            struct_df["max_corner"].alias("_max_corner"),
+        )
+        return obs_pl.filter(pl.col("_zg").is_not_null())
+
+    @classmethod
+    def to_ranges(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        raise NotImplementedError(f"{cls.__name__} does not define raveled range reads")
+
+    @classmethod
+    def to_boxes(cls, obs_pl: pl.DataFrame) -> tuple[np.ndarray, np.ndarray]:
+        """Return N-D bounding boxes from a prepared discrete-spatial pointer dataframe."""
+        _require_prepared_columns(obs_pl, ("_min_corner", "_max_corner"), cls.__name__, "to_boxes")
+        if obs_pl.is_empty():
+            empty = np.empty((0, 0), dtype=np.int64)
+            return empty, empty
+
+        min_lens = obs_pl["_min_corner"].list.len().unique().to_list()
+        max_lens = obs_pl["_max_corner"].list.len().unique().to_list()
+        if len(min_lens) != 1 or len(max_lens) != 1 or min_lens != max_lens:
+            raise ValueError(
+                f"{cls.__name__}.to_boxes requires uniform box rank across rows, got "
+                f"min_corner lengths {min_lens}, max_corner lengths {max_lens}"
+            )
+
+        # TODO: Assumes all boxes have the same dimensionality. Cannot mix 2D, 3D, and 4D yet.
+        # Could update the group reader to strip padding dimensions, if they exist. Could use
+        # -1 as sentinel values and strip.
+        box_rank = int(min_lens[0])
+        if box_rank < 1:
+            raise ValueError(f"{cls.__name__}.to_boxes requires box rank >= 1, got {box_rank}")
+
+        min_corners = (
+            obs_pl["_min_corner"].list.to_array(box_rank).to_numpy().astype(np.int64, copy=False)
+        )
+        max_corners = (
+            obs_pl["_max_corner"].list.to_array(box_rank).to_numpy().astype(np.int64, copy=False)
+        )
+        return min_corners, max_corners
+
+    @model_validator(mode="after")
+    def _validate_corners(self):
+        # Pointer doesn't have a group, so there's nothing else to validate
+        if self.zarr_group is None:
+            return self
+
+        if len(self.min_corner) != len(self.max_corner):
+            raise ValueError(
+                f"min_corner and max_corner must have the same length, "
+                f"got {len(self.min_corner)} and {len(self.max_corner)}"
+            )
+        # Since these coordinates are local to the multiscales group it's expected
+        # that they are not inverted. After a transformation is it possible that `min_corner`
+        # and `max_corner` need to be flipped?
+        for i, (lo, hi) in enumerate(zip(self.min_corner, self.max_corner, strict=True)):
+            if lo > hi:
+                raise ValueError(f"min_corner[{i}]={lo} exceeds max_corner[{i}]={hi}")
+        return self
+
+
 ZarrPointer = SparseZarrPointer | DenseZarrPointer | DiscreteSpatialPointer
 ZARR_POINTER_TYPES = (SparseZarrPointer, DenseZarrPointer, DiscreteSpatialPointer)
