@@ -8,9 +8,9 @@ import pandas as pd
 import polars as pl
 
 from homeobox.batch_types import SparseBatch
-from homeobox.obs_alignment import PointerField
 from homeobox.reconstruction import _build_obs_df, _read_joined_feature_batch
 from homeobox.reconstructor_base import Reconstructor, endpoint
+from homeobox.schema import PointerField
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
