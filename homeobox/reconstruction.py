@@ -30,7 +30,7 @@ from homeobox.reconstruction_functional import (
     read_arrays_by_group,
 )
 from homeobox.reconstructor_base import Reconstructor, endpoint
-from homeobox.schema import PointerField
+from homeobox.schema import PointerField, _infer_pointer_type_from_struct_fields
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
@@ -84,9 +84,21 @@ def _build_var(
     return var
 
 
-def _build_obs_df(obs_pl: pl.DataFrame, pointer_cols: list[str]) -> pd.DataFrame:
+def _pointer_field_names_from_obs(obs_pl: pl.DataFrame) -> list[str]:
+    """Infer pointer columns in an obs DataFrame from Polars struct signatures."""
+    pointer_cols: list[str] = []
+    for name, dtype in obs_pl.schema.items():
+        if not isinstance(dtype, pl.Struct):
+            continue
+        sub_names = {field.name for field in dtype.fields}
+        if _infer_pointer_type_from_struct_fields(sub_names) is not None:
+            pointer_cols.append(name)
+    return pointer_cols
+
+
+def _build_obs_df(obs_pl: pl.DataFrame) -> pd.DataFrame:
     """Build an obs DataFrame from query results, excluding pointer/internal columns."""
-    pointer_cols_set = set(pointer_cols)
+    pointer_cols_set = set(_pointer_field_names_from_obs(obs_pl))
     keep_cols = [c for c in obs_pl.columns if c not in pointer_cols_set and not c.startswith("_")]
     obs = obs_pl.select(keep_cols).to_pandas()
     if "uid" in obs.columns:
@@ -94,9 +106,9 @@ def _build_obs_df(obs_pl: pl.DataFrame, pointer_cols: list[str]) -> pd.DataFrame
     return obs
 
 
-def _build_obs_only_anndata(obs_pl: pl.DataFrame, pointer_cols: list[str]) -> ad.AnnData:
+def _build_obs_only_anndata(obs_pl: pl.DataFrame) -> ad.AnnData:
     """Build an AnnData with only obs, no X."""
-    return ad.AnnData(obs=_build_obs_df(obs_pl, pointer_cols))
+    return ad.AnnData(obs=_build_obs_df(obs_pl))
 
 
 def _assemble_anndata(
@@ -106,11 +118,10 @@ def _assemble_anndata(
     obs_parts: list[pl.DataFrame],
     layers_to_read: list[str],
     stacked: dict[str, "sp.csr_matrix | np.ndarray"],
-    pointer_field_names: list[str],
 ) -> ad.AnnData:
     """Build final AnnData from stacked layer data, obs parts, and registry."""
     obs_pl = pl.concat(obs_parts, how="diagonal_relaxed")
-    obs = _build_obs_df(obs_pl, pointer_field_names)
+    obs = _build_obs_df(obs_pl)
     var = _build_var(atlas, feature_space, joined_globals)
 
     first_layer = layers_to_read[0]
@@ -141,13 +152,11 @@ def _read_joined_feature_batch(
     *,
     feature_join: Literal["union", "intersection"] | None,
     wanted_globals: np.ndarray | None,
-    pointer_field_names: list[str],
 ) -> tuple[
     "SparseBatch | DenseFeatureBatch | None",
     np.ndarray,
     list[str],
     pl.DataFrame,
-    list[str],
 ]:
     """Shared sparse/dense ``as_anndata`` pipeline up through concat.
 
@@ -158,12 +167,11 @@ def _read_joined_feature_batch(
     obs-only AnnData via :func:`_build_obs_only_anndata`.
     """
     spec = get_spec(pf.feature_space)
-    pointer_cols = list(pointer_field_names)
     obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
 
     if obs_pl.is_empty():
         _, layer_array_paths = get_array_paths_to_read(spec, layer_overrides)
-        return None, np.empty(0, dtype=np.int32), list(layer_array_paths), obs_pl, pointer_cols
+        return None, np.empty(0, dtype=np.int32), list(layer_array_paths), obs_pl
 
     plan = build_feature_read_plan(
         atlas,
@@ -174,11 +182,11 @@ def _read_joined_feature_batch(
         wanted_globals=wanted_globals,
     )
     if plan.n_features == 0:
-        return None, plan.joined_globals, plan.layer_names, obs_pl, pointer_cols
+        return None, plan.joined_globals, plan.layer_names, obs_pl
 
     group_batches = read_arrays_by_group(plan, groups)
     batch = finalize_grouped_read(plan, group_batches)
-    return batch, plan.joined_globals, plan.layer_names, obs_pl, pointer_cols
+    return batch, plan.joined_globals, plan.layer_names, obs_pl
 
 
 class SparseCSRReconstructor(Reconstructor):
@@ -235,8 +243,6 @@ class SparseCSRReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
-        *,
-        pointer_field_names: list[str],
     ) -> ad.AnnData:
         """Reconstruct an AnnData object from sparse CSR zarr groups.
 
@@ -264,25 +270,21 @@ class SparseCSRReconstructor(Reconstructor):
         wanted_globals:
             If provided, pin the output feature space to these global indices.
             Overrides *feature_join*.
-        pointer_field_names:
-            Names of the pointer columns on the bound obs table; used to drop
-            these from the reconstructed AnnData's obs DataFrame.
         """
         if wanted_globals is not None:
             # wanted_globals overrides feature_join, so turn it off
             feature_join = None
 
-        batch, joined_globals, layer_names, obs_pl, pointer_cols = _read_joined_feature_batch(
+        batch, joined_globals, layer_names, obs_pl = _read_joined_feature_batch(
             atlas,
             obs_pl,
             pf,
             layer_overrides,
             feature_join=feature_join,
             wanted_globals=wanted_globals,
-            pointer_field_names=pointer_field_names,
         )
         if batch is None:
-            return _build_obs_only_anndata(obs_pl, pointer_cols)
+            return _build_obs_only_anndata(obs_pl)
 
         n_features = len(joined_globals)
         n_rows = len(batch.offsets) - 1
@@ -301,7 +303,6 @@ class SparseCSRReconstructor(Reconstructor):
             [batch.metadata],
             layer_names,
             stacked,
-            pointer_field_names,
         )
 
 
@@ -346,8 +347,6 @@ class DenseFeatureReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
-        *,
-        pointer_field_names: list[str],
     ) -> ad.AnnData:
         if wanted_globals is not None and feature_join != "union":
             raise ValueError(
@@ -355,17 +354,16 @@ class DenseFeatureReconstructor(Reconstructor):
                 "the feature space is pinned to the requested globals."
             )
 
-        batch, joined_globals, layer_names, obs_pl, pointer_cols = _read_joined_feature_batch(
+        batch, joined_globals, layer_names, obs_pl = _read_joined_feature_batch(
             atlas,
             obs_pl,
             pf,
             layer_overrides,
             feature_join=None if wanted_globals is not None else feature_join,
             wanted_globals=wanted_globals,
-            pointer_field_names=pointer_field_names,
         )
         if batch is None:
-            return _build_obs_only_anndata(obs_pl, pointer_cols)
+            return _build_obs_only_anndata(obs_pl)
 
         return _assemble_anndata(
             atlas,
@@ -374,7 +372,6 @@ class DenseFeatureReconstructor(Reconstructor):
             [batch.metadata],
             layer_names,
             batch.layers,
-            pointer_field_names,
         )
 
 
@@ -564,8 +561,6 @@ class FeatureCSCReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
-        *,
-        pointer_field_names: list[str],
     ) -> ad.AnnData:
         if wanted_globals is None:
             raise ValueError(
@@ -579,10 +574,9 @@ class FeatureCSCReconstructor(Reconstructor):
             )
 
         spec = get_spec(pf.feature_space)
-        pointer_cols = list(pointer_field_names)
         obs_pl, groups = _prepare_obs_and_groups(obs_pl, spec.pointer_type, pf.field_name)
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl, pointer_cols)
+            return _build_obs_only_anndata(obs_pl)
 
         csc_layer_paths = _csc_layer_paths(spec, layer_overrides)
         layers_to_read = list(csc_layer_paths.keys())
@@ -652,7 +646,6 @@ class FeatureCSCReconstructor(Reconstructor):
             obs_parts,
             layers_to_read,
             stacked,
-            pointer_field_names,
         )
 
 
@@ -707,8 +700,6 @@ class SparseGeneExpressionReconstructor(Reconstructor):
         layer_overrides: list[str] | None = None,
         feature_join: Literal["union", "intersection"] = "union",
         wanted_globals: np.ndarray | None = None,
-        *,
-        pointer_field_names: list[str],
     ) -> ad.AnnData:
         spec = get_spec(pf.feature_space)
         impl = (
@@ -723,7 +714,6 @@ class SparseGeneExpressionReconstructor(Reconstructor):
             layer_overrides,
             feature_join,
             wanted_globals,
-            pointer_field_names=pointer_field_names,
         )
 
     def _should_use_csc(

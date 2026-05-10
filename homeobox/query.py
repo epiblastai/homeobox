@@ -18,7 +18,7 @@ import polars as pl
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import get_spec
-from homeobox.reconstruction import _build_obs_only_anndata
+from homeobox.reconstruction import _build_obs_only_anndata, _pointer_field_names_from_obs
 from homeobox.schema import PointerField
 from homeobox.util import sql_escape
 
@@ -362,7 +362,7 @@ class AtlasQuery:
     def to_polars(self) -> pl.DataFrame:
         """Execute the query and return a Polars DataFrame of obs metadata."""
         result = self._materialize_rows()
-        pointer_cols = self.pointer_field_names
+        pointer_cols = _pointer_field_names_from_obs(result)
         if pointer_cols:
             keep = [c for c in result.columns if c not in pointer_cols]
             result = result.select(keep)
@@ -375,13 +375,12 @@ class AtlasQuery:
         space is used for X. Use :meth:`to_mudata` for multi-modal.
         """
         obs_pl = self._materialize_rows()
-        pointer_cols = self.pointer_field_names
         if obs_pl.is_empty():
-            return _build_obs_only_anndata(obs_pl, pointer_cols)
+            return _build_obs_only_anndata(obs_pl)
 
         active_pfs = self._active_pointer_fields()
         if not active_pfs:
-            return _build_obs_only_anndata(obs_pl, pointer_cols)
+            return _build_obs_only_anndata(obs_pl)
 
         # Pick the first feature space that has data for the queried rows
         # TODO: Add a warning on this behavior. Should be clear to the user
@@ -394,7 +393,7 @@ class AtlasQuery:
             if zg.is_not_null().any():
                 return self._reconstruct_single_space_anndata(obs_pl, pf)
 
-        return _build_obs_only_anndata(obs_pl, pointer_cols)
+        return _build_obs_only_anndata(obs_pl)
 
     def to_mudata(self) -> "mu.MuData":
         """Execute the query and return a MuData with one modality per feature space.
@@ -424,7 +423,7 @@ class AtlasQuery:
         from homeobox.reconstruction import _build_obs_df
 
         obs_pl = self._materialize_rows()
-        obs = _build_obs_df(obs_pl, self.pointer_field_names)
+        obs = _build_obs_df(obs_pl)
 
         if obs_pl.is_empty():
             return MultimodalResult(obs=obs)
@@ -460,7 +459,6 @@ class AtlasQuery:
                     self._atlas,
                     obs_pl,
                     pf,
-                    pointer_field_names=self.pointer_field_names,
                 )
             elif "as_spatial_batch" in endpoints and not spec.has_var_df:
                 result = reconstructor.as_spatial_batch(
@@ -500,7 +498,6 @@ class AtlasQuery:
             self._atlas,
             obs_pl,
             pf,
-            pointer_field_names=self.pointer_field_names,
         )
 
     def to_spatial_batch(self, field_name: str) -> "SpatialTileBatch":
@@ -545,7 +542,6 @@ class AtlasQuery:
         """
         active_pfs = self._active_pointer_fields()
         pf = next(iter(active_pfs.values())) if active_pfs else None
-        pointer_cols = self.pointer_field_names
 
         if self._balanced_limit_n is not None:
             obs_pl = self._materialize_rows()
@@ -554,7 +550,7 @@ class AtlasQuery:
                 if chunk.is_empty():
                     continue
                 if pf is None:
-                    yield _build_obs_only_anndata(chunk, pointer_cols)
+                    yield _build_obs_only_anndata(chunk)
                 else:
                     yield self._reconstruct_single_space_anndata(chunk, pf)
             return
@@ -566,7 +562,7 @@ class AtlasQuery:
             for batch in reader:
                 if batch.num_rows == 0:
                     continue
-                yield _build_obs_only_anndata(pl.from_arrow(batch), pointer_cols)
+                yield _build_obs_only_anndata(pl.from_arrow(batch))
             return
 
         for batch in reader:
@@ -728,5 +724,4 @@ class AtlasQuery:
             layer_overrides=self._layer_overrides.get(pf.feature_space),
             feature_join=self._feature_join,
             wanted_globals=wanted_globals,
-            pointer_field_names=self.pointer_field_names,
         )
