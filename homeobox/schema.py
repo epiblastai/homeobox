@@ -11,8 +11,11 @@ import pyarrow as pa
 from lancedb.pydantic import LanceModel
 from pydantic import Field, model_validator
 
-from homeobox.group_specs import get_spec
-from homeobox.pointer_types import ZARR_POINTER_TYPES, ZarrPointer
+from homeobox.group_specs import get_spec, registered_feature_spaces
+from homeobox.pointer_types import (
+    ZARR_POINTER_TYPES,
+    ZarrPointer,
+)
 
 # Arrow field metadata key used to persist the feature_space for each pointer column.
 # Written by HoxBaseSchema.to_arrow_schema() and read back by
@@ -127,6 +130,114 @@ def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
             if t in ZARR_POINTER_TYPES:
                 result.append((name, t))
                 break
+    return result
+
+
+def _validate_pointer_field(
+    *,
+    field_name: str,
+    pointer_type: type,
+    feature_space: str,
+    context: str,
+) -> PointerField:
+    """Validate feature-space metadata and return runtime pointer metadata."""
+    spec = get_spec(feature_space)
+    if pointer_type is not spec.pointer_type:
+        raise TypeError(
+            f"{context}: {pointer_type.pointer_type_name} pointer does not match "
+            f"feature_space '{feature_space}' which expects "
+            f"{spec.pointer_type.pointer_type_name}"
+        )
+    return PointerField(
+        field_name=field_name,
+        feature_space=feature_space,
+    )
+
+
+def _extract_pointer_fields(
+    schema_cls: type["HoxBaseSchema"],
+) -> dict[str, PointerField]:
+    """Introspect a schema class and return :class:`PointerField` for each pointer field.
+
+    Reads the ``json_schema_extra`` that :meth:`PointerField.declare` attaches
+    to each pydantic field. Keys are the Python attribute names — which may
+    differ from the feature_space value carried by each pointer — so schemas
+    can declare multiple columns in the same feature space.
+    """
+    result: dict[str, PointerField] = {}
+    for name, pointer_type in _iter_pointer_annotations(schema_cls):
+        extra = _read_field_json_schema_extra(schema_cls, name) or {}
+        feature_space = extra.get("feature_space")
+        if not feature_space:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: pointer field missing feature_space "
+                f"metadata; declare with PointerField.declare(feature_space=...)"
+            )
+        result[name] = _validate_pointer_field(
+            field_name=name,
+            pointer_type=pointer_type,
+            feature_space=feature_space,
+            context=f"{schema_cls.__name__}.{name}",
+        )
+    return result
+
+
+def _infer_pointer_type_from_struct_fields(sub_names: set[str]) -> type | None:
+    for pointer_type in sorted(
+        ZARR_POINTER_TYPES,
+        key=lambda cls: len(frozenset(cls.model_fields)),
+        reverse=True,
+    ):
+        if frozenset(pointer_type.model_fields) == sub_names:
+            return pointer_type
+    return None
+
+
+def _infer_pointer_fields_from_arrow(
+    arrow_schema: pa.Schema,
+) -> dict[str, PointerField]:
+    """Infer pointer fields from a obs table's Arrow schema.
+
+    Detects struct columns whose sub-field names match the signatures of
+    ``SparseZarrPointer``, ``DenseZarrPointer``, or ``DiscreteSpatialPointer``,
+    then reads the declared feature_space from Arrow field metadata (key
+    :data:`POINTER_FEATURE_SPACE_METADATA_KEY`) stamped by
+    :meth:`HoxBaseSchema.to_arrow_schema`.
+    """
+    result: dict[str, PointerField] = {}
+    for i in range(len(arrow_schema)):
+        field = arrow_schema.field(i)
+        if not pa.types.is_struct(field.type):
+            continue
+        sub_names = {field.type.field(j).name for j in range(field.type.num_fields)}
+        pointer_type = _infer_pointer_type_from_struct_fields(sub_names)
+        if pointer_type is None:
+            continue
+
+        metadata = field.metadata or {}
+        fs_bytes = metadata.get(POINTER_FEATURE_SPACE_METADATA_KEY)
+        if fs_bytes is not None:
+            feature_space = fs_bytes.decode("utf-8")
+        elif field.name in registered_feature_spaces():
+            # Legacy-atlas fallback: tables written before PointerField.declare
+            # existed carry no per-field metadata, but the old convention required
+            # field_name == feature_space. Fall back to that only if it resolves
+            # to a registered spec.
+            feature_space = field.name
+        else:
+            raise TypeError(
+                f"Arrow field '{field.name}' looks like a {pointer_type.pointer_type_name} pointer "
+                f"but is missing the '{POINTER_FEATURE_SPACE_METADATA_KEY.decode()}' "
+                f"metadata key, and its name does not match any registered feature "
+                f"space. Open with an explicit obs_schema or re-create the atlas with "
+                f"a schema that uses PointerField.declare(feature_space=...)."
+            )
+        result[field.name] = _validate_pointer_field(
+            field_name=field.name,
+            pointer_type=pointer_type,
+            feature_space=feature_space,
+            context=f"Arrow field '{field.name}'",
+        )
     return result
 
 
@@ -255,13 +366,12 @@ class HoxBaseSchema(LanceModel):
                     f"{cls.__name__}.{name}: PointerField.declare must be called with "
                     f"a non-empty feature_space string"
                 )
-            spec = get_spec(feature_space)
-            if pointer_type is not spec.pointer_type:
-                raise TypeError(
-                    f"{cls.__name__}.{name}: {pointer_type.pointer_type_name} pointer annotation "
-                    f"does not match feature_space '{feature_space}' which expects "
-                    f"{spec.pointer_type.pointer_type_name}"
-                )
+            _validate_pointer_field(
+                field_name=name,
+                pointer_type=pointer_type,
+                feature_space=feature_space,
+                context=f"{cls.__name__}.{name}",
+            )
 
     @model_validator(mode="after")
     def _require_at_least_one_pointer(self):

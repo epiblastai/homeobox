@@ -25,7 +25,6 @@ from homeobox.feature_layouts import (
     validate_feature_layout,
 )
 from homeobox.group_specs import get_spec
-from homeobox.obs_alignment import _extract_pointer_fields, _infer_pointer_fields_from_arrow
 from homeobox.schema import (
     AtlasVersionRecord,
     DatasetSchema,
@@ -33,6 +32,8 @@ from homeobox.schema import (
     FeatureLayout,
     HoxBaseSchema,
     PointerField,
+    _extract_pointer_fields,
+    _infer_pointer_fields_from_arrow,
 )
 from homeobox.util import sql_escape
 
