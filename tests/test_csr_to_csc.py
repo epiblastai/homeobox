@@ -71,7 +71,7 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
         atlas,
         adata,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=DatasetSchema(
             zarr_group=zarr_group,
             feature_space="gene_expression",

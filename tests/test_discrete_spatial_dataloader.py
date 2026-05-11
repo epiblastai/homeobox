@@ -392,7 +392,7 @@ def multimodal_crops_and_genes_atlas(tmp_path):
         atlas,
         adata,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=DatasetSchema(
             zarr_group="ds_genes/gene_expression",
             feature_space="gene_expression",

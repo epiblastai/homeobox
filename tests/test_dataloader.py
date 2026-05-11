@@ -104,7 +104,7 @@ def two_group_atlas(tmp_path):
         atlas,
         adata1,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=DatasetSchema(
             zarr_group="ds1/gene_expression",
             feature_space="gene_expression",
@@ -119,7 +119,7 @@ def two_group_atlas(tmp_path):
         atlas,
         adata2,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=DatasetSchema(
             zarr_group="ds2/gene_expression",
             feature_space="gene_expression",
@@ -162,7 +162,7 @@ def single_group_atlas(tmp_path):
         atlas,
         adata,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=DatasetSchema(
             zarr_group="ds/gene_expression",
             feature_space="gene_expression",
@@ -207,7 +207,7 @@ def single_group_dense_feature_atlas(tmp_path):
         atlas,
         adata,
         field_name="image_features",
-        zarr_layer="ctrl_standardized",
+        zarr_layers={"ctrl_standardized": "X"},
         dataset_record=DatasetSchema(
             zarr_group="ds/image_features",
             feature_space="image_features",
@@ -254,7 +254,7 @@ def shared_layout_atlas(tmp_path):
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=DatasetSchema(
                 zarr_group=f"ds{idx}/gene_expression",
                 feature_space="gene_expression",

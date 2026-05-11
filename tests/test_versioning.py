@@ -87,7 +87,7 @@ class TestSnapshot:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
 
@@ -102,7 +102,7 @@ class TestSnapshot:
             atlas,
             adata1,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -112,7 +112,7 @@ class TestSnapshot:
             atlas,
             adata2,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
         v1 = atlas.snapshot()
@@ -126,7 +126,7 @@ class TestSnapshot:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -136,7 +136,7 @@ class TestSnapshot:
             atlas,
             adata2,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
         atlas.snapshot()
@@ -199,7 +199,7 @@ class TestListVersions:
             atlas,
             adata1,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -209,7 +209,7 @@ class TestListVersions:
             atlas,
             adata2,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
         atlas.snapshot()
@@ -226,7 +226,7 @@ class TestListVersions:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -244,7 +244,7 @@ class TestCheckout:
             atlas,
             adata1,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
         atlas.snapshot()  # v0: 20 cells
@@ -254,7 +254,7 @@ class TestCheckout:
             atlas,
             adata2,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
         atlas.snapshot()  # v1: 35 cells
@@ -275,7 +275,7 @@ class TestCheckout:
             atlas,
             adata1,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata1, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -285,7 +285,7 @@ class TestCheckout:
             atlas,
             adata2,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata2, "ds2/gene_expression"),
         )
         atlas.snapshot()
@@ -306,7 +306,7 @@ class TestCheckout:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -327,7 +327,7 @@ class TestCheckout:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()  # v0 — pins feature_layouts at current version
@@ -371,7 +371,7 @@ class TestSchemalessCheckout:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -418,7 +418,7 @@ class TestStorelessCheckout:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -436,7 +436,7 @@ class TestStorelessCheckout:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -465,7 +465,7 @@ class TestIngestionGuard:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
         atlas.snapshot()
@@ -481,7 +481,7 @@ class TestIngestionGuard:
                 checked,
                 adata2,
                 field_name="gene_expression",
-                zarr_layer="counts",
+                zarr_layers={"counts": "X"},
                 dataset_record=_ds(adata2, "ds2/gene_expression"),
             )
 
@@ -496,7 +496,7 @@ class TestOpenDefaults:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
 
@@ -520,7 +520,7 @@ class TestBackwardCompat:
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
 

@@ -214,7 +214,7 @@ n_fo = add_anndata_batch(
     atlas,
     fo_adata,
     feature_space="image_features",
-    zarr_layer="raw",
+    zarr_layers={"raw": "X"},
     dataset_record=fo_dataset,
     chunk_shape=chunk_shape,
     shard_shape=shard_shape,

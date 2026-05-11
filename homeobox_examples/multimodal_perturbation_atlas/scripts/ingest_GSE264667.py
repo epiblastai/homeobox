@@ -168,7 +168,7 @@ for exp_name, exp_info in EXPERIMENTS.items():
         atlas,
         adata,
         feature_space="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=dataset_record,
     )
     total_cells += n_ingested

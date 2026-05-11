@@ -80,7 +80,7 @@ def _build_dual_atlas(tmp_path) -> tuple[RaggedAtlas, str, obstore.store.ObjectS
         atlas,
         cell_adata,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=_ds(cell_adata, "cells/ds1"),
         obs_table_name="cells",
     )
@@ -90,7 +90,7 @@ def _build_dual_atlas(tmp_path) -> tuple[RaggedAtlas, str, obstore.store.ObjectS
         atlas,
         nuc_adata,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=_ds(nuc_adata, "nuclei/ds1"),
         obs_table_name="nuclei",
     )
@@ -196,7 +196,7 @@ def test_single_table_snapshot_round_trips(tmp_path):
         atlas,
         adata,
         field_name="gene_expression",
-        zarr_layer="counts",
+        zarr_layers={"counts": "X"},
         dataset_record=_ds(adata, "cells/ds1"),
     )
     atlas.snapshot()
@@ -286,7 +286,7 @@ def test_add_from_anndata_requires_obs_table_name_when_field_shared(tmp_path):
             atlas,
             adata,
             field_name="gene_expression",
-            zarr_layer="counts",
+            zarr_layers={"counts": "X"},
             dataset_record=_ds(adata, "cells/ds1"),
         )
 

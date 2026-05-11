@@ -109,27 +109,42 @@ def deduplicate_var(
     return mat_dedup, var_dedup
 
 
-def _is_backed_csr(adata: ad.AnnData) -> bool:
-    """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
+def _source_h5_path(source: str) -> str:
+    """Map a source identifier to its on-disk h5ad path.
+
+    ``"X"`` → ``"X"``; any other name → ``"layers/<name>"``.
+    """
+    return "X" if source == "X" else f"layers/{source}"
+
+
+def _source_matrix(adata: ad.AnnData, source: str):
+    """Return the in-memory or backed matrix accessor for a source identifier."""
+    return adata.X if source == "X" else adata.layers[source]
+
+
+def _is_backed_csr(adata: ad.AnnData, source: str = "X") -> bool:
+    """Return True if ``source`` is a backed HDF5 CSR matrix (h5ad format)."""
     import h5py
 
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and isinstance(adata.file._file["X"], h5py.Group)
-        and "data" in adata.file._file["X"]
-    )
+    if not adata.isbacked:
+        return False
+    h5_path = _source_h5_path(source)
+    if h5_path not in adata.file._file:
+        return False
+    node = adata.file._file[h5_path]
+    return isinstance(node, h5py.Group) and "data" in node
 
 
-def _is_backed_dense(adata: ad.AnnData) -> bool:
-    """Return True if adata.X is a backed HDF5 dense matrix."""
+def _is_backed_dense(adata: ad.AnnData, source: str = "X") -> bool:
+    """Return True if ``source`` is a backed HDF5 dense matrix."""
     import h5py
 
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and isinstance(adata.file._file["X"], h5py.Dataset)
-    )
+    if not adata.isbacked:
+        return False
+    h5_path = _source_h5_path(source)
+    if h5_path not in adata.file._file:
+        return False
+    return isinstance(adata.file._file[h5_path], h5py.Dataset)
 
 
 def _count_nnz_batched(h5_dataset, batch_rows: int) -> tuple[int, np.ndarray]:
@@ -490,58 +505,181 @@ def insert_obs_records(
     return len(obs_df)
 
 
-def _write_sparse_batched(
+class _SparseSource:
+    """Iterable accessor for a sparse source matrix (``adata.X`` or a layer).
+
+    Exposes a common interface used by :func:`_write_sparse_layers_batched`:
+
+    * ``nnz`` and ``indptr`` are materialised eagerly so multi-layer sparsity
+      can be validated cheaply before any writes.
+    * ``iter_flat(batch_size)`` yields ``(offset, indices_chunk, values_chunk)``
+      tuples covering the flat CSR arrays in fixed-size chunks.
+
+    Three on-disk modes are supported, mirroring the original
+    ``_write_sparse_batched`` logic:
+
+    * **Backed CSR** — h5 CSR group with ``data``/``indices``/``indptr``.
+    * **Backed dense** — h5 2D dataset; row batches are converted to CSR.
+    * **In-memory** — scipy CSR (or coercible).
+    """
+
+    def __init__(
+        self,
+        kind: str,
+        *,
+        nnz: int,
+        indptr: np.ndarray,
+        data_dtype: np.dtype,
+        # backed_csr / in_memory
+        indices: object = None,
+        data: object = None,
+        # backed_dense
+        h5_dense: object = None,
+        n_vars: int = 0,
+        dense_batch_rows: int = 0,
+    ) -> None:
+        self.kind = kind
+        self.nnz = nnz
+        self.indptr = indptr
+        self.data_dtype = data_dtype
+        self._indices = indices
+        self._data = data
+        self._h5_dense = h5_dense
+        self._n_vars = n_vars
+        self._dense_batch_rows = dense_batch_rows
+
+    def iter_flat(self, batch_size: int):
+        """Yield ``(offset, indices_chunk, values_chunk)`` covering the full CSR.
+
+        For the dense-backed mode, row batches are accumulated into a buffer
+        and re-chunked to ``batch_size`` so callers see the same flat-array
+        layout regardless of input mode.
+        """
+        if self.kind in ("backed_csr", "in_memory"):
+            nnz = self.nnz
+            written = 0
+            while written < nnz:
+                end = min(written + batch_size, nnz)
+                idx_chunk = self._indices[written:end].astype(np.uint32, copy=False)
+                val_chunk = self._data[written:end]
+                yield written, idx_chunk, val_chunk
+                written = end
+            return
+
+        # backed_dense — accumulate row batches into shard-sized buffers.
+        n_rows = self._h5_dense.shape[0]
+        offset = 0
+        buf_indices: list[np.ndarray] = []
+        buf_data: list[np.ndarray] = []
+        buf_size = 0
+        for row_start in range(0, n_rows, self._dense_batch_rows):
+            row_end = min(row_start + self._dense_batch_rows, n_rows)
+            batch_csr = sp.csr_matrix(self._h5_dense[row_start:row_end])
+            if batch_csr.nnz == 0:
+                continue
+            buf_indices.append(batch_csr.indices.astype(np.uint32, copy=False))
+            buf_data.append(batch_csr.data)
+            buf_size += batch_csr.nnz
+            while buf_size >= batch_size:
+                all_idx = np.concatenate(buf_indices)
+                all_dat = np.concatenate(buf_data)
+                yield offset, all_idx[:batch_size], all_dat[:batch_size]
+                offset += batch_size
+                remainder_idx = all_idx[batch_size:]
+                remainder_dat = all_dat[batch_size:]
+                if remainder_idx.size > 0:
+                    buf_indices = [remainder_idx]
+                    buf_data = [remainder_dat]
+                    buf_size = remainder_idx.size
+                else:
+                    buf_indices = []
+                    buf_data = []
+                    buf_size = 0
+        if buf_size > 0:
+            yield offset, np.concatenate(buf_indices), np.concatenate(buf_data)
+
+
+def _resolve_sparse_source(
+    adata: ad.AnnData, source: str, shard_shape: tuple[int, ...]
+) -> _SparseSource:
+    """Build a :class:`_SparseSource` for one ``adata`` source identifier."""
+    if _is_backed_csr(adata, source):
+        h5x = adata.file._file[_source_h5_path(source)]
+        nnz = int(h5x["data"].shape[0])
+        indptr = h5x["indptr"][:]
+        return _SparseSource(
+            "backed_csr",
+            nnz=nnz,
+            indptr=indptr,
+            data_dtype=h5x["data"].dtype,
+            indices=h5x["indices"],
+            data=h5x["data"],
+        )
+
+    if _is_backed_dense(adata, source):
+        h5x = adata.file._file[_source_h5_path(source)]
+        n_vars = adata.n_vars
+        batch_rows = max(1, shard_shape[0] // n_vars) if n_vars > 0 else 1024
+        batch_rows = max(batch_rows, 256)
+        nnz, nnz_per_row = _count_nnz_batched(h5x, batch_rows)
+        indptr = np.zeros(len(nnz_per_row) + 1, dtype=np.int64)
+        np.cumsum(nnz_per_row, out=indptr[1:])
+        return _SparseSource(
+            "backed_dense",
+            nnz=nnz,
+            indptr=indptr,
+            data_dtype=h5x.dtype,
+            h5_dense=h5x,
+            n_vars=n_vars,
+            dense_batch_rows=batch_rows,
+        )
+
+    mat = _source_matrix(adata, source)
+    csr = mat if isinstance(mat, sp.csr_matrix) else sp.csr_matrix(mat)
+    return _SparseSource(
+        "in_memory",
+        nnz=csr.nnz,
+        indptr=csr.indptr,
+        data_dtype=csr.data.dtype,
+        indices=csr.indices,
+        data=csr.data,
+    )
+
+
+def _write_sparse_layers_batched(
     group: zarr.Group,
     adata: ad.AnnData,
-    zarr_layer: str,
+    zarr_layers: dict[str, str],
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
     spec: FeatureSpaceSpec,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Pre-allocate and stream-write CSR data in shard-sized batches.
+    """Pre-allocate and stream-write CSR data for one or more layers.
 
-    Supports three input modes:
+    All sparse layers in a CSR zarr group share the same ``csr/indices`` and
+    per-row ``indptr`` — i.e. an identical nonzero pattern. The first entry
+    of ``zarr_layers`` is the *anchor*: its indices are written to disk, and
+    every subsequent source's indices/indptr are compared against the anchor
+    in shard-sized batches. Mismatches raise ``ValueError`` rather than
+    silently corrupting the layout.
 
-    1. **Backed CSR** — reads directly from HDF5 CSR datasets (data/indices/indptr).
-    2. **Backed dense** — reads row batches from HDF5, converts each to CSR,
-       and streams without loading the full matrix.  Requires two passes: one
-       to count nonzeros, one to write.
-    3. **In-memory** — converts to scipy CSR then streams the flat arrays.
+    Parameters
+    ----------
+    zarr_layers
+        ``{dest_zarr_layer: source}`` mapping. Values are ``"X"`` (for
+        ``adata.X``) or a key in ``adata.layers``.
 
     Returns
     -------
     tuple[np.ndarray, np.ndarray]
-        ``(starts, ends)`` — per-obs indptr start/end positions.
+        ``(starts, ends)`` — per-obs indptr start/end positions from the
+        anchor (and equal for all layers by construction).
     """
-    backed_dense = _is_backed_dense(adata)
-
-    if _is_backed_csr(adata):
-        h5x = adata.file._file["X"]
-        nnz = int(h5x["data"].shape[0])
-        indptr = h5x["indptr"][:]
-        src_indices = h5x["indices"]
-        src_data = h5x["data"]
-        data_dtype = src_data.dtype
-    elif backed_dense:
-        # Two-pass approach to avoid loading the full dense matrix.
-        h5x = adata.file._file["X"]
-        data_dtype = h5x.dtype
-        # Pass 1: count nonzeros per row in batches.
-        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
-        batch_rows = max(batch_rows, 256)  # floor to avoid tiny batches
-        nnz, nnz_per_row = _count_nnz_batched(h5x, batch_rows)
-        # Build indptr from nnz_per_row.
-        indptr = np.zeros(len(nnz_per_row) + 1, dtype=np.int64)
-        np.cumsum(nnz_per_row, out=indptr[1:])
-        src_indices = None  # sentinel: pass 2 will stream
-        src_data = None
-    else:
-        csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-        nnz = csr.nnz
-        indptr = csr.indptr
-        src_indices = csr.indices
-        src_data = csr.data
-        data_dtype = csr.data.dtype
+    items = list(zarr_layers.items())
+    anchor_dest, anchor_source_name = items[0]
+    anchor = _resolve_sparse_source(adata, anchor_source_name, shard_shape)
+    nnz = anchor.nnz
+    batch_size = shard_shape[0]
 
     indices_name = (
         f"{spec.zarr_group_spec.layers.prefix}/indices"
@@ -551,78 +689,93 @@ def _write_sparse_batched(
     zarr_indices = spec.zarr_group_spec.create_array(
         group, indices_name, (nnz,), chunks=chunk_shape, shards=shard_shape
     )
-    zarr_values = spec.zarr_group_spec.create_array(
+    anchor_values = spec.zarr_group_spec.create_array(
         group,
-        zarr_layer,
+        anchor_dest,
         (nnz,),
-        dtype=data_dtype,
+        dtype=anchor.data_dtype,
         chunks=chunk_shape,
         shards=shard_shape,
     )
 
-    if backed_dense:
-        # Pass 2: read row batches, convert to CSR, write flat arrays.
-        n_rows = adata.n_obs
-        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
-        batch_rows = max(batch_rows, 256)
-        written = 0
-        for row_start in range(0, n_rows, batch_rows):
-            row_end = min(row_start + batch_rows, n_rows)
-            batch_csr = sp.csr_matrix(h5x[row_start:row_end])
-            batch_nnz = batch_csr.nnz
-            if batch_nnz == 0:
-                continue
-            zarr_indices[written : written + batch_nnz] = batch_csr.indices.astype(
-                np.uint32, copy=False
-            )
-            zarr_values[written : written + batch_nnz] = batch_csr.data
-            written += batch_nnz
-    else:
-        # Stream flat CSR arrays (backed CSR or in-memory).
-        batch_size = shard_shape[0]
-        written = 0
-        while written < nnz:
-            end = min(written + batch_size, nnz)
-            zarr_indices[written:end] = src_indices[written:end].astype(np.uint32, copy=False)
-            zarr_values[written:end] = src_data[written:end]
-            written = end
+    for offset, idx_chunk, val_chunk in anchor.iter_flat(batch_size):
+        zarr_indices[offset : offset + len(idx_chunk)] = idx_chunk
+        anchor_values[offset : offset + len(val_chunk)] = val_chunk
 
-    starts = indptr[:-1].astype(np.int64)
-    ends = indptr[1:].astype(np.int64)
+    for dest, source_name in items[1:]:
+        layer = _resolve_sparse_source(adata, source_name, shard_shape)
+        if layer.nnz != nnz:
+            raise ValueError(
+                f"Sparsity mismatch ingesting zarr layer '{dest}': source "
+                f"'{source_name}' has nnz={layer.nnz}, but anchor source "
+                f"'{anchor_source_name}' (zarr layer '{anchor_dest}') has nnz={nnz}. "
+                f"All layers in a sparse zarr group must share the same nonzero pattern."
+            )
+        if not np.array_equal(layer.indptr, anchor.indptr):
+            raise ValueError(
+                f"Sparsity mismatch ingesting zarr layer '{dest}': source "
+                f"'{source_name}' indptr does not match anchor source "
+                f"'{anchor_source_name}' (zarr layer '{anchor_dest}'). All layers "
+                f"must have identical per-row nonzero counts."
+            )
+
+        layer_values = spec.zarr_group_spec.create_array(
+            group,
+            dest,
+            (nnz,),
+            dtype=layer.data_dtype,
+            chunks=chunk_shape,
+            shards=shard_shape,
+        )
+
+        for offset, idx_chunk, val_chunk in layer.iter_flat(batch_size):
+            on_disk = zarr_indices[offset : offset + len(idx_chunk)]
+            if not np.array_equal(on_disk, idx_chunk):
+                raise ValueError(
+                    f"Sparsity mismatch ingesting zarr layer '{dest}': source "
+                    f"'{source_name}' column indices differ from anchor source "
+                    f"'{anchor_source_name}' at flat offset {offset}."
+                )
+            layer_values[offset : offset + len(val_chunk)] = val_chunk
+
+    starts = anchor.indptr[:-1].astype(np.int64)
+    ends = anchor.indptr[1:].astype(np.int64)
     return starts, ends
 
 
-def _write_dense_batched(
+def _write_dense_layers_batched(
     group: zarr.Group,
     adata: ad.AnnData,
-    zarr_layer: str,
+    zarr_layers: dict[str, str],
     chunk_shape: tuple[int, ...],
     shard_shape: tuple[int, ...],
     spec: FeatureSpaceSpec,
 ) -> None:
-    """Pre-allocate and stream-write dense 2D data in shard-sized row batches.
+    """Pre-allocate and stream-write one or more dense 2D layers.
 
-    Slices ``adata.X[start:end, :]`` per batch; anndata handles backed vs
-    in-memory transparently for dense arrays.
+    Each layer is independent — no shared structure beyond the
+    ``(n_obs, n_vars)`` shape. Slices each source per row-batch; anndata
+    handles backed vs in-memory transparently for dense arrays.
     """
     n_rows, n_vars = adata.shape
     batch_size = shard_shape[0]
-    data_dtype = adata.X.dtype
 
-    zarr_arr = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (n_rows, n_vars),
-        dtype=data_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    written = 0
-    while written < n_rows:
-        end = min(written + batch_size, n_rows)
-        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
-        written = end
+    for dest, source_name in zarr_layers.items():
+        mat = _source_matrix(adata, source_name)
+        data_dtype = mat.dtype
+        zarr_arr = spec.zarr_group_spec.create_array(
+            group,
+            dest,
+            (n_rows, n_vars),
+            dtype=data_dtype,
+            chunks=chunk_shape,
+            shards=shard_shape,
+        )
+        written = 0
+        while written < n_rows:
+            end = min(written + batch_size, n_rows)
+            zarr_arr[written:end] = np.asarray(mat[written:end], dtype=data_dtype)
+            written = end
 
 
 def add_anndata_batch(
@@ -630,21 +783,27 @@ def add_anndata_batch(
     adata: ad.AnnData,
     *,
     field_name: str,
-    zarr_layer: str,
+    zarr_layers: dict[str, str],
     dataset_record: DatasetSchema,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
     obs_table_name: str | None = None,
 ) -> int:
-    """Ingest an AnnData into the atlas using batched zarr writes.
+    """Ingest one or more AnnData matrices into the atlas using batched zarr writes.
 
-    Always ingests ``adata.X``. ``zarr_layer`` is the *destination* layer name
-    within the zarr group (e.g. ``"counts"``), not a source AnnData layer.
+    ``zarr_layers`` maps each destination zarr layer name to the AnnData source
+    that should populate it. Source values are either ``"X"`` (for ``adata.X``)
+    or a key in ``adata.layers``. Example::
 
-    Writes zarr arrays, var_df sidecar, remap, and inserts row records into
-    the obs table. Features must already be registered via
-    :meth:`RaggedAtlas.register_features`, and ``adata.var`` must contain a
-    ``global_feature_uid`` column.
+        zarr_layers={"counts": "X", "log_normalized": "log1p"}
+
+    For sparse feature spaces all sources must share the same nonzero pattern
+    (matching ``nnz``, ``indptr``, and column indices). A mismatch raises
+    ``ValueError`` — the on-disk layout uses one shared ``csr/indices`` per
+    group. For dense feature spaces each layer is independent.
+
+    Writes zarr arrays, features, and inserts row records into the obs table.
+    Features must already be registered via :meth:`RaggedAtlas.register_features`.
 
     Parameters
     ----------
@@ -657,10 +816,11 @@ def add_anndata_batch(
     field_name:
         Obs-schema attribute name for the pointer column to populate.
         The feature_space is derived from its registered ``PointerField``.
-    zarr_layer:
-        Destination layer name within the zarr ``layers/`` group
-        (e.g. ``"counts"``). Must be one of the allowed values for the
-        feature space.
+    zarr_layers:
+        ``{destination_layer: source}`` mapping. Destination names must be
+        valid layers for the feature space; sources are ``"X"`` or layer keys
+        in ``adata.layers``. Insertion order determines the *anchor* source
+        for sparse ingestion (the first entry defines the shared indices).
     dataset_record:
         Dataset record to register. ``dataset_record.zarr_group`` is used as
         the zarr group path (relative to the atlas store). Construct with
@@ -681,6 +841,9 @@ def add_anndata_batch(
     int
         Number of cells ingested.
     """
+    if not zarr_layers:
+        raise ValueError("zarr_layers must be a non-empty mapping")
+
     name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     obs_schema = atlas.obs_schemas[name]
     if obs_schema is None:
@@ -694,14 +857,30 @@ def add_anndata_batch(
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
 
-    if (
-        spec.zarr_group_spec.layers.allowed
-        and zarr_layer not in spec.zarr_group_spec.layers.allowed_names
-    ):
-        raise ValueError(
-            f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.zarr_group_spec.layers.allowed_names}"
-        )
+    known_layer_names = set(spec.zarr_group_spec.layers.array_specs_by_name)
+    if known_layer_names:
+        invalid = [d for d in zarr_layers if d not in known_layer_names]
+        if invalid:
+            raise ValueError(
+                f"zarr_layers {invalid} are not declared for feature space "
+                f"'{feature_space}'. Known: {sorted(known_layer_names)}"
+            )
+
+    n_rows, n_vars = adata.shape
+    for dest, source_name in zarr_layers.items():
+        if source_name == "X":
+            continue
+        if source_name not in adata.layers:
+            raise ValueError(
+                f"Source 'adata.layers[{source_name!r}]' for zarr layer '{dest}' "
+                f"not found. Available layers: {list(adata.layers)}"
+            )
+        layer_shape = adata.layers[source_name].shape
+        if layer_shape != (n_rows, n_vars):
+            raise ValueError(
+                f"adata.layers[{source_name!r}] has shape {layer_shape}, expected "
+                f"{(n_rows, n_vars)} to match adata.X."
+            )
 
     obs_errors = validate_obs_columns(adata.obs, obs_schema)
     if obs_errors:
@@ -710,7 +889,6 @@ def add_anndata_batch(
     if spec.has_var_df:
         _check_var_no_duplicate_uids(adata.var)
 
-    n_rows = adata.n_obs
     zarr_group = dataset_record.zarr_group
 
     if spec.pointer_type is SparseZarrPointer:
@@ -722,7 +900,6 @@ def add_anndata_batch(
                 f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
             )
     elif spec.pointer_type is DenseZarrPointer:
-        n_vars = adata.n_vars
         if chunk_shape is None:
             chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
             chunk_shape = (chunk_rows, n_vars)
@@ -757,18 +934,17 @@ def add_anndata_batch(
 
     group = atlas.create_zarr_group(zarr_group)
     if spec.pointer_type is SparseZarrPointer:
-        starts, ends = _write_sparse_batched(
-            group, adata, zarr_layer, chunk_shape, shard_shape, spec
+        starts, ends = _write_sparse_layers_batched(
+            group, adata, zarr_layers, chunk_shape, shard_shape, spec
         )
     elif spec.pointer_type is DenseZarrPointer:
-        _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
+        _write_dense_layers_batched(group, adata, zarr_layers, chunk_shape, shard_shape, spec)
     else:
         raise NotImplementedError(
             f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
             f"feature space '{feature_space}'"
         )
 
-    # Build pointer struct for the active feature space
     if spec.pointer_type is SparseZarrPointer:
         pointer_struct = _make_sparse_pointer(zarr_group, starts, ends)
     elif spec.pointer_type is DenseZarrPointer:
@@ -801,7 +977,7 @@ def add_from_anndata(
     adata: ad.AnnData | str | Path,
     *,
     field_name: str,
-    zarr_layer: str,
+    zarr_layers: dict[str, str],
     dataset_record: DatasetSchema,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
@@ -822,7 +998,7 @@ def add_from_anndata(
         atlas,
         adata,
         field_name=field_name,
-        zarr_layer=zarr_layer,
+        zarr_layers=zarr_layers,
         dataset_record=dataset_record,
         chunk_shape=chunk_shape,
         shard_shape=shard_shape,
