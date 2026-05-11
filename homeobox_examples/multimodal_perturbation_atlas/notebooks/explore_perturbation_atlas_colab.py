@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.1
+#       jupytext_version: 1.19.2
 #   kernelspec:
 #     display_name: Python 3 (ipykernel)
 #     language: python
@@ -56,6 +56,8 @@
 # # !pip install -q "homeobox"
 
 # %%
+import os
+
 import homeobox as hox
 import numpy as np
 import polars as pl
@@ -75,14 +77,22 @@ from tqdm.auto import tqdm
 
 # %%
 ATLAS_DIR = "s3://epiblast-public/multimodal_perturbation_atlas"
+STORE_KWARGS = {
+    "config": {
+        "endpoint": f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
+        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
+        "aws_region": "auto",
+    }
+}
 
 # %%
 # List available snapshots — each is a frozen, reproducible view of the atlas
-hox.RaggedAtlas.list_versions(ATLAS_DIR)
+hox.RaggedAtlas.list_versions(ATLAS_DIR, store_kwargs=STORE_KWARGS)
 
 # %%
 # Checkout the latest snapshot (read-only)
-atlas = PerturbationAtlas.checkout_latest(ATLAS_DIR)
+atlas = PerturbationAtlas.checkout_latest(ATLAS_DIR, store_kwargs=STORE_KWARGS)
 atlas
 
 # %% [markdown]
@@ -470,6 +480,9 @@ for mod_name, mod_adata in mdata.mod.items():
 # spans multiple assay types.
 
 # %%
+atlas.obs_table.search().limit(10).to_polars()
+
+# %%
 mm = (
     atlas.query()
     .by_gene("PPARG")
@@ -480,6 +493,9 @@ print(f"{len(mm.obs)} cells, {len(mm.mod)} modalities: {list(mm.mod.keys())}")
 for name, data in mm.mod.items():
     n_present = mm.present[name].sum()
     print(f"  {name}: {type(data).__name__}, {n_present:,} cells with data")
+
+# %%
+atlas.list_datasets()
 
 # %% [markdown]
 # ### Streaming with `.to_batches()`
@@ -781,5 +797,7 @@ print(f"Torch tensor: shape={result['X'].shape}, dtype={result['X'].dtype}")
 # | Image tile training | `.to_cell_dataset("image_tiles")` + `make_loader(...)` |
 #
 # For more details, see the [homeobox documentation](https://epiblastai.github.io/homeobox/).
+
+# %%
 
 # %%

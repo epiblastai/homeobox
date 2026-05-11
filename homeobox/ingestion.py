@@ -21,7 +21,6 @@ from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.pointer_types import (
     DenseZarrPointer,
-    DiscreteSpatialPointer,
     SparseZarrPointer,
 )
 from homeobox.schema import (
@@ -1080,43 +1079,11 @@ def add_coo_batch(
         pointer_field.field_name: pointer_struct,
     }
 
-    # Zero-fill other pointer fields
-    for other_pf_name, other_pf in pointer_fields.items():
+    # Null out the other pointer fields for this batch's rows.
+    for other_pf_name in pointer_fields:
         if other_pf_name == pointer_field.field_name:
             continue
-        other_spec = get_spec(other_pf.feature_space)
-        if other_spec.pointer_type is SparseZarrPointer:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_rows, type=pa.string()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                ],
-                names=["zarr_group", "start", "end", "zarr_row"],
-            )
-        elif other_spec.pointer_type is DenseZarrPointer:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_rows, type=pa.string()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                ],
-                names=["zarr_group", "position"],
-            )
-        elif other_spec.pointer_type is DiscreteSpatialPointer:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_rows, type=pa.string()),
-                    pa.array([[] for _ in range(n_rows)], type=pa.list_(pa.int64())),
-                    pa.array([[] for _ in range(n_rows)], type=pa.list_(pa.int64())),
-                ],
-                names=["zarr_group", "min_corner", "max_corner"],
-            )
-        else:
-            raise TypeError(
-                f"Field '{other_pf_name}' uses unsupported pointer type "
-                f"{other_spec.pointer_type.pointer_type_name}"
-            )
+        columns[other_pf_name] = pa.nulls(n_rows, type=arrow_schema.field(other_pf_name).type)
 
     for col in schema_fields:
         if col in obs_df.columns:
