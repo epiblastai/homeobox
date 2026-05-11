@@ -556,8 +556,53 @@ class RaggedAtlas:
 
     # -- Dataset / zarr helpers --------------------------------------------
 
-    def register_dataset(self, dataset_record: DatasetSchema) -> None:
-        """Insert a ``DatasetSchema`` into the dataset table."""
+    def register_dataset(
+        self,
+        dataset_record: DatasetSchema,
+        *,
+        var_df: pl.DataFrame | None = None,
+    ) -> None:
+        """Insert a ``DatasetSchema`` into the dataset table.
+
+        When ``var_df`` is provided, computes the feature layout from
+        ``var_df`` against the registry for ``dataset_record.feature_space``,
+        writes any new layout rows into ``_feature_layouts``, and sets
+        ``dataset_record.layout_uid`` before insertion. The dataset row is
+        therefore born with its final ``layout_uid``; no read-modify-write
+        on the dataset table is needed.
+
+        Parameters
+        ----------
+        dataset_record:
+            The dataset row to insert. ``feature_space`` and ``zarr_group``
+            must already be set; ``layout_uid`` is overwritten when ``var_df``
+            is given.
+        var_df:
+            One row per local feature in local feature order. Must have a
+            ``global_feature_uid`` column. Pass ``None`` for feature spaces
+            without a per-dataset feature layout.
+        """
+        if var_df is not None:
+            feature_space = dataset_record.feature_space
+            registry_table = self._registry_tables.get(feature_space)
+            if registry_table is None:
+                raise ValueError(
+                    f"No registry table for feature space '{feature_space}'. "
+                    f"Ensure a registry schema was provided at create() time."
+                )
+            layout_uid, layout_df = build_feature_layout_df(var_df, registry_table)
+
+            if not layout_exists(self._feature_layouts_table, layout_uid):
+                # Use merge_insert for concurrency safety: if two parallel
+                # ingestions compute the same layout, the second is a no-op.
+                (
+                    self._feature_layouts_table.merge_insert(on=["layout_uid", "feature_uid"])
+                    .when_not_matched_insert_all()
+                    .execute(layout_df)
+                )
+
+            dataset_record.layout_uid = layout_uid
+
         arrow_table = pa.Table.from_pylist(
             [dataset_record.model_dump()],
             schema=type(dataset_record).to_arrow_schema(),
@@ -725,66 +770,6 @@ class RaggedAtlas:
         n_before = registry_table.count_rows()
         (registry_table.merge_insert(on="uid").when_not_matched_insert_all().execute(new_records))
         return registry_table.count_rows() - n_before
-
-    # -- Feature layouts ----------------------------------------------------
-
-    def add_or_reuse_layout(
-        self,
-        var_df: pl.DataFrame,
-        zarr_group: str,
-        feature_space: str,
-    ) -> str:
-        """Compute or reuse a feature layout for a dataset.
-
-        Computes the layout_uid from the feature ordering in var_df. If
-        the layout already exists in the table, skips insertion. Otherwise
-        inserts the layout rows. Updates the DatasetSchema to set layout_uid.
-
-        Parameters
-        ----------
-        var_df:
-            One row per local feature in local feature order.
-            Must have a ``global_feature_uid`` column.
-        zarr_group:
-            The DatasetSchema zarr_group (per-row primary key) for this dataset.
-        feature_space:
-            Which feature space this dataset belongs to (used to look up registry).
-
-        Returns
-        -------
-        str
-            The layout_uid assigned to this dataset.
-        """
-        registry_table = self._registry_tables.get(feature_space)
-        if registry_table is None:
-            raise ValueError(
-                f"No registry table for feature space '{feature_space}'. "
-                f"Ensure a registry schema was provided at create() time."
-            )
-        layout_uid, layout_df = build_feature_layout_df(var_df, registry_table)
-
-        if not layout_exists(self._feature_layouts_table, layout_uid):
-            # Use merge_insert for concurrency safety: if two parallel
-            # ingestions compute the same layout, the second is a no-op.
-            (
-                self._feature_layouts_table.merge_insert(on=["layout_uid", "feature_uid"])
-                .when_not_matched_insert_all()
-                .execute(layout_df)
-            )
-
-        # Update DatasetSchema with layout_uid
-        (
-            self._dataset_table.merge_insert(on="zarr_group")
-            .when_matched_update_all()
-            .execute(
-                self._dataset_table.search()
-                .where(f"zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
-                .to_polars()
-                .with_columns(pl.lit(layout_uid).alias("layout_uid"))
-            )
-        )
-
-        return layout_uid
 
     # -- Maintenance --------------------------------------------------------
 
