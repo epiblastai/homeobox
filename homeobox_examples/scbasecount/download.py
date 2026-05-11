@@ -1,38 +1,58 @@
-"""Bulk download scBaseCount h5ad files from GCS.
+"""Bulk download scBaseCount h5ad files from the epiblast-public R2/S3 bucket.
 
 Usage:
     python -m homeobox_examples.scbasecount.download \
         --output-dir ./data/scbasecount \
         --max-download 50 \
-        --feature-type Velocyto \
+        --feature-type Gene \
         --release-date 2026-01-12 \
         --dry-run
+
+Credentials and endpoint follow standard boto3 conventions:
+    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY  (or AWS_PROFILE)
+    R2_URL  (Cloudflare R2 endpoint, or pass --endpoint-url)
+
+Pass --anonymous for unauthenticated reads from a public bucket.
 """
 
 import argparse
-import shutil
-import subprocess
+import io
+import os
 from pathlib import Path
 
-import gcsfs
+import boto3
 import pyarrow.parquet as pq
+from botocore import UNSIGNED
+from botocore.client import Config
 
-GCS_BASE = "gs://arc-institute-virtual-cell-atlas/scbasecount"
+BUCKET = "epiblast-public"
+PREFIX = "scbasecount"
 
 
-def read_sample_metadata(
-    release_date: str,
-    feature_type: str,
-) -> list[dict]:
-    """Read sample metadata parquet from GCS and return list of row dicts."""
-    gcs_path = (
-        f"arc-institute-virtual-cell-atlas/scbasecount/{release_date}"
-        f"/metadata/{feature_type}/Homo_sapiens/sample_metadata.parquet"
-        # f"/metadata/{feature_type}/Caenorhabditis_elegans/sample_metadata.parquet"
-    )
-    fs = gcsfs.GCSFileSystem(token="anon")
-    with fs.open(gcs_path, "rb") as f:
-        table = pq.read_table(f)
+def make_s3_client(endpoint_url: str | None, anonymous: bool):
+    """Build a boto3 S3 client pointed at the configured endpoint."""
+    kwargs = {}
+    if endpoint_url:
+        kwargs["endpoint_url"] = endpoint_url
+    if anonymous:
+        kwargs["config"] = Config(signature_version=UNSIGNED)
+    return boto3.client("s3", **kwargs)
+
+
+def metadata_key(release_date: str, feature_type: str) -> str:
+    return f"{PREFIX}/{release_date}/metadata/{feature_type}/Homo_sapiens/sample_metadata.parquet"
+
+
+def h5ad_key(release_date: str, feature_type: str, srx: str) -> str:
+    return f"{PREFIX}/{release_date}/h5ad/{feature_type}/Homo_sapiens/{srx}.h5ad"
+
+
+def read_sample_metadata(s3, release_date: str, feature_type: str) -> list[dict]:
+    """Fetch sample_metadata.parquet from R2 and return a list of row dicts."""
+    key = metadata_key(release_date, feature_type)
+    resp = s3.get_object(Bucket=BUCKET, Key=key)
+    body = resp["Body"].read()
+    table = pq.read_table(io.BytesIO(body))
     return table.to_pylist()
 
 
@@ -43,64 +63,60 @@ def build_file_list(
     output_dir: Path,
     max_download: int | None,
 ) -> list[tuple[str, Path]]:
-    """Return list of (gcs_uri, local_path) pairs, skipping already-downloaded files."""
-    pairs = []
+    """Return (s3_key, local_path) pairs, skipping files already on disk."""
+    pairs: list[tuple[str, Path]] = []
     for row in rows:
-        srx = row.get("srx_accession") or row["SRX_accession"]
-        gcs_uri = (
-            f"{GCS_BASE}/{release_date}/h5ad/{feature_type}/Homo_sapiens/{srx}.h5ad"
-            # f"/Caenorhabditis_elegans/{srx}.h5ad"
-        )
+        srx = row.get("srx_accession") or row.get("SRX_accession")
+        if not srx:
+            continue
         local_path = output_dir / f"{srx}.h5ad"
         if local_path.exists():
             continue
-        pairs.append((gcs_uri, local_path))
+        pairs.append((h5ad_key(release_date, feature_type, srx), local_path))
         if max_download is not None and len(pairs) >= max_download:
             break
     return pairs
 
 
-def download_files(pairs: list[tuple[str, Path]]) -> None:
-    """Download files using gcloud storage cp."""
-    for i, (gcs_uri, local_path) in enumerate(pairs, 1):
-        print(f"  [{i}/{len(pairs)}] {gcs_uri} -> {local_path}")
-        subprocess.run(
-            ["gcloud", "storage", "cp", gcs_uri, str(local_path)],
-            check=True,
-        )
+def download_files(s3, pairs: list[tuple[str, Path]]) -> None:
+    for i, (key, local_path) in enumerate(pairs, 1):
+        print(f"  [{i}/{len(pairs)}] s3://{BUCKET}/{key} -> {local_path}")
+        s3.download_file(BUCKET, key, str(local_path))
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Download scBaseCount h5ad files from GCS")
+    parser = argparse.ArgumentParser(description="Download scBaseCount h5ad files from R2/S3")
     parser.add_argument("--output-dir", required=True, help="Local download directory")
-    parser.add_argument(
-        "--feature-type", default="Velocyto", help="Feature type (default: Velocyto)"
-    )
+    parser.add_argument("--feature-type", default="Gene", help="Feature type (default: Gene)")
     parser.add_argument(
         "--release-date", default="2026-01-12", help="Release date (default: 2026-01-12)"
     )
     parser.add_argument("--max-download", type=int, default=None, help="Limit number of h5ad files")
+    parser.add_argument(
+        "--endpoint-url",
+        default=os.environ.get("R2_URL"),
+        help="S3 endpoint URL (default: $R2_URL)",
+    )
+    parser.add_argument(
+        "--anonymous", action="store_true", help="Skip request signing for public buckets"
+    )
     parser.add_argument("--dry-run", action="store_true", help="List files without downloading")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not args.dry_run and shutil.which("gcloud") is None:
-        raise RuntimeError(
-            "gcloud CLI not found. Install it from https://cloud.google.com/sdk/docs/install"
-        )
+    s3 = make_s3_client(args.endpoint_url, args.anonymous)
 
     print(f"Reading sample metadata for {args.feature_type} / {args.release_date}...")
-    rows = read_sample_metadata(args.release_date, args.feature_type)
+    rows = read_sample_metadata(s3, args.release_date, args.feature_type)
     print(f"  Found {len(rows)} samples")
 
-    # Save sample metadata locally for the ingest script
     metadata_path = output_dir / "sample_metadata.parquet"
     if not metadata_path.exists():
         import pyarrow as pa
 
-        pa.parquet.write_table(pa.Table.from_pylist(rows), str(metadata_path))
+        pq.write_table(pa.Table.from_pylist(rows), str(metadata_path))
         print(f"  Saved sample metadata to {metadata_path}")
 
     pairs = build_file_list(
@@ -109,11 +125,11 @@ def main():
     print(f"  {len(pairs)} files to download")
 
     if args.dry_run:
-        for gcs_uri, _local_path in pairs:
-            print(f"    {gcs_uri}")
+        for key, _local_path in pairs:
+            print(f"    s3://{BUCKET}/{key}")
         return
 
-    download_files(pairs)
+    download_files(s3, pairs)
     print("Done!")
 
 
