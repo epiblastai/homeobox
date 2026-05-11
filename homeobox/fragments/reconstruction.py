@@ -116,8 +116,6 @@ class IntervalReconstructor(Reconstructor):
         atlas: "RaggedAtlas",
         obs_pl: pl.DataFrame,
         pf: PointerField,
-        *,
-        pointer_field_names: list[str],
     ) -> FragmentResult:
         """Read cell-sorted fragment arrays and return raw intervals.
 
@@ -133,22 +131,19 @@ class IntervalReconstructor(Reconstructor):
             accessibility zarr pointer column).
         pf:
             Pointer field info for chromatin_accessibility.
-        pointer_field_names:
-            Names of the pointer columns on the bound obs table.
 
         Returns
         -------
         FragmentResult
             Flat fragment arrays with CSR-style offsets and chromosome names.
         """
-        batch, joined_globals, _layer_names, obs_pl, pointer_cols = _read_joined_feature_batch(
+        batch, joined_globals, _layer_names, obs_pl = _read_joined_feature_batch(
             atlas,
             obs_pl,
             pf,
             layer_overrides=None,
             feature_join="union",
             wanted_globals=None,
-            pointer_field_names=pointer_field_names,
         )
         if batch is None:
             return FragmentResult(
@@ -157,7 +152,7 @@ class IntervalReconstructor(Reconstructor):
                 lengths=np.array([], dtype=np.uint16),
                 offsets=np.zeros(1, dtype=np.int64),
                 chrom_names=[],
-                obs=_build_obs_df(obs_pl, pointer_cols),
+                obs=_build_obs_df(obs_pl),
             )
 
         chrom_names = _resolve_chrom_names(atlas, pf.feature_space, joined_globals)
@@ -167,5 +162,5 @@ class IntervalReconstructor(Reconstructor):
             lengths=batch.layers["lengths"],
             offsets=batch.offsets,
             chrom_names=chrom_names,
-            obs=_build_obs_df(batch.metadata, pointer_cols),
+            obs=_build_obs_df(batch.metadata),
         )

@@ -22,6 +22,7 @@ import lancedb
 import numpy as np
 import obstore.store
 import pandas as pd
+import polars as pl
 import pyarrow as pa
 import zarr
 
@@ -30,7 +31,6 @@ from homeobox.group_specs import get_spec
 from homeobox.ingestion import (
     _write_dense_batched,
     add_anndata_batch,
-    write_feature_layout,
 )
 from homeobox.obs_alignment import _schema_obs_fields
 from homeobox.pointer_types import SparseZarrPointer, make_uid
@@ -278,17 +278,16 @@ tile_dataset = DatasetSchema(
     disease=None,
 )
 
-# Write dataset records
-for ds in [feat_dataset, tile_dataset]:
-    ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
-    atlas._dataset_table.add(ds_arrow)
+# Write dataset records (image_features carries a layout; image_tiles does not)
+feat_var_df = pl.from_pandas(ov_adata.var.reset_index())
+atlas.register_dataset(feat_dataset, var_df=feat_var_df)
+atlas.register_dataset(tile_dataset)
 
 # Write image_features zarr (standard 2D dense)
 feat_spec = get_spec("image_features")
 feat_chunk, feat_shard = aligned_chunk_shard(ov_adata.n_vars)
 feat_group = atlas._root.create_group(feat_uid)
 _write_dense_batched(feat_group, ov_adata, "raw", feat_chunk, feat_shard, feat_spec)
-write_feature_layout(atlas, ov_adata, "image_features", feat_uid)
 
 # Write image_tiles zarr (custom 4D)
 tile_group = atlas._root.create_group(tile_uid)

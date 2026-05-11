@@ -743,7 +743,16 @@ def add_anndata_batch(
             f"feature space '{feature_space}'"
         )
 
-    atlas.register_dataset(dataset_record)
+    if spec.has_var_df:
+        var_df = pl.from_pandas(adata.var.reset_index())
+        if "global_feature_uid" not in var_df.columns:
+            raise ValueError(
+                "adata.var must have a 'global_feature_uid' column. "
+                "Set it before calling add_anndata_batch()."
+            )
+        atlas.register_dataset(dataset_record, var_df=var_df)
+    else:
+        atlas.register_dataset(dataset_record)
 
     group = atlas.create_zarr_group(zarr_group)
     if spec.pointer_type is SparseZarrPointer:
@@ -757,9 +766,6 @@ def add_anndata_batch(
             f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
             f"feature space '{feature_space}'"
         )
-
-    if spec.has_var_df:
-        write_feature_layout(atlas, adata, feature_space, zarr_group)
 
     # Build pointer struct for the active feature space
     if spec.pointer_type is SparseZarrPointer:
@@ -981,9 +987,9 @@ def add_coo_batch(
     ends = indptr[1:].copy()
 
     # -----------------------------------------------------------------------
-    # Register dataset record
+    # Register dataset record (computes layout_uid from var_df up front)
     # -----------------------------------------------------------------------
-    atlas.register_dataset(dataset_record)
+    atlas.register_dataset(dataset_record, var_df=var_df if spec.has_var_df else None)
 
     # -----------------------------------------------------------------------
     # Pass 2: Stream triplet chunks into zarr
@@ -1052,12 +1058,6 @@ def add_coo_batch(
             source.close()
 
     # -----------------------------------------------------------------------
-    # Write feature layout
-    # -----------------------------------------------------------------------
-    if spec.has_var_df:
-        atlas.add_or_reuse_layout(var_df, dataset_record.zarr_group, feature_space)
-
-    # -----------------------------------------------------------------------
     # Insert obs records
     # -----------------------------------------------------------------------
     arrow_schema = obs_schema.to_arrow_schema()
@@ -1096,27 +1096,6 @@ def add_coo_batch(
     arrow_table = pa.table(columns, schema=arrow_schema)
     atlas.add_obs_records(arrow_table, obs_table_name=name)
     return n_rows
-
-
-def write_feature_layout(
-    atlas: RaggedAtlas,
-    adata: ad.AnnData,
-    feature_space: str,
-    zarr_group: str,
-) -> None:
-    """Write feature layout for a dataset into the _feature_layouts Lance table.
-
-    Requires ``global_feature_uid`` in ``adata.var`` and features to
-    already be registered via :meth:`RaggedAtlas.register_features`.
-    """
-    var_df = pl.from_pandas(adata.var.reset_index())
-    if "global_feature_uid" not in var_df.columns:
-        raise ValueError(
-            "adata.var must have a 'global_feature_uid' column. "
-            "Set it before calling add_anndata_batch()."
-        )
-
-    atlas.add_or_reuse_layout(var_df, zarr_group, feature_space)
 
 
 def add_csc(

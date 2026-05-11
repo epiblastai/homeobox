@@ -295,7 +295,7 @@ def ingest_genefull(
     starts = union_indptr[:-1].astype(np.int64)
     ends = union_indptr[1:].astype(np.int64)
 
-    # Build dataset record from sample metadata (must exist before add_or_reuse_layout)
+    # Build dataset record from sample metadata
     dataset_kwargs = {
         "dataset_uid": zarr_group,
         "zarr_group": zarr_group,
@@ -326,15 +326,8 @@ def ingest_genefull(
             dataset_kwargs[field] = sample_row[field]
 
     dataset_record = ScBasecountDatasetSchema(**dataset_kwargs)
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=ScBasecountDatasetSchema.to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
-
-    # Register feature layout (updates dataset record with layout_uid)
     var_pl = pl.DataFrame({"global_feature_uid": adata.var["global_feature_uid"].tolist()})
-    atlas.add_or_reuse_layout(var_pl, zarr_group, FEATURE_SPACE)
+    atlas.register_dataset(dataset_record, var_df=var_pl)
 
     # Insert cell records
     pointer_field: PointerFieldInfo | None = None

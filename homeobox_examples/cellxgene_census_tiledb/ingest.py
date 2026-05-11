@@ -300,16 +300,10 @@ def ingest_dataset(
         n_cells=n_cells,
         cellxgene_dataset_id=dataset_id,
     )
-    dataset_arrow = pa.Table.from_pylist(
-        [dataset_record.model_dump()],
-        schema=CensusDatasetSchema.to_arrow_schema(),
-    )
-    atlas._dataset_table.add(dataset_arrow)
-
     # --- Write dataset vars (feature mapping) ---
     var_uids = [joinid_to_uid[int(jid)] for jid in var_joinids]
     var_pl = pl.DataFrame({"global_feature_uid": var_uids})
-    atlas.add_or_reuse_layout(var_pl, zarr_group, FEATURE_SPACE)
+    atlas.register_dataset(dataset_record, var_df=var_pl)
 
     # --- Write cell records ---
     pointer_field: PointerFieldInfo | None = None
