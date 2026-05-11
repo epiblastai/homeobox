@@ -236,7 +236,9 @@ def build_scdl(out_dir: str, h5ad_path: str) -> None:
     """Convert the canonical h5ad to BioNeMo SingleCellMemMapDataset."""
     from bionemo.scdl.io.single_cell_memmap_dataset import SingleCellMemMapDataset
 
-    os.makedirs(out_dir, exist_ok=True)
+    # SCMMAP refuses to ingest an h5ad into an already-existing directory,
+    # so create the parent but not out_dir itself.
+    os.makedirs(os.path.dirname(out_dir), exist_ok=True)
     ds = SingleCellMemMapDataset(out_dir, h5ad_path=h5ad_path)
     ds.flush()
 
