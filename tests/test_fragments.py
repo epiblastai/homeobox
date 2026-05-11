@@ -109,11 +109,9 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
         feature_space="chromatin_accessibility",
         n_rows=len(cell_ids),
     )
-    atlas.register_dataset(dataset)
-    atlas.add_or_reuse_layout(
-        pl.DataFrame({"global_feature_uid": chrom_order}),
-        group_uid,
-        "chromatin_accessibility",
+    atlas.register_dataset(
+        dataset,
+        var_df=pl.DataFrame({"global_feature_uid": chrom_order}),
     )
 
     insert_obs_records(

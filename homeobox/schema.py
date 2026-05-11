@@ -438,9 +438,6 @@ class DatasetSchema(LanceModel):
     zarr_group: str
     feature_space: str  # FeatureSpace value
     n_rows: int
-    # TODO: Layout UID is updated automatically by add_or_reuse_layout. If a user forgets
-    # to call that method during ingestion, this will break. add_or_reuse_layout should
-    # probably be called automatically somewhere to avoid mistakes.
     layout_uid: str = ""
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()

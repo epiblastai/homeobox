@@ -25,7 +25,7 @@ from homeobox.fragments.ingestion import (
     write_genome_sorted_arrays,
 )
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import SparseZarrWriter, write_feature_layout
+from homeobox.ingestion import SparseZarrWriter
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import DatasetSchema, DenseZarrPointer, SparseZarrPointer, make_uid
 
@@ -237,7 +237,16 @@ def add_multimodal_batch(
         ds = dataset_records[field_name]
         zarr_group = ds.zarr_group
 
-        atlas.register_dataset(ds)
+        if spec.has_var_df:
+            var_df = pl.from_pandas(adata.var.reset_index())
+            if "global_feature_uid" not in var_df.columns:
+                raise ValueError(
+                    "adata.var must have a 'global_feature_uid' column for "
+                    f"feature space '{feature_space}'."
+                )
+            atlas.register_dataset(ds, var_df=var_df)
+        else:
+            atlas.register_dataset(ds)
         group = atlas.create_zarr_group(zarr_group)
 
         if spec.pointer_type is SparseZarrPointer:
@@ -256,9 +265,6 @@ def add_multimodal_batch(
             pointer_data[field_name] = _make_dense_pointer(zarr_group, n_cells)
         else:
             raise TypeError(f"Unsupported pointer type for feature space '{feature_space}'")
-
-        if spec.has_var_df:
-            write_feature_layout(atlas, adata, feature_space, zarr_group)
 
     arrow_table = _build_cell_arrow_table(
         atlas,
@@ -376,9 +382,14 @@ def add_fragment_batch(
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
-    # --- Write dataset record ---
+    # --- Write dataset record (with feature layout) ---
     dataset_record.n_cells = n_cells
-    atlas.register_dataset(dataset_record)
+    var_df = pl.DataFrame(
+        {
+            "global_feature_uid": [chrom_uids[c] for c in chrom_order],
+        }
+    )
+    atlas.register_dataset(dataset_record, var_df=var_df)
 
     # --- Write zarr arrays ---
     group = atlas.create_zarr_group(zarr_group)
@@ -391,14 +402,6 @@ def add_fragment_batch(
     end_max = build_end_max(gs_starts, gs_lengths)
     write_genome_sorted_arrays(group, gs_cell_ids, gs_starts, gs_lengths, chrom_offsets, end_max)
     print("  Wrote cell-sorted and genome-sorted fragment arrays")
-
-    # --- Write feature layout ---
-    var_df = pl.DataFrame(
-        {
-            "global_feature_uid": [chrom_uids[c] for c in chrom_order],
-        }
-    )
-    atlas.add_or_reuse_layout(var_df, zarr_group, feature_space)
 
     # --- Build and insert cell records ---
     pointer_starts = offsets[:-1].astype(np.int64)
