@@ -1,18 +1,35 @@
 # homeobox
 
-Homeobox is a multimodal single-cell database built for interactive analysis and ML training at scale. It stores cell metadata in [LanceDB](https://lancedb.com) and raw array data (count matrices, images and features) in [Zarr](https://zarr.dev), and provides a PyTorch-native data loading layer that reads directly from those stores without intermediate copies or format conversions.
+Homeobox is a multimodal database built for interactive analysis and ML training at scale. It combines the search and versioning capabilities of [LanceDB](https://lancedb.com) with the efficient and scalable storage of array data (count matrices, images and features) in [Zarr](https://zarr.dev).
 
-A central design goal is to make it practical to train foundation models on collections of heterogeneous datasets — datasets with different gene panels, different assayed modalities, and different obs schemas — without forcing them into a common rectangular matrix upfront.
+A central design goal is to make it practical to train foundation models on collections of heterogeneous datasets without creating intermediate copies optimized only for ML. For example, a single homeobox dataloader can stream batches of text, (2,3,4)D image crops, sparse single cell gene expression matrices, plus 3D biomolecular structures and their corresponding sequences.
 
 ---
 
 ## Why homeobox
 
-### Ragged feature spaces, unified cell table
+### Motivating cases
 
-Real-world atlas building involves stitching together datasets that were not designed to be compatible. A 10x 3' dataset measures ~33,000 genes. A targeted panel measures 500. A CITE-seq experiment adds protein on top of RNA. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
+- A collection of hundreds or thousands of `h5ad` or `h5mu` files from different assays, panels, and organisms.
+- A repository of large images stored in Zarr or OME-Zarr, DICOM, tiff, etc. Possibly, 2D, 3D, or 4D and > 1 TB each and associated with text descriptions.
+- Single cell images, masks, and associated feature data (e.g., CellProfiler vectors).
+- A combination of all-of-the-above
 
-Homeobox takes a different approach: each dataset occupies its own zarr group with its own feature ordering, and each cell carries a pointer into its group. The reconstruction layer handles union/intersection/feature-filter logic at query time — no padding is stored, no information is discarded at ingest.
+These cases are common and becoming harder to manage. Existing solutions tend to focus on single large datasets from one modality, often with a laborious standardization process that may involve bifurcating or dropping data to harmonize it. The `RaggedAtlas` concept introduced by homeobox, makes it possible to unify messy data into a single database that supports search, interactive data loading, and streaming for ML training.
+
+### Ragged feature spaces, unified metadata tables
+
+Conventional atlases have a single structured feature space, like a 2D cell-by-gene matrix. A ragged atlas, defines a feature space per dataset. In homeobox, we define a feature registry, which is a manifest of all features that appear across datasets. Each dataset is a separate zarr group with an associated feature layout. At query time, we remap the features in each zarr group into the global feature space defined by the feature registry either by taking the union across all queried groups or the intersection. This means that ingestion never requires dropping features and there is no ambiguity about whether a feature is a true zero or padding.
+
+The `RaggedAtlas` is like an AnnData with a shared `obs` but arbitrary `var`. The `obs` component is stored in LanceDB and provides vector search, full text search, and scalar search indexes.
+
+### Comparison to TileDB
+
+- Single library works for everything
+- Spec-driven design allows trivial extension of the library to new use cases
+- `RaggedAtlas` flexibility
+- Much better for random reads, which is critical for ML training.
+- Deep integration with the python + rust data ecosystem: lance, duckdb, polars, zarrs.
 
 ### Querying across cells, modalities, and feature spaces
 
@@ -29,10 +46,6 @@ hits = atlas_r.query().search(query_vec, vector_column_name="embedding").limit(5
 adata = atlas_r.query().features(["CD3D", "CD19", "MS4A1"], "gene_expression").to_anndata()
 ```
 
-Feature-filtered queries are a first-class operation. When you request a gene panel, homeobox uses the optional CSC (column-sorted) index to read only the byte ranges belonging to those features — O(nnz for wanted features) instead of O(nnz across all cells). Groups without a CSC index fall back to CSR reads automatically, so the index is purely additive and can be built incrementally.
-
-For multimodal atlases, `.to_mudata()` returns one `AnnData` per modality wrapped in `MuData`, with per-cell presence masks tracking which cells were measured by each assay. `.to_batches()` provides a streaming iterator for queries that would exceed memory if materialised all at once.
-
 ### Fast reads from cloud storage
 
 Zarr's sharded storage format packs many chunks into a single object-store file. The shard index records each chunk's byte offset, enabling targeted range reads — but the Python zarr stack issues one HTTP request per chunk even when chunks can be coalesced.
@@ -41,9 +54,7 @@ Homeobox includes a Rust extension (`RustShardReader`) that handles shard reads 
 
 ### BP-128 bitpacking
 
-When ingesting integer count data (`int32`, `int64`, `uint32`, `uint64`), homeobox automatically applies BP-128 bitpacking with delta encoding to the sparse `indices` array, and BP-128 without delta to the values array. BP-128 is a SIMD-accelerated codec that packs integers using the minimum number of bits required per 128-element block.
-
-In practice this delivers compression ratios comparable to the zarr default zstd on typical single-cell count matrices, while decoding at memory bandwidth speeds — making it strictly better than general-purpose codecs for this data type. 
+When ingesting integer data (`int32`, `int64`, `uint32`, `uint64`), homeobox feature space specs automatically use BP-128 bitpacking compression. In practice this delivers compression ratios comparable to the zarr default zstd on typical single-cell count matrices, while decoding at memory bandwidth speeds — making it strictly better than general-purpose codecs for this data type. 
 
 ### Map-style PyTorch datasets
 
