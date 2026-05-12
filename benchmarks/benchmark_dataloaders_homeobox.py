@@ -21,7 +21,9 @@ import argparse
 import gc
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass
@@ -48,6 +50,20 @@ class BenchResult:
     batch_count: int
 
 
+# Canonical (key, label) ordering. Used both by the in-process runner and the
+# subprocess-isolated runner so the final report matches.
+SYSTEM_KEYS: list[tuple[str, str]] = [
+    ("slaf", "SLAF"),
+    ("scdataset", "scDataset"),
+    ("anndataloader", "AnnDataLoader"),
+    ("annloader", "AnnLoader"),
+    ("scdl", "BioNeMo SCDL"),
+    ("annbatch", "annbatch"),
+    ("tiledbsoma", "TileDB-SOMA"),
+    ("homeobox", "Homeobox"),
+]
+
+
 # ---------------------------------------------------------------------------
 # Module-level callback (must be picklable for scDataset's spawn workers)
 # ---------------------------------------------------------------------------
@@ -72,6 +88,7 @@ class HomeoboxDataloaderBenchmark:
         only: set | None = None,
         warmup_seconds: int = 10,
         measure_seconds: int = 30,
+        homeobox_io_factor: int | None = None,
     ):
         self.data_root = os.path.abspath(data_root)
         self.atlas_path = os.path.join(self.data_root, "atlas")
@@ -79,12 +96,14 @@ class HomeoboxDataloaderBenchmark:
         self.h5ad_path = os.path.join(self.data_root, "h5ad", "synth.h5ad")
         self.scdl_path = os.path.join(self.data_root, "scdl")
         self.annbatch_path = os.path.join(self.data_root, "annbatch")
+        self.tiledbsoma_path = os.path.join(self.data_root, "tiledbsoma")
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.skip = skip or set()
         self.only = only or set()
         self.warmup_seconds = warmup_seconds
         self.measure_seconds = measure_seconds
+        self.homeobox_io_factor = homeobox_io_factor
         self.console = Console()
         self._adata = None  # lazy-loaded backed h5ad
 
@@ -228,12 +247,19 @@ class HomeoboxDataloaderBenchmark:
             field_name="gene_expression",
             layer_overrides=["counts"],
         )
-        loader = make_loader(
-            dataset,
+        loader_kwargs = dict(
             batch_size=self.batch_size,
-            shuffle=False,
+            shuffle=True,
             num_workers=self.num_workers,
+            prefetch_factor=(16 if self.num_workers > 0 else None),
+            persistent_workers=self.num_workers > 0,
         )
+        if self.homeobox_io_factor is not None:
+            loader_kwargs["io_factor"] = self.homeobox_io_factor
+            self.console.print(
+                f"  [Homeobox] using IO-batched loader (io_factor={self.homeobox_io_factor})"
+            )
+        loader = make_loader(dataset, **loader_kwargs)
 
         self.console.print(
             f"  dataset: n_rows={dataset.n_rows:,}, n_features={dataset.n_features:,}"
@@ -509,7 +535,7 @@ class HomeoboxDataloaderBenchmark:
         try:
             import anndata as ad
             import zarr
-            from annbatch import ZarrSparseDataset
+            from annbatch import Loader
         except ImportError:
             self.console.print("[yellow]annbatch not installed — skip[/yellow]")
             return None
@@ -544,13 +570,14 @@ class HomeoboxDataloaderBenchmark:
             )
             for p in zarr_paths
         ]
-        dataloader = ZarrSparseDataset(
+        dataloader = Loader(
             batch_size=self.batch_size,
             chunk_size=32,
             preload_nchunks=256,
+            shuffle=True,
             preload_to_gpu=False,
             to_torch=True,
-        ).add_anndatas(anndatas, obs_keys=None)
+        ).add_adatas(anndatas)
 
         self.console.print("  warming up (15 batches)...")
         for i, _ in enumerate(dataloader):
@@ -568,6 +595,64 @@ class HomeoboxDataloaderBenchmark:
         return BenchResult("annbatch", thru, peak, 1, measurement_time, total_cells, batch_count)
 
     # ------------------------------------------------------------------ #
+    # Baseline: TileDB-SOMA via tiledbsoma_ml
+    # ------------------------------------------------------------------ #
+    def benchmark_tiledbsoma(self) -> BenchResult | None:
+        try:
+            import tiledbsoma
+            from tiledbsoma_ml import ExperimentDataset, experiment_dataloader
+        except ImportError:
+            self.console.print("[yellow]tiledbsoma_ml not installed — skip[/yellow]")
+            return None
+
+        self.console.print("\n[bold blue]Benchmarking TileDB-SOMA[/bold blue]")
+        if not os.path.isdir(self.tiledbsoma_path):
+            self.console.print(
+                f"[yellow]tiledbsoma dir missing at {self.tiledbsoma_path} — skip[/yellow]"
+            )
+            return None
+
+        with tiledbsoma.Experiment.open(self.tiledbsoma_path) as exp:
+            with exp.axis_query(measurement_name="RNA") as query:
+                ds = ExperimentDataset(
+                    query,
+                    layer_name="data",
+                    batch_size=self.batch_size,
+                    shuffle=True,
+                    return_sparse_X=True,
+                )
+                dataloader = experiment_dataloader(ds, num_workers=0)
+
+                def _infinite(dl):
+                    while True:
+                        yield from dl
+
+                infinite_dl = _infinite(dataloader)
+
+                self.console.print("  warming up (15 batches)...")
+                for i, _ in enumerate(infinite_dl):
+                    if i >= 15:
+                        break
+
+                total_cells, batch_count, elapsed, peak = (
+                    self.benchmark_with_memory_tracking(infinite_dl, "TileDB-SOMA")
+                )
+                del dataloader, ds
+
+        gc.collect()
+        measurement_time = elapsed - self.warmup_seconds
+        thru = total_cells / measurement_time if measurement_time > 0 else 0.0
+        return BenchResult(
+            "TileDB-SOMA",
+            thru,
+            peak,
+            1,
+            measurement_time,
+            total_cells,
+            batch_count,
+        )
+
+    # ------------------------------------------------------------------ #
     # Run + report
     # ------------------------------------------------------------------ #
     def run(self) -> list[BenchResult]:
@@ -581,15 +666,17 @@ class HomeoboxDataloaderBenchmark:
             )
         )
 
-        systems = [
-            ("homeobox", "Homeobox", self.benchmark_homeobox),
-            ("slaf", "SLAF", self.benchmark_slaf),
-            ("scdataset", "scDataset", self.benchmark_scdataset),
-            ("anndataloader", "AnnDataLoader", self.benchmark_anndataloader),
-            ("annloader", "AnnLoader", self.benchmark_annloader),
-            ("scdl", "BioNeMo SCDL", self.benchmark_scdl),
-            ("annbatch", "annbatch", self.benchmark_annbatch),
-        ]
+        fn_by_key = {
+            "slaf": self.benchmark_slaf,
+            "scdataset": self.benchmark_scdataset,
+            "anndataloader": self.benchmark_anndataloader,
+            "annloader": self.benchmark_annloader,
+            "scdl": self.benchmark_scdl,
+            "annbatch": self.benchmark_annbatch,
+            "tiledbsoma": self.benchmark_tiledbsoma,
+            "homeobox": self.benchmark_homeobox,
+        }
+        systems = [(k, label, fn_by_key[k]) for k, label in SYSTEM_KEYS]
 
         results: list[BenchResult] = []
         for key, label, fn in systems:
@@ -651,6 +738,71 @@ class HomeoboxDataloaderBenchmark:
 
 
 # ---------------------------------------------------------------------------
+# Subprocess-isolated runner
+# ---------------------------------------------------------------------------
+
+
+def run_isolated(keys: list[str], args: argparse.Namespace) -> list[BenchResult]:
+    """Run each selected system in its own subprocess.
+
+    Each child inherits stdout/stderr so progress is streamed live. Per-test
+    peak memory is clean: the child's RSS includes only that one system's
+    libraries, not cumulative state from prior tests.
+    """
+    console = Console()
+    results: list[BenchResult] = []
+    for key in keys:
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", prefix=f"bench_{key}_", delete=False
+        ) as fh:
+            tmp = fh.name
+        cmd = [
+            sys.executable,
+            __file__,
+            "--data-root",
+            args.data_root,
+            "--batch-size",
+            str(args.batch_size),
+            "--num-workers",
+            str(args.num_workers),
+            "--warmup-seconds",
+            str(args.warmup_seconds),
+            "--measure-seconds",
+            str(args.measure_seconds),
+            "--only",
+            key,
+            "--no-isolate",
+            "--output-json",
+            tmp,
+        ]
+        if args.homeobox_io_factor is not None:
+            cmd += ["--homeobox-io-factor", str(args.homeobox_io_factor)]
+        console.print(f"\n[bold cyan]>>> isolated subprocess: {key}[/bold cyan]")
+        proc = subprocess.run(cmd, check=False)
+        if proc.returncode != 0:
+            console.print(f"[red]child for {key} exited {proc.returncode}; skipping[/red]")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            continue
+        try:
+            with open(tmp) as fh:
+                payload = json.load(fh)
+        except (OSError, json.JSONDecodeError) as e:
+            console.print(f"[red]could not read child JSON for {key}: {e}[/red]")
+            payload = []
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        for row in payload:
+            results.append(BenchResult(**row))
+    return results
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -670,10 +822,27 @@ def main():
     ap.add_argument("--warmup-seconds", type=int, default=10)
     ap.add_argument("--measure-seconds", type=int, default=30)
     ap.add_argument("--output-json", default=None)
+    ap.add_argument(
+        "--homeobox-io-factor",
+        type=int,
+        default=None,
+        help="If set, use IOBatchedHoxDataset for the homeobox path with "
+        "io_batch_size = batch_size * io_factor.",
+    )
+    ap.add_argument(
+        "--isolate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run each system in its own subprocess so peak RSS is per-system "
+        "rather than cumulative. Pass --no-isolate to run all in-process.",
+    )
     args = ap.parse_args()
 
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
     only = {s.strip() for s in args.only.split(",") if s.strip()}
+    selected_keys = [
+        k for k, _ in SYSTEM_KEYS if (not only or k in only) and k not in skip
+    ]
 
     bench = HomeoboxDataloaderBenchmark(
         data_root=args.data_root,
@@ -683,8 +852,17 @@ def main():
         only=only,
         warmup_seconds=args.warmup_seconds,
         measure_seconds=args.measure_seconds,
+        homeobox_io_factor=args.homeobox_io_factor,
     )
-    results = bench.run()
+
+    # In-process when isolation is off, or when there's only one system to run
+    # (isolation adds nothing in that case — and avoids infinite recursion
+    # when this script is invoked as a child).
+    if not args.isolate or len(selected_keys) <= 1:
+        results = bench.run()
+    else:
+        results = run_isolated(selected_keys, args)
+
     bench.print_results(results)
 
     if args.output_json:

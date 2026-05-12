@@ -8,6 +8,7 @@ Writes the dataset in every format the benchmark needs to read:
     <data-root>/slaf/                  - SLAF Lance dataset
     <data-root>/scdl/                  - BioNeMo SingleCellMemMapDataset
     <data-root>/annbatch/dataset_*.zarr - annbatch zarr shards
+    <data-root>/tiledbsoma/             - TileDB-SOMA Experiment (tiledbsoma_ml)
     <data-root>/meta.json              - shape + per-format build stats
 
 Generation is shard-by-shard CSR. RAM stays bounded at ~1-2 GB regardless of
@@ -239,8 +240,16 @@ def build_scdl(out_dir: str, h5ad_path: str) -> None:
     # SCMMAP refuses to ingest an h5ad into an already-existing directory,
     # so create the parent but not out_dir itself.
     os.makedirs(os.path.dirname(out_dir), exist_ok=True)
-    ds = SingleCellMemMapDataset(out_dir, h5ad_path=h5ad_path)
-    ds.flush()
+    SingleCellMemMapDataset(out_dir, h5ad_path=h5ad_path, use_X_not_raw=True)
+
+
+def build_tiledbsoma(out_dir: str, h5ad_path: str) -> None:
+    """Convert the canonical h5ad to a TileDB-SOMA Experiment."""
+    import tiledbsoma.io
+
+    # tiledbsoma.io.from_h5ad refuses to write into an existing experiment URI.
+    os.makedirs(os.path.dirname(out_dir), exist_ok=True)
+    tiledbsoma.io.from_h5ad(out_dir, h5ad_path, measurement_name="RNA")
 
 
 def build_annbatch(out_dir: str, n_obs, n_vars, density, shard_cells, seed) -> None:
@@ -283,6 +292,7 @@ def _sentinel(data_root: str, fmt: str) -> str:
         "slaf": os.path.join(data_root, "slaf", "config.json"),
         "scdl": os.path.join(data_root, "scdl", "features.idx"),
         "annbatch": os.path.join(data_root, "annbatch", "dataset_00000.zarr"),
+        "tiledbsoma": os.path.join(data_root, "tiledbsoma", "__tiledb_group.tdb"),
     }[fmt]
 
 
@@ -294,6 +304,7 @@ _BYTES_PER_NNZ = {
     "slaf": 6.0,
     "scdl": 8.0,
     "annbatch": 7.0,
+    "tiledbsoma": 9.0,
 }
 
 
@@ -307,7 +318,7 @@ def predicted_size_gb(fmt: str, n_obs: int, n_vars: int, density: float) -> floa
 # ---------------------------------------------------------------------------
 
 
-ALL_FORMATS = ["h5ad", "atlas", "slaf", "scdl", "annbatch"]
+ALL_FORMATS = ["h5ad", "atlas", "slaf", "scdl", "annbatch", "tiledbsoma"]
 
 
 def _disk_check(data_root: str, formats: list[str], n_obs, n_vars, density) -> None:
@@ -378,7 +389,9 @@ def main() -> None:
 
     # h5ad must come before slaf/scdl (they read it).
     # atlas + annbatch generate directly from RNG, no h5ad dep.
-    ordered = [f for f in ["h5ad", "atlas", "slaf", "scdl", "annbatch"] if f in formats]
+    ordered = [
+        f for f in ["h5ad", "atlas", "slaf", "scdl", "annbatch", "tiledbsoma"] if f in formats
+    ]
 
     stats: dict = {
         "n_obs": args.n_obs,
@@ -442,6 +455,14 @@ def main() -> None:
                 args.shard_cells,
                 args.seed,
             )
+        elif fmt == "tiledbsoma":
+            h5ad_path = _sentinel(data_root, "h5ad")
+            if not os.path.exists(h5ad_path):
+                sys.exit(
+                    "tiledbsoma build needs h5ad first — include 'h5ad' in --formats "
+                    "or run a separate pass to build it."
+                )
+            build_tiledbsoma(os.path.join(data_root, "tiledbsoma"), h5ad_path)
         dt = time.time() - t0
         size_gb = _du_gb(_format_root(data_root, fmt))
         stats["formats"][fmt] = {
