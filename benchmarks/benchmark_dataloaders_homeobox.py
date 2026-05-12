@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import csv
 import gc
 import json
 import os
@@ -26,7 +27,7 @@ import sys
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 
 import psutil
 from rich.console import Console
@@ -48,6 +49,9 @@ class BenchResult:
     measurement_time: float
     total_cells: int
     batch_count: int
+    batch_size: int = 0
+    num_workers: int = 0
+    run_idx: int = 0
 
 
 # Canonical (key, label) ordering. Used both by the in-process runner and the
@@ -62,6 +66,47 @@ SYSTEM_KEYS: list[tuple[str, str]] = [
     ("tiledbsoma", "TileDB-SOMA"),
     ("homeobox", "Homeobox"),
 ]
+
+# Systems whose underlying loader API supports torch-style num_workers > 0.
+# Others are auto-skipped when --num-workers > 0 so the sweep doesn't waste
+# time re-running identical num_workers=0 measurements under a different label.
+# TileDB-SOMA is in this set but its worker rows are dense-materialised (the
+# sparse + workers combo is blocked by pytorch/pytorch#20248); see
+# benchmark_tiledbsoma() for the modal switch.
+_SUPPORTS_WORKERS: set[str] = {"homeobox", "scdataset", "tiledbsoma"}
+
+# Systems that can read directly from object-store URIs (s3://, gs://, az://).
+# The h5ad-backed systems need a seekable local file (HDF5/h5py constraint);
+# BioNeMo SCDL uses np.memmap on local inode-backed files. When --data-root
+# is a remote URI, only systems in this set are run.
+_SUPPORTS_REMOTE: set[str] = {"homeobox", "slaf", "annbatch", "tiledbsoma"}
+
+_REMOTE_SCHEMES = ("s3://", "gs://", "az://")
+
+
+def _is_remote(path: str) -> bool:
+    return path.startswith(_REMOTE_SCHEMES)
+
+
+def _joinpath(base: str, *parts: str) -> str:
+    """`os.path.join` for local paths, slash-join for object-store URIs."""
+    if _is_remote(base):
+        joined = base.rstrip("/")
+        for p in parts:
+            joined = f"{joined}/{p.strip('/')}"
+        return joined
+    return os.path.join(base, *parts)
+
+
+def _parse_store_kwargs(kvs: list[str] | None) -> dict[str, str]:
+    """Parse repeated `--store-kwarg key=value` into a dict."""
+    out: dict[str, str] = {}
+    for kv in kvs or []:
+        if "=" not in kv:
+            raise ValueError(f"--store-kwarg expects key=value, got {kv!r}")
+        k, v = kv.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -88,22 +133,23 @@ class HomeoboxDataloaderBenchmark:
         only: set | None = None,
         warmup_seconds: int = 10,
         measure_seconds: int = 30,
-        homeobox_io_factor: int | None = None,
+        store_kwargs: dict[str, str] | None = None,
     ):
-        self.data_root = os.path.abspath(data_root)
-        self.atlas_path = os.path.join(self.data_root, "atlas")
-        self.slaf_path = os.path.join(self.data_root, "slaf")
-        self.h5ad_path = os.path.join(self.data_root, "h5ad", "synth.h5ad")
-        self.scdl_path = os.path.join(self.data_root, "scdl")
-        self.annbatch_path = os.path.join(self.data_root, "annbatch")
-        self.tiledbsoma_path = os.path.join(self.data_root, "tiledbsoma")
+        self.is_remote = _is_remote(data_root)
+        self.data_root = data_root if self.is_remote else os.path.abspath(data_root)
+        self.atlas_path = _joinpath(self.data_root, "atlas")
+        self.slaf_path = _joinpath(self.data_root, "slaf")
+        self.h5ad_path = _joinpath(self.data_root, "h5ad", "synth.h5ad")
+        self.scdl_path = _joinpath(self.data_root, "scdl")
+        self.annbatch_path = _joinpath(self.data_root, "annbatch")
+        self.tiledbsoma_path = _joinpath(self.data_root, "tiledbsoma")
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.skip = skip or set()
         self.only = only or set()
         self.warmup_seconds = warmup_seconds
         self.measure_seconds = measure_seconds
-        self.homeobox_io_factor = homeobox_io_factor
+        self.store_kwargs = store_kwargs or {}
         self.console = Console()
         self._adata = None  # lazy-loaded backed h5ad
 
@@ -233,16 +279,25 @@ class HomeoboxDataloaderBenchmark:
         from make_synth_dataset import BenchCellSchema
 
         self.console.print("\n[bold blue]Benchmarking Homeobox (SUT)[/bold blue]")
-        if not os.path.isdir(self.atlas_path):
+        if not self.is_remote and not os.path.isdir(self.atlas_path):
             self.console.print(f"[yellow]atlas dir missing at {self.atlas_path} — skip[/yellow]")
             return None
 
-        store = obstore.store.LocalStore(prefix=os.path.join(self.atlas_path, "zarr_store"))
-        atlas = RaggedAtlas.checkout_latest(
-            self.atlas_path,
-            obs_schemas={"cells": BenchCellSchema},
-            store=store,
-        )
+        if self.is_remote:
+            # checkout_latest will infer an obstore S3/GCS/Azure store from the
+            # URI scheme; store_kwargs (e.g. region) is forwarded to from_url.
+            atlas = RaggedAtlas.checkout_latest(
+                self.atlas_path,
+                obs_schemas={"cells": BenchCellSchema},
+                store_kwargs=self.store_kwargs or None,
+            )
+        else:
+            store = obstore.store.LocalStore(prefix=_joinpath(self.atlas_path, "zarr_store"))
+            atlas = RaggedAtlas.checkout_latest(
+                self.atlas_path,
+                obs_schemas={"cells": BenchCellSchema},
+                store=store,
+            )
         dataset = atlas.query().to_unimodal_dataset(
             field_name="gene_expression",
             layer_overrides=["counts"],
@@ -254,11 +309,6 @@ class HomeoboxDataloaderBenchmark:
             prefetch_factor=(16 if self.num_workers > 0 else None),
             persistent_workers=self.num_workers > 0,
         )
-        if self.homeobox_io_factor is not None:
-            loader_kwargs["io_factor"] = self.homeobox_io_factor
-            self.console.print(
-                f"  [Homeobox] using IO-batched loader (io_factor={self.homeobox_io_factor})"
-            )
         loader = make_loader(dataset, **loader_kwargs)
 
         self.console.print(
@@ -302,7 +352,7 @@ class HomeoboxDataloaderBenchmark:
             return None
 
         self.console.print("\n[bold blue]Benchmarking SLAF[/bold blue]")
-        if not os.path.isdir(self.slaf_path):
+        if not self.is_remote and not os.path.isdir(self.slaf_path):
             self.console.print(f"[yellow]slaf dir missing at {self.slaf_path} — skip[/yellow]")
             return None
 
@@ -362,7 +412,13 @@ class HomeoboxDataloaderBenchmark:
             fetch_factor=64,
             fetch_transform=fetch_transform_adata,
         )
-        dataloader = DataLoader(sc_dataset, batch_size=None, num_workers=0, prefetch_factor=None)
+        dataloader = DataLoader(
+            sc_dataset,
+            batch_size=None,
+            num_workers=self.num_workers,
+            prefetch_factor=(16 if self.num_workers > 0 else None),
+            persistent_workers=self.num_workers > 0,
+        )
 
         self.console.print("  warming up (15 batches)...")
         for i, _ in enumerate(dataloader):
@@ -377,7 +433,15 @@ class HomeoboxDataloaderBenchmark:
 
         measurement_time = elapsed - self.warmup_seconds
         thru = total_cells / measurement_time if measurement_time > 0 else 0.0
-        return BenchResult("scDataset", thru, peak, 1, measurement_time, total_cells, batch_count)
+        return BenchResult(
+            "scDataset",
+            thru,
+            peak,
+            max(1, self.num_workers),
+            measurement_time,
+            total_cells,
+            batch_count,
+        )
 
     # ------------------------------------------------------------------ #
     # Baseline: AnnDataLoader (scvi-tools)
@@ -496,7 +560,9 @@ class HomeoboxDataloaderBenchmark:
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=collate_sparse_matrix_batch,
-            num_workers=0,
+            num_workers=self.num_workers,
+            prefetch_factor=(16 if self.num_workers > 0 else None),
+            persistent_workers=self.num_workers > 0,
         )
 
         def _infinite(dl):
@@ -522,7 +588,7 @@ class HomeoboxDataloaderBenchmark:
             "BioNeMo SCDL",
             thru,
             peak,
-            1,
+            max(1, self.num_workers),
             measurement_time,
             total_cells,
             batch_count,
@@ -541,7 +607,7 @@ class HomeoboxDataloaderBenchmark:
             return None
 
         self.console.print("\n[bold blue]Benchmarking annbatch[/bold blue]")
-        if not os.path.isdir(self.annbatch_path):
+        if not self.is_remote and not os.path.isdir(self.annbatch_path):
             self.console.print(
                 f"[yellow]annbatch dir missing at {self.annbatch_path} — skip[/yellow]"
             )
@@ -554,11 +620,23 @@ class HomeoboxDataloaderBenchmark:
         except ImportError:
             self.console.print("[yellow]zarrs not installed; annbatch will run slower[/yellow]")
 
-        zarr_paths = sorted(
-            os.path.join(self.annbatch_path, p)
-            for p in os.listdir(self.annbatch_path)
-            if p.startswith("dataset_") and p.endswith(".zarr")
-        )
+        if self.is_remote:
+            # List shards via fsspec — zarr's URL handling already pulls it in.
+            import fsspec
+
+            fs, root = fsspec.core.url_to_fs(self.annbatch_path)
+            scheme = self.annbatch_path.split("://", 1)[0] + "://"
+            zarr_paths = sorted(
+                f"{scheme}{e.lstrip('/')}"
+                for e in fs.ls(root, detail=False)
+                if e.rsplit("/", 1)[-1].startswith("dataset_") and e.endswith(".zarr")
+            )
+        else:
+            zarr_paths = sorted(
+                os.path.join(self.annbatch_path, p)
+                for p in os.listdir(self.annbatch_path)
+                if p.startswith("dataset_") and p.endswith(".zarr")
+            )
         if not zarr_paths:
             self.console.print("[yellow]no dataset_*.zarr files found — skip[/yellow]")
             return None
@@ -606,12 +684,22 @@ class HomeoboxDataloaderBenchmark:
             return None
 
         self.console.print("\n[bold blue]Benchmarking TileDB-SOMA[/bold blue]")
-        if not os.path.isdir(self.tiledbsoma_path):
+        if not self.is_remote and not os.path.isdir(self.tiledbsoma_path):
             self.console.print(
                 f"[yellow]tiledbsoma dir missing at {self.tiledbsoma_path} — skip[/yellow]"
             )
             return None
 
+        # tiledbsoma_ml.ExperimentDataset rejects num_workers > 0 when
+        # return_sparse_X=True (torch sparse tensors don't cross worker
+        # boundaries safely — pytorch/pytorch#20248). For workers > 0 we fall
+        # back to dense output. This is footnoted in docs/ml_benchmarks.md.
+        return_sparse = self.num_workers == 0
+        if not return_sparse:
+            self.console.print(
+                "  [yellow]workers > 0: switching TileDB-SOMA to "
+                "return_sparse_X=False (dense materialisation)[/yellow]"
+            )
         with tiledbsoma.Experiment.open(self.tiledbsoma_path) as exp:
             with exp.axis_query(measurement_name="RNA") as query:
                 ds = ExperimentDataset(
@@ -619,9 +707,9 @@ class HomeoboxDataloaderBenchmark:
                     layer_name="data",
                     batch_size=self.batch_size,
                     shuffle=True,
-                    return_sparse_X=True,
+                    return_sparse_X=return_sparse,
                 )
-                dataloader = experiment_dataloader(ds, num_workers=0)
+                dataloader = experiment_dataloader(ds, num_workers=self.num_workers)
 
                 def _infinite(dl):
                     while True:
@@ -646,7 +734,7 @@ class HomeoboxDataloaderBenchmark:
             "TileDB-SOMA",
             thru,
             peak,
-            1,
+            max(1, self.num_workers),
             measurement_time,
             total_cells,
             batch_count,
@@ -684,6 +772,18 @@ class HomeoboxDataloaderBenchmark:
                 continue
             if key in self.skip:
                 self.console.print(f"  [grey50]skipping {label} (--skip)[/grey50]")
+                continue
+            if self.is_remote and key not in _SUPPORTS_REMOTE:
+                self.console.print(
+                    f"  [grey50]skipping {label}: loader cannot read from "
+                    f"object-store URIs[/grey50]"
+                )
+                continue
+            if self.num_workers > 0 and key not in _SUPPORTS_WORKERS:
+                self.console.print(
+                    f"  [grey50]skipping {label}: loader does not accept "
+                    f"num_workers > 0[/grey50]"
+                )
                 continue
             try:
                 r = fn()
@@ -769,14 +869,16 @@ def run_isolated(keys: list[str], args: argparse.Namespace) -> list[BenchResult]
             str(args.warmup_seconds),
             "--measure-seconds",
             str(args.measure_seconds),
+            "--run-idx",
+            str(args.run_idx),
             "--only",
             key,
             "--no-isolate",
             "--output-json",
             tmp,
         ]
-        if args.homeobox_io_factor is not None:
-            cmd += ["--homeobox-io-factor", str(args.homeobox_io_factor)]
+        for kv in args.store_kwarg or []:
+            cmd += ["--store-kwarg", kv]
         console.print(f"\n[bold cyan]>>> isolated subprocess: {key}[/bold cyan]")
         proc = subprocess.run(cmd, check=False)
         if proc.returncode != 0:
@@ -803,6 +905,25 @@ def run_isolated(keys: list[str], args: argparse.Namespace) -> list[BenchResult]
 
 
 # ---------------------------------------------------------------------------
+# CSV output
+# ---------------------------------------------------------------------------
+
+
+def append_csv(path: str, results: list[BenchResult]) -> None:
+    """Append rows to a CSV at `path`, writing the header iff the file is new
+    or empty. Columns are the BenchResult dataclass fields, in declaration
+    order, so the schema stays in lock-step with the dataclass."""
+    columns = [f.name for f in fields(BenchResult)]
+    new_file = not os.path.exists(path) or os.path.getsize(path) == 0
+    with open(path, "a", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=columns)
+        if new_file:
+            writer.writeheader()
+        for r in results:
+            writer.writerow(asdict(r))
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -821,13 +942,25 @@ def main():
     ap.add_argument("--only", default="", help="Comma list of system keys to run")
     ap.add_argument("--warmup-seconds", type=int, default=10)
     ap.add_argument("--measure-seconds", type=int, default=30)
-    ap.add_argument("--output-json", default=None)
     ap.add_argument(
-        "--homeobox-io-factor",
-        type=int,
+        "--output-csv",
         default=None,
-        help="If set, use IOBatchedHoxDataset for the homeobox path with "
-        "io_batch_size = batch_size * io_factor.",
+        help="Path to a CSV file. Appended to if it already exists; header is "
+        "written once. Each row tags system_name + batch_size, num_workers, "
+        "run_idx so multiple sweep invocations can write into one file.",
+    )
+    ap.add_argument(
+        "--output-json",
+        default=None,
+        help="Internal: used by subprocess isolation to pass results back to "
+        "the parent. Users should prefer --output-csv.",
+    )
+    ap.add_argument(
+        "--run-idx",
+        type=int,
+        default=0,
+        help="Tag every result row with this run index. Used by the sweep "
+        "harness to identify repeat measurements at the same config.",
     )
     ap.add_argument(
         "--isolate",
@@ -836,6 +969,15 @@ def main():
         help="Run each system in its own subprocess so peak RSS is per-system "
         "rather than cumulative. Pass --no-isolate to run all in-process.",
     )
+    ap.add_argument(
+        "--store-kwarg",
+        action="append",
+        default=None,
+        metavar="KEY=VALUE",
+        help="Repeatable. Forwarded to obstore.store.from_url when --data-root "
+        "is an s3:// / gs:// / az:// URI. Example: --store-kwarg region=us-east-1 "
+        "--store-kwarg skip_signature=true.",
+    )
     args = ap.parse_args()
 
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
@@ -843,6 +985,10 @@ def main():
     selected_keys = [
         k for k, _ in SYSTEM_KEYS if (not only or k in only) and k not in skip
     ]
+    if _is_remote(args.data_root):
+        selected_keys = [k for k in selected_keys if k in _SUPPORTS_REMOTE]
+    if args.num_workers > 0:
+        selected_keys = [k for k in selected_keys if k in _SUPPORTS_WORKERS]
 
     bench = HomeoboxDataloaderBenchmark(
         data_root=args.data_root,
@@ -852,7 +998,7 @@ def main():
         only=only,
         warmup_seconds=args.warmup_seconds,
         measure_seconds=args.measure_seconds,
-        homeobox_io_factor=args.homeobox_io_factor,
+        store_kwargs=_parse_store_kwargs(args.store_kwarg),
     )
 
     # In-process when isolation is off, or when there's only one system to run
@@ -863,12 +1009,21 @@ def main():
     else:
         results = run_isolated(selected_keys, args)
 
+    for r in results:
+        r.batch_size = args.batch_size
+        r.num_workers = args.num_workers
+        r.run_idx = args.run_idx
+
     bench.print_results(results)
 
     if args.output_json:
         with open(args.output_json, "w") as fh:
             json.dump([asdict(r) for r in results], fh, indent=2)
         bench.console.print(f"Wrote {args.output_json}")
+
+    if args.output_csv:
+        append_csv(args.output_csv, results)
+        bench.console.print(f"Appended {len(results)} rows to {args.output_csv}")
 
 
 if __name__ == "__main__":

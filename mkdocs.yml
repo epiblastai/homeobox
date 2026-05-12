@@ -48,9 +48,12 @@ nav:
     - Reconstructors: reconstructors.md
     - Array Storage: array_storage.md
     - PyTorch Data Loading: dataloader.md
+  - Benchmarks:
+    - ML Dataloader Benchmarks: ml_benchmarks.md
 
 markdown_extensions:
   - admonition
+  - footnotes
   - pymdownx.highlight:
       anchor_linenums: true
   - pymdownx.superfences:
