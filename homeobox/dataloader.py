@@ -38,7 +38,12 @@ from homeobox.batch_types import (
     SpatialTileBatch,
 )
 from homeobox.group_specs import get_spec
-from homeobox.pointer_types import DiscreteSpatialPointer
+from homeobox.pointer_types import (
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
+    SparseZarrPointer,
+    ZarrPointer,
+)
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     FeatureReadPlan,
@@ -46,6 +51,16 @@ from homeobox.reconstruction_functional import (
     finalize_grouped_read,
     read_arrays_by_group,
 )
+
+# Pointer-type-specific internal columns added by ``ZarrPointer.prepare_obs``.
+# These are the only obs columns ``read_arrays_by_group`` needs per-batch; we
+# retain them on the dataset at init so ``__getitems__`` doesn't have to
+# refetch pointers from lance over the network per batch.
+_POINTER_INTERNAL_COLS: dict[type[ZarrPointer], tuple[str, ...]] = {
+    SparseZarrPointer: ("_zg", "_start", "_end", "_zarr_row"),
+    DenseZarrPointer: ("_zg", "_pos"),
+    DiscreteSpatialPointer: ("_zg", "_min_corner", "_max_corner"),
+}
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
@@ -338,7 +353,13 @@ class UnimodalHoxDataset(_AsyncDataset):
             obs_pl.height,
         )
 
-        self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
+        # Retain only the pointer-internal cols + _rowid so __getitems__ can
+        # slice locally instead of round-tripping to lance per batch. User
+        # metadata is fetched separately (in parallel with zarr) when needed.
+        pointer_cols = _POINTER_INTERNAL_COLS[self._pointer_type]
+        self._obs_with_pointers = filtered.select(["_rowid", *pointer_cols])
+
+        self._row_ids = self._obs_with_pointers["_rowid"].to_numpy().astype(np.uint64)
         self._n_rows = len(self._row_ids)
         self._pointer_field = field_name
         self._metadata_columns = metadata_columns
@@ -384,33 +405,50 @@ class UnimodalHoxDataset(_AsyncDataset):
         """
         self._ensure_initialized()
         indices_arr = np.array(row_indices, dtype=np.int64)
-
-        # 1. Lance take: pointer + metadata in one call
         batch_row_ids = self._row_ids[indices_arr]
-        select_cols = [self._pointer_field]
-        if self._metadata_columns:
-            select_cols.extend(self._metadata_columns)
 
-        take_result = (
-            self._obs_table.take_row_ids(batch_row_ids.tolist())
-            .with_row_id()
-            .select(select_cols)
-            .to_polars()
-        )
+        # Slice preloaded pointer DF (no network) and group by zarr_group.
+        # Row order in the slice is irrelevant: finalize_grouped_read uses
+        # ``_rowid`` -> ``target_row_ids`` to reorder the concatenated array
+        # batches into input order.
+        obs_slice = self._obs_with_pointers[indices_arr.tolist()]
+        groups = obs_slice.group_by("_zg")
 
-        # 2. Extract pointer data and dispatch async read
-        # This is safe because we already filtered at __init__, that
-        # guarantees that this op will not drop any rows from take_result
-        obs_pl, groups = _prepare_obs_and_groups(
-            take_result, self._pointer_type, self._pointer_field
-        )
-        # Sanity check
-        assert len(obs_pl) == len(take_result)
-        future = asyncio.run_coroutine_threadsafe(
+        # Dispatch zarr reads on the background event loop.
+        zarr_fut = asyncio.run_coroutine_threadsafe(
             _take_from_pointers(groups, batch_row_ids, self._mod_data.plan),
             self._loop,
         )
-        return future.result()
+
+        # In parallel, fetch metadata columns from lance if requested. The
+        # lance take is sync, so wrap it with asyncio.to_thread so it runs
+        # concurrently with the zarr reads instead of after them.
+        meta_fut = None
+        if self._metadata_columns:
+            meta_fut = asyncio.run_coroutine_threadsafe(
+                asyncio.to_thread(self._fetch_metadata_sync, batch_row_ids),
+                self._loop,
+            )
+
+        batch = zarr_fut.result()
+        if meta_fut is not None:
+            batch.metadata = meta_fut.result()
+        return batch
+
+    def _fetch_metadata_sync(self, batch_row_ids: np.ndarray) -> pl.DataFrame:
+        """Lance metadata fetch in input-row order.
+
+        ``take_row_ids`` returns rows sorted by ``_rowid``; we reorder via
+        :func:`_reorder_take_result` so each returned metadata row aligns
+        with the corresponding cell in the array batch.
+        """
+        meta_pl = (
+            self._obs_table.take_row_ids(batch_row_ids.tolist())
+            .with_row_id()
+            .select(list(self._metadata_columns))
+            .to_polars()
+        )
+        return _reorder_take_result(meta_pl, batch_row_ids).select(self._metadata_columns)
 
     def __getitem__(self, idx: int) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
         """Fetch a single row as a batch."""
