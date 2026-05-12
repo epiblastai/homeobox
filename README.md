@@ -1,9 +1,33 @@
 # homeobox
-Designed for building heterogeneous biomedical data atlases for interactive analysis and ML training.
 
-Metadata lives in LanceDB, queryable with SQL predicates, vector search, and full-text search. Raw array data (count matrices, embeddings, images) lives in sharded Zarr.
+Homeobox is a multimodal database for interactive analysis and ML training at scale. It combines the search and versioning capabilities of [LanceDB](https://lancedb.com) with the scalable array storage of [Zarr](https://zarr.dev).
+
+A single homeobox atlas can hold sparse single-cell gene expression, dense protein and embedding features, 2D/3D/4D/5D images, biomolecular structures, and free text. A single dataloader streams batches across all of them with no intermediate ML-only copies and no special modality-specific entrypoints.
 
 - **[Documentation](https://epiblastai.github.io/homeobox/)**
+
+---
+
+## Why homeobox
+
+### Motivating cases
+
+- Hundreds or thousands of `h5ad` or `h5mu` files from different assays, panels, and organisms that you want to query and train on as a single collection.
+- Repositories of large images stored in Zarr / OME-Zarr, DICOM, or TIFF — 2D, 3D, or 4D, sometimes >1 TB each, with associated text descriptions.
+- Single-cell images, masks, and associated feature data (e.g. CellProfiler vectors).
+- Any combination of the above, in one queryable store.
+
+Existing tools tend to optimise for single large datasets from a single modality, often through a laborious standardisation step that drops or duplicates data to fit a rectangular schema. Homeobox's `RaggedAtlas` unifies heterogeneous data into a single store that supports SQL / vector / full-text search, interactive `AnnData` / `MuData` reconstruction, and ML streaming — without that flattening step.
+
+### Ragged feature spaces, unified obs
+
+Real-world atlases pull together datasets that were not designed to be compatible: different feature panels, different assays and imaging modalities, different metadata fields. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
+
+A `RaggedAtlas` keeps a single shared `obs` table while letting each dataset retain its own feature axis (or no features at all, for raw images). The obs table lives in LanceDB; each dataset occupies its own Zarr group with its own feature ordering; every row carries a pointer into its group.
+
+![Multimodal schema with auxiliary metadata tables](docs/assets/hox_ragged_atlas.svg)
+
+At query time, the reconstruction layer joins the feature spaces on the fly: it computes the union or intersection of global feature indices, scatters each group's data into the right columns, and returns a single AnnData / MuData with every row correctly placed. Nothing is dropped at ingest, and there is no ambiguity about whether a value is a true zero or padding.
 
 ---
 
@@ -30,23 +54,7 @@ maturin develop --release
 
 ---
 
-## The RaggedAtlas
-
-Real-world atlas building involves datasets that were not designed to be compatible: different gene panels, different assay types, different obs schemas. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
-
-Homeobox's `RaggedAtlas` takes a different approach: each dataset occupies its own Zarr group with its own feature ordering. Every row carries a pointer into its group.
-
-```
-Cell table (shared)                Zarr (per-dataset)
-──────────────────                 ──────────────────
-cell A  gene_expression → pbmc3k/  pbmc3k/   1838 genes, 2638 cells
-cell B  gene_expression → pbmc3k/  pbmc68k/   765 genes,  700 cells
-cell C  gene_expression → pbmc68k/
-```
-
-At query time, the reconstruction layer joins the feature spaces: it computes the union or intersection of global feature indices, scatters each group's data into the right columns, and returns a single AnnData with every cell correctly placed.
-
-### Quickstart
+## Quickstart
 
 ```python
 import os
@@ -70,8 +78,7 @@ atlas_dir = "./hox_example_atlas/"
 os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
     atlas_path=atlas_dir,
-    obs_table_name="cells",
-    obs_schema=CellSchema,
+    obs_schemas={"cells": CellSchema},
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
@@ -87,7 +94,7 @@ atlas.register_features("gene_expression", features)
 #    to populate; its feature_space is resolved from PointerField.declare.
 adata.var["global_feature_uid"] = adata.var_names
 record = hox.DatasetSchema(
-    zarr_group="pbmc3k", feature_space="gene_expression", n_cells=adata.n_obs,
+    zarr_group="pbmc3k", feature_space="gene_expression", n_rows=adata.n_obs,
 )
 hox.add_from_anndata(
     atlas, adata, field_name="gene_expression",
@@ -99,122 +106,39 @@ atlas.optimize()
 atlas.snapshot()
 
 # 6. Open the atlas and query
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=CellSchema)
+atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir)
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
 
-### Ingesting image tiles
+### Multimodal in one row
 
-Not every modality fits in an AnnData. The built-in ``image_tiles`` feature
-space stores a single 4D ``(n_cells, n_channels, H, W)`` array per dataset
-with no feature registry. Ingestion is a few lines on top of
-``atlas.create_zarr_group`` and the spec's ``create_array`` helper.
+The same shape scales to any number of modalities — declare one pointer column per feature space on a single obs schema:
 
 ```python
-import os
-import numpy as np
-import homeobox as hox
-from homeobox.group_specs import get_spec
+class MultimodalCell(hox.HoxBaseSchema):
+    # Shared obs fields
+    cell_type: str | None
+    tissue: str | None
 
-# 1. Schema with a single dense pointer into image_tiles.
-class TileSchema(hox.HoxBaseSchema):
+    # Optional pointers — cells measured by only one assay are first-class,
+    # no padding rows, no presence flags inserted at ingest.
+    gene_expression: hox.SparseZarrPointer | None = hox.PointerField.declare(
+        feature_space="gene_expression"
+    )
+    protein_abundance: hox.DenseZarrPointer | None = hox.PointerField.declare(
+        feature_space="protein_abundance"
+    )
     image_tiles: hox.DenseZarrPointer | None = hox.PointerField.declare(
         feature_space="image_tiles"
     )
-
-# 2. image_tiles has no feature registry, so registry_schemas is empty.
-atlas_dir = "./hox_tile_atlas/"
-os.makedirs(atlas_dir, exist_ok=True)
-atlas = hox.create_or_open_atlas(
-    atlas_path=atlas_dir,
-    obs_table_name="cells",
-    obs_schema=TileSchema,
-    dataset_table_name="datasets",
-    dataset_schema=hox.DatasetSchema,
-    registry_schemas={},
-)
-
-# 3. Fabricate 128 random 5-channel, 96×96 uint8 tiles.
-n_cells, n_channels, h, w = 128, 5, 96, 96
-tiles = np.random.randint(0, 256, (n_cells, n_channels, h, w), dtype=np.uint8)
-
-# 4. Register the dataset, create the zarr group, and write the 4D array.
-#    The spec's create_array enforces ndim=4 and the allowed dtype set.
-record = hox.DatasetSchema(
-    zarr_group="random_tiles", feature_space="image_tiles", n_cells=n_cells,
-)
-atlas.register_dataset(record)
-group = atlas.create_zarr_group(record.zarr_group)
-
-spec = get_spec("image_tiles")
-arr = spec.create_array(
-    group, "data", shape=tiles.shape, dtype=np.uint8,
-    chunks=(1, n_channels, h, w),
-    shards=(64, n_channels, h, w),
-)
-arr[:] = tiles
-
-# 5. Insert one cell row per tile with a DenseZarrPointer at that position.
-rows = [
-    TileSchema(
-        dataset_uid=record.dataset_uid,
-        image_tiles=hox.DenseZarrPointer(zarr_group=record.zarr_group, position=i),
-    )
-    for i in range(n_cells)
-]
-atlas.add_obs_records(rows)
-
-atlas.optimize()
-atlas.snapshot()
-
-# 6. Query tiles back as a raw 4D array + obs DataFrame.
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir, obs_schema=TileSchema)
-tile_array, obs = atlas_r.query().to_array("image_tiles")
-print(tile_array.shape, tile_array.dtype)  # (128, 5, 96, 96) uint8
 ```
 
-### Opening a public atlas
-
-The CellxGene Census mouse atlas (about 44M cells) is available on S3.
-No schema class or store construction needed, just `db_uri` and S3 config:
-
-```python
-import homeobox as hox
-
-atlas = hox.RaggedAtlas.checkout_latest(
-    db_uri="s3://epiblast-public/cellxgene_mouse_homeobox/lance_db",
-    store_kwargs={"config": {"skip_signature": True, "region": "us-east-2"}},
-)
-adata = atlas.query().where("cell_type = 'neural cell'").limit(5000).to_anndata()
-```
-
-### Querying
-
-The cell table is a LanceDB table. The full query surface is available without custom loaders.
-
-```python
-# SQL filter
-adata = atlas_r.query().where("tissue = 'lung' AND cell_type IS NOT NULL").to_anndata()
-
-# Vector similarity search
-hits = atlas_r.query().search(query_vec, vector_column_name="embedding").limit(50).to_anndata()
-
-# Feature-filtered query: reads only the byte ranges for those genes (CSC index)
-adata = atlas_r.query().features(["CD3D", "CD19", "MS4A1"], "gene_expression").to_anndata()
-
-# Intersection across ragged datasets (only genes shared by all)
-shared = atlas_r.query().feature_join("intersection").to_anndata()
-
-# Count by cell type (cheap, only fetches the grouping column)
-atlas_r.query().count(group_by="cell_type")
-```
-
-For large results, `.to_batches()` provides a streaming iterator that avoids materialising everything at once. `.to_mudata()` returns one AnnData per modality for multimodal atlases.
+A query against this atlas streams within-row multimodal batches through a single `DataLoader`, regardless of how many modalities each cell has. See [`homeobox_examples/multimodal_perturbation_atlas/schema.py`](homeobox_examples/multimodal_perturbation_atlas/schema.py) for a five-modality production schema (gene expression, chromatin accessibility, protein abundance, image features, image tiles) plus perturbation, publication, and donor tables.
 
 ---
 
-### Example Notebooks
+## Example Notebooks
 
 The `notebooks/` directory contains self-contained [marimo](https://marimo.io) notebooks that work after a plain `pip install homeobox` (no repo clone needed).
 
@@ -228,75 +152,19 @@ The `notebooks/` directory contains self-contained [marimo](https://marimo.io) n
 
 ## Performance
 
-Benchmarked against TileDB-SOMA on a ~44M cell mouse atlas (CellxGene Census), reading from S3.
+Beyond raw numbers, the case for homeobox over a single-modality tabular store like TileDB-SOMA is generality and integration. One library handles cell tables, sparse matrices, dense features, images, embeddings, and text — there is no separate stack for non-tabular modalities. New modalities are added by writing a feature-space spec, not by waiting for upstream support. And because storage is plain LanceDB + Zarr, homeobox plays directly with the broader Python + Rust data ecosystem (Lance, DuckDB, Polars, zarrs).
 
-### ML dataloader throughput
-
-`UnimodalHoxDataset` is a map-style PyTorch dataset in contrast to the TileDB iterable-style dataset. This allows it to leverage PyTorch's `DataLoader` for parallelism and locality-aware batching. Homeobox's dataloader achieves an order of magnitude higher throughput than TileDB-SOMA on a single worker even with fully random data shuffling.
+On the 44M-cell CellxGene Census mouse atlas streaming from S3, homeobox's PyTorch dataloader is roughly an order of magnitude faster than TileDB-SOMA on a single worker, and AnnData query latency is 1.7–3x lower across cell-, feature-, and combined-filter patterns.
 
 ![Dataloader throughput: homeobox vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
 
-| Workers | TileDB-SOMA | homeobox | Speedup |
-|---------|-------------|---------|---------|
-| 0 (in-process) | ~150 cells/s | ~1,600 cells/s | ~10x |
-| 4 workers | ~500 cells/s | ~3,150 cells/s | ~6x |
-
-### Query → AnnData latency
-
-Three access patterns: cell-oriented (filter by cell type, full matrix), feature-oriented (subset genes across a population), and combined.
-
-![Query latency: homeobox vs TileDB-SOMA](docs/assets/benchmark_query.png)
-
-Homeobox is 1.7–3x faster across patterns, with the largest margin on feature-oriented queries where the CSC index avoids scanning irrelevant cells entirely.
-
-### Fast cloud reads: RustShardReader
-
-Zarr's sharded format packs many chunks into a single object-store file, with an index recording each chunk's byte offset. The Python zarr stack issues one HTTP request per chunk even when chunks could be coalesced.
-
-Homeobox's `RustShardReader` handles shard reads in Rust: it batches all requested ranges, issues one `get_ranges` call per shard file, and decodes chunks in parallel via rayon. On S3 and GCS this typically cuts latency-dominated read time by an order of magnitude compared to sequential per-chunk fetches.
-
-### BP-128 bitpacking (from BPCells)
-
-When ingesting integer count data, homeobox automatically applies BP-128 bitpacking with delta encoding to the sparse `indices` array, and BP-128 (no delta) to the values array. BP-128 is a SIMD-accelerated codec that packs integers using the minimum number of bits required per 128-element block.
-
-This delivers compression ratios comparable to zstd on typical single-cell count matrices while decoding at memory bandwidth speeds, making it strictly better than general-purpose codecs for this data type. Chunk sizes that are multiples of 128 align perfectly with the codec's block boundaries.
+See [docs/performance.md](docs/performance.md) for full benchmark tables, the `RustShardReader` design, and BP-128 bitpacking details.
 
 ---
 
 ## Versioning
 
-Homeobox separates the writable ingest path from the read/query path with an explicit snapshot model:
-
-1. **Ingest**: write Zarr arrays and cell records freely, in parallel if needed.
-2. **`optimize()`**: compact Lance fragments, assign `global_index` to newly registered features, rebuild FTS indexes.
-3. **`snapshot()`**: validate consistency and record the current Lance table versions. Returns a version number.
-4. **`checkout(version)`**: open a read-only atlas pinned to that snapshot. Every table is pinned to the exact Lance version recorded at snapshot time.
-
-```python
-atlas.optimize()
-v0 = atlas.snapshot()       # validate + commit; returns version int
-
-# read-only handle pinned to v0; concurrent ingestion won't affect it
-atlas_r = RaggedAtlas.checkout_latest("/data/atlas/db", store=store)
-
-# inspect available snapshots
-RaggedAtlas.list_versions("/data/atlas/db")
-```
-
-Queries and training runs execute against a frozen, reproducible view of the atlas. Concurrent ingestion into the live atlas does not affect any checked-out handle.
-
----
-
-## Documentation
-
-- **[Data Structure](docs/data_structure.md)**: LanceDB + Zarr layout, pointer types, `_feature_layouts` feature mapping, versioning model.
-- **[Building an Atlas](docs/atlas.md)**: end-to-end walkthrough with two heterogeneous datasets.
-- **[Array Storage](docs/array_storage.md)**: `add_from_anndata` internals, BP-128 bitpacking, CSC column index for fast feature-filtered reads.
-- **[Querying](docs/querying.md)**: `AtlasQuery` fluent builder, filtering, feature reconstruction, union/intersection joins, terminal methods.
-- **[PyTorch Data Loading](docs/dataloader.md)**: `UnimodalHoxDataset`, `CellSampler`, locality-aware bin-packing, `make_loader`.
-- **[Versioning](docs/versioning.md)**: snapshot lifecycle, parallel write safety, `checkout()`, `list_versions()`.
-- **[Schemas](docs/schemas.md)**: `HoxBaseSchema`, pointer types, `FeatureBaseSchema`, `DatasetSchema`.
-- **[Full docs site](https://epiblastai.github.io/homeobox/)**
+Homeobox separates the writable ingest path from the read/query path with an explicit snapshot model: ingest writes Zarr arrays and cell records freely (in parallel if needed), `optimize()` compacts Lance fragments and rebuilds indexes, `snapshot()` validates consistency and records the current Lance table versions, and `checkout(version)` opens a read-only atlas pinned to that snapshot. Queries and training runs execute against a frozen, reproducible view; concurrent ingestion does not affect any checked-out handle. See [docs/versioning.md](docs/versioning.md) for the full lifecycle.
 
 ---
 
