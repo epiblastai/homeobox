@@ -54,6 +54,27 @@ class SparseBatch:
             metadata=metadata,
         )
 
+    def __len__(self) -> int:
+        return len(self.offsets) - 1
+
+    def __getitem__(self, sl: slice) -> "SparseBatch":
+        """Return a sub-batch holding the rows in *sl* (contiguous slices only)."""
+        if not isinstance(sl, slice):
+            raise TypeError(f"SparseBatch only supports slice indexing, got {type(sl).__name__}")
+        start, stop, step = sl.indices(len(self))
+        if step != 1:
+            raise ValueError("SparseBatch slicing requires step == 1")
+        offsets = self.offsets[start : stop + 1]
+        nnz_start = int(offsets[0])
+        nnz_end = int(offsets[-1])
+        return SparseBatch(
+            indices=self.indices[nnz_start:nnz_end],
+            offsets=offsets - offsets[0],
+            layers={name: arr[nnz_start:nnz_end] for name, arr in self.layers.items()},
+            n_features=self.n_features,
+            metadata=self.metadata[start:stop] if self.metadata is not None else None,
+        )
+
 
 @dataclass
 class DenseFeatureBatch:
@@ -93,6 +114,21 @@ class DenseFeatureBatch:
             metadata=metadata,
         )
 
+    def __len__(self) -> int:
+        return next(iter(self.layers.values())).shape[0]
+
+    def __getitem__(self, sl: slice) -> "DenseFeatureBatch":
+        """Return a sub-batch holding the rows in *sl*."""
+        if not isinstance(sl, slice):
+            raise TypeError(
+                f"DenseFeatureBatch only supports slice indexing, got {type(sl).__name__}"
+            )
+        return DenseFeatureBatch(
+            layers={name: arr[sl] for name, arr in self.layers.items()},
+            n_features=self.n_features,
+            metadata=self.metadata[sl] if self.metadata is not None else None,
+        )
+
 
 @dataclass
 class SpatialTileBatch:
@@ -124,6 +160,20 @@ class SpatialTileBatch:
         return cls(
             layers={name: [] for name in layer_names},
             metadata=metadata,
+        )
+
+    def __len__(self) -> int:
+        return len(next(iter(self.layers.values())))
+
+    def __getitem__(self, sl: slice) -> "SpatialTileBatch":
+        """Return a sub-batch holding the rows in *sl*."""
+        if not isinstance(sl, slice):
+            raise TypeError(
+                f"SpatialTileBatch only supports slice indexing, got {type(sl).__name__}"
+            )
+        return SpatialTileBatch(
+            layers={name: arrs[sl] for name, arrs in self.layers.items()},
+            metadata=self.metadata[sl] if self.metadata is not None else None,
         )
 
 

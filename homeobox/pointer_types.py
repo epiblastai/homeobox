@@ -22,6 +22,7 @@ def _require_prepared_columns(
 
 class SparseZarrPointer(LanceModel):
     pointer_type_name: ClassVar[str] = "sparse"
+    alias_columns: ClassVar[tuple[str, ...]] = ("_zg", "_start", "_end", "_zarr_row")
 
     zarr_group: str | None = None
     start: int | None = None
@@ -58,6 +59,7 @@ class SparseZarrPointer(LanceModel):
 
 class DenseZarrPointer(LanceModel):
     pointer_type_name: ClassVar[str] = "dense"
+    alias_columns: ClassVar[tuple[str, ...]] = ("_zg", "_pos")
 
     zarr_group: str | None = None
     position: int | None = None
@@ -100,6 +102,7 @@ class DiscreteSpatialPointer(LanceModel):
     """
 
     pointer_type_name: ClassVar[str] = "discrete_spatial"
+    alias_columns: ClassVar[tuple[str, ...]] = ("_zg", "_min_corner", "_max_corner")
 
     zarr_group: str | None = None
     min_corner: list[int] | None = None

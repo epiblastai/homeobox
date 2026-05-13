@@ -1,5 +1,7 @@
 """GroupReader: per-(zarr_group, feature_space) read state."""
 
+import threading
+
 import lancedb
 import numpy as np
 import obstore
@@ -129,6 +131,13 @@ class GroupReader:
         self._layout_reader = layout_reader
         self._zarr_group_handle = zarr_group_handle
         self._array_reader_cache: dict[str, BatchAsyncArray] = {}
+        # Lazy init of ``_zarr_group_handle`` and insertions into
+        # ``_array_reader_cache`` are check-then-act sequences; concurrent
+        # callers can both miss the check and execute the act. They might double-open
+        # the zarr handle (and clobbering each other's cache reset) or
+        # produce duplicate BatchAsyncArray instances. This lock serialises
+        # both paths. Dropped on pickle, re-created in ``__setstate__``.
+        self._init_lock = threading.Lock()
 
     @classmethod
     def from_atlas_root(
@@ -206,24 +215,37 @@ class GroupReader:
         """Return a cached BatchAsyncArray reader for a zarr array."""
         self._ensure_initialized()
         reader = self._array_reader_cache.get(array_name)
-        if reader is None:
+        if reader is not None:
+            return reader
+        with self._init_lock:
+            reader = self._array_reader_cache.get(array_name)
+            if reader is not None:
+                return reader
             reader = BatchAsyncArray.from_array(self._zarr_group_handle[array_name])
             self._array_reader_cache[array_name] = reader
-        return reader
+            return reader
 
     def _ensure_initialized(self) -> None:
         """Open the zarr group handle lazily if not yet done."""
-        if self._zarr_group_handle is None:
+        if self._zarr_group_handle is not None:
+            return
+        with self._init_lock:
+            if self._zarr_group_handle is not None:
+                return
             root = zarr.open_group(zarr.storage.ObjectStore(self._store), mode="r")
-            self._zarr_group_handle = root[self.zarr_group]
+            # Reset cache *before* publishing the handle so any thread that
+            # observes the handle non-None also sees the fresh cache.
             self._array_reader_cache = {}
+            self._zarr_group_handle = root[self.zarr_group]
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
         # Zero transient zarr state so the object is safely picklable.
         state["_zarr_group_handle"] = None
         state["_array_reader_cache"] = {}
+        state.pop("_init_lock", None)
         return state
 
     def __setstate__(self, state: dict) -> None:
         self.__dict__.update(state)
+        self._init_lock = threading.Lock()
