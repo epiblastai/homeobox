@@ -163,7 +163,7 @@ async def read_annbatch(
     """Mirror annbatch._fetch_data_sparse: build a MultiBasicIndexer of one
     BasicIndexer per (start, end) slice, dispatch via `_get_selection` into
     a preallocated contiguous output buffer."""
-    slices = [slice(int(s), int(e)) for s, e in zip(starts, ends)]
+    slices = [slice(int(s), int(e)) for s, e in zip(starts, ends, strict=True)]
 
     def _build_multi(arr):
         return MultiBasicIndexer(

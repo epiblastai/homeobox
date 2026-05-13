@@ -33,6 +33,10 @@ import numpy as np
 import obstore
 import pandas as pd
 
+# Registers the ``hvg_gene_expression`` feature space at import time so the
+# schema's PointerField below resolves. Import for side effects.
+from perturb_feature_space import FEATURE_SPACE, LAYER  # noqa: F401
+
 from homeobox.atlas import RaggedAtlas
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
@@ -44,10 +48,6 @@ from homeobox.schema import (
     HoxBaseSchema,
     PointerField,
 )
-
-# Registers the ``hvg_gene_expression`` feature space at import time so the
-# schema's PointerField below resolves. Import for side effects.
-from perturb_feature_space import FEATURE_SPACE, LAYER  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Atlas schemas (importable by the benchmark so spawn workers can unpickle)

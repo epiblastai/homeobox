@@ -33,9 +33,9 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
-from typing import Callable
 
 import psutil
 from tqdm import tqdm
@@ -160,16 +160,15 @@ def _run_homeobox(
 ) -> BenchResult:
     import obstore
 
-    from homeobox.atlas import RaggedAtlas
-    from homeobox.dataloader import make_loader
-
     # Side-effect import: registers the ``hvg_gene_expression`` feature space
     # before we open an atlas that references it.
     import perturb_feature_space  # noqa: F401
-    from perturb_feature_space import LAYER as HVG_LAYER
-
     from group_samplers import GroupBatchSampler
     from make_perturbation_synth import PerturbCellSchema
+    from perturb_feature_space import LAYER as HVG_LAYER
+
+    from homeobox.atlas import RaggedAtlas
+    from homeobox.dataloader import make_loader
 
     atlas_dir = data_root / "atlas"
     store = obstore.store.LocalStore(prefix=str(atlas_dir / "zarr_store"))
@@ -253,7 +252,6 @@ def _run_cell_load(
     run_idx: int,
 ) -> BenchResult:
     from cell_load.data_modules.perturbation_dataloader import PerturbationDataModule
-
     from group_samplers import NoOpMappingStrategy
 
     toml_path = data_root / "cell_load" / "config.toml"

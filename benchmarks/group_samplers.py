@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 import sys
-from typing import TYPE_CHECKING, Iterator
+from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -181,7 +182,7 @@ class NoOpMappingStrategy(BaseMappingStrategy):
 
     def register_split_indices(
         self,
-        dataset: "PerturbationDataset",
+        dataset: PerturbationDataset,
         split: str,
         perturbed_indices: np.ndarray,
         control_indices: np.ndarray,
@@ -189,17 +190,17 @@ class NoOpMappingStrategy(BaseMappingStrategy):
         return None
 
     def get_control_indices(
-        self, dataset: "PerturbationDataset", split: str, perturbed_idx: int
+        self, dataset: PerturbationDataset, split: str, perturbed_idx: int
     ) -> np.ndarray:
         return np.array([perturbed_idx], dtype=np.int64)
 
     def get_control_index(
-        self, dataset: "PerturbationDataset", split: str, perturbed_idx: int
+        self, dataset: PerturbationDataset, split: str, perturbed_idx: int
     ) -> int:
         return int(perturbed_idx)
 
     def get_mapped_expressions(
-        self, dataset: "PerturbationDataset", split: str, perturbed_idx: int
+        self, dataset: PerturbationDataset, split: str, perturbed_idx: int
     ) -> tuple[torch.Tensor, torch.Tensor, int]:
         if dataset.embed_key:
             pert_expr = dataset.fetch_obsm_expression(perturbed_idx, dataset.embed_key)
