@@ -657,39 +657,33 @@ class AtlasQuery:
                 self._feature_filter[feature_space],
             )
 
+        if mode not in ("map", "iterable"):
+            raise ValueError(f"Unknown mode {mode!r}; expected 'map' or 'iterable'")
+
+        inner = UnimodalHoxDataset(
+            atlas=self._atlas,
+            obs_pl=obs_pl,
+            field_name=field_name,
+            layer_overrides=layer_overrides,
+            metadata_columns=metadata_columns,
+            wanted_globals=wanted_globals,
+            obs_table_name=self._obs_table_name,
+        )
+
         if mode == "map":
-            return UnimodalHoxDataset(
-                atlas=self._atlas,
-                obs_pl=obs_pl,
-                field_name=field_name,
-                layer_overrides=layer_overrides,
-                metadata_columns=metadata_columns,
-                wanted_globals=wanted_globals,
-                obs_table_name=self._obs_table_name,
-            )
+            return inner
 
-        if mode == "iterable":
-            if batch_size is None or io_batch_size is None:
-                raise ValueError(
-                    "mode='iterable' requires both batch_size and io_batch_size to be set"
-                )
-            return UnimodalHoxIterableDataset(
-                atlas=self._atlas,
-                obs_pl=obs_pl,
-                field_name=field_name,
-                layer_overrides=layer_overrides,
-                metadata_columns=metadata_columns,
-                wanted_globals=wanted_globals,
-                obs_table_name=self._obs_table_name,
-                batch_size=batch_size,
-                io_batch_size=io_batch_size,
-                prefetch=prefetch,
-                shuffle=shuffle,
-                drop_last=drop_last,
-                seed=seed,
-            )
-
-        raise ValueError(f"Unknown mode {mode!r}; expected 'map' or 'iterable'")
+        if batch_size is None or io_batch_size is None:
+            raise ValueError("mode='iterable' requires both batch_size and io_batch_size to be set")
+        return UnimodalHoxIterableDataset(
+            inner,
+            batch_size=batch_size,
+            io_batch_size=io_batch_size,
+            prefetch=prefetch,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            seed=seed,
+        )
 
     def to_multimodal_dataset(
         self,
