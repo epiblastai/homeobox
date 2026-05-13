@@ -291,8 +291,13 @@ def reindex_registry(table: lancedb.table.Table) -> int:
     int
         Number of features newly indexed.  0 if all features are already indexed.
     """
+    # Sort by uid so global_index assignment is deterministic across runs.
     unindexed = (
-        table.search().where("global_index IS NULL", prefilter=True).select(["uid"]).to_polars()
+        table.search()
+        .where("global_index IS NULL", prefilter=True)
+        .select(["uid"])
+        .to_polars()
+        .sort("uid")
     )
     if unindexed.is_empty():
         return 0
