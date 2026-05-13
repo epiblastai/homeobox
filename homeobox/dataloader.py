@@ -200,17 +200,21 @@ class _ModalityData:
 # ---------------------------------------------------------------------------
 
 
-async def _take_from_pointers(
+def _build_grouped_batch(
+    plan: FeatureReadPlan,
     groups: GroupBy,
     batch_row_ids: np.ndarray,
-    plan: FeatureReadPlan,
 ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
-    """Fetch a batch from per-row pointer arrays.
+    """Read groups and stack into a single batch.
 
     Pointer-type-agnostic: the spec's reconstructor handles batch construction
     (per-group via :meth:`Reconstructor.build_group_batch`, and the empty case
     via :meth:`Reconstructor.build_empty_batch`), so the same flow works for
     sparse CSR, dense feature, and spatial tile pointers.
+
+    Metadata is left as the raw concatenated group obs (with internal
+    ``_``-prefixed columns). Callers should either filter via
+    :func:`_select_obs_metadata` or overwrite from a lance fetch.
     """
     group_batches = read_arrays_by_group(plan, groups)
     if not group_batches:
@@ -220,9 +224,18 @@ async def _take_from_pointers(
             layer_dtypes=plan.layer_dtypes,
             layer_names=plan.layer_names,
         )
+    return finalize_grouped_read(plan, group_batches, target_row_ids=batch_row_ids)
 
-    batch = finalize_grouped_read(plan, group_batches, target_row_ids=batch_row_ids)
-    batch.metadata = _select_obs_metadata(batch.metadata)
+
+async def _take_from_pointers(
+    groups: GroupBy,
+    batch_row_ids: np.ndarray,
+    plan: FeatureReadPlan,
+) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    """Async wrapper around :func:`_build_grouped_batch` for the multimodal path."""
+    batch = _build_grouped_batch(plan, groups, batch_row_ids)
+    if batch.metadata is not None:
+        batch.metadata = _select_obs_metadata(batch.metadata)
     return batch
 
 
@@ -372,6 +385,10 @@ class UnimodalHoxDataset(_AsyncDataset):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         self._obs_table: lancedb.table.Table | None = None
+        # Concurrent first-call from the iterable dataset's prefetch threadpool
+        # races on lazy init of the asyncio loop / lance table. Dropped on
+        # pickle, re-created in __setstate__.
+        self._init_lock = threading.Lock()
 
     @property
     def n_rows(self) -> int:
@@ -455,17 +472,59 @@ class UnimodalHoxDataset(_AsyncDataset):
     def _ensure_initialized(self) -> None:
         """Start the background event loop and open the lance table if not yet done.
 
-        Safe to call multiple times; subsequent calls are no-ops.
-        Called automatically on the first ``__getitem__`` in each process,
-        including spawned worker processes.
+        Safe to call multiple times and across threads; subsequent calls are
+        no-ops. Called automatically on the first ``__getitem__`` in each
+        process, including spawned worker processes.
         """
+        self._ensure_lance_table()
         if self._loop is not None:
             return
-        self._start_event_loop()
-        db_uri, table_name, table_version, storage_options = self._lance_info
-        db = lancedb.connect(db_uri, storage_options=storage_options)
-        self._obs_table = db.open_table(table_name)
-        self._obs_table.checkout(table_version)
+        with self._init_lock:
+            if self._loop is not None:
+                return
+            self._start_event_loop()
+
+    def _ensure_lance_table(self) -> None:
+        """Open the lance table without starting the asyncio loop.
+
+        Used by :meth:`_take_block_sync`, which never touches ``self._loop``.
+        """
+        if self._obs_table is not None:
+            return
+        with self._init_lock:
+            if self._obs_table is not None:
+                return
+            db_uri, table_name, table_version, storage_options = self._lance_info
+            db = lancedb.connect(db_uri, storage_options=storage_options)
+            table = db.open_table(table_name)
+            table.checkout(table_version)
+            self._obs_table = table
+
+    def _take_block_sync(
+        self, row_indices: list[int] | np.ndarray
+    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+        """Synchronous take that bypasses ``self._loop``.
+
+        Reads + decode + (optional) metadata fetch run inline on the calling
+        thread, so N concurrent callers from a prefetch threadpool achieve N
+        blocks worth of I/O in flight on zarr's own loop simultaneously.
+        Unlike :meth:`__getitems__`, this path does **not** overlap the lance
+        metadata fetch with the zarr read — caller-side parallelism is the
+        intended source of overlap.
+        """
+        indices_arr = np.asarray(row_indices, dtype=np.int64)
+        batch_row_ids = self._row_ids[indices_arr]
+
+        obs_slice = self._obs_with_pointers[indices_arr.tolist()]
+        groups = obs_slice.group_by("_zg")
+
+        batch = _build_grouped_batch(self._mod_data.plan, groups, batch_row_ids)
+        if self._metadata_columns:
+            self._ensure_lance_table()
+            batch.metadata = self._fetch_metadata_sync(batch_row_ids)
+        elif batch.metadata is not None:
+            batch.metadata = _select_obs_metadata(batch.metadata)
+        return batch
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
@@ -475,7 +534,13 @@ class UnimodalHoxDataset(_AsyncDataset):
         state["_loop"] = None
         state["_loop_thread"] = None
         state["_obs_table"] = None
+        # threading.Lock can't be pickled; recreated in __setstate__.
+        state.pop("_init_lock", None)
         return state
+
+    def __setstate__(self, state: dict) -> None:
+        super().__setstate__(state)
+        self._init_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +641,12 @@ class UnimodalHoxIterableDataset(IterableDataset):
     def _fetch_block(
         self, indices: np.ndarray
     ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
-        return self._inner.__getitems__(indices.tolist())
+        # Bypass the inner dataset's per-instance asyncio loop: its coroutines
+        # have no await points, so the loop processes them serially and caps
+        # block-level concurrency at one regardless of prefetch. Calling
+        # _take_block_sync directly from each prefetch thread lets N blocks
+        # fan out on zarr's own loop simultaneously.
+        return self._inner._take_block_sync(indices)
 
     def __iter__(self):
         self._ensure_initialized()
