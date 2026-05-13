@@ -373,9 +373,10 @@ class HomeoboxDataloaderBenchmark:
                 store=store,
             )
 
-        dataset = atlas.query().to_unimodal_iterable_dataset(
+        dataset = atlas.query().to_unimodal_dataset(
             field_name="gene_expression",
             layer_overrides=["counts"],
+            mode="iterable",
             batch_size=self.batch_size,
             io_batch_size=65_536,
             prefetch=2,
