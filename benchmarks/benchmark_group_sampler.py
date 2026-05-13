@@ -44,12 +44,6 @@ from tqdm import tqdm
 # and strategy classes by module path.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# cell-load isn't a homeobox dependency. If a sibling checkout exists at
-# ~/cell-load/src, expose it so the cell-load adapter can `import cell_load`.
-_CELL_LOAD_SRC = os.path.expanduser("~/cell-load/src")
-if os.path.isdir(os.path.join(_CELL_LOAD_SRC, "cell_load")) and _CELL_LOAD_SRC not in sys.path:
-    sys.path.insert(0, _CELL_LOAD_SRC)
-
 
 # ---------------------------------------------------------------------------
 # Result schema (mirrors BenchResult from benchmark_dataloaders_homeobox.py)

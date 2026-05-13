@@ -379,7 +379,7 @@ class HomeoboxDataloaderBenchmark:
             mode="iterable",
             batch_size=self.batch_size,
             io_batch_size=65_536,
-            prefetch=2,
+            prefetch=4,
             shuffle=True,
         )
         loader = DataLoader(dataset, batch_size=None, num_workers=0, collate_fn=_identity_collate)

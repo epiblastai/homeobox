@@ -27,9 +27,9 @@ from pathlib import Path
 
 BENCH_SCRIPT = Path(__file__).parent / "benchmark_dataloaders_homeobox.py"
 
-DEFAULT_WORKERS = [0, 4, 8]
+DEFAULT_WORKERS = [0, 4]
 DEFAULT_BATCH_SIZES = [64, 512, 4096]
-DEFAULT_REPS = 3
+DEFAULT_REPS = 1
 _REMOTE_SCHEMES = ("s3://", "gs://", "az://")
 
 
