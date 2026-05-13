@@ -74,7 +74,7 @@ SYSTEM_KEYS: list[tuple[str, str]] = [
 # TileDB-SOMA is in this set but its worker rows are dense-materialised (the
 # sparse + workers combo is blocked by pytorch/pytorch#20248); see
 # benchmark_tiledbsoma() for the modal switch.
-_SUPPORTS_WORKERS: set[str] = {"homeobox", "scdataset", "tiledbsoma"}
+_SUPPORTS_WORKERS: set[str] = {"homeobox", "tiledbsoma"}
 
 # Systems that can read directly from object-store URIs (s3://, gs://, az://).
 # The h5ad-backed systems need a seekable local file (HDF5/h5py constraint);

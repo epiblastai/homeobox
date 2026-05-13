@@ -25,7 +25,7 @@ from pathlib import Path
 BENCH_SCRIPT = Path(__file__).parent / "benchmark_group_sampler.py"
 
 DEFAULT_WORKERS = [0, 4]
-DEFAULT_BATCH_SIZES = [1024]
+DEFAULT_BATCH_SIZES = [64, 512, 1024]
 DEFAULT_SYSTEMS = ["cell-load", "homeobox"]
 DEFAULT_REPS = 1
 
