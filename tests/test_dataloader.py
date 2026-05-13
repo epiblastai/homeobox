@@ -12,7 +12,7 @@ import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.batch_types import DenseFeatureBatch, SparseBatch
-from homeobox.dataloader import make_loader
+from homeobox.dataloader import UnimodalHoxIterableDataset, make_loader
 from homeobox.feature_layouts import reindex_registry
 from homeobox.ingestion import add_from_anndata
 from homeobox.obs_alignment import align_obs_to_schema
@@ -608,3 +608,286 @@ def test_unimodal_dataset_pickle_round_trip_after_initialization(two_group_atlas
     assert len(batch.offsets) == 4
     assert len(batch.indices) == batch.offsets[-1]
     assert len(batch.layers["counts"]) == batch.offsets[-1]
+
+
+# ---------------------------------------------------------------------------
+# Tests: UnimodalHoxIterableDataset
+# ---------------------------------------------------------------------------
+
+
+def _sparse_batch_to_dense(batch: SparseBatch, n_features: int) -> np.ndarray:
+    """Reconstruct a dense (n_rows, n_features) matrix from a SparseBatch."""
+    n_rows = len(batch.offsets) - 1
+    dense = np.zeros((n_rows, n_features), dtype=np.float32)
+    for i in range(n_rows):
+        s, e = batch.offsets[i], batch.offsets[i + 1]
+        dense[i, batch.indices[s:e]] = batch.layers["counts"][s:e]
+    return dense
+
+
+def test_iterable_dataset_shapes_and_coverage(two_group_atlas):
+    """Iterable yields SparseBatch covering every row exactly once with no shuffle."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        metadata_columns=["uid"],
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=20,
+    )
+    assert isinstance(ds, UnimodalHoxIterableDataset)
+    assert ds.n_rows == 35
+    assert ds.n_features == 10
+    assert len(ds) == 4  # ceil(35 / 10)
+
+    seen: list[str] = []
+    n_batches = 0
+    for batch in ds:
+        assert isinstance(batch, SparseBatch)
+        assert batch.n_features == 10
+        assert batch.offsets[0] == 0
+        assert len(batch.indices) == batch.offsets[-1]
+        assert len(batch.layers["counts"]) == batch.offsets[-1]
+        if len(batch.indices) > 0:
+            assert np.all(batch.indices >= 0)
+            assert np.all(batch.indices < batch.n_features)
+        seen.extend(batch.metadata["uid"].to_list())
+        n_batches += 1
+
+    assert n_batches == 4
+    assert len(seen) == 35
+    assert len(set(seen)) == 35
+
+
+def test_iterable_dataset_drop_last(two_group_atlas):
+    """drop_last=True skips the trailing partial training batch."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=20,
+        drop_last=True,
+    )
+    assert len(ds) == 3  # 35 // 10
+
+    batches = list(ds)
+    assert len(batches) == 3
+    assert all(len(b.offsets) - 1 == 10 for b in batches)
+
+
+def test_iterable_dataset_shuffle_reproducible(two_group_atlas):
+    """Same seed produces the same shuffle order at the same epoch index."""
+    pytest.importorskip("torch")
+
+    def collect_first_epoch(seed: int) -> list[str]:
+        ds = two_group_atlas.query().to_unimodal_dataset(
+            "gene_expression",
+            metadata_columns=["uid"],
+            mode="iterable",
+            batch_size=5,
+            io_batch_size=20,
+            shuffle=True,
+            seed=seed,
+        )
+        uids: list[str] = []
+        for batch in ds:
+            uids.extend(batch.metadata["uid"].to_list())
+        return uids
+
+    assert collect_first_epoch(42) == collect_first_epoch(42)
+    assert collect_first_epoch(42) != collect_first_epoch(7)
+
+
+def test_iterable_dataset_shuffle_advances_each_epoch(two_group_atlas):
+    """Successive epochs on the same dataset yield different shuffle orders."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        metadata_columns=["uid"],
+        mode="iterable",
+        batch_size=5,
+        io_batch_size=20,
+        shuffle=True,
+        seed=0,
+    )
+
+    def collect() -> list[str]:
+        uids: list[str] = []
+        for batch in ds:
+            uids.extend(batch.metadata["uid"].to_list())
+        return uids
+
+    first = collect()
+    second = collect()
+    assert len(first) == len(second) == ds.n_rows
+    assert set(first) == set(second)
+    assert first != second
+
+
+def test_iterable_dataset_round_trip_values(single_group_atlas):
+    """Concatenated iterable output matches to_anndata() values row-by-row by uid."""
+    pytest.importorskip("torch")
+    q = single_group_atlas.query().feature_spaces("gene_expression")
+    adata = q.to_anndata()
+    ref_dense = adata.X.toarray()
+    ref_uids = list(adata.obs.index)
+
+    ds = q.to_unimodal_dataset(
+        "gene_expression",
+        metadata_columns=["uid"],
+        mode="iterable",
+        batch_size=3,
+        io_batch_size=9,
+    )
+
+    rebuilt_rows: list[np.ndarray] = []
+    rebuilt_uids: list[str] = []
+    for batch in ds:
+        dense = _sparse_batch_to_dense(batch, ds.n_features)
+        rebuilt_rows.extend(dense)
+        rebuilt_uids.extend(batch.metadata["uid"].to_list())
+
+    for row, uid in zip(rebuilt_rows, rebuilt_uids, strict=True):
+        ref_idx = ref_uids.index(uid)
+        np.testing.assert_allclose(row[: ref_dense.shape[1]], ref_dense[ref_idx])
+
+
+def test_iterable_dataset_no_metadata(two_group_atlas):
+    """metadata is None when no metadata_columns are requested."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=20,
+    )
+    batch = next(iter(ds))
+    assert batch.metadata is None
+
+
+def test_iterable_dataset_empty(two_group_atlas):
+    """Iterator over an empty filter yields nothing."""
+    pytest.importorskip("torch")
+    ds = (
+        two_group_atlas.query()
+        .where("tissue = 'nonexistent'")
+        .to_unimodal_dataset(
+            "gene_expression",
+            mode="iterable",
+            batch_size=4,
+            io_batch_size=8,
+        )
+    )
+    assert ds.n_rows == 0
+    assert list(ds) == []
+
+
+def test_iterable_dataset_io_batch_size_rounding(two_group_atlas):
+    """io_batch_size is rounded down to a multiple of batch_size."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=23,
+    )
+    # 23 // 10 == 2, so rounded down to 20.
+    assert ds._io_batch_size == 20
+
+
+def test_iterable_dataset_invalid_args(two_group_atlas):
+    """Invalid constructor args raise ValueError."""
+    pytest.importorskip("torch")
+    q = two_group_atlas.query()
+
+    with pytest.raises(ValueError, match="batch_size must be positive"):
+        q.to_unimodal_dataset("gene_expression", mode="iterable", batch_size=0, io_batch_size=10)
+    with pytest.raises(ValueError, match="io_batch_size must be >= batch_size"):
+        q.to_unimodal_dataset("gene_expression", mode="iterable", batch_size=16, io_batch_size=8)
+    with pytest.raises(ValueError, match="prefetch must be >= 1"):
+        q.to_unimodal_dataset(
+            "gene_expression", mode="iterable", batch_size=4, io_batch_size=8, prefetch=0
+        )
+    with pytest.raises(ValueError, match="requires both batch_size and io_batch_size"):
+        q.to_unimodal_dataset("gene_expression", mode="iterable", batch_size=4)
+
+
+def test_iterable_dataset_with_make_loader(two_group_atlas):
+    """make_loader auto-routes iterable to a DataLoader(batch_size=None) and yields batches."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        metadata_columns=["uid"],
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=20,
+    )
+    loader = make_loader(ds)
+    seen: list[str] = []
+    for batch in loader:
+        assert isinstance(batch, SparseBatch)
+        seen.extend(batch.metadata["uid"].to_list())
+    assert len(seen) == ds.n_rows
+    assert len(set(seen)) == ds.n_rows
+
+
+def test_iterable_dataset_make_loader_warns_on_workers(two_group_atlas):
+    """make_loader warns and forces num_workers=0 for iterable datasets."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=20,
+    )
+    with pytest.warns(UserWarning, match="num_workers"):
+        loader = make_loader(ds, num_workers=2)
+    assert loader.num_workers == 0
+
+
+def test_iterable_dataset_pickle_round_trip(two_group_atlas):
+    """Iterable dataset survives pickle and is iterable after unpickling."""
+    pytest.importorskip("torch")
+    ds = two_group_atlas.query().to_unimodal_dataset(
+        "gene_expression",
+        metadata_columns=["uid"],
+        mode="iterable",
+        batch_size=10,
+        io_batch_size=20,
+    )
+    # Initialize worker-local state, then pickle.
+    _ = next(iter(ds))
+
+    loaded = pickle.loads(pickle.dumps(ds))
+    assert isinstance(loaded, UnimodalHoxIterableDataset)
+    assert loaded._executor is None  # stripped by __getstate__
+
+    seen: list[str] = []
+    for batch in loaded:
+        seen.extend(batch.metadata["uid"].to_list())
+    assert len(seen) == loaded.n_rows
+    assert len(set(seen)) == loaded.n_rows
+
+
+def test_iterable_dense_feature_dataset(single_group_dense_feature_atlas):
+    """Iterable mode works for dense feature spaces and yields DenseFeatureBatch."""
+    pytest.importorskip("torch")
+    atlas, expected = single_group_dense_feature_atlas
+
+    ds = atlas.query().to_unimodal_dataset(
+        "image_features",
+        layer_overrides=["ctrl_standardized"],
+        metadata_columns=["tissue"],
+        mode="iterable",
+        batch_size=2,
+        io_batch_size=4,
+    )
+
+    batches = list(ds)
+    assert sum(b.layers["ctrl_standardized"].shape[0] for b in batches) == 4
+    for b in batches:
+        assert isinstance(b, DenseFeatureBatch)
+        assert b.n_features == 3
+        assert b.layers["ctrl_standardized"].shape[1] == 3
+        assert b.metadata is not None
