@@ -21,6 +21,7 @@ Usage::
 
 import asyncio
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,7 @@ import lancedb
 import numpy as np
 import polars as pl
 from polars.dataframe.group_by import GroupBy
+from torch.utils.data import IterableDataset
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
@@ -38,7 +40,12 @@ from homeobox.batch_types import (
     SpatialTileBatch,
 )
 from homeobox.group_specs import get_spec
-from homeobox.pointer_types import DiscreteSpatialPointer
+from homeobox.pointer_types import (
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
+    SparseZarrPointer,
+    ZarrPointer,
+)
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     FeatureReadPlan,
@@ -46,6 +53,16 @@ from homeobox.reconstruction_functional import (
     finalize_grouped_read,
     read_arrays_by_group,
 )
+
+# Pointer-type-specific internal columns added by ``ZarrPointer.prepare_obs``.
+# These are the only obs columns ``read_arrays_by_group`` needs per-batch; we
+# retain them on the dataset at init so ``__getitems__`` doesn't have to
+# refetch pointers from lance over the network per batch.
+_POINTER_INTERNAL_COLS: dict[type[ZarrPointer], tuple[str, ...]] = {
+    SparseZarrPointer: ("_zg", "_start", "_end", "_zarr_row"),
+    DenseZarrPointer: ("_zg", "_pos"),
+    DiscreteSpatialPointer: ("_zg", "_min_corner", "_max_corner"),
+}
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
@@ -117,6 +134,56 @@ def _select_obs_metadata(obs_pl: pl.DataFrame) -> pl.DataFrame | None:
     return obs_pl.select(cols) if cols else None
 
 
+def _batch_n_rows(batch: "SparseBatch | DenseFeatureBatch | SpatialTileBatch") -> int:
+    """Row count for a batch, regardless of its concrete type."""
+    if isinstance(batch, SparseBatch):
+        return len(batch.offsets) - 1
+    if isinstance(batch, DenseFeatureBatch):
+        return next(iter(batch.layers.values())).shape[0]
+    if isinstance(batch, SpatialTileBatch):
+        return len(next(iter(batch.layers.values())))
+    raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
+
+
+def _slice_batch(
+    batch: "SparseBatch | DenseFeatureBatch | SpatialTileBatch",
+    start: int,
+    end: int,
+) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    """Return a new batch holding rows ``[start, end)`` of *batch*.
+
+    Used by :class:`UnimodalHoxIterableDataset` to carve a large I/O block
+    into training-sized sub-batches. The returned batch shares numpy
+    buffers with the input via slicing; SparseBatch offsets are rebased
+    to start at 0.
+    """
+    meta = batch.metadata[start:end] if batch.metadata is not None else None
+
+    if isinstance(batch, SparseBatch):
+        offsets = batch.offsets[start : end + 1]
+        nnz_start = int(offsets[0])
+        nnz_end = int(offsets[-1])
+        return SparseBatch(
+            indices=batch.indices[nnz_start:nnz_end],
+            offsets=offsets - offsets[0],
+            layers={name: arr[nnz_start:nnz_end] for name, arr in batch.layers.items()},
+            n_features=batch.n_features,
+            metadata=meta,
+        )
+    if isinstance(batch, DenseFeatureBatch):
+        return DenseFeatureBatch(
+            layers={name: arr[start:end] for name, arr in batch.layers.items()},
+            n_features=batch.n_features,
+            metadata=meta,
+        )
+    if isinstance(batch, SpatialTileBatch):
+        return SpatialTileBatch(
+            layers={name: arrs[start:end] for name, arrs in batch.layers.items()},
+            metadata=meta,
+        )
+    raise TypeError(f"Unsupported batch type for _slice_batch: {type(batch).__name__}")
+
+
 def _reorder_take_result(result: pl.DataFrame, batch_row_ids: np.ndarray) -> pl.DataFrame:
     """Reorder ``take_row_ids`` result to match the input order of *batch_row_ids*.
 
@@ -151,11 +218,17 @@ class _AsyncDataset:
         self.__dict__.update(state)
 
     def __del__(self) -> None:
-        if hasattr(self, "_loop") and self._loop is not None and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-            if self._loop_thread is not None:
-                self._loop_thread.join(timeout=5)
-            self._loop.close()
+        # At interpreter shutdown the daemon loop thread can be killed
+        # before stop() fires, leaving close() to raise RuntimeError on a
+        # "running" loop.
+        try:
+            if hasattr(self, "_loop") and self._loop is not None and not self._loop.is_closed():
+                self._loop.call_soon_threadsafe(self._loop.stop)
+                if self._loop_thread is not None:
+                    self._loop_thread.join(timeout=5)
+                self._loop.close()
+        except RuntimeError:
+            pass
 
 
 # Used insted of a lambda function because pickle doesn't like lambdas
@@ -338,7 +411,13 @@ class UnimodalHoxDataset(_AsyncDataset):
             obs_pl.height,
         )
 
-        self._row_ids = filtered["_rowid"].to_numpy().astype(np.uint64)
+        # Retain only the pointer-internal cols + _rowid so __getitems__ can
+        # slice locally instead of round-tripping to lance per batch. User
+        # metadata is fetched separately (in parallel with zarr) when needed.
+        pointer_cols = _POINTER_INTERNAL_COLS[self._pointer_type]
+        self._obs_with_pointers = filtered.select(["_rowid", *pointer_cols])
+
+        self._row_ids = self._obs_with_pointers["_rowid"].to_numpy().astype(np.uint64)
         self._n_rows = len(self._row_ids)
         self._pointer_field = field_name
         self._metadata_columns = metadata_columns
@@ -384,33 +463,50 @@ class UnimodalHoxDataset(_AsyncDataset):
         """
         self._ensure_initialized()
         indices_arr = np.array(row_indices, dtype=np.int64)
-
-        # 1. Lance take: pointer + metadata in one call
         batch_row_ids = self._row_ids[indices_arr]
-        select_cols = [self._pointer_field]
-        if self._metadata_columns:
-            select_cols.extend(self._metadata_columns)
 
-        take_result = (
-            self._obs_table.take_row_ids(batch_row_ids.tolist())
-            .with_row_id()
-            .select(select_cols)
-            .to_polars()
-        )
+        # Slice preloaded pointer DF (no network) and group by zarr_group.
+        # Row order in the slice is irrelevant: finalize_grouped_read uses
+        # ``_rowid`` -> ``target_row_ids`` to reorder the concatenated array
+        # batches into input order.
+        obs_slice = self._obs_with_pointers[indices_arr.tolist()]
+        groups = obs_slice.group_by("_zg")
 
-        # 2. Extract pointer data and dispatch async read
-        # This is safe because we already filtered at __init__, that
-        # guarantees that this op will not drop any rows from take_result
-        obs_pl, groups = _prepare_obs_and_groups(
-            take_result, self._pointer_type, self._pointer_field
-        )
-        # Sanity check
-        assert len(obs_pl) == len(take_result)
-        future = asyncio.run_coroutine_threadsafe(
+        # Dispatch zarr reads on the background event loop.
+        zarr_fut = asyncio.run_coroutine_threadsafe(
             _take_from_pointers(groups, batch_row_ids, self._mod_data.plan),
             self._loop,
         )
-        return future.result()
+
+        # In parallel, fetch metadata columns from lance if requested. The
+        # lance take is sync, so wrap it with asyncio.to_thread so it runs
+        # concurrently with the zarr reads instead of after them.
+        meta_fut = None
+        if self._metadata_columns:
+            meta_fut = asyncio.run_coroutine_threadsafe(
+                asyncio.to_thread(self._fetch_metadata_sync, batch_row_ids),
+                self._loop,
+            )
+
+        batch = zarr_fut.result()
+        if meta_fut is not None:
+            batch.metadata = meta_fut.result()
+        return batch
+
+    def _fetch_metadata_sync(self, batch_row_ids: np.ndarray) -> pl.DataFrame:
+        """Lance metadata fetch in input-row order.
+
+        ``take_row_ids`` returns rows sorted by ``_rowid``; we reorder via
+        :func:`_reorder_take_result` so each returned metadata row aligns
+        with the corresponding cell in the array batch.
+        """
+        meta_pl = (
+            self._obs_table.take_row_ids(batch_row_ids.tolist())
+            .with_row_id()
+            .select(list(self._metadata_columns))
+            .to_polars()
+        )
+        return _reorder_take_result(meta_pl, batch_row_ids).select(self._metadata_columns)
 
     def __getitem__(self, idx: int) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
         """Fetch a single row as a batch."""
@@ -440,6 +536,167 @@ class UnimodalHoxDataset(_AsyncDataset):
         state["_loop_thread"] = None
         state["_obs_table"] = None
         return state
+
+
+# ---------------------------------------------------------------------------
+# UnimodalHoxIterableDataset
+# ---------------------------------------------------------------------------
+
+
+class UnimodalHoxIterableDataset(IterableDataset):
+    """Iterable wrapper around :class:`UnimodalHoxDataset`.
+
+    Decouples zarr I/O size from training batch size. Each iteration step
+    asks the inner map-style dataset for a large ``io_batch_size`` block
+    and slices it into ``batch_size`` training batches; up to ``prefetch``
+    I/O blocks are read in parallel by an in-process
+    :class:`ThreadPoolExecutor` so next-block I/O overlaps current-block
+    consumption.
+
+    Single-process by design: wrap with
+    ``DataLoader(dataset, batch_size=None, num_workers=0)`` (or use
+    :func:`make_loader`). DataLoader workers add nothing — all overlap
+    is provided by the dataset's own threadpool.
+
+    Parameters
+    ----------
+    dataset:
+        A configured :class:`UnimodalHoxDataset`. The iterable delegates
+        all per-block I/O (zarr fetch + metadata join) to its
+        ``__getitems__`` and owns only the prefetch threadpool, block
+        planning, and slicing.
+    batch_size:
+        Rows per yielded training batch.
+    io_batch_size:
+        Rows per zarr fetch. Rounded down to the nearest multiple of
+        ``batch_size`` so block boundaries align with training-batch
+        boundaries.
+    prefetch:
+        Number of I/O blocks kept in flight (and the threadpool size).
+    shuffle:
+        If True, permute row order each epoch.
+    drop_last:
+        Drop trailing partial training batches.
+    seed:
+        Base RNG seed; per-epoch streams use ``seed + epoch``.
+    """
+
+    def __init__(
+        self,
+        dataset: UnimodalHoxDataset,
+        *,
+        batch_size: int,
+        io_batch_size: int = 65_536,
+        prefetch: int = 2,
+        shuffle: bool = False,
+        drop_last: bool = False,
+        seed: int = 0,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if io_batch_size < batch_size:
+            raise ValueError("io_batch_size must be >= batch_size")
+        if prefetch < 1:
+            raise ValueError("prefetch must be >= 1")
+
+        self._inner = dataset
+
+        # Round io_batch_size down to a multiple of batch_size so block
+        # boundaries don't produce small training batches mid-epoch.
+        self._batch_size = batch_size
+        self._io_batch_size = max(batch_size, (io_batch_size // batch_size) * batch_size)
+        self._prefetch = prefetch
+        self._shuffle = shuffle
+        self._drop_last = drop_last
+        self._seed = seed
+        self._epoch = 0
+
+        self._executor: ThreadPoolExecutor | None = None
+
+    @property
+    def n_rows(self) -> int:
+        return self._inner.n_rows
+
+    @property
+    def n_features(self) -> int:
+        return self._inner.n_features
+
+    def __len__(self) -> int:
+        n = self._inner.n_rows
+        if self._drop_last:
+            return n // self._batch_size
+        return (n + self._batch_size - 1) // self._batch_size
+
+    def _ensure_initialized(self) -> None:
+        # Inner dataset lazily starts its own asyncio loop on first
+        # __getitems__ call (which happens inside threadpool tasks).
+        if self._executor is None:
+            self._executor = ThreadPoolExecutor(max_workers=self._prefetch)
+
+    def _fetch_block(
+        self, indices: np.ndarray
+    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+        return self._inner.__getitems__(indices.tolist())
+
+    def __iter__(self):
+        self._ensure_initialized()
+
+        rng = np.random.default_rng(self._seed + self._epoch)
+        self._epoch += 1
+
+        n_rows = self._inner.n_rows
+        if self._shuffle:
+            order = rng.permutation(n_rows)
+        else:
+            order = np.arange(n_rows, dtype=np.int64)
+
+        n_blocks = (len(order) + self._io_batch_size - 1) // self._io_batch_size
+        blocks = [
+            order[i * self._io_batch_size : (i + 1) * self._io_batch_size] for i in range(n_blocks)
+        ]
+
+        # Prime the prefetch queue: submit up to ``prefetch`` blocks before
+        # yielding any results so I/O overlaps consumption from step zero.
+        in_flight: list[Future] = []
+        next_block_idx = 0
+        for _ in range(min(self._prefetch, len(blocks))):
+            in_flight.append(self._executor.submit(self._fetch_block, blocks[next_block_idx]))
+            next_block_idx += 1
+
+        while in_flight:
+            fut = in_flight.pop(0)
+            batch = fut.result()
+
+            # Replenish the queue *before* yielding so the new fetch starts
+            # while the caller consumes this block.
+            if next_block_idx < len(blocks):
+                in_flight.append(self._executor.submit(self._fetch_block, blocks[next_block_idx]))
+                next_block_idx += 1
+
+            block_n_rows = _batch_n_rows(batch)
+            for start in range(0, block_n_rows, self._batch_size):
+                end = min(start + self._batch_size, block_n_rows)
+                if self._drop_last and (end - start) < self._batch_size:
+                    continue
+                yield _slice_batch(batch, start, end)
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["_executor"] = None
+        return state
+
+    def __del__(self) -> None:
+        # Drain in-flight prefetches before the inner dataset's loop is
+        # torn down. The inner's __del__ closes its asyncio loop; running
+        # _fetch_block tasks call into that loop, so they must finish (or
+        # be cancelled) first. At interpreter shutdown executor threads
+        # may already be gone, in which case join raises RuntimeError.
+        executor = getattr(self, "_executor", None)
+        if executor is not None:
+            try:
+                executor.shutdown(wait=True, cancel_futures=True)
+            except RuntimeError:
+                pass
 
 
 # ---------------------------------------------------------------------------
@@ -603,7 +860,7 @@ class MultimodalHoxDataset(_AsyncDataset):
 
 
 def make_loader(
-    dataset: "UnimodalHoxDataset | MultimodalHoxDataset",
+    dataset: "UnimodalHoxDataset | MultimodalHoxDataset | UnimodalHoxIterableDataset",
     *,
     batch_size: int = 1024,
     shuffle: bool = False,
@@ -648,6 +905,26 @@ def make_loader(
     torch.utils.data.DataLoader
     """
     from torch.utils.data import DataLoader
+
+    if isinstance(dataset, UnimodalHoxIterableDataset):
+        # IterableDataset pre-batches in-process; DataLoader just passes
+        # items through. num_workers > 0 adds no benefit (the dataset's
+        # own threadpool already overlaps I/O), so force 0.
+        if num_workers > 0:
+            import warnings
+
+            warnings.warn(
+                "UnimodalHoxIterableDataset performs its own in-process prefetch; "
+                "num_workers > 0 is ignored.",
+                stacklevel=2,
+            )
+        defaults: dict = dict(
+            batch_size=None,
+            num_workers=0,
+            collate_fn=_identity_collate,
+        )
+        defaults.update(kwargs)
+        return DataLoader(dataset, **defaults)
 
     defaults: dict = dict(
         num_workers=num_workers,
