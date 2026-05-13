@@ -1,34 +1,34 @@
 # ML Dataloader Benchmarks
 
-Homeobox is designed to serve PyTorch training loops directly out of its zarr-backed atlas. To make claims about throughput meaningful, we compare it against a variety a commonly used dataloaders in both local and remote settings. The current benchmarks focus on single cell gene expression data, we will expand to consider other modalities like image data in the future.
+Homeobox is designed to serve PyTorch training loops directly out of its zarr-backed atlas. To make throughput claims meaningful, we compare it against commonly used dataloaders in both local and remote settings. The current benchmarks focus on single-cell gene expression data; other modalities (e.g. images) will follow.
 
-The benchmarking scripts and methodology were copied and modified from [SLAF](`https://github.com/slaf-project/slaf/tree/d002bd72ff77f00b7d8fa3af8c4230543694d316/benchmarks`).
+Scripts and methodology were adapted from [SLAF](`https://github.com/slaf-project/slaf/tree/d002bd72ff77f00b7d8fa3af8c4230543694d316/benchmarks`).
 
-**DISCLAIMER:** Fairly comparing dataloading methods is challenging. Data shuffling and entropy are inconsistent, some datasets support multiple workers with multiprocessing and others use prefetching threads, some only support local data stores or hold cached copies of the data in memory, hyparameter tuning for the system and dataset may be required, etc. We provide the scripts so that anyone can experiment and compare on their own systems and datasets.
+**DISCLAIMER:** Fair comparisons between dataloaders are hard — shuffling semantics, worker models (multiprocessing vs prefetching threads), remote support, in-memory caching, and per-system tuning all vary. We publish the scripts so anyone can re-run on their own systems and datasets.
 
 ---
 
 ## Metrics
 
-We measure **sustained cells per second** delivered to the training loop after a per-system warmup. Memory is recorded as **peak RSS** across the benchmarked process and all of its spawn children, sampled at 10 Hz.
+We measure **sustained cells per second** delivered to the training loop after a per-system warmup. Memory is recorded as **peak RSS** across the benchmarked process and its spawn children, sampled at 10 Hz.
 
-Throughput is what training loops care about — a model step cannot start until the next batch is materialised, so the dataloader's steady-state rate is the upper bound on epochs per wall-hour.
+Throughput is what training loops care about: a model step cannot start until the next batch is materialised, so the dataloader's steady-state rate caps epochs per wall-hour.
 
 We deliberately do **not** measure:
 
-- **First-batch latency** — irrelevant for long training runs and dominated by import / open / mmap costs that no system optimises hard.
-- **GPU-side preprocessing** — the systems compared here disagree on what counts as a batch (CSR vs. dense vs. tokenized), so we stop at "raw data delivered to Python."
-- **Cold-disk read rates** — see the section on [page-cache priming](#page-cache-priming) below.
+- **First-batch latency** — irrelevant for long training runs and dominated by import / open / mmap costs nobody optimises hard.
+- **GPU-side preprocessing** — systems disagree on what counts as a batch (CSR vs dense vs tokenized), so we stop at "raw data delivered to Python."
+- **Cold-disk read rates** — see [page-cache priming](#page-cache-priming).
 
 ---
 
 ## Dataset
 
-The benchmark suite uses two synthetic datasets, generated with deterministic seeds so a sweep can be reproduced bit-for-bit. The **throughput dataset** is the workhorse — sparse counts at atlas scale, exercised under both local and remote storage. The **perturbation dataset** is a separate, smaller workload that exists to stress the random-read access pattern used in single-cell perturbation training.
+The suite uses two synthetic datasets, generated with deterministic seeds so a sweep can be reproduced bit-for-bit. The **throughput dataset** is sparse counts at atlas scale, run under both local and remote storage. The **perturbation dataset** is smaller and targets the random-read pattern of single-cell perturbation training.
 
 ### Throughput dataset (local + remote)
 
-All local- and remote-throughput dataloader runs read the same synthetic dataset, generated once by `benchmarks/make_synth_dataset.py` and converted into each system's native on-disk format:
+All local and remote throughput runs read the same synthetic dataset, generated once by `benchmarks/make_synth_dataset.py` and converted into each system's native on-disk format:
 
 | Property | Value |
 |---|---|
@@ -39,7 +39,7 @@ All local- and remote-throughput dataloader runs read the same synthetic dataset
 | Values | `uint32` counts, drawn from `1 + Geometric(p=0.3)` |
 | Total on disk | ~32 GB across all formats |
 
-Each system reads its own copy, generated from the same underlying CSR shards. On-disk sizes vary by an order of magnitude across formats — the same logical 1M × 20k × 7% matrix occupies 2.5 GB in homeobox's bitpacked sharded zarr versus 11.3 GB in zstd-compressed h5ad, which is one of the things the benchmark *implicitly* measures (page-cache pressure, byte-rate ceilings on remote storage).
+Each system reads its own copy, generated from the same underlying CSR shards. On-disk sizes vary by an order of magnitude — the same logical 1M × 20k × 7% matrix is 2.5 GB in homeobox's bitpacked sharded zarr vs 11.3 GB in zstd-compressed h5ad. This shows up *implicitly* in page-cache pressure and remote byte-rate ceilings.
 
 | Path | Reader | Size on disk |
 |---|---|---:|
@@ -50,13 +50,13 @@ Each system reads its own copy, generated from the same underlying CSR shards. O
 | `annbatch/dataset_*.zarr` | annbatch | 3.0 GB |
 | `tiledbsoma/` | TileDB-SOMA `Experiment` | 2.9 GB |
 
-Identical copies of the formats that support remote stores (Homeobox, SLAF, annbatch, TileDB-SOMA) were uploaded to S3 for the remote sweep.
+Copies of the formats that support remote stores (Homeobox, SLAF, annbatch, TileDB-SOMA) were uploaded to S3 for the remote sweep.
 
-The synthetic distribution matches the *shape* of single-cell count data (sparsity, integer counts, geometric tail) but does not impose biological structure.
+The synthetic distribution matches the *shape* of single-cell count data (sparsity, integer counts, geometric tail) but imposes no biological structure.
 
 ### Perturbation dataset (group-aware random reads)
 
-A separate dataset, built by `benchmarks/make_perturbation_synth.py`, targets the random-access workload that single-cell perturbation training imposes: each batch contains cells from one `(cell_type, gene)` group, which means the dataloader materialises rows that are scattered across the file rather than reading a contiguous slice.
+A separate dataset, built by `benchmarks/make_perturbation_synth.py`, targets the random-access workload in single-cell perturbation training: each batch contains cells from one `(cell_type, gene)` group, so the dataloader materialises scattered rows rather than a contiguous slice.
 
 | Property | Value |
 |---|---|
@@ -73,9 +73,9 @@ A separate dataset, built by `benchmarks/make_perturbation_synth.py`, targets th
 | `atlas/` | Homeobox `RaggedAtlas` with a group sampler | 7.0 GB |
 | `cell_load/synth/CT*.h5` | `cell-load` (one AnnData per cell type) | 15 GB |
 
-Cells are **deliberately shuffled within each shard** before being written. Real perturbation experiments don't store cells contiguously by `(cell_type, gene)`; without the shuffle, both backends would degenerate to sequential reads within a batch — the easy case — and storage-layout differences (zarr chunk layout, HDF5 dataspace ordering) would be hidden.
+Cells are **deliberately shuffled within each shard** before being written. Real perturbation experiments don't store cells contiguously by `(cell_type, gene)`; without the shuffle, both backends would degenerate to sequential reads within a batch and storage-layout differences (zarr chunks, HDF5 dataspace ordering) would be hidden.
 
-Only two systems target this workload in the current sweep: **Homeobox-Map** (random row reads via `BatchArray` plus a group-aware batch sampler) and **cell-load** (the Arc Institute perturbation loader, designed for exactly this access pattern). The other systems in the throughput suite do not support group-aware batching out of the box. The perturbation sweep is local-only because cell-load can't read from remote storage.
+Only two systems target this workload: **Homeobox-Map** (random row reads via `BatchArray` + a group-aware batch sampler) and **cell-load** (the Arc Institute perturbation loader, designed for this pattern). The other throughput-suite systems don't support group-aware batching out of the box. The perturbation sweep is local-only because cell-load can't read from remote storage.
 
 ---
 
@@ -83,12 +83,12 @@ Only two systems target this workload in the current sweep: **Homeobox-Map** (ra
 
 ### Homeobox-Map vs Homeobox-Iter
 
-Homeobox exposes the same on-disk atlas through two PyTorch dataset surfaces, and the benchmark treats them as separate systems because the trade-off between them is the central design point of homeobox as a dataloader. **Both shuffle the full atlas uniformly at random each epoch** — the difference is the unit of I/O, not the access pattern:
+Homeobox exposes the same on-disk atlas through two PyTorch dataset surfaces, and we benchmark them as separate systems because the trade-off between them is the central design point of homeobox as a dataloader. **Both shuffle the full atlas uniformly at random each epoch** — the difference is the unit of I/O, not the access pattern:
 
-- **Homeobox-Map** is a `torch.utils.data.Dataset` with `__getitem__(indices)`. Each training batch is one call into the `RustShardReader` for `batch_size` shuffled rows. Any sampler is allowed — including ones that aren't a simple permutation (group-aware perturbation samplers, fine-grained subsetting, anything custom).
-- **Homeobox-Iter** is a `torch.utils.data.IterableDataset` that requests `io_batch_size=65,536` shuffled rows per call into the same reader and slices training batches out of an in-memory queue filled by a background prefetcher. Both the shuffle and the underlying zarr reads are scattered; the win is that each Python/Rust round-trip pulls 65k rows instead of `batch_size`, so the per-call fixed cost amortizes and the reader has more indices in hand to coalesce. The cost is that the sampler is fixed to "permutation, sliced into blocks" — group-aware samplers don't apply.
+- **Homeobox-Map** is a `torch.utils.data.Dataset` with `__getitem__(indices)`. Each training batch is one `RustShardReader` call for `batch_size` shuffled rows. Any sampler works — including non-permutation ones (group-aware, fine-grained subsetting, custom).
+- **Homeobox-Iter** is a `torch.utils.data.IterableDataset` that requests `io_batch_size=65,536` shuffled rows per reader call and slices training batches out of an in-memory queue filled by a background prefetcher. Reads are still scattered, but each Python/Rust round-trip pulls 65k rows instead of `batch_size`, so per-call fixed cost amortizes and the reader has more indices to coalesce. The cost: the sampler is fixed to "permutation, sliced into blocks" — group-aware samplers don't apply.
 
-In short: **Homeobox-Map trades speed for sampler flexibility**, and **Homeobox-Iter trades sampler flexibility for speed**. As training `batch_size` grows, Map's per-batch fixed costs amortize over more cells and the Map-vs-Iter gap narrows — see [Results](#results).
+In short: **Map trades speed for sampler flexibility, Iter trades sampler flexibility for speed**. As `batch_size` grows, Map's per-batch fixed cost amortizes and the gap narrows — see [Results](#results).
 
 ### Systems table
 
@@ -107,7 +107,7 @@ In short: **Homeobox-Map trades speed for sampler flexibility**, and **Homeobox-
 
 ### Capability matrix
 
-Beyond raw throughput, these systems differ in what they can do at all. The table below is meant to help frame the throughput numbers in the right context — a system that can't read from S3 isn't directly comparable to one that can, even if its local-disk numbers look similar.
+Beyond raw throughput, these systems differ in what they can do at all. The table frames the throughput numbers in context — a system that can't read from S3 isn't directly comparable to one that can, even if local-disk numbers look similar.
 
 | System | Map-style[^map] | Remote storage | Training-only format[^tof] | Versioned snapshots | Ragged features[^rag] |
 |---|:-:|:-:|:-:|:-:|:-:|
@@ -122,7 +122,7 @@ Beyond raw throughput, these systems differ in what they can do at all. The tabl
 | TileDB-SOMA | – | ✓ | – | ✓ | – |
 | cell-load | – | – | ✓ | – | – |
 
-Torch-worker support varies across these systems but the rules are too noisy to capture in a column — see [`num_workers` support](#num_workers-support) for the per-system breakdown.
+Torch-worker support varies across systems but the rules are too noisy for a column — see [`num_workers` support](#num_workers-support) for the per-system breakdown.
 
 [^map]: **Map-style** means the dataset exposes `__getitem__(idx)` so PyTorch's `DataLoader` can dispatch any index to any worker independently. Iterable systems run a single producer that fans batches out — their multi-worker scaling depends on partitioning, not on worker-side parallelism.
 
@@ -154,18 +154,18 @@ The dataset fits entirely in page cache (~30 GB vs. ~130 GB RAM), see below.
 For each system, the harness:
 
 1. Constructs the loader with the requested `batch_size` and `num_workers`.
-2. Iterates 15 batches and discards them — a fast in-Python warmup that absorbs JIT, lazy-init, and first-touch costs internal to the loader.
-3. Enters a fixed-duration loop: `warmup_seconds=10` of unmeasured iteration to let the worker pipeline reach steady state, followed by `measure_seconds=30` during which cells are counted.
+2. Iterates 15 batches and discards them — a fast in-Python warmup absorbing JIT, lazy-init, and first-touch costs internal to the loader.
+3. Enters a fixed-duration loop: `warmup_seconds=10` of unmeasured iteration to let the worker pipeline reach steady state, then `measure_seconds=30` during which cells are counted.
 4. Throughput is reported as `total_cells / measure_seconds`.
 
-A background thread samples `psutil` RSS across the parent and all spawn children at 10 Hz; the maximum observed value is reported as peak memory.
+A background thread samples `psutil` RSS across the parent and all spawn children at 10 Hz; the maximum is reported as peak memory.
 
 ### Subprocess isolation
 
-Each system runs in its own subprocess invocation of the benchmark script (`--isolate`, default). This serves two purposes:
+Each system runs in its own subprocess (`--isolate`, default). This gives:
 
-- **Per-system peak RSS is clean** — no residual heap from earlier systems' imports or buffers.
-- **No cross-library interference** — some systems install global Python multiprocessing start methods or hold module-level caches that would otherwise persist.
+- **Clean per-system peak RSS** — no residual heap from earlier systems' imports or buffers.
+- **No cross-library interference** — some systems install global multiprocessing start methods or hold module-level caches that would otherwise persist.
 
 The parent harness collects each child's JSON result, augments it with `(batch_size, num_workers, run_idx)`, and appends one row per system to a single CSV.
 
@@ -194,7 +194,7 @@ Covers Homeobox-Map and cell-load against the [perturbation dataset](#perturbati
 
 ### `num_workers` support
 
-Not every system accepts torch-style multi-process workers. The sweeps auto-skip systems that don't, rather than running the `num_workers > 0` cell as a duplicate `num_workers = 0` measurement under a different label:
+Not every system accepts torch-style multi-process workers. The sweeps auto-skip those rather than running `num_workers > 0` as a duplicate `num_workers = 0` measurement under a different label:
 
 | System | `num_workers > 0` |
 |---|---|
@@ -208,15 +208,15 @@ Not every system accepts torch-style multi-process workers. The sweeps auto-skip
 | AnnDataLoader, AnnLoader | — backed-h5ad pickling is unreliable across workers |
 | TileDB-SOMA | — `ExperimentDataset` rejects `num_workers > 0` with `return_sparse_X=True` ([pytorch/pytorch#20248](https://github.com/pytorch/pytorch/issues/20248)) |
 
-Systems in the second group contribute only the `num_workers = 0` rows. Plots showing scaling with `num_workers` therefore only carry curves for systems in the first group.
+Systems in the second group contribute only the `num_workers = 0` rows; plots showing scaling with `num_workers` only carry curves for the first group.
 
 ---
 
 ## Page-cache priming
 
-The first time a benchmark process reads a system's files, it pays a cold-disk read latency that has nothing to do with the loader's design. The second time, all of that data is in the Linux page cache and reads run from RAM at memory speed. Because the full dataset (~30 GB) fits comfortably in page cache (~130 GB), the realistic sustained-training scenario is the warm one — after the first epoch, every subsequent epoch hits cache.
+The first time a benchmark process reads a system's files, it pays cold-disk latency that has nothing to do with loader design. The second time, the data is in the Linux page cache and reads run from RAM. The full dataset (~30 GB) fits comfortably in cache (~130 GB), so the realistic sustained-training scenario is the warm one — every epoch after the first hits cache.
 
-We do not attempt to drop the page cache between reps — it would require root, and a cold-disk benchmark is a different experiment (a disk benchmark, not a dataloader benchmark). If you want to study cold-start behavior, run the sweep with `--skip-primer` and look at rep 0 in isolation; expect substantial run-to-run noise that reflects storage hardware, not loader code.
+We do not drop the page cache between reps — it would require root, and a cold-disk benchmark is a different experiment (a disk benchmark, not a dataloader benchmark). To study cold-start behavior, run the sweep with `--skip-primer` and look at rep 0 in isolation; expect substantial noise reflecting storage hardware, not loader code.
 
 ---
 
@@ -230,7 +230,7 @@ processes, measurement_time, total_cells, batch_count,
 batch_size, num_workers, run_idx
 ```
 
-`processes` is the worker process count actually used (`max(1, num_workers)` for systems that respect the argument). `measurement_time` is the wall-clock duration of the measurement window, which should be close to `measure_seconds` but is not exactly equal because the loop only checks the deadline between batches.
+`processes` is the worker count actually used (`max(1, num_workers)` for systems that respect the argument). `measurement_time` is the wall-clock duration of the measurement window — close to but not exactly `measure_seconds`, because the loop only checks the deadline between batches.
 
 ---
 
@@ -286,9 +286,9 @@ uv run python benchmarks/plot_dataloader_sweep.py        # script-mode regenerat
 
 ## Results
 
-All numbers below come from the reference hardware ([Hardware and software](#hardware-and-software)) with the page cache primed. Throughput is sustained cells/sec at steady state. The figures average across whatever reps are present in the CSV; the current snapshots are single-rep, so the markers and tables match the raw measurements one-for-one.
+All numbers below come from the reference hardware ([Hardware and software](#hardware-and-software)) with the page cache primed. Throughput is sustained cells/sec at steady state. Figures average over whatever reps are in the CSV; current snapshots are single-rep, so markers and tables match raw measurements one-for-one.
 
-The recurring theme across all three sections is **the Homeobox-Map ↔ Homeobox-Iter trade-off**. Both shuffle the atlas uniformly at random. Map asks for `batch_size` shuffled rows per call into the Rust reader, Iter asks for 65k. Reading the same atlas under the same shuffle, **the gap between them is a direct measure of the per-call fixed cost Map pays for sampler flexibility**. That gap shrinks as `batch_size` grows: larger batches amortize Map's per-batch overhead over more rows and give the reader more indices per call to coalesce — both of which Iter already gets for free with its 65k-row block.
+The recurring theme across all three sections is **the Homeobox-Map ↔ Homeobox-Iter trade-off**. Both shuffle the atlas uniformly at random; Map asks for `batch_size` rows per Rust-reader call, Iter asks for 65k. **The gap between them is a direct measure of the per-call fixed cost Map pays for sampler flexibility.** It shrinks as `batch_size` grows: larger batches amortize per-batch overhead and give the reader more indices per call to coalesce — both of which Iter gets for free.
 
 ### Local — throughput on NVMe
 
@@ -312,12 +312,12 @@ Throughput (cells/sec, `workers=0`, single rep):
 
 Three things to notice:
 
-1. **Homeobox-Iter saturates the reference NVMe at ~70k cells/sec** and is essentially flat across batch sizes — once the prefetcher is in steady state, the training-loop batch size doesn't matter, because the I/O unit is the 65k-row block and the training batches are sliced out of a warm queue. The only systems that get close are annbatch (chunk-prefetching zarr) and BioNeMo SCDL at large batches (memmap with bulk slicing).
-2. **Homeobox-Map's gap to Homeobox-Iter narrows sharply with batch size.** At `b=64` Iter is 7.3× faster than Map (69,658 vs 9,553); at `b=512` it's 3.2× (73,171 vs 22,749); at `b=4096` it's 2.9× (72,548 vs 25,049). Exactly the amortization effect predicted above: at large `B`, Map's per-batch fixed overhead is divided over more rows, and the reader receives a wider index set per call so it can coalesce more zarr ranges — which is what Iter is effectively doing all the time with its 65k-row blocks.
+1. **Homeobox-Iter saturates the reference NVMe at ~70k cells/sec** and is flat across batch sizes — once the prefetcher is in steady state, training-loop batch size doesn't matter: the I/O unit is the 65k-row block and training batches are sliced from a warm queue. The only systems that get close are annbatch (chunk-prefetching zarr) and BioNeMo SCDL at large batches (memmap with bulk slicing).
+2. **Homeobox-Map's gap to Iter narrows sharply with batch size.** At `b=64` Iter is 7.3× faster (69,658 vs 9,553); at `b=512`, 3.2× (73,171 vs 22,749); at `b=4096`, 2.9× (72,548 vs 25,049). Exactly the predicted amortization: at large `B`, Map's per-batch fixed overhead is divided over more rows, and the reader coalesces more zarr ranges per call — which is what Iter does all the time.
 
 ![Local peak memory vs throughput](assets/local_mem_vs_throughput.png)
 
-On memory: Homeobox-Map sits in the low-RSS cluster (~1–3 GB at `b=4096, workers=0`), comparable to annbatch and AnnDataLoader. Homeobox-Iter pays for its in-memory prefetch queue with ~18 GB peak — the trade-off is again explicit. BioNeMo SCDL and TileDB-SOMA dominate the memory axis (~9 and ~10 GB respectively) without buying corresponding throughput against the leading systems.
+On memory: Homeobox-Map sits in the low-RSS cluster (~1–3 GB at `b=4096, workers=0`), comparable to annbatch and AnnDataLoader. Homeobox-Iter pays ~18 GB peak for its in-memory prefetch queue — the trade-off is explicit. BioNeMo SCDL and TileDB-SOMA dominate the memory axis (~9 and ~10 GB) without buying corresponding throughput.
 
 ### Remote — same atlas served from S3
 
@@ -335,15 +335,15 @@ Throughput (cells/sec, `workers=0`):
 | **Homeobox-Map** | 576 | 1,884 | 3,300 |
 | annbatch | 1,050 | 1,314 | 1,594 |
 
-S3 latency turns the Map ↔ Iter trade-off from a 3–7× gap into a 12–70× gap. Each Homeobox-Map batch issues `B` obstore GETs against S3, and the per-request RTT (~10–20 ms) dominates the actual byte transfer. Homeobox-Iter still does scattered reads, but it asks for 65,536 indices per call, so the reader can coalesce co-located indices into fewer GETs and overlap many in-flight requests against the same RTT budget — and decode runs ahead of the consumer in the background prefetcher. The fixed cost being amortized is the same as locally; remote storage just makes that fixed cost an order of magnitude larger, which is why the gap is correspondingly larger.
+S3 latency turns the Map ↔ Iter trade-off from a 3–7× gap into a 12–70× gap. Each Map batch issues `B` obstore GETs against S3, and per-request RTT (~10–20 ms) dominates the byte transfer. Iter still does scattered reads, but at 65,536 indices per call it coalesces co-located indices into fewer GETs, overlaps many in-flight requests against the same RTT budget, and decodes ahead of the consumer in the prefetcher. The amortized fixed cost is the same as locally; remote storage just makes it an order of magnitude larger, so the gap widens correspondingly.
 
 ![Remote peak memory vs throughput](assets/remote_mem_vs_throughput.png)
 
-Memory-wise the picture is similar to local: Homeobox-Iter trades ~15 GB peak RSS (its prefetch queue) for an order-of-magnitude throughput advantage; Homeobox-Map sits near the bottom of the memory axis.
+Memory looks similar to local: Iter trades ~15 GB peak RSS (prefetch queue) for an order-of-magnitude throughput advantage; Map sits near the bottom of the memory axis.
 
 ### Perturbation — group-aware random reads
 
-Each batch is `B` cells drawn from a single `(cell_type, gene)` group on the [perturbation dataset](#perturbation-dataset-group-aware-random-reads). Only **Homeobox-Map** and **cell-load** appear — none of the throughput-suite systems implement a group-aware sampler, and Homeobox-Iter cannot serve this workload because the access pattern requires `__getitem__`.
+Each batch is `B` cells drawn from a single `(cell_type, gene)` group on the [perturbation dataset](#perturbation-dataset-group-aware-random-reads). Only **Homeobox-Map** and **cell-load** appear — no throughput-suite system implements a group-aware sampler, and Iter can't serve this workload because the access pattern requires `__getitem__`.
 
 ![Perturbation throughput vs batch size (workers = 0)](assets/perturbation_throughput_vs_batchsize.png)
 
@@ -354,12 +354,12 @@ Throughput (cells/sec, `workers=0`):
 | **Homeobox-Map** | 9,842 | 13,677 | 12,265 |
 | cell-load | 4,936 | 26,678 | 27,096 |
 
-The crossover at `b≥512` is the locality story: a single-group batch in cell-load maps to a contiguous-ish region in one cell-type-specific `.h5` (one large HDF5 read), whereas Homeobox-Map issues `B` independent zarr range reads regardless of how the batch is constructed. At `b=64`, the per-batch fixed cost dominates cell-load's HDF5 open/seek path and Homeobox-Map wins by ~2×; at `b≥512`, cell-load's bulk-read advantage takes over and it pulls ahead by roughly the same factor.
+The crossover at `b≥512` is the locality story: a single-group batch in cell-load maps to a contiguous-ish region in one cell-type-specific `.h5` (one large HDF5 read), whereas Homeobox-Map issues `B` independent zarr range reads regardless of batch construction. At `b=64`, per-batch fixed cost dominates cell-load's HDF5 open/seek path and Map wins by ~2×; at `b≥512`, cell-load's bulk-read advantage takes over and it pulls ahead by roughly the same factor.
 
 ![Perturbation throughput vs num_workers](assets/perturbation_throughput_vs_workers.png)
 
-At `num_workers=4` both systems roughly double, preserving the same ordering: cell-load at 34–59k cells/sec, Homeobox-Map at 18–25k cells/sec.
+At `num_workers=4` both systems roughly double, preserving the ordering: cell-load at 34–59k cells/sec, Map at 18–25k cells/sec.
 
 ![Perturbation peak memory vs throughput](assets/perturbation_mem_vs_throughput.png)
 
-Memory is comparable between the two systems at the largest batch (cell-load ~1.1 GB, Homeobox-Map ~1.6 GB at `b=1024, workers=0`). The reason this benchmark exists is not to show that Homeobox-Map "wins" — at large batches on this workload it doesn't — but to quantify the cost of one specific flexibility: arbitrary `__getitem__` over the atlas, with no second on-disk copy and no per-cell-type sharding requirement. If your training loop is dominated by sustained large-batch group reads on a single dense embedding modality, cell-load's specialized format is faster; if you also need random access, multi-modal queries, ragged feature spaces, or remote-store reads, Homeobox-Map is the system that can serve all of those from one atlas.
+Memory is comparable at the largest batch (cell-load ~1.1 GB, Map ~1.6 GB at `b=1024, workers=0`). This benchmark isn't here to show Homeobox-Map "wins" — at large batches on this workload it doesn't — but to quantify the cost of one specific flexibility: arbitrary `__getitem__` over the atlas, with no second on-disk copy and no per-cell-type sharding requirement. For sustained large-batch group reads on a single dense embedding modality, cell-load's specialized format is faster; if you also need random access, multi-modal queries, ragged features, or remote-store reads, Homeobox-Map serves all of those from one atlas.
