@@ -122,7 +122,25 @@ Beyond raw throughput, these systems differ in what they can do at all. The tabl
 | TileDB-SOMA | – | ✓ | – | ✓ | – |
 | cell-load | – | – | ✓ | – | – |
 
-Torch-worker support varies across systems but the rules are too noisy for a column — see [`num_workers` support](#num_workers-support) for the per-system breakdown.
+Torch-worker support varies across systems but the rules are too noisy for a column — see the per-system breakdown below.
+
+### `num_workers` support
+
+Not every system accepts torch-style multi-process workers. The sweeps auto-skip those rather than running `num_workers > 0` as a duplicate `num_workers = 0` measurement under a different label:
+
+| System | `num_workers > 0` |
+|---|---|
+| Homeobox-Map | ✓ |
+| Homeobox-Iter | — internal multithreaded prefetcher; running on top of `DataLoader` workers would double up |
+| scDataset | ✓ |
+| BioNeMo SCDL | ✓ |
+| cell-load | ✓ |
+| SLAF | — manages its own scanner threads (`n_scanners`) |
+| annbatch | — own threaded preloader, no `num_workers` argument |
+| AnnDataLoader, AnnLoader | — backed-h5ad pickling is unreliable across workers |
+| TileDB-SOMA | — `ExperimentDataset` rejects `num_workers > 0` with `return_sparse_X=True` ([pytorch/pytorch#20248](https://github.com/pytorch/pytorch/issues/20248)) |
+
+Systems in the second group contribute only the `num_workers = 0` rows; plots showing scaling with `num_workers` only carry curves for the first group.
 
 [^map]: **Map-style** means the dataset exposes `__getitem__(idx)` so PyTorch's `DataLoader` can dispatch any index to any worker independently. Iterable systems run a single producer that fans batches out — their multi-worker scaling depends on partitioning, not on worker-side parallelism.
 
@@ -147,140 +165,11 @@ The dataset fits entirely in page cache (~30 GB vs. ~130 GB RAM), see below.
 
 ---
 
-## Measurement protocol
-
-### Per-system harness
-
-For each system, the harness:
-
-1. Constructs the loader with the requested `batch_size` and `num_workers`.
-2. Iterates 15 batches and discards them — a fast in-Python warmup absorbing JIT, lazy-init, and first-touch costs internal to the loader.
-3. Enters a fixed-duration loop: `warmup_seconds=10` of unmeasured iteration to let the worker pipeline reach steady state, then `measure_seconds=30` during which cells are counted.
-4. Throughput is reported as `total_cells / measure_seconds`.
-
-A background thread samples `psutil` RSS across the parent and all spawn children at 10 Hz; the maximum is reported as peak memory.
-
-### Subprocess isolation
-
-Each system runs in its own subprocess (`--isolate`, default). This gives:
-
-- **Clean per-system peak RSS** — no residual heap from earlier systems' imports or buffers.
-- **No cross-library interference** — some systems install global multiprocessing start methods or hold module-level caches that would otherwise persist.
-
-The parent harness collects each child's JSON result, augments it with `(batch_size, num_workers, run_idx)`, and appends one row per system to a single CSV.
-
----
-
-## Sweep grid
-
-The benchmark suite runs two independent sweeps, each producing its own CSV.
-
-### Throughput sweep (`benchmarks/sweep_dataloaders.py`)
-
-Covers all systems against the [throughput dataset](#throughput-dataset-local--remote). One sweep produces one CSV.
-
-- **Batch size:** 64, 512, 4096
-- **`num_workers`:** 0, 4
-- **Systems:** all (see [Systems table](#systems-table)); the harness auto-skips systems × configs that don't apply (see below).
-
-### Perturbation sweep (`benchmarks/sweep_group_sampler.py`)
-
-Covers Homeobox-Map and cell-load against the [perturbation dataset](#perturbation-dataset-group-aware-random-reads).
-
-- **Batch size:** 64, 512, 1024
-- **`num_workers`:** 0, 4
-- **Systems:** Homeobox-Map, cell-load (the throughput-suite systems do not implement a group-aware sampler).
-- The harness runs `(workers, batch_size)` as the *outer* product and alternates systems on the inner axis so each pair runs back-to-back under the same page-cache state.
-
-### `num_workers` support
-
-Not every system accepts torch-style multi-process workers. The sweeps auto-skip those rather than running `num_workers > 0` as a duplicate `num_workers = 0` measurement under a different label:
-
-| System | `num_workers > 0` |
-|---|---|
-| Homeobox-Map | ✓ |
-| Homeobox-Iter | — internal multithreaded prefetcher; running on top of `DataLoader` workers would double up |
-| scDataset | ✓ |
-| BioNeMo SCDL | ✓ |
-| cell-load | ✓ |
-| SLAF | — manages its own scanner threads (`n_scanners`) |
-| annbatch | — own threaded preloader, no `num_workers` argument |
-| AnnDataLoader, AnnLoader | — backed-h5ad pickling is unreliable across workers |
-| TileDB-SOMA | — `ExperimentDataset` rejects `num_workers > 0` with `return_sparse_X=True` ([pytorch/pytorch#20248](https://github.com/pytorch/pytorch/issues/20248)) |
-
-Systems in the second group contribute only the `num_workers = 0` rows; plots showing scaling with `num_workers` only carry curves for the first group.
-
----
-
 ## Page-cache priming
 
 The first time a benchmark process reads a system's files, it pays cold-disk latency that has nothing to do with loader design. The second time, the data is in the Linux page cache and reads run from RAM. The full dataset (~30 GB) fits comfortably in cache (~130 GB), so the realistic sustained-training scenario is the warm one — every epoch after the first hits cache.
 
-We do not drop the page cache between reps — it would require root, and a cold-disk benchmark is a different experiment (a disk benchmark, not a dataloader benchmark). To study cold-start behavior, run the sweep with `--skip-primer` and look at rep 0 in isolation; expect substantial noise reflecting storage hardware, not loader code.
-
----
-
-## CSV output
-
-The harness writes one CSV at `<output-csv>` with one row per `(system, batch_size, num_workers, run_idx)` measurement. Columns:
-
-```
-system_name, throughput_cells_per_sec, memory_usage_gb,
-processes, measurement_time, total_cells, batch_count,
-batch_size, num_workers, run_idx
-```
-
-`processes` is the worker count actually used (`max(1, num_workers)` for systems that respect the argument). `measurement_time` is the wall-clock duration of the measurement window — close to but not exactly `measure_seconds`, because the loop only checks the deadline between batches.
-
----
-
-## Reproducing
-
-### Throughput sweep
-
-```bash
-python benchmarks/make_synth_dataset.py --data-root /path/to/synth
-
-python benchmarks/sweep_dataloaders.py \
-    --data-root /path/to/synth \
-    --output-csv profiles/dataloader_sweep.csv \
-    --workers 0 4 \
-    --batch-sizes 64 512 4096 \
-    --reps 1
-```
-
-To benchmark a single system at a single configuration (useful when tuning):
-
-```bash
-python benchmarks/benchmark_dataloaders_homeobox.py \
-    --data-root /path/to/synth \
-    --batch-size 512 --num-workers 4 \
-    --only homeobox \
-    --output-csv /tmp/one.csv
-```
-
-### Perturbation sweep
-
-```bash
-python benchmarks/make_perturbation_synth.py --data-root /path/to/pertsynth_shuffled
-
-python benchmarks/sweep_group_sampler.py \
-    --data-root /path/to/pertsynth_shuffled \
-    --output-csv profiles/group_sampler_sweep.csv \
-    --systems homeobox cell-load \
-    --workers 0 4 \
-    --batch-sizes 64 512 1024 \
-    --reps 1
-```
-
-### Rendering the figures
-
-The plots in [Results](#results) below are generated by a marimo notebook that reads the CSVs in `profiles/` and writes PNGs to `docs/assets/`:
-
-```bash
-uv run marimo edit benchmarks/plot_dataloader_sweep.py   # interactive
-uv run python benchmarks/plot_dataloader_sweep.py        # script-mode regeneration
-```
+We do not drop the page cache between reps — it would require root, and a cold-disk benchmark is a different experiment (a disk benchmark, not a dataloader benchmark). Reported numbers are post-priming.
 
 ---
 
