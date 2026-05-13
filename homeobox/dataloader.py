@@ -29,7 +29,13 @@ import lancedb
 import numpy as np
 import polars as pl
 from polars.dataframe.group_by import GroupBy
-from torch.utils.data import IterableDataset
+
+try:
+    from torch.utils.data import IterableDataset
+except ImportError:
+    # Torch is an optional runtime dependency. The class below still needs a
+    # base; without torch installed, iteration code paths can't run anyway.
+    IterableDataset = object  # type: ignore[misc,assignment]
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
