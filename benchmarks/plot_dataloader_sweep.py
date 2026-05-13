@@ -7,6 +7,7 @@
 #     "seaborn",
 # ]
 # ///
+# ruff: noqa: B018, B905
 
 import marimo
 
@@ -16,11 +17,12 @@ app = marimo.App(width="medium")
 
 @app.cell
 def _():
-    import marimo as mo
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    import seaborn as sns
     from pathlib import Path
+
+    import marimo as mo
+    import matplotlib.pyplot as plt
+    import pandas as pd
+    import seaborn as sns
 
     sns.set_theme(style="whitegrid", context="notebook")
     return Path, mo, pd, plt, sns
