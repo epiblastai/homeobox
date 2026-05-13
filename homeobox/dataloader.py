@@ -40,12 +40,7 @@ from homeobox.batch_types import (
     SpatialTileBatch,
 )
 from homeobox.group_specs import get_spec
-from homeobox.pointer_types import (
-    DenseZarrPointer,
-    DiscreteSpatialPointer,
-    SparseZarrPointer,
-    ZarrPointer,
-)
+from homeobox.pointer_types import DiscreteSpatialPointer
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     FeatureReadPlan,
@@ -53,16 +48,6 @@ from homeobox.reconstruction_functional import (
     finalize_grouped_read,
     read_arrays_by_group,
 )
-
-# Pointer-type-specific internal columns added by ``ZarrPointer.prepare_obs``.
-# These are the only obs columns ``read_arrays_by_group`` needs per-batch; we
-# retain them on the dataset at init so ``__getitems__`` doesn't have to
-# refetch pointers from lance over the network per batch.
-_POINTER_INTERNAL_COLS: dict[type[ZarrPointer], tuple[str, ...]] = {
-    SparseZarrPointer: ("_zg", "_start", "_end", "_zarr_row"),
-    DenseZarrPointer: ("_zg", "_pos"),
-    DiscreteSpatialPointer: ("_zg", "_min_corner", "_max_corner"),
-}
 
 # ---------------------------------------------------------------------------
 # Shared helpers / mixin
@@ -364,8 +349,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         # Retain only the pointer-internal cols + _rowid so __getitems__ can
         # slice locally instead of round-tripping to lance per batch. User
         # metadata is fetched separately (in parallel with zarr) when needed.
-        pointer_cols = _POINTER_INTERNAL_COLS[self._pointer_type]
-        self._obs_with_pointers = filtered.select(["_rowid", *pointer_cols])
+        self._obs_with_pointers = filtered.select(["_rowid", *self._pointer_type.alias_columns])
 
         self._row_ids = self._obs_with_pointers["_rowid"].to_numpy().astype(np.uint64)
         self._n_rows = len(self._row_ids)
