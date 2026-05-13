@@ -134,56 +134,6 @@ def _select_obs_metadata(obs_pl: pl.DataFrame) -> pl.DataFrame | None:
     return obs_pl.select(cols) if cols else None
 
 
-def _batch_n_rows(batch: "SparseBatch | DenseFeatureBatch | SpatialTileBatch") -> int:
-    """Row count for a batch, regardless of its concrete type."""
-    if isinstance(batch, SparseBatch):
-        return len(batch.offsets) - 1
-    if isinstance(batch, DenseFeatureBatch):
-        return next(iter(batch.layers.values())).shape[0]
-    if isinstance(batch, SpatialTileBatch):
-        return len(next(iter(batch.layers.values())))
-    raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
-
-
-def _slice_batch(
-    batch: "SparseBatch | DenseFeatureBatch | SpatialTileBatch",
-    start: int,
-    end: int,
-) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
-    """Return a new batch holding rows ``[start, end)`` of *batch*.
-
-    Used by :class:`UnimodalHoxIterableDataset` to carve a large I/O block
-    into training-sized sub-batches. The returned batch shares numpy
-    buffers with the input via slicing; SparseBatch offsets are rebased
-    to start at 0.
-    """
-    meta = batch.metadata[start:end] if batch.metadata is not None else None
-
-    if isinstance(batch, SparseBatch):
-        offsets = batch.offsets[start : end + 1]
-        nnz_start = int(offsets[0])
-        nnz_end = int(offsets[-1])
-        return SparseBatch(
-            indices=batch.indices[nnz_start:nnz_end],
-            offsets=offsets - offsets[0],
-            layers={name: arr[nnz_start:nnz_end] for name, arr in batch.layers.items()},
-            n_features=batch.n_features,
-            metadata=meta,
-        )
-    if isinstance(batch, DenseFeatureBatch):
-        return DenseFeatureBatch(
-            layers={name: arr[start:end] for name, arr in batch.layers.items()},
-            n_features=batch.n_features,
-            metadata=meta,
-        )
-    if isinstance(batch, SpatialTileBatch):
-        return SpatialTileBatch(
-            layers={name: arrs[start:end] for name, arrs in batch.layers.items()},
-            metadata=meta,
-        )
-    raise TypeError(f"Unsupported batch type for _slice_batch: {type(batch).__name__}")
-
-
 def _reorder_take_result(result: pl.DataFrame, batch_row_ids: np.ndarray) -> pl.DataFrame:
     """Reorder ``take_row_ids`` result to match the input order of *batch_row_ids*.
 
@@ -673,12 +623,12 @@ class UnimodalHoxIterableDataset(IterableDataset):
                 in_flight.append(self._executor.submit(self._fetch_block, blocks[next_block_idx]))
                 next_block_idx += 1
 
-            block_n_rows = _batch_n_rows(batch)
+            block_n_rows = len(batch)
             for start in range(0, block_n_rows, self._batch_size):
                 end = min(start + self._batch_size, block_n_rows)
                 if self._drop_last and (end - start) < self._batch_size:
                     continue
-                yield _slice_batch(batch, start, end)
+                yield batch[start:end]
 
     def __getstate__(self) -> dict:
         state = self.__dict__.copy()
