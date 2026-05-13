@@ -8,7 +8,11 @@ if TYPE_CHECKING:
     from lancedb.query import LanceQueryBuilder
 
     from homeobox.batch_types import SpatialTileBatch
-    from homeobox.dataloader import MultimodalHoxDataset, UnimodalHoxDataset
+    from homeobox.dataloader import (
+        MultimodalHoxDataset,
+        UnimodalHoxDataset,
+        UnimodalHoxIterableDataset,
+    )
     from homeobox.fragments.reconstruction import FragmentResult
     from homeobox.multimodal import MultimodalResult
 
@@ -632,6 +636,60 @@ class AtlasQuery:
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
             obs_table_name=self._obs_table_name,
+        )
+
+    def to_unimodal_iterable_dataset(
+        self,
+        field_name: str,
+        layer_overrides: list[str] | None = None,
+        metadata_columns: list[str] | None = None,
+        *,
+        batch_size: int,
+        io_batch_size: int = 65_536,
+        prefetch: int = 2,
+        shuffle: bool = False,
+        drop_last: bool = False,
+        seed: int = 0,
+    ) -> "UnimodalHoxIterableDataset":
+        """Create a :class:`UnimodalHoxIterableDataset` (iterable variant).
+
+        Reads large I/O blocks of ``io_batch_size`` rows from zarr and slices
+        them into training batches of ``batch_size``; up to ``prefetch``
+        blocks are prefetched by an in-process threadpool. See
+        :class:`~homeobox.dataloader.UnimodalHoxIterableDataset` for details.
+        """
+        from homeobox.dataloader import UnimodalHoxIterableDataset
+        from homeobox.group_specs import get_spec
+
+        pf = self._pointer_fields[field_name]
+        feature_space = pf.feature_space
+        spec = get_spec(feature_space)
+
+        obs_pl = self._materialize_rows_for_dataset()
+
+        wanted_globals = None
+        if feature_space in self._feature_filter and spec.has_var_df:
+            from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
+
+            wanted_globals = resolve_feature_uids_to_global_indices(
+                self._atlas.registry_tables[feature_space],
+                self._feature_filter[feature_space],
+            )
+
+        return UnimodalHoxIterableDataset(
+            atlas=self._atlas,
+            obs_pl=obs_pl,
+            field_name=field_name,
+            layer_overrides=layer_overrides,
+            metadata_columns=metadata_columns,
+            wanted_globals=wanted_globals,
+            obs_table_name=self._obs_table_name,
+            batch_size=batch_size,
+            io_batch_size=io_batch_size,
+            prefetch=prefetch,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            seed=seed,
         )
 
     def to_multimodal_dataset(

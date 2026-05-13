@@ -21,6 +21,7 @@ Usage::
 
 import asyncio
 import threading
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,7 @@ import lancedb
 import numpy as np
 import polars as pl
 from polars.dataframe.group_by import GroupBy
+from torch.utils.data import IterableDataset
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
@@ -130,6 +132,56 @@ def _select_obs_metadata(obs_pl: pl.DataFrame) -> pl.DataFrame | None:
         if not col.startswith("_") and dtype.base_type() != pl.Struct
     ]
     return obs_pl.select(cols) if cols else None
+
+
+def _batch_n_rows(batch: "SparseBatch | DenseFeatureBatch | SpatialTileBatch") -> int:
+    """Row count for a batch, regardless of its concrete type."""
+    if isinstance(batch, SparseBatch):
+        return len(batch.offsets) - 1
+    if isinstance(batch, DenseFeatureBatch):
+        return next(iter(batch.layers.values())).shape[0]
+    if isinstance(batch, SpatialTileBatch):
+        return len(next(iter(batch.layers.values())))
+    raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
+
+
+def _slice_batch(
+    batch: "SparseBatch | DenseFeatureBatch | SpatialTileBatch",
+    start: int,
+    end: int,
+) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    """Return a new batch holding rows ``[start, end)`` of *batch*.
+
+    Used by :class:`UnimodalHoxIterableDataset` to carve a large I/O block
+    into training-sized sub-batches. The returned batch shares numpy
+    buffers with the input via slicing; SparseBatch offsets are rebased
+    to start at 0.
+    """
+    meta = batch.metadata[start:end] if batch.metadata is not None else None
+
+    if isinstance(batch, SparseBatch):
+        offsets = batch.offsets[start : end + 1]
+        nnz_start = int(offsets[0])
+        nnz_end = int(offsets[-1])
+        return SparseBatch(
+            indices=batch.indices[nnz_start:nnz_end],
+            offsets=offsets - offsets[0],
+            layers={name: arr[nnz_start:nnz_end] for name, arr in batch.layers.items()},
+            n_features=batch.n_features,
+            metadata=meta,
+        )
+    if isinstance(batch, DenseFeatureBatch):
+        return DenseFeatureBatch(
+            layers={name: arr[start:end] for name, arr in batch.layers.items()},
+            n_features=batch.n_features,
+            metadata=meta,
+        )
+    if isinstance(batch, SpatialTileBatch):
+        return SpatialTileBatch(
+            layers={name: arrs[start:end] for name, arrs in batch.layers.items()},
+            metadata=meta,
+        )
+    raise TypeError(f"Unsupported batch type for _slice_batch: {type(batch).__name__}")
 
 
 def _reorder_take_result(result: pl.DataFrame, batch_row_ids: np.ndarray) -> pl.DataFrame:
@@ -481,6 +533,239 @@ class UnimodalHoxDataset(_AsyncDataset):
 
 
 # ---------------------------------------------------------------------------
+# UnimodalHoxIterableDataset
+# ---------------------------------------------------------------------------
+
+
+class UnimodalHoxIterableDataset(_AsyncDataset, IterableDataset):
+    """Iterable variant of :class:`UnimodalHoxDataset`.
+
+    Decouples zarr I/O size from training batch size. Each iteration step
+    reads a large ``io_batch_size`` block from zarr and slices it into
+    ``batch_size`` training batches; up to ``prefetch`` I/O blocks are
+    read in parallel by an in-process :class:`ThreadPoolExecutor` so
+    next-block I/O overlaps current-block consumption.
+
+    Single-process by design: wrap with
+    ``DataLoader(dataset, batch_size=None, num_workers=0)`` (or use
+    :func:`make_loader`). DataLoader workers add nothing — all overlap
+    is provided by the dataset's own threadpool.
+
+    Parameters
+    ----------
+    atlas, obs_pl, field_name, layer_overrides, metadata_columns,
+    wanted_globals, obs_table_name:
+        Same as :class:`UnimodalHoxDataset`.
+    batch_size:
+        Rows per yielded training batch.
+    io_batch_size:
+        Rows per zarr fetch. Rounded down to the nearest multiple of
+        ``batch_size`` so block boundaries align with training-batch
+        boundaries.
+    prefetch:
+        Number of I/O blocks kept in flight (and the threadpool size).
+    shuffle:
+        If True, permute row order each epoch.
+    drop_last:
+        Drop trailing partial training batches.
+    seed:
+        Base RNG seed; per-epoch streams use ``seed + epoch``.
+    """
+
+    def __init__(
+        self,
+        atlas: "RaggedAtlas",
+        obs_pl: pl.DataFrame,
+        field_name: str = "gene_expression",
+        layer_overrides: list[str] | None = None,
+        metadata_columns: list[str] | None = None,
+        wanted_globals: np.ndarray | None = None,
+        *,
+        batch_size: int,
+        io_batch_size: int = 65_536,
+        prefetch: int = 2,
+        shuffle: bool = False,
+        drop_last: bool = False,
+        seed: int = 0,
+        obs_table_name: str | None = None,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be positive")
+        if io_batch_size < batch_size:
+            raise ValueError("io_batch_size must be >= batch_size")
+        if prefetch < 1:
+            raise ValueError("prefetch must be >= 1")
+
+        name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+        pf = atlas.pointer_fields_for(name)[field_name]
+        self.spec = get_spec(pf.feature_space)
+
+        self._store = atlas.store
+        self._pointer_type = self.spec.pointer_type
+
+        rows_indexed = obs_pl.with_row_index("_orig_idx")
+        filtered, self._mod_data = _build_modality_data(
+            atlas, rows_indexed, pf, layer_overrides, wanted_globals, obs_pl.height
+        )
+
+        pointer_cols = _POINTER_INTERNAL_COLS[self._pointer_type]
+        self._obs_with_pointers = filtered.select(["_rowid", *pointer_cols])
+
+        self._row_ids = self._obs_with_pointers["_rowid"].to_numpy().astype(np.uint64)
+        self._n_rows = len(self._row_ids)
+        self._pointer_field = field_name
+        self._metadata_columns = metadata_columns
+        self._lance_info = (
+            atlas.db_uri,
+            table.name,
+            table.version,
+            getattr(atlas.db, "storage_options", None),
+        )
+
+        # Round io_batch_size down to a multiple of batch_size so block
+        # boundaries don't produce small training batches mid-epoch.
+        self._batch_size = batch_size
+        self._io_batch_size = max(batch_size, (io_batch_size // batch_size) * batch_size)
+        self._prefetch = prefetch
+        self._shuffle = shuffle
+        self._drop_last = drop_last
+        self._seed = seed
+        self._epoch = 0
+
+        # Worker-local state — initialized lazily in _ensure_initialized()
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_thread: threading.Thread | None = None
+        self._obs_table: lancedb.table.Table | None = None
+        self._executor: ThreadPoolExecutor | None = None
+
+    @property
+    def n_rows(self) -> int:
+        return self._n_rows
+
+    @property
+    def n_features(self) -> int:
+        return self._mod_data.plan.n_features
+
+    def __len__(self) -> int:
+        if self._drop_last:
+            return self._n_rows // self._batch_size
+        return (self._n_rows + self._batch_size - 1) // self._batch_size
+
+    def _ensure_initialized(self) -> None:
+        if self._loop is not None:
+            return
+        self._start_event_loop()
+        db_uri, table_name, table_version, storage_options = self._lance_info
+        db = lancedb.connect(db_uri, storage_options=storage_options)
+        self._obs_table = db.open_table(table_name)
+        self._obs_table.checkout(table_version)
+        self._executor = ThreadPoolExecutor(max_workers=self._prefetch)
+
+    def _fetch_block(
+        self, indices: np.ndarray
+    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+        """Read one I/O block via the existing async pipeline."""
+        batch_row_ids = self._row_ids[indices]
+        obs_slice = self._obs_with_pointers[indices.tolist()]
+        groups = obs_slice.group_by("_zg")
+
+        zarr_fut = asyncio.run_coroutine_threadsafe(
+            _take_from_pointers(groups, batch_row_ids, self._mod_data.plan),
+            self._loop,
+        )
+        meta_fut = None
+        if self._metadata_columns:
+            meta_fut = asyncio.run_coroutine_threadsafe(
+                asyncio.to_thread(self._fetch_metadata_sync, batch_row_ids),
+                self._loop,
+            )
+        batch = zarr_fut.result()
+        if meta_fut is not None:
+            batch.metadata = meta_fut.result()
+        return batch
+
+    def _fetch_metadata_sync(self, batch_row_ids: np.ndarray) -> pl.DataFrame:
+        meta_pl = (
+            self._obs_table.take_row_ids(batch_row_ids.tolist())
+            .with_row_id()
+            .select(list(self._metadata_columns))
+            .to_polars()
+        )
+        return _reorder_take_result(meta_pl, batch_row_ids).select(self._metadata_columns)
+
+    def __iter__(self):
+        self._ensure_initialized()
+
+        rng = np.random.default_rng(self._seed + self._epoch)
+        self._epoch += 1
+
+        if self._shuffle:
+            order = rng.permutation(self._n_rows)
+        else:
+            order = np.arange(self._n_rows, dtype=np.int64)
+
+        n_blocks = (len(order) + self._io_batch_size - 1) // self._io_batch_size
+        blocks = [
+            order[i * self._io_batch_size : (i + 1) * self._io_batch_size]
+            for i in range(n_blocks)
+        ]
+
+        # Prime the prefetch queue: submit up to ``prefetch`` blocks before
+        # yielding any results so I/O overlaps consumption from step zero.
+        in_flight: list[Future] = []
+        next_block_idx = 0
+        for _ in range(min(self._prefetch, len(blocks))):
+            in_flight.append(
+                self._executor.submit(self._fetch_block, blocks[next_block_idx])
+            )
+            next_block_idx += 1
+
+        while in_flight:
+            fut = in_flight.pop(0)
+            batch = fut.result()
+
+            # Replenish the queue *before* yielding so the new fetch starts
+            # while the caller consumes this block.
+            if next_block_idx < len(blocks):
+                in_flight.append(
+                    self._executor.submit(self._fetch_block, blocks[next_block_idx])
+                )
+                next_block_idx += 1
+
+            block_n_rows = _batch_n_rows(batch)
+            for start in range(0, block_n_rows, self._batch_size):
+                end = min(start + self._batch_size, block_n_rows)
+                if self._drop_last and (end - start) < self._batch_size:
+                    continue
+                yield _slice_batch(batch, start, end)
+
+    def __getstate__(self) -> dict:
+        state = self.__dict__.copy()
+        state["_loop"] = None
+        state["_loop_thread"] = None
+        state["_obs_table"] = None
+        state["_executor"] = None
+        return state
+
+    def __del__(self) -> None:
+        # Drain in-flight prefetches before tearing down the asyncio loop —
+        # otherwise the executor's threads can still be submitting coroutines
+        # while _AsyncDataset.__del__ closes the loop. Wrap teardown in
+        # try/except: at interpreter shutdown the daemon loop thread may be
+        # terminated before stop() fires, leaving loop.close() to complain.
+        executor = getattr(self, "_executor", None)
+        if executor is not None:
+            try:
+                executor.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                pass
+        try:
+            super().__del__()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # MultimodalHoxDataset
 # ---------------------------------------------------------------------------
 
@@ -641,7 +926,7 @@ class MultimodalHoxDataset(_AsyncDataset):
 
 
 def make_loader(
-    dataset: "UnimodalHoxDataset | MultimodalHoxDataset",
+    dataset: "UnimodalHoxDataset | MultimodalHoxDataset | UnimodalHoxIterableDataset",
     *,
     batch_size: int = 1024,
     shuffle: bool = False,
@@ -686,6 +971,26 @@ def make_loader(
     torch.utils.data.DataLoader
     """
     from torch.utils.data import DataLoader
+
+    if isinstance(dataset, UnimodalHoxIterableDataset):
+        # IterableDataset pre-batches in-process; DataLoader just passes
+        # items through. num_workers > 0 adds no benefit (the dataset's
+        # own threadpool already overlaps I/O), so force 0.
+        if num_workers > 0:
+            import warnings
+
+            warnings.warn(
+                "UnimodalHoxIterableDataset performs its own in-process prefetch; "
+                "num_workers > 0 is ignored.",
+                stacklevel=2,
+            )
+        defaults: dict = dict(
+            batch_size=None,
+            num_workers=0,
+            collate_fn=_identity_collate,
+        )
+        defaults.update(kwargs)
+        return DataLoader(dataset, **defaults)
 
     defaults: dict = dict(
         num_workers=num_workers,

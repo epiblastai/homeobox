@@ -57,6 +57,7 @@ def run_bench(
         "--warmup-seconds", str(warmup_seconds),
         "--measure-seconds", str(measure_seconds),
         "--run-idx", str(run_idx),
+        "--only", "tiledb,homeobox",
     ]
     if output_csv:
         cmd += ["--output-csv", output_csv]

@@ -65,6 +65,7 @@ SYSTEM_KEYS: list[tuple[str, str]] = [
     ("annbatch", "annbatch"),
     ("tiledbsoma", "TileDB-SOMA"),
     ("homeobox", "Homeobox"),
+    ("homeobox_iter", "Homeobox-Iter"),
 ]
 
 # Systems whose underlying loader API supports torch-style num_workers > 0.
@@ -79,7 +80,7 @@ _SUPPORTS_WORKERS: set[str] = {"homeobox", "scdataset", "tiledbsoma"}
 # The h5ad-backed systems need a seekable local file (HDF5/h5py constraint);
 # BioNeMo SCDL uses np.memmap on local inode-backed files. When --data-root
 # is a remote URI, only systems in this set are run.
-_SUPPORTS_REMOTE: set[str] = {"homeobox", "slaf", "annbatch", "tiledbsoma"}
+_SUPPORTS_REMOTE: set[str] = {"homeobox", "homeobox_iter", "slaf", "annbatch", "tiledbsoma"}
 
 _REMOTE_SCHEMES = ("s3://", "gs://", "az://")
 
@@ -240,7 +241,7 @@ class HomeoboxDataloaderBenchmark:
 
     def _extract_batch_size(self, batch, system_name: str) -> int:
         """Return the cell count in a batch AND force its data to materialize."""
-        if system_name == "Homeobox":
+        if system_name in ("Homeobox", "Homeobox-Iter"):
             # SparseBatch: offsets is CSR indptr; len(offsets) - 1 = n_rows.
             # Force layer materialization (already loaded by __getitems__, but
             # touch it so downstream isn't lazy).
@@ -341,6 +342,80 @@ class HomeoboxDataloaderBenchmark:
         )
 
     # ------------------------------------------------------------------ #
+    # System-under-test: Homeobox UnimodalHoxIterableDataset
+    # ------------------------------------------------------------------ #
+    def benchmark_homeobox_iter(self) -> BenchResult | None:
+        import obstore
+        from torch.utils.data import DataLoader
+
+        from homeobox.atlas import RaggedAtlas
+        from homeobox.dataloader import _identity_collate
+
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from make_synth_dataset import BenchCellSchema
+
+        self.console.print("\n[bold blue]Benchmarking Homeobox-Iter (SUT)[/bold blue]")
+        if not self.is_remote and not os.path.isdir(self.atlas_path):
+            self.console.print(f"[yellow]atlas dir missing at {self.atlas_path} — skip[/yellow]")
+            return None
+
+        if self.is_remote:
+            atlas = RaggedAtlas.checkout_latest(
+                self.atlas_path,
+                obs_schemas={"cells": BenchCellSchema},
+                store_kwargs=self.store_kwargs or None,
+            )
+        else:
+            store = obstore.store.LocalStore(prefix=_joinpath(self.atlas_path, "zarr_store"))
+            atlas = RaggedAtlas.checkout_latest(
+                self.atlas_path,
+                obs_schemas={"cells": BenchCellSchema},
+                store=store,
+            )
+
+        dataset = atlas.query().to_unimodal_iterable_dataset(
+            field_name="gene_expression",
+            layer_overrides=["counts"],
+            batch_size=self.batch_size,
+            io_batch_size=65_536,
+            prefetch=2,
+            shuffle=True,
+        )
+        loader = DataLoader(
+            dataset, batch_size=None, num_workers=0, collate_fn=_identity_collate
+        )
+
+        self.console.print(
+            f"  dataset: n_rows={dataset.n_rows:,}, n_features={dataset.n_features:,}, "
+            f"io_batch_size={dataset._io_batch_size:,}, prefetch={dataset._prefetch}"
+        )
+        self.console.print("  warming up (15 batches)...")
+        for i, _ in enumerate(loader):
+            if i >= 15:
+                break
+
+        total_cells, batch_count, elapsed, peak = self.benchmark_with_memory_tracking(
+            loader, "Homeobox-Iter"
+        )
+        del loader, dataset, atlas
+        gc.collect()
+
+        measurement_time = elapsed - self.warmup_seconds
+        thru = total_cells / measurement_time if measurement_time > 0 else 0.0
+        self.console.print(
+            f"  Homeobox-Iter: {total_cells:,} cells in {measurement_time:.2f}s -> {thru:,.0f} cells/sec"
+        )
+        return BenchResult(
+            "Homeobox-Iter",
+            thru,
+            peak,
+            1,
+            measurement_time,
+            total_cells,
+            batch_count,
+        )
+
+    # ------------------------------------------------------------------ #
     # Baseline: SLAF
     # ------------------------------------------------------------------ #
     def benchmark_slaf(self) -> BenchResult | None:
@@ -416,7 +491,7 @@ class HomeoboxDataloaderBenchmark:
             sc_dataset,
             batch_size=None,
             num_workers=self.num_workers,
-            prefetch_factor=(16 if self.num_workers > 0 else None),
+            # prefetch_factor=(16 if self.num_workers > 0 else None),
             persistent_workers=self.num_workers > 0,
         )
 
@@ -763,6 +838,7 @@ class HomeoboxDataloaderBenchmark:
             "annbatch": self.benchmark_annbatch,
             "tiledbsoma": self.benchmark_tiledbsoma,
             "homeobox": self.benchmark_homeobox,
+            "homeobox_iter": self.benchmark_homeobox_iter,
         }
         systems = [(k, label, fn_by_key[k]) for k, label in SYSTEM_KEYS]
 
