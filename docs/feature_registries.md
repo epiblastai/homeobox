@@ -23,7 +23,7 @@ class GeneFeature(hox.FeatureBaseSchema):
     ensembl_id: str | None = hox.StableUIDField.declare(default=None)
 ```
 
-`StableUIDField.declare(...)` marks `ensembl_id` as the field that derives `uid`. A schema MAY declare **at most one** `StableUIDField` — defining two is a class-definition-time error.
+`StableUIDField.declare(...)` marks `ensembl_id` as the field that derives `uid`. A schema MAY declare **at most one** `StableUIDField` — defining two is a class-definition-time error. (If you need to join multiple fields to create a stable uid, we recommend creating an additional derived field on your schema, you can auto-populate if necessary as well. We do not allow multiple `StableUIDField` declarations on the same schema because it introduces order ambiguity).
 
 ## Why stable UIDs matter
 

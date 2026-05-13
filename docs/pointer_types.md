@@ -45,7 +45,7 @@ class SparseZarrPointer(LanceModel):
     zarr_row: int | None  # 0-indexed position within this zarr group (for CSC lookup)
 ```
 
-Each row points at a half-open slice `[start, end)` of a flat `data` / `indices` array stored on the zarr group. `to_ranges` returns those `start`s and `end`s directly. `zarr_row` is the row's position within the group's CSR matrix; it is carried so that the same obs row can be looked up in a parallel CSC copy for feature-filtered queries (see [Array storage](array_storage.md)).
+Each row points at a half-open slice `[start, end)` of a flat `data` / `indices` array stored on the zarr group. `to_ranges` returns those `start`s and `end`s directly. `zarr_row` is the row's position within the group's CSR matrix; it is carried so that the same obs row can be looked up in a parallel feature-oriented copy (e.g. CSC, genome-sorted fragments) when one exists. See [Array storage](array_storage.md) for the built-in layouts.
 
 `read_ranges` is the right primitive here: each row's read is a contiguous strip, but the strips have varying lengths and live at unrelated offsets, so a batched scatter-gather over `(starts, ends)` is the cheapest way to materialise the whole batch.
 
