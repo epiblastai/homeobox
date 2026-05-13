@@ -494,10 +494,9 @@ def warm_up_tiledb_database(experiment, verbose=False):
         lambda: experiment.ms["RNA"]["var"].read().concat(),
         # Expression queries (equivalent to SLAF WHERE queries)
         lambda: experiment.ms["RNA"]["X"]["data"].read((slice(0, 1),)).tables().concat(),
-        lambda: experiment.ms["RNA"]["X"]["data"]
-        .read((slice(None), slice(0, 1)))
-        .tables()
-        .concat(),
+        lambda: (
+            experiment.ms["RNA"]["X"]["data"].read((slice(None), slice(0, 1))).tables().concat()
+        ),
         # Aggregation queries (equivalent to SLAF MIN/MAX/COUNT queries)
         lambda: experiment.ms["RNA"]["X"]["data"].read((slice(0, 100),)).tables().concat(),
         lambda: experiment.ms["RNA"]["X"]["data"].read((slice(0, 50),)).tables().concat(),

@@ -44,13 +44,20 @@ def run_bench(
     cmd = [
         sys.executable,
         str(BENCH_SCRIPT),
-        "--data-root", data_root,
-        "--system", system,
-        "--batch-size", str(batch_size),
-        "--num-workers", str(num_workers),
-        "--warmup-seconds", str(warmup_seconds),
-        "--measure-seconds", str(measure_seconds),
-        "--run-idx", str(run_idx),
+        "--data-root",
+        data_root,
+        "--system",
+        system,
+        "--batch-size",
+        str(batch_size),
+        "--num-workers",
+        str(num_workers),
+        "--warmup-seconds",
+        str(warmup_seconds),
+        "--measure-seconds",
+        str(measure_seconds),
+        "--run-idx",
+        str(run_idx),
     ]
     if output_csv:
         cmd += ["--output-csv", output_csv]

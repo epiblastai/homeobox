@@ -173,9 +173,7 @@ def build(
     sentinel = data_root / ".perturb_synth_complete"
 
     h5_paths = [cell_load_dir / f"CT{i}.h5" for i in range(n_cell_types)]
-    if not force and _all_outputs_exist(
-        cell_load_dir, config_toml, atlas_dir, sentinel, h5_paths
-    ):
+    if not force and _all_outputs_exist(cell_load_dir, config_toml, atlas_dir, sentinel, h5_paths):
         print(f"[synth] SKIP: sentinel + all outputs present at {data_root}")
         return
 
@@ -191,9 +189,7 @@ def build(
     atlas_dir.mkdir(parents=True, exist_ok=True)
 
     n_per_ct = n_cells // n_cell_types
-    print(
-        f"[synth] target: {n_cells:,} cells = {n_cell_types} CTs x {n_per_ct:,} cells/CT"
-    )
+    print(f"[synth] target: {n_cells:,} cells = {n_cell_types} CTs x {n_per_ct:,} cells/CT")
     print(f"[synth] features: {n_features}, perturbations: {n_perturbations}")
     print(f"[synth] data-root: {data_root}")
 
@@ -239,9 +235,7 @@ def build(
             # contiguous h5 slice. The atlas keeps the shuffled order, so
             # homeobox still does scattered reads. Use this to quantify how
             # much locality matters for the cell-load backend.
-            order = np.argsort(
-                adata.obs["gene"].cat.codes.to_numpy(), kind="stable"
-            )
+            order = np.argsort(adata.obs["gene"].cat.codes.to_numpy(), kind="stable")
             h5_adata = adata[order].copy()
             h5_adata.obsm["X_hvg"] = np.ascontiguousarray(h5_adata.obsm["X_hvg"])
             h5_adata.write_h5ad(h5_path)
@@ -276,13 +270,7 @@ def build(
     atlas.snapshot()
 
     abs_synth = str(cell_load_dir.resolve())
-    toml_text = (
-        "[datasets]\n"
-        f'synth = "{abs_synth}"\n'
-        "\n"
-        "[training]\n"
-        'synth = "train"\n'
-    )
+    toml_text = f'[datasets]\nsynth = "{abs_synth}"\n\n[training]\nsynth = "train"\n'
     config_toml.write_text(toml_text)
     print(f"[synth] wrote {config_toml}")
 

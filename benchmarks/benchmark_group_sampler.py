@@ -131,9 +131,7 @@ def _measure(
                 print(f"  [{system_name}] warmup done at {elapsed:.1f}s; measuring...")
             if measurement_started:
                 total_cells += actual_batch_size
-            cur_thru = (
-                total_cells / (elapsed - warmup_s) if elapsed > warmup_s else 0.0
-            )
+            cur_thru = total_cells / (elapsed - warmup_s) if elapsed > warmup_s else 0.0
             pbar.set_postfix_str(f"{cur_thru:,.0f} cells/sec | mem {peak_memory:.2f} GB")
             pbar.update(1)
             if elapsed >= total_duration:
@@ -235,10 +233,7 @@ def _run_homeobox(
 
     measurement_time = elapsed - warmup_s
     thru = total_cells / measurement_time if measurement_time > 0 else 0.0
-    print(
-        f"  Homeobox: {total_cells:,} cells in {measurement_time:.2f}s "
-        f"-> {thru:,.0f} cells/sec"
-    )
+    print(f"  Homeobox: {total_cells:,} cells in {measurement_time:.2f}s -> {thru:,.0f} cells/sec")
     return BenchResult(
         system_name="Homeobox",
         throughput_cells_per_sec=thru,
@@ -320,10 +315,7 @@ def _run_cell_load(
 
     measurement_time = elapsed - warmup_s
     thru = total_cells / measurement_time if measurement_time > 0 else 0.0
-    print(
-        f"  cell-load: {total_cells:,} cells in {measurement_time:.2f}s "
-        f"-> {thru:,.0f} cells/sec"
-    )
+    print(f"  cell-load: {total_cells:,} cells in {measurement_time:.2f}s -> {thru:,.0f} cells/sec")
     return BenchResult(
         system_name="cell-load",
         throughput_cells_per_sec=thru,

@@ -13,6 +13,7 @@ Usage:
         --data-root data/bench_read_ranges \
         --out bench_read_ranges.json
 """
+
 from __future__ import annotations
 
 import argparse
@@ -54,9 +55,7 @@ class MultiBasicIndexer(zarr.core.indexing.Indexer):
             for c in i:
                 out_selection = c[2]
                 gap = out_selection[0].stop - out_selection[0].start
-                yield type(c)(
-                    c[0], c[1], (slice(total, total + gap), *out_selection[1:]), c[3]
-                )
+                yield type(c)(c[0], c[1], (slice(total, total + gap), *out_selection[1:]), c[3])
                 total += gap
 
 
@@ -213,8 +212,8 @@ def drop_caches() -> None:
 # ---------------------------------------------------------------------------
 @dataclass
 class TrialResult:
-    method: str           # "homeobox" | "annbatch"
-    cache: str            # "cold" | "warm"
+    method: str  # "homeobox" | "annbatch"
+    cache: str  # "cold" | "warm"
     n_rows_dataset: int
     batch_size: int
     n_batches: int
@@ -277,9 +276,7 @@ def run_method(
                 n = int((e - s).sum())
                 out_idx = np.empty(n, dtype=np.uint32)
                 out_cnt = np.empty(n, dtype=np.float32)
-                asyncio.run(
-                    read_annbatch(indices_native, counts_native, s, e, out_idx, out_cnt)
-                )
+                asyncio.run(read_annbatch(indices_native, counts_native, s, e, out_idx, out_cnt))
                 total_nnz += n
 
     gc.collect()
@@ -299,9 +296,7 @@ def run_method(
             n = int((e - s).sum())
             out_idx = np.empty(n, dtype=np.uint32)
             out_cnt = np.empty(n, dtype=np.float32)
-            asyncio.run(
-                read_annbatch(indices_native, counts_native, s, e, out_idx, out_cnt)
-            )
+            asyncio.run(read_annbatch(indices_native, counts_native, s, e, out_idx, out_cnt))
     elapsed = time.perf_counter() - t0
 
     if cache == "cold":
@@ -332,9 +327,7 @@ def verify_methods_match(
     """Sanity check: both readers must return identical bytes."""
     homeobox_idx = BatchAsyncArray.from_array(indices_async)
     homeobox_cnt = BatchAsyncArray.from_array(counts_async)
-    flat_idx_h, flat_cnt_h = asyncio.run(
-        read_homeobox(homeobox_idx, homeobox_cnt, starts, ends)
-    )
+    flat_idx_h, flat_cnt_h = asyncio.run(read_homeobox(homeobox_idx, homeobox_cnt, starts, ends))
 
     n = int((ends - starts).sum())
     out_idx = np.empty(n, dtype=np.uint32)
@@ -357,9 +350,7 @@ def run_sweep(
     results: list[dict] = []
 
     for ds_spec in dataset_specs:
-        ds_dir = os.path.join(
-            data_root, f"n{ds_spec.n_rows}_v{ds_spec.n_vars}_d{ds_spec.density}"
-        )
+        ds_dir = os.path.join(data_root, f"n{ds_spec.n_rows}_v{ds_spec.n_vars}_d{ds_spec.density}")
         if not os.path.exists(os.path.join(ds_dir, "indptr.npy")):
             print(f"\n[dataset] building {ds_dir}")
             synth_dataset(ds_spec, ds_dir, seed=seed)
@@ -384,9 +375,7 @@ def run_sweep(
         verify_methods_match(indices_async, counts_async, check_starts, check_ends)
 
         for batch_size in batch_sizes:
-            print(
-                f"\n--- dataset n_rows={ds_spec.n_rows:,} batch_size={batch_size} ---"
-            )
+            print(f"\n--- dataset n_rows={ds_spec.n_rows:,} batch_size={batch_size} ---")
             batches = sample_batches(indptr, n_batches, batch_size, seed=seed)
 
             for cache in caches:
@@ -433,10 +422,7 @@ def summarize(results: list[dict]) -> None:
         a = vals.get("annbatch", float("nan"))
         speedup = h / a if a else float("nan")
         n_rows, bs, cache = key
-        print(
-            f"{n_rows:>10,} {bs:>6} {cache:>5} "
-            f"{h:>14,.0f} {a:>14,.0f} {speedup:>7.2f}x"
-        )
+        print(f"{n_rows:>10,} {bs:>6} {cache:>5} {h:>14,.0f} {a:>14,.0f} {speedup:>7.2f}x")
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ def _ensure_cell_load_importable() -> None:
     """
     try:
         import cell_load  # noqa: F401
+
         return
     except ModuleNotFoundError:
         pass
@@ -94,9 +95,7 @@ class GroupBatchSampler(Sampler[list[int]]):
             raise ValueError(f"batch_size must be positive, got {batch_size}")
         missing = [c for c in group_cols if c not in obs.columns]
         if missing:
-            raise ValueError(
-                f"group_cols missing from obs: {missing}; have {obs.columns}"
-            )
+            raise ValueError(f"group_cols missing from obs: {missing}; have {obs.columns}")
 
         self._batch_size = int(batch_size)
         self._seed = int(seed)
@@ -105,16 +104,13 @@ class GroupBatchSampler(Sampler[list[int]]):
         self._cycle = bool(cycle)
 
         idx = obs.with_row_index("_idx").group_by(self._group_cols).agg(pl.col("_idx"))
-        self._groups: list[np.ndarray] = [
-            row.to_numpy().astype(np.int64) for row in idx["_idx"]
-        ]
+        self._groups: list[np.ndarray] = [row.to_numpy().astype(np.int64) for row in idx["_idx"]]
 
         if self._drop_last:
             self._n_batches = sum(len(g) // self._batch_size for g in self._groups)
         else:
             self._n_batches = sum(
-                (len(g) + self._batch_size - 1) // self._batch_size
-                for g in self._groups
+                (len(g) + self._batch_size - 1) // self._batch_size for g in self._groups
             )
 
     def __len__(self) -> int:
@@ -130,11 +126,7 @@ class GroupBatchSampler(Sampler[list[int]]):
                 idxs = self._groups[gi].copy()
                 rng.shuffle(idxs)
                 n = len(idxs)
-                stop = (
-                    (n // self._batch_size) * self._batch_size
-                    if self._drop_last
-                    else n
-                )
+                stop = (n // self._batch_size) * self._batch_size if self._drop_last else n
                 for start in range(0, stop, self._batch_size):
                     batches.append(idxs[start : start + self._batch_size].tolist())
 

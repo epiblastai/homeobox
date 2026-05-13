@@ -381,9 +381,7 @@ class HomeoboxDataloaderBenchmark:
             prefetch=2,
             shuffle=True,
         )
-        loader = DataLoader(
-            dataset, batch_size=None, num_workers=0, collate_fn=_identity_collate
-        )
+        loader = DataLoader(dataset, batch_size=None, num_workers=0, collate_fn=_identity_collate)
 
         self.console.print(
             f"  dataset: n_rows={dataset.n_rows:,}, n_features={dataset.n_features:,}, "
@@ -797,8 +795,8 @@ class HomeoboxDataloaderBenchmark:
                     if i >= 15:
                         break
 
-                total_cells, batch_count, elapsed, peak = (
-                    self.benchmark_with_memory_tracking(infinite_dl, "TileDB-SOMA")
+                total_cells, batch_count, elapsed, peak = self.benchmark_with_memory_tracking(
+                    infinite_dl, "TileDB-SOMA"
                 )
                 del dataloader, ds
 
@@ -857,8 +855,7 @@ class HomeoboxDataloaderBenchmark:
                 continue
             if self.num_workers > 0 and key not in _SUPPORTS_WORKERS:
                 self.console.print(
-                    f"  [grey50]skipping {label}: loader does not accept "
-                    f"num_workers > 0[/grey50]"
+                    f"  [grey50]skipping {label}: loader does not accept num_workers > 0[/grey50]"
                 )
                 continue
             try:
@@ -1058,9 +1055,7 @@ def main():
 
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
     only = {s.strip() for s in args.only.split(",") if s.strip()}
-    selected_keys = [
-        k for k, _ in SYSTEM_KEYS if (not only or k in only) and k not in skip
-    ]
+    selected_keys = [k for k, _ in SYSTEM_KEYS if (not only or k in only) and k not in skip]
     if _is_remote(args.data_root):
         selected_keys = [k for k in selected_keys if k in _SUPPORTS_REMOTE]
     if args.num_workers > 0:

@@ -51,13 +51,20 @@ def run_bench(
     cmd = [
         sys.executable,
         str(BENCH_SCRIPT),
-        "--data-root", data_root,
-        "--batch-size", str(batch_size),
-        "--num-workers", str(num_workers),
-        "--warmup-seconds", str(warmup_seconds),
-        "--measure-seconds", str(measure_seconds),
-        "--run-idx", str(run_idx),
-        "--only", "tiledb,homeobox",
+        "--data-root",
+        data_root,
+        "--batch-size",
+        str(batch_size),
+        "--num-workers",
+        str(num_workers),
+        "--warmup-seconds",
+        str(warmup_seconds),
+        "--measure-seconds",
+        str(measure_seconds),
+        "--run-idx",
+        str(run_idx),
+        "--only",
+        "tiledb,homeobox",
     ]
     if output_csv:
         cmd += ["--output-csv", output_csv]
@@ -104,10 +111,7 @@ def main() -> None:
 
     remote = _is_remote(args.data_root)
     if remote and not args.skip_primer:
-        print(
-            "[sweep] --data-root is remote; forcing --skip-primer "
-            "(no OS page cache to warm)"
-        )
+        print("[sweep] --data-root is remote; forcing --skip-primer (no OS page cache to warm)")
         args.skip_primer = True
 
     primer_measure = (
@@ -125,10 +129,7 @@ def main() -> None:
 
     wall_start = time.time()
     for cfg_i, (workers, bs) in enumerate(configs, 1):
-        print(
-            f"\n[sweep] === config {cfg_i}/{len(configs)}: "
-            f"workers={workers} batch_size={bs} ==="
-        )
+        print(f"\n[sweep] === config {cfg_i}/{len(configs)}: workers={workers} batch_size={bs} ===")
 
         if not args.skip_primer:
             print("[sweep] priming pass (results discarded; warms page cache)")

@@ -51,9 +51,7 @@ def _(Path, mo, pd):
     drop_workers_8 = raw["num_workers"] == 8
     df = raw[~(drop_scdataset_workers | drop_workers_8)].copy()
 
-    mo.md(
-        f"Loaded **{len(raw)}** rows from `{csv_path.name}`, **{len(df)}** rows after filters."
-    )
+    mo.md(f"Loaded **{len(raw)}** rows from `{csv_path.name}`, **{len(df)}** rows after filters.")
     return (df,)
 
 
@@ -70,9 +68,7 @@ def _(df):
         )
         .fillna({"throughput_std": 0.0, "mem_std": 0.0})
     )
-    agg = agg.sort_values(["system_name", "num_workers", "batch_size"]).reset_index(
-        drop=True
-    )
+    agg = agg.sort_values(["system_name", "num_workers", "batch_size"]).reset_index(drop=True)
     agg
     return (agg,)
 
@@ -110,7 +106,9 @@ def _(SYSTEM_COLORS, agg, plt):
     )
     batch_sizes = sorted(agg["batch_size"].unique())
 
-    fig1, axes1 = plt.subplots(1, len(batch_sizes), figsize=(5 * len(batch_sizes), 4.2), sharey=False)
+    fig1, axes1 = plt.subplots(
+        1, len(batch_sizes), figsize=(5 * len(batch_sizes), 4.2), sharey=False
+    )
     if len(batch_sizes) == 1:
         axes1 = [axes1]
 
@@ -311,9 +309,7 @@ def _(s3_df):
         )
         .fillna({"throughput_std": 0.0})
     )
-    s3_agg = s3_agg.sort_values(["system_name", "num_workers", "batch_size"]).reset_index(
-        drop=True
-    )
+    s3_agg = s3_agg.sort_values(["system_name", "num_workers", "batch_size"]).reset_index(drop=True)
     s3_agg
     return (s3_agg,)
 
@@ -388,9 +384,7 @@ def _(Path, SYSTEM_COLORS, pd, plt):
     profiles_dir = Path(__file__).parent.parent / "profiles"
 
     pre_raw = pd.read_csv(profiles_dir / "dataloader_sweep_s3.csv")
-    pre_raw = pre_raw[
-        (pre_raw["system_name"] == "Homeobox") & (pre_raw["num_workers"] == 0)
-    ]
+    pre_raw = pre_raw[(pre_raw["system_name"] == "Homeobox") & (pre_raw["num_workers"] == 0)]
     pre_agg = (
         pre_raw.groupby("batch_size", as_index=False)
         .agg(
@@ -408,9 +402,7 @@ def _(Path, SYSTEM_COLORS, pd, plt):
         ],
         ignore_index=True,
     )
-    post_raw = post_raw[
-        (post_raw["system_name"] == "Homeobox") & (post_raw["num_workers"] == 0)
-    ]
+    post_raw = post_raw[(post_raw["system_name"] == "Homeobox") & (post_raw["num_workers"] == 0)]
     post_agg = (
         post_raw.groupby("batch_size", as_index=False)
         .agg(
