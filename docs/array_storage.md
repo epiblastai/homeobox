@@ -1,263 +1,156 @@
-# Array Storage (CSR and CSC)
+# Array storage
 
-Array data in homeobox is stored in zarr, organized by dataset and feature space. For sparse assays (gene expression, chromatin accessibility), two complementary layouts exist:
+Every dataset in an atlas writes its array data into a single **zarr group** dedicated to that dataset. The contents of that group — which arrays exist, what their dtypes and shapes look like, which layers it carries — are determined by the dataset's **feature space**. Each feature space registers a `FeatureSpaceSpec` that declares the expected layout, and homeobox validates every group against that declaration at snapshot time.
 
-- **CSR (row-sorted)** — the primary storage format. Every ingest call writes CSR. Appending a new dataset is a pure array append with no read-modify-write on existing data.
-- **CSC (column-sorted)** — an optional transpose index. Enables efficient feature-oriented reads (e.g., "give me all cells' values for gene X") by providing direct byte ranges per feature column. Built on-demand via `add_csc()`.
-
-The key design principle: **CSC is not required**. Reconstructors always fall back to CSR and filter the relevant columns when CSC is unavailable. You can add CSC incrementally to existing groups without disrupting reads on groups that do not yet have it.
+This page covers the spec types that describe the layout, the built-in layouts shipped with the package, and the mechanics ingestion uses to write the arrays (chunking, sharding, compression, streaming from `.h5ad`). The companion pages explain what reads from these arrays: [Pointer types](pointer_types.md), [Feature layouts](feature_layouts.md), [Reconstructors](reconstructors.md).
 
 ---
 
-## Ingesting data: `add_from_anndata`
-
-`add_from_anndata` is the primary entry point for writing a dataset into the atlas. It accepts either an in-memory `AnnData` object or a path to an `.h5ad` file.
-
-```python
-from homeobox.ingestion import add_from_anndata
-
-n = add_from_anndata(
-    atlas,
-    adata,                          # AnnData object or path to .h5ad file
-    field_name="gene_expression",   # pointer-field column on the cell schema
-    zarr_layer="counts",            # destination layer name within the zarr group
-    dataset_record=dataset_record,
-)
-print(f"ingested {n} cells")
-```
-
-### What happens
-
-1. Validates `zarr_layer` against the spec's `layers.allowed` and validates obs columns against the cell schema.
-2. Resolves `field_name` to its declared `PointerField` on the cell schema (this is where the feature_space binding comes from).
-3. Pre-allocates zarr arrays with the configured chunk and shard shapes, then streams data in shard-sized batches.
-4. For backed `.h5ad` files, reads directly from HDF5 `indptr`, `indices`, and `data` datasets without materializing the full matrix into memory.
-5. Writes the `_feature_layouts` feature mapping (one row per feature, recording `local_index` and `global_index`).
-6. Inserts cell records with `SparseZarrPointer` fields (`start`, `end`, `zarr_row`) derived from the CSR `indptr` array.
-
-For sparse assays, ingest produces the CSR layout under the zarr group:
+## The spec hierarchy
 
 ```
-<zarr_group>/
-└── csr/
-    ├── indices          # (N_entries,)  uint32 — local feature indices
-    └── layers/
-        └── counts       # (N_entries,)  dtype  — values
+FeatureSpaceSpec                          # user-facing entry: name + pointer + reconstructor + layout
+├── feature_space:    str                 # registry key, also used as pointer-field name
+├── pointer_type:     type[ZarrPointer]   # SparseZarr | DenseZarr | DiscreteSpatial
+├── has_var_df:       bool                # whether features have a shared cross-dataset axis
+├── reconstructor:    Reconstructor       # how reads are assembled into AnnData/MuData/other
+├── zarr_group_spec:  ZarrGroupSpec       # primary obs-oriented layout
+└── feature_oriented: ZarrGroupSpec | None  # optional parallel feature-oriented layout
+
+ZarrGroupSpec                             # pure layout description for one zarr group
+├── required_arrays:  list[ArraySpec]     # structural arrays under the group root
+└── layers:           LayersSpec          # per-element measurement arrays
+
+LayersSpec                                # the `layers/` subgroup
+├── prefix:           str                 # nesting; "" → "layers/", "csr" → "csr/layers/"
+├── match_shape_of:   str | None          # require every layer to match one structural array's shape
+├── axis_order:       tuple[str, ...] | None  # e.g. ("T","C","Z","Y","X") or ("N","C","Y","X")
+├── shape_mismatch_axes: tuple[str, ...]  # axes allowed to differ between layers
+├── required:         list[ArraySpec]
+└── allowed:          list[ArraySpec]
+
+ArraySpec                                 # expected properties of a single zarr array
+├── array_name:       str                 # path relative to its parent group
+├── allowed_dtypes:   list[np.dtype]      # must be a list, even for a single dtype
+├── ndim:             int | None          # exact rank
+├── min_ndim/max_ndim: int | None         # OR a range (mutually exclusive with ndim)
+└── compressors:      CompressorsLike     # e.g. BitpackingCodec(transform="delta")
 ```
 
-For dense assays (e.g., image feature vectors, protein panels):
+The two halves of `ZarrGroupSpec` have distinct roles. `required_arrays` is **structural** — index/skeleton arrays that locate elements (the `indices` array of a CSR matrix; the `chromosomes`/`starts`/`lengths` arrays of a fragments group). `layers` is **measurement data** — the per-element values queries reconstruct (counts, log-normalized expression, image-feature values).
 
-```
-<zarr_group>/
-└── layers/
-    └── counts           # (N_cells, N_features)  float32
-```
+A feature space may legitimately have no layers — interval fragments, for instance, store the entire signal in their structural arrays. It may also have no `required_arrays` — dense feature panels keep everything under `layers/`.
 
-### Chunking and sharding
+### `FeatureSpaceSpec.feature_oriented`
 
-Sharding is important for object-store performance: a shard is a single file, so large shards reduce the number of HTTP requests required to read a dataset. The defaults are:
+Some assays benefit from storing a parallel copy of the data in feature-oriented order so feature-filtered queries can read exactly the columns they need without scanning every obs row. `feature_oriented` is the optional `ZarrGroupSpec` describing that copy. Two built-ins use it today:
 
-- Sparse: chunk shape `(40960,)`, shard shape `(41943040,)` — one shard holds 1024 chunks.
-- Dense: chunk shape `(max(1, 40960 // n_vars), n_vars)`, shard shape `(max(1, 41943040 // n_vars), n_vars)`.
+- `GENE_EXPRESSION_SPEC` pairs a CSR layout under `csr/` with an optional CSC copy under `csc/`.
+- `CHROMATIN_ACCESSIBILITY_SPEC` pairs cell-sorted fragments under `cell_sorted/` with a genome-sorted copy under `genome_sorted/`.
 
-These can be overridden at ingest time:
-
-```python
-n = add_from_anndata(
-    atlas, adata,
-    field_name="gene_expression",
-    zarr_layer="counts",
-    dataset_record=dataset_record,
-    chunk_shape=(4096,),       # zarr chunk shape for 1D CSR arrays
-    shard_shape=(4194304,),    # outer shard; must be a multiple of chunk_shape
-)
-```
-
-For sparse feature spaces, `chunk_shape` and `shard_shape` must be 1-element tuples. For dense feature spaces they must be 2-element tuples `(n_cells_per_chunk, n_features)`. Chunk sizes that are multiples of 128 align well with BP-128 bitpacking.
-
-### Integer compression
-
-When the source data has an integer dtype (`int32`, `int64`, `uint32`, `uint64`), `add_from_anndata` automatically applies BP-128 bitpacking with delta encoding on the `indices` array and BP-128 (no delta) on the values layer. This is a lossless codec that typically halves storage for typical single-cell count matrices. Float data is stored uncompressed at the zarr level (outer compression from the zarr store is still applied).
-
-### Backed `.h5ad` files
-
-If you pass an `.h5ad` path (or an `AnnData` opened with `backed="r"`), `add_from_anndata` streams CSR data directly from disk without loading the full matrix into memory. This is the recommended approach for large datasets.
-
-```python
-n = add_from_anndata(
-    atlas,
-    "/path/to/large_dataset.h5ad",  # opened backed="r" automatically
-    field_name="gene_expression",
-    zarr_layer="counts",
-    dataset_record=dataset_record,
-)
-```
-
-For dense arrays, AnnData handles backed vs in-memory transparently — `adata.X[start:end]` streams from disk regardless.
+The feature-oriented copy is always optional from a correctness standpoint — every reconstructor's primary read path goes through `zarr_group_spec`. The feature-oriented layout is a performance accelerator the reconstructor opts into when present.
 
 ---
 
-## The `_feature_layouts` feature mapping
+## Built-in feature spaces
 
-At ingest time, `add_from_anndata` writes one `FeatureLayout` row per feature into the `_feature_layouts` LanceDB table (or reuses an existing layout if the feature ordering matches). The full function reference is on the [Feature Layouts](feature_layouts.md) page. Each row records:
+All built-in specs are registered when `homeobox.builtins` is imported, which happens at package import. Each example below shows the on-disk shape; the spec source is in `homeobox/builtins.py`.
 
-| Field | Description |
-|---|---|
-| `layout_uid` | Content-hash of the ordered feature list; shared across datasets with identical feature orderings |
-| `feature_uid` | Stable global feature identifier (from `adata.var["global_feature_uid"]`) |
-| `local_index` | 0-based column index in this dataset's zarr array — i.e. the value stored in `csr/indices` |
-| `global_index` | The feature's position in the shared global feature space; used for scatter/gather at query time |
-
-The `local_index → global_index` mapping is what allows the reconstruction layer to correctly align features from different datasets into a single output matrix. Each dataset may have measured a different subset of features, in a different order. The remap array (`remap[local_i] = global_index`) derived from `_feature_layouts` drives the scatter step.
-
-### Prerequisite: `global_index` assignment
-
-Before `add_from_anndata` can write `_feature_layouts`, features must have a non-null `global_index` in the registry. `global_index` is assigned by `atlas.optimize()`, which runs `reindex_registry` as part of its maintenance pass. If any feature in `adata.var` has `global_index = None` in the registry, `add_from_anndata` raises a `ValueError` reporting the offending UIDs.
-
-The typical pattern is to batch-register features across all datasets first, call `optimize()` once to assign indices, and then ingest:
-
-```python
-# Register features for each dataset (idempotent — safe to call multiple times)
-atlas.register_features("gene_expression", features_dataset_a)
-atlas.register_features("gene_expression", features_dataset_b)
-
-# optimize() assigns global_index to all newly registered features
-atlas.optimize()
-
-# Now ingest
-n_a = add_from_anndata(atlas, adata_a, ...)
-n_b = add_from_anndata(atlas, adata_b, ...)
-```
-
----
-
-## Building the CSC index: `add_csc`
-
-CSC is a transposed view of the CSR data, sorted by local feature index. Where CSR stores entries in cell order (all non-zeros for cell 0, then all for cell 1, …), CSC stores them in feature order (all non-zeros for feature 0 across all cells, then feature 1, …).
-
-After CSC is built, the zarr group contains a `csc/indptr` array with byte-range pointers for each feature. A feature-filtered query can then read exactly `csc/indices[indptr[i]:indptr[i+1]]` to get the cell row IDs that expressed that feature, without touching any other data.
-
-```python
-from homeobox.ingestion import add_csc
-
-add_csc(
-    atlas,
-    zarr_group="pbmc3k",
-    field_name="gene_expression",
-    layer_name="counts",
-)
-```
-
-### What happens
-
-1. Looks up the `dataset_uid` for this `(zarr_group, feature_space)` pair (feature_space is resolved from the pointer field).
-2. Queries all cell records for this group; sorts them by `zarr_row` and validates that `zarr_row` is a contiguous 0..N-1 sequence (a prerequisite for the CSC index to be internally consistent).
-3. Reads the full `csr/indices` and `csr/layers/<layer>` flat arrays via `BatchArray.read_ranges`.
-4. Reconstructs `(cell_row, feature_idx)` pairs for every non-zero entry, then sorts by `feature_idx` (stable sort, so cell order is preserved within each feature column).
-5. Writes `csc/indices` (sorted cell row IDs, `uint32`) and `csc/layers/<layer>` (corresponding values) as sharded zarr arrays.
-6. Computes CSC `indptr` for each feature via `np.searchsorted` and writes it as a zarr array in the group.
-
-After this call, the zarr group contains:
+### `gene_expression` — sparse CSR
 
 ```
 <zarr_group>/
 ├── csr/
-│   ├── indices          # row-sorted: entry order matches cell order
+│   ├── indices                # (N_entries,)  uint32, BP-128 delta-encoded
 │   └── layers/
-│       └── counts
-└── csc/
-    ├── indices          # col-sorted: cell row IDs in feature order
-    ├── indptr           # (n_features + 1,) int64 — byte-range boundaries per feature
+│       ├── counts             # (N_entries,)  uint32, BP-128 no-delta
+│       ├── log_normalized     # (N_entries,)  float32   (optional)
+│       └── tpm                # (N_entries,)  float32   (optional)
+└── csc/                       # optional feature-oriented copy
+    ├── indices                # (N_entries,)  uint32
+    ├── indptr                 # (n_features + 1,) int64
     └── layers/
-        └── counts
+        └── counts             # (N_entries,)  uint32
 ```
 
-The `chunk_size` and `shard_size` parameters (defaulting to 4096 and 65536 respectively) control the CSC arrays' zarr layout independently of the CSR layout.
+`csr/indices` carries the local feature index for each non-zero entry. Each obs row's `SparseZarrPointer` stores a half-open `[start, end)` slice into this flat array, plus a `zarr_row` recording its position within the group's CSR matrix. `match_shape_of="csr/indices"` enforces that every layer has the same entry count as `csr/indices` — a prerequisite for correct sparse reads.
 
-### When to run `add_csc`
+### `protein_abundance` and `image_features` — dense `(N_obs, N_features)`
 
-- After bulk ingestion is complete for a dataset, before snapshotting.
-- When queries frequently filter by specific feature UIDs (e.g., marker gene panels, pathway genes, guide sequences).
-- When the atlas is large — the I/O savings are proportional to `1 - (n_wanted_features / n_total_features)`. For a dataset with 20,000 genes where you want 50, CSC reads ~0.25% of the data that full-CSR would read.
+```
+<zarr_group>/
+└── layers/
+    ├── counts | clr_normalized | dsb_normalized    # protein_abundance
+    └── raw    | log_normalized | ctrl_standardized  # image_features
+```
 
-### When CSC is not needed
+Dense feature panels store their data as a 2-D `(N_obs, N_features)` array per layer. No structural array is needed: the axis-0 position of a row is its `DenseZarrPointer.position`. `match_shape_of` is unset because the layers themselves are the structural arrays.
 
-- Small atlases where full-CSR reads complete in acceptable time.
-- Workloads that always load all features (`.to_anndata()` with union join and no feature filter).
-- Prototyping and development — CSC can be added at any point without modifying existing CSR data or cell records.
+### `chromatin_accessibility` — interval fragments
+
+```
+<zarr_group>/
+├── cell_sorted/                       # primary
+│   ├── chromosomes                    # (N_fragments,)  uint8
+│   └── layers/
+│       ├── starts                     # (N_fragments,)  uint32, BP-128 delta
+│       └── lengths                    # (N_fragments,)  uint16 | uint32, BP-128 no-delta
+└── genome_sorted/                     # optional feature-oriented copy
+    ├── cell_ids                       # (N_fragments,)  uint32
+    ├── chrom_offsets                  # (N_chroms + 1,) int64
+    ├── end_max                        # (N_chroms,)     uint32
+    └── layers/
+        ├── starts                     # (N_fragments,)  uint32
+        └── lengths                    # (N_fragments,)  uint16 | uint32
+```
+
+Both layouts are entirely structural — there is no separate "counts" layer because at single-cell resolution per-fragment counts would essentially be boolean. The same `SparseZarrPointer` `[start, end)` semantics from `gene_expression` carry over: each obs row's pointer addresses a contiguous slice of fragment indices in `cell_sorted/`.
+
+### `image_tiles` — 4-D dense (N, C, Y, X)
+
+```
+<zarr_group>/
+└── layers/
+    └── raw                            # (N_tiles, C, Y, X)  float32 | uint8 | uint16
+```
+
+Image tiles use a `DenseZarrPointer` with `position` indexing into the leading `N_tiles` axis. `LayersSpec.axis_order = ("N", "C", "Y", "X")` lets validators reason about lower-rank arrays as suffixes (a 3-D array would be `("C","Y","X")`, etc.). `has_var_df=False` — there is no per-tile feature axis.
+
+### `discrete_image` — large single-scale images (T, C, Z, Y, X)
+
+A `DiscreteSpatialPointer` here addresses an N-D bounding box `[min_corner, max_corner)` over the leading axes of one large image stored in a zarr group. `LayersSpec.axis_order = SPATIAL_AXIS_ORDER = ("T","C","Z","Y","X")`; `shape_mismatch_axes=("C",)` allows multi-modal stacks where channel counts differ but spatial dimensions match.
 
 ---
 
-## CSR vs CSC access patterns
+## What a layer is
 
-| | CSR | CSC |
-|---|---|---|
-| Storage | Always present | Optional; built by `add_csc()` |
-| Sorted by | Cell row (entry order matches cell order) | Feature column (entry order matches feature order) |
-| Efficient for | Fetching all features for a set of cells | Fetching all cells' values for a specific feature |
-| Reconstruction cost | O(nnz for queried cells) | O(nnz for wanted features) |
-| Setup cost | None — written at ingest time | Full CSR read + sort + zarr write |
-| Space overhead | Baseline | ~2× storage for the transposed copy |
-| When querying N features from F total | Reads all nnz for those cells, then filters columns | Reads only the nnz belonging to those N features |
+A **layer** is an alternative encoding or normalization of the same logical values addressed by the group's pointer structure. `counts`, `log_normalized`, and `tpm` on a sparse group are three layers over the same `[start, end)` slices in `csr/indices`. `raw` and `dsb_normalized` on a protein panel are two normalizations of the same `(N_obs, N_features)` shape.
+
+This is why `LayersSpec.match_shape_of` (and the default same-shape-across-all-layers rule) is so strict: a layer that does not share the shape of its peers cannot be addressed by the same pointers, which would break the reconstructor's per-batch read invariant. The `shape_mismatch_axes` escape hatch exists for cases where the variability is bounded and meaningful — e.g. a `("C",)` channel axis on `image_tiles` where two layers may carry different numbers of channels.
+
+`layers.required` listed layers must exist on every group of that feature space. `layers.allowed` is a whitelist for ingestion validation — attempting to write a layer whose name is not in the whitelist raises immediately.
 
 ---
 
-## CSC fallback behavior
+### Chunking and sharding
 
-`FeatureCSCReconstructor` (invoked automatically by `SparseCSRReconstructor` when `wanted_globals` is provided) checks each group independently:
+Sharding matters for object-store performance: a shard is one file, so larger shards can mean fewer HTTP requests per read. The defaults:
 
-- Groups **with** CSC: reads `csc/indices[csc_start:csc_end]` and the corresponding layer slice for each wanted feature. The result is assembled as a COO matrix and converted to CSR.
-- Groups **without** CSC: reads the full `csr/indices` slice for each cell, remaps local indices to global positions, and filters to the wanted columns. Equivalent to a standard CSR read followed by column selection.
+- **Sparse** (1-D arrays): chunk shape `(40 960,)`, shard shape `(41 943 040,)` — one shard holds 1024 chunks.
+- **Dense** (2-D `(N, F)` arrays): chunk shape `(max(1, 40 960 // F), F)`, shard shape `(max(1, 41 943 040 // F), F)`.
 
-Both paths produce identical output. The fallback is not a degraded mode — it is the full-fidelity CSR reconstruction path. You can run `add_csc()` on your largest or most-queried groups while leaving smaller groups CSR-only.
+---
+
+## Validation
+
+`ZarrGroupSpec.validate_group(group)` inspects a zarr group and returns a list of error strings (empty list means valid). It is called internally by `atlas.validate()` during `snapshot()`, but is also useful during development:
 
 ```python
-# Only add CSC to the two largest groups
-add_csc(atlas, zarr_group="large_dataset_1", field_name="gene_expression", layer_name="counts")
-add_csc(atlas, zarr_group="large_dataset_2", field_name="gene_expression", layer_name="counts")
-# small_dataset_3 stays CSR-only — reconstructors fall back automatically
+import zarr
+group = zarr.open_group("/path/to/group")
+errors = spec.zarr_group_spec.validate_group(group)
+for e in errors:
+    print(e)
 ```
 
-`GroupReader.has_csc` is the property that drives this decision at read time. It returns `True` only when the zarr group contains a `csc/` subgroup — meaning `add_csc()` completed successfully for that group.
-
----
-
-## Typical workflow
-
-```python
-from homeobox.ingestion import add_from_anndata, add_csc
-
-# 1. Register features
-atlas.register_features("gene_expression", features)
-
-# 2. Assign global_index and compact — optimize() handles reindex internally
-atlas.optimize()
-
-# 3. Ingest
-n = add_from_anndata(
-    atlas, adata,
-    field_name="gene_expression",
-    zarr_layer="counts",
-    dataset_record=record,
-)
-
-# 4. Build CSC for feature-filtered queries (optional but recommended for large groups)
-add_csc(
-    atlas,
-    zarr_group=record.zarr_group,
-    field_name="gene_expression",
-    layer_name="counts",
-)
-
-# 5. Compact and snapshot
-atlas.optimize()
-v = atlas.snapshot()
-```
-
----
-
-## Imports
-
-```python
-from homeobox.ingestion import add_from_anndata, add_csc
-```
+Typical errors: missing required array, wrong `ndim`, dtype not in `allowed_dtypes`, missing layer, an unknown layer name when `layers.allowed` is set, mismatched layer shapes, a layer shape that disagrees with `match_shape_of`. Validation reads zarr metadata only — no array data is loaded — so it stays fast even for remote groups with billions of entries.

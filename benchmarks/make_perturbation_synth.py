@@ -81,7 +81,7 @@ BATCH_NAME = "batch1"
 
 def _var_df(n_features: int) -> pd.DataFrame:
     uids = [f"hvg_{j:05d}" for j in range(n_features)]
-    return pd.DataFrame({"global_feature_uid": uids, "feature_name": uids})
+    return pd.DataFrame({"uid": uids, "feature_name": uids})
 
 
 def _shard_anndata(

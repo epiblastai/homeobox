@@ -69,7 +69,9 @@ def _make_sparse_adata(
     X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.uint32, random_state=rng)
     X.data[:] = rng.integers(1, 100, size=X.nnz).astype(np.uint32)
     obs = {"tissue": tissues or [f"tissue_{i % 3}" for i in range(n_obs)]}
-    var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
+    var = pl.DataFrame(
+        {"uid": feature_uids, "gene_name": [f"GENE_{u}" for u in feature_uids]}
+    ).to_pandas()
     return ad.AnnData(X=X, obs=obs, var=var)
 
 
@@ -200,7 +202,7 @@ def single_group_dense_feature_atlas(tmp_path):
 
     X = np.arange(12, dtype=np.float32).reshape(4, 3)
     obs = {"tissue": [f"tissue_{i % 2}" for i in range(4)]}
-    var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
+    var = pl.DataFrame({"uid": feature_uids, "channel": [f"ch_{i}" for i in range(3)]}).to_pandas()
     adata = ad.AnnData(X=X, obs=obs, var=var)
     adata = align_obs_to_schema(adata, DenseFeatureCellSchema)
     add_from_anndata(

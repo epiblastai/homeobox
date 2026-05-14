@@ -326,7 +326,7 @@ def ingest_all(
     )
     # --- Dataset vars (single set of feature mappings) ---
     var_uids = [joinid_to_uid[int(jid)] for jid in var_joinids]
-    var_pl = pl.DataFrame({"global_feature_uid": var_uids})
+    var_pl = pl.DataFrame({"uid": var_uids})
     atlas.register_dataset(dataset_record, var_df=var_pl)
 
     # --- Write cell records in batches to avoid huge Arrow allocations ---

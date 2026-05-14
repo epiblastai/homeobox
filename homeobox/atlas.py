@@ -226,8 +226,11 @@ class RaggedAtlas:
         obs_schemas:
             Mapping of ``{obs_table_name: HoxBaseSchema subclass}`` declaring
             one or more obs tables and their pointer-field schemas. Each obs
-            table is independent; pointer fields are keyed by
-            ``(obs_table_name, field_name)`` internally.
+            table is independent. Pointer fields are keyed by ``field_name``
+            across the atlas: the same field name may appear in multiple obs
+            tables only if every declaration shares the same ``feature_space``
+            (the shared declaration then collapses to one entry); conflicting
+            declarations raise at construction.
         dataset_table_name:
             Name for the dataset metadata table.
         dataset_schema:
@@ -579,8 +582,8 @@ class RaggedAtlas:
             is given.
         var_df:
             One row per local feature in local feature order. Must have a
-            ``global_feature_uid`` column. Pass ``None`` for feature spaces
-            without a per-dataset feature layout.
+            ``uid`` column whose values match registry uids. Pass ``None`` for
+            feature spaces without a per-dataset feature layout.
         """
         if var_df is not None:
             feature_space = dataset_record.feature_space

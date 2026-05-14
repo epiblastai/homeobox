@@ -9,6 +9,7 @@ import subprocess
 from pathlib import Path
 
 import anndata as ad
+import lancedb
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -21,7 +22,6 @@ from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.pointer_types import (
     DenseZarrPointer,
-    DiscreteSpatialPointer,
     SparseZarrPointer,
 )
 from homeobox.schema import (
@@ -37,39 +37,62 @@ _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
 
 
 def _check_var_no_duplicate_uids(var: pd.DataFrame) -> None:
-    """Raise if adata.var has duplicate global_feature_uid values."""
-    if "global_feature_uid" not in var.columns:
+    """Raise if adata.var has duplicate uid values."""
+    if "uid" not in var.columns:
         return
     n_total = len(var)
-    n_unique = var["global_feature_uid"].nunique()
+    n_unique = var["uid"].nunique()
     if n_unique != n_total:
         n_dupes = n_total - n_unique
         raise ValueError(
-            f"adata.var has {n_dupes} duplicate global_feature_uid value(s) "
+            f"adata.var has {n_dupes} duplicate uid value(s) "
             f"({n_total} rows, {n_unique} unique). "
             f"Deduplicate var (and the corresponding matrix columns) before ingestion."
         )
 
 
 def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
-    """Raise if a polars var DataFrame has duplicate global_feature_uid values."""
-    if "global_feature_uid" not in var_df.columns:
+    """Raise if a polars var DataFrame has duplicate uid values."""
+    if "uid" not in var_df.columns:
         return
     n_total = var_df.height
-    n_unique = var_df["global_feature_uid"].n_unique()
+    n_unique = var_df["uid"].n_unique()
     if n_unique != n_total:
         n_dupes = n_total - n_unique
         raise ValueError(
-            f"var_df has {n_dupes} duplicate global_feature_uid value(s) "
+            f"var_df has {n_dupes} duplicate uid value(s) "
             f"({n_total} rows, {n_unique} unique). "
             f"Deduplicate var (and the corresponding matrix columns) before ingestion."
+        )
+
+
+def _validate_var_columns_against_registry(
+    adata_var: pd.DataFrame, registry_table: lancedb.table.Table, feature_space: str
+) -> None:
+    """Validate that adata.var columns exactly match the registry schema (minus ``global_index``).
+
+    The registry table's arrow schema is the source of truth. ``global_index``
+    is assigned by :meth:`optimize` and must not appear on ``adata.var``.
+    """
+    expected = set(registry_table.schema.names) - {"global_index"}
+    actual = set(adata_var.columns)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(
+            f"adata.var columns do not match the '{feature_space}' registry schema. "
+            f"Expected exactly {sorted(expected)}; got {sorted(actual)}. "
+            f"Missing: {missing}. Unexpected: {extra}. "
+            f"Tip: if the registry schema uses StableUIDField, set the stable-uid "
+            f"source column on var and run "
+            f"<RegistrySchema>.compute_stable_uids(adata.var) to populate 'uid'."
         )
 
 
 def deduplicate_var(
     mat: sp.spmatrix,
     var_df: pd.DataFrame,
-    uid_column: str = "global_feature_uid",
+    uid_column: str = "uid",
 ) -> tuple[sp.csr_matrix, pd.DataFrame]:
     """Merge matrix columns that share the same feature UID by summing.
 
@@ -643,8 +666,12 @@ def add_anndata_batch(
 
     Writes zarr arrays, var_df sidecar, remap, and inserts row records into
     the obs table. Features must already be registered via
-    :meth:`RaggedAtlas.register_features`, and ``adata.var`` must contain a
-    ``global_feature_uid`` column.
+    :meth:`RaggedAtlas.register_features`. For feature spaces with
+    ``has_var_df=True``, ``adata.var`` must have columns exactly matching the
+    registry schema (minus ``global_index``) — including a ``uid`` column whose
+    values are the registry uids for each local feature (use
+    ``<RegistrySchema>.compute_stable_uids(adata.var)`` when the schema declares
+    a ``StableUIDField``).
 
     Parameters
     ----------
@@ -708,6 +735,8 @@ def add_anndata_batch(
         raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
 
     if spec.has_var_df:
+        registry_table = atlas._registry_tables[feature_space]
+        _validate_var_columns_against_registry(adata.var, registry_table, feature_space)
         _check_var_no_duplicate_uids(adata.var)
 
     n_rows = adata.n_obs
@@ -745,12 +774,7 @@ def add_anndata_batch(
         )
 
     if spec.has_var_df:
-        var_df = pl.from_pandas(adata.var.reset_index())
-        if "global_feature_uid" not in var_df.columns:
-            raise ValueError(
-                "adata.var must have a 'global_feature_uid' column. "
-                "Set it before calling add_anndata_batch()."
-            )
+        var_df = pl.from_pandas(adata.var.reset_index(drop=True))
         atlas.register_dataset(dataset_record, var_df=var_df)
     else:
         atlas.register_dataset(dataset_record)
@@ -875,8 +899,9 @@ def add_coo_batch(
         Validated obs DataFrame with schema-aligned columns. Must have
         exactly ``n_rows`` rows.
     var_df:
-        Polars DataFrame with a ``global_feature_uid`` column (one row per
-        feature in the matrix's var space, in positional order).
+        Polars DataFrame with a ``uid`` column (one row per feature in the
+        matrix's var space, in positional order). The ``uid`` values are the
+        registry uids for each local feature.
     field_name:
         Cell-schema attribute name for the pointer column to populate.
         The feature_space is derived from its registered ``PointerField``.
@@ -942,8 +967,8 @@ def add_coo_batch(
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
 
-    if "global_feature_uid" not in var_df.columns:
-        raise ValueError("var_df must have a 'global_feature_uid' column")
+    if "uid" not in var_df.columns:
+        raise ValueError("var_df must have a 'uid' column")
 
     _check_var_no_duplicate_uids_pl(var_df)
 
@@ -1080,43 +1105,11 @@ def add_coo_batch(
         pointer_field.field_name: pointer_struct,
     }
 
-    # Zero-fill other pointer fields
-    for other_pf_name, other_pf in pointer_fields.items():
+    # Null out the other pointer fields for this batch's rows.
+    for other_pf_name in pointer_fields:
         if other_pf_name == pointer_field.field_name:
             continue
-        other_spec = get_spec(other_pf.feature_space)
-        if other_spec.pointer_type is SparseZarrPointer:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_rows, type=pa.string()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                ],
-                names=["zarr_group", "start", "end", "zarr_row"],
-            )
-        elif other_spec.pointer_type is DenseZarrPointer:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_rows, type=pa.string()),
-                    pa.array([0] * n_rows, type=pa.int64()),
-                ],
-                names=["zarr_group", "position"],
-            )
-        elif other_spec.pointer_type is DiscreteSpatialPointer:
-            columns[other_pf_name] = pa.StructArray.from_arrays(
-                [
-                    pa.array([""] * n_rows, type=pa.string()),
-                    pa.array([[] for _ in range(n_rows)], type=pa.list_(pa.int64())),
-                    pa.array([[] for _ in range(n_rows)], type=pa.list_(pa.int64())),
-                ],
-                names=["zarr_group", "min_corner", "max_corner"],
-            )
-        else:
-            raise TypeError(
-                f"Field '{other_pf_name}' uses unsupported pointer type "
-                f"{other_spec.pointer_type.pointer_type_name}"
-            )
+        columns[other_pf_name] = pa.nulls(n_rows, type=arrow_schema.field(other_pf_name).type)
 
     for col in schema_fields:
         if col in obs_df.columns:

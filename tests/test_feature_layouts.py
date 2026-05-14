@@ -91,7 +91,7 @@ class TestBuildFeatureLayoutDf:
     def test_basic(self, tmp_path):
         uids = ["uid_a", "uid_b", "uid_c"]
         registry = _make_registry(tmp_path, uids)
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
+        var_df = pl.DataFrame({"uid": ["uid_c", "uid_a"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
 
         assert df.columns == [
@@ -108,13 +108,13 @@ class TestBuildFeatureLayoutDf:
 
     def test_missing_uid_raises(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_a"])
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_missing"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_missing"]})
         with pytest.raises(ValueError, match="not found in registry"):
             build_feature_layout_df(var_df, registry)
 
     def test_unindexed_registry_returns_null_global_index(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_a", "uid_b"], indexed=False)
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a"]})
+        var_df = pl.DataFrame({"uid": ["uid_a"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         assert df["feature_uid"].to_list() == ["uid_a"]
         assert df["global_index"].null_count() == 1
@@ -122,7 +122,7 @@ class TestBuildFeatureLayoutDf:
     def test_missing_column_raises(self, tmp_path):
         registry = _make_registry(tmp_path, ["uid_a"])
         var_df = pl.DataFrame({"other_col": ["uid_a"]})
-        with pytest.raises(ValueError, match="global_feature_uid"):
+        with pytest.raises(ValueError, match="uid"):
             build_feature_layout_df(var_df, registry)
 
     def test_roundtrip_via_table(self, tmp_path):
@@ -130,7 +130,7 @@ class TestBuildFeatureLayoutDf:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b", "uid_c"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_b", "uid_c"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -155,7 +155,7 @@ class TestLayoutExistsAndRead:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": uids})
+        var_df = pl.DataFrame({"uid": uids})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -168,8 +168,8 @@ class TestLayoutExistsAndRead:
         table = _make_feature_layouts_table(tmp_path)
 
         # Insert two layouts with different orderings
-        var_df1 = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
-        var_df2 = pl.DataFrame({"global_feature_uid": ["uid_b"]})
+        var_df1 = pl.DataFrame({"uid": ["uid_c", "uid_a"]})
+        var_df2 = pl.DataFrame({"uid": ["uid_b"]})
         lid1, df1 = build_feature_layout_df(var_df1, registry)
         lid2, df2 = build_feature_layout_df(var_df2, registry)
         table.add(df1)
@@ -199,7 +199,7 @@ class TestLayoutReuse:
         uids = ["uid_a", "uid_b", "uid_c"]
         registry = _make_registry(tmp_path, uids)
 
-        var_df = pl.DataFrame({"global_feature_uid": uids})
+        var_df = pl.DataFrame({"uid": uids})
         lid1, _ = build_feature_layout_df(var_df, registry)
         lid2, _ = build_feature_layout_df(var_df, registry)
         assert lid1 == lid2
@@ -208,8 +208,8 @@ class TestLayoutReuse:
         uids = ["uid_a", "uid_b", "uid_c"]
         registry = _make_registry(tmp_path, uids)
 
-        var_df1 = pl.DataFrame({"global_feature_uid": uids})
-        var_df2 = pl.DataFrame({"global_feature_uid": list(reversed(uids))})
+        var_df1 = pl.DataFrame({"uid": uids})
+        var_df2 = pl.DataFrame({"uid": list(reversed(uids))})
         lid1, _ = build_feature_layout_df(var_df1, registry)
         lid2, _ = build_feature_layout_df(var_df2, registry)
         assert lid1 != lid2
@@ -228,7 +228,7 @@ class TestSyncLayoutsGlobalIndex:
         table = _make_feature_layouts_table(tmp_path)
 
         # Build layout BEFORE reindex — global_index will be NULL
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a"]})
+        var_df = pl.DataFrame({"uid": ["uid_c", "uid_a"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         assert df["global_index"].null_count() == 2
         table.add(df)
@@ -291,7 +291,7 @@ class TestValidateFeatureLayout:
         registry = _make_registry(tmp_path, ["uid_a", "uid_b"])
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_b"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -346,7 +346,7 @@ class TestReindexRegistry:
         gi_b = int(reg_df.filter(pl.col("uid") == "uid_b")["global_index"][0])
         gi_c = int(reg_df.filter(pl.col("uid") == "uid_c")["global_index"][0])
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_b", "uid_c"]})
+        var_df = pl.DataFrame({"uid": ["uid_b", "uid_c"]})
         _, df = build_feature_layout_df(var_df, registry)
         assert df["global_index"].to_list() == [gi_b, gi_c]
 
@@ -364,7 +364,7 @@ class TestGroupReaderRemap:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_c", "uid_a", "uid_b"]})
+        var_df = pl.DataFrame({"uid": ["uid_c", "uid_a", "uid_b"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -393,7 +393,7 @@ class TestGroupReaderRemap:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_b"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -422,7 +422,7 @@ class TestGroupReaderRemap:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_b"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -453,7 +453,7 @@ class TestGroupReaderRemap:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_b"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 
@@ -499,7 +499,7 @@ class TestGroupReaderRemap:
         registry = _make_registry(tmp_path, uids)
         table = _make_feature_layouts_table(tmp_path)
 
-        var_df = pl.DataFrame({"global_feature_uid": ["uid_a", "uid_b"]})
+        var_df = pl.DataFrame({"uid": ["uid_a", "uid_b"]})
         layout_uid, df = build_feature_layout_df(var_df, registry)
         table.add(df)
 

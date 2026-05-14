@@ -143,9 +143,9 @@ for exp_name, exp_info in EXPERIMENTS.items():
     obs = pd.read_parquet(exp_info["validated_obs"])
     adata.obs = obs
 
-    # Set global_feature_uid on var
+    # Set uid on var
     var_df = pd.read_csv(exp_info["standardized_var"])
-    adata.var["global_feature_uid"] = var_df["global_feature_uid"].values
+    adata.var["uid"] = var_df["uid"].values
 
     # Create dataset record
     dataset_uid = make_uid()

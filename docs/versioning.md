@@ -12,120 +12,49 @@ Versioning bridges these two worlds. Writers accumulate data freely into the mut
 ## The lifecycle at a glance
 
 ```
-RaggedAtlas.create()   ← one time, by the atlas owner
-        │
-        ▼
-RaggedAtlas.open()     ← writers open the mutable tip
+create_or_open_atlas(...)        ← writers create or attach to the mutable tip
         │
         ├── register_features()
-        ├── write zarr arrays + cell rows
-        └── add_or_reuse_layout()
+        ├── register_dataset(record, var_df=...)
+        ├── create_zarr_group() + write zarr arrays
+        ├── add_obs_records(...)
         │
         ▼
-atlas.optimize()       ← compact tables, assign global_index
+atlas.optimize()                 ← compact tables, assign global_index to new features
         │
         ▼
-atlas.snapshot()       ← validate + commit a versioned snapshot
+atlas.snapshot()                 ← validate zarr groups + commit a versioned snapshot
         │
         ▼
-RaggedAtlas.checkout(version=N)   ← readers pin to a snapshot
+RaggedAtlas.checkout(version=N)  ← readers pin to a snapshot
         │
-        └── atlas.query()...      ← stable, read-only queries
+        └── atlas.query()...     ← stable, read-only queries
 ```
 
 ---
 
-## Creating an atlas
+## The writable tip
 
-`RaggedAtlas.create()` initialises all LanceDB tables and the zarr root group. This is a one-time operation performed by whoever owns the atlas.
+`create_or_open_atlas(...)` returns an atlas attached to the mutable "tip" — the zarr root is opened for append, and the LanceDB tables are at their current head version. See [Building an Atlas](atlas.md) for the ingestion surface (`register_features`, `register_dataset`, `add_obs_records`, etc.).
 
-```python
-import obstore.store
-import homeobox
-from homeobox.atlas import RaggedAtlas
-from homeobox.schema import HoxBaseSchema, SparseZarrPointer, PointerField
-from homeobox.schema import DatasetSchema
-from my_project.schemas import GeneSchema  # a FeatureBaseSchema subclass
-
-store = obstore.store.S3Store("s3://my-bucket/my-atlas/zarr")
-
-atlas = RaggedAtlas.create(
-    db_uri="s3://my-bucket/my-atlas/lancedb",
-    obs_table_name="cells",
-    obs_schema=MyCellSchema,
-    dataset_table_name="datasets",
-    dataset_schema=DatasetSchema,
-    store=store,
-    registry_schemas={
-        "gene_expression": GeneSchema,
-    },
-)
-```
-
-This creates:
-
-| Table | Purpose |
-|---|---|
-| `cells` | One row per cell, with pointer fields into zarr |
-| `datasets` | One row per dataset/zarr group |
-| `gene_expression_registry` | Global feature registry for gene expression |
-| `_feature_layouts` | Feature ordering layouts referenced by datasets |
-| `atlas_versions` | Snapshot history |
-
-The zarr root group is created in write mode (`mode="w"`).
-
----
-
-## Adding data
-
-Any process that wants to add datasets calls `RaggedAtlas.open()`, which connects to the existing LanceDB tables and opens the zarr root in append mode (`mode="a"`).
-
-```python
-atlas = RaggedAtlas.open(
-    db_uri="s3://my-bucket/my-atlas/lancedb",
-    obs_table_name="cells",
-    obs_schema=MyCellSchema,
-    dataset_table_name="datasets",
-    store=store,
-    registry_tables={"gene_expression": "gene_expression_registry"},
-)
-```
-
-A typical ingestion pipeline for a single dataset looks like this:
-
-```python
-# 1. Register the features in this dataset
-n_new = atlas.register_features("gene_expression", var_df)
-print(f"Registered {n_new} new genes")
-
-# 2. Write the zarr arrays (CSR data, indptr, indices, data arrays)
-write_dataset_to_zarr(atlas.root, dataset_uid, adata)
-
-# 3. Insert cell rows into the cell table
-atlas.cell_table.add(cell_rows)
-
-# 4. Record the feature ordering for this dataset
-atlas.add_or_reuse_layout(var_df, zarr_group, "gene_expression")
-```
-
-**Newly added data is not yet queryable.** The atlas is in a partially consistent state after ingestion: features have been registered but have not yet been assigned a `global_index`, and no snapshot has captured this state. Attempting to call `atlas.query()` on an `open()`-ed atlas will raise:
+**Newly written data is not yet queryable.** Until you call `snapshot()`, the atlas is in a partially consistent state: features may not have a `global_index` yet, and no version record exists. `atlas.query()` on a writable handle raises:
 
 ```
 RuntimeError: query() is only available on a versioned atlas.
 After ingestion, call atlas.snapshot() then
-RaggedAtlas.checkout(db_uri, version, schema, store) to pin to a
-validated snapshot. For convenience, use RaggedAtlas.checkout_latest(...).
+RaggedAtlas.checkout(db_uri, version, ...) to pin to a validated
+snapshot. For convenience, use RaggedAtlas.checkout_latest(...).
 ```
 
 ---
 
 ## Preparing for a snapshot: `optimize()`
 
-<!-- It also does deduplication of features before assigning a global index. The deduplication is done on `uid`. It's the user's responsibility to assign uids in such a way that deduplication work, for example using `make_stable_uid` on a canonical reference like `ensembl_gene_id` -->
-Before calling `snapshot()`, you must call `optimize()`. This does three things:
+Before calling `snapshot()`, you must call `optimize()`. It walks the obs tables, dataset table, every feature registry, and `_feature_layouts` and does the following:
 
-1. **Compacts Lance fragments** — multiple small write batches get merged into larger fragments for efficient reads.
-2. **Assigns `global_index`** — features are registered with `global_index = None`. `optimize()` calls `reindex_registry()` which assigns a stable integer index to every unindexed feature, starting from `max(existing_index) + 1`:
+1. **Compacts Lance fragments** — many small write batches from parallel ingestion get merged into larger fragments for efficient reads. Applied to obs tables, the dataset table, every registry, and `_feature_layouts`.
+2. **Deduplicates newly-added rows** — rows added since the last `optimize()`/`snapshot()` are deduped in place: `_feature_layouts` on `(layout_uid, feature_uid)` and every registry on `uid`. Two workers that register the same gene or write the same layout will each have inserted a row; dedup collapses them to one before a `global_index` is assigned. It is the user's responsibility to choose stable `uid`s so the dedup is meaningful — for genes, that typically means hashing a canonical reference like `ensembl_gene_id` via `make_stable_uid`.
+3. **Assigns `global_index`** — features are registered with `global_index = None`. `optimize()` calls `reindex_registry()` which assigns a stable integer index to every unindexed feature, starting from `max(existing_index) + 1`:
 
     ```python
     # reindex_registry() assigns indices like this:
@@ -135,13 +64,8 @@ Before calling `snapshot()`, you must call `optimize()`. This does three things:
     # ...
     ```
 
-3. **Propagates indices to `_feature_layouts`** — calls `sync_layouts_global_index()` to fill in the `global_index` column in every feature layout row that references a newly indexed feature.
-
-```python
-atlas.optimize()
-```
-
-`global_index` is the stable coordinate used at query time to align features across datasets. It is intentionally not assigned during registration — this allows multiple writers to register features independently without needing to coordinate on a shared counter. All the indexing happens in one place, in one writer's call to `optimize()`, eliminating the race condition.
+4. **Propagates indices to `_feature_layouts`** — `sync_layouts_global_index()` fills in the `global_index` column in every feature layout row that references a newly indexed feature.
+5. **Rebuilds indexes** — a scalar index on `uid` for every registry, plus a scalar index on `layout_uid` and an FTS index on `feature_uid` for `_feature_layouts`. The FTS index is what makes "which layouts contain feature X?" lookups fast at query time.
 
 ---
 
@@ -159,23 +83,22 @@ Under the hood, a snapshot record looks like this:
 ```python
 AtlasVersionRecord(
     version=0,
-    obs_table_name="cells",
-    cell_table_version=4,           # Lance version at time of snapshot
+    obs_table_versions='{"cells": 4}',   # JSON: one version per obs table
     dataset_table_name="datasets",
     dataset_table_version=2,
     registry_table_names='{"gene_expression": "gene_expression_registry"}',
     registry_table_versions='{"gene_expression": 3}',
     feature_layouts_table_version=5,
-    total_cells=1_234_567,
+    total_rows=1_234_567,
 )
 ```
 
-Every field in every LanceDB table is an append-only log of Lance fragments. Storing a version number for each table is sufficient to reconstruct the exact state of all tables as they existed at snapshot time — `checkout()` uses these numbers to call `.checkout(version)` on each table, effectively time-travelling to that state.
+Storing a version number for each table is sufficient to reconstruct the exact state of all tables as they existed at snapshot time — `checkout()` uses these numbers to call `.checkout(version)` on each table, effectively time-travelling to that state and blocking writes.
 
 Validation checks that must pass before `snapshot()` succeeds:
 
 - All features in every registry have `global_index` assigned (i.e., `optimize()` has been run).
-- Every zarr group matches its registered `ZarrGroupSpec` (correct arrays, correct dtypes).
+- Every zarr group matches its registered `FeatureSpaceSpec` (correct arrays in the right structure and with allowed dtypes).
 - Every feature layout is internally consistent: no duplicate feature UIDs, all UIDs present in the registry, no missing `global_index` values.
 
 If any check fails, `snapshot()` raises a `ValueError` listing all errors:
@@ -185,6 +108,8 @@ ValueError: Atlas validation failed — fix errors before snapshotting:
   • Registry 'gene_expression': 142 row(s) have no global_index. Run reindex_registry(table) to fix.
 ```
 
+Snapshot will also fail if it detects that the currently checked out version of any tables in the atlas are not the latest versions. This can happen, for example, if data has been appended to tables since the atlas was opened. In that case we provide `atlas.refresh()`, which reopens all version-controlled tables to their latest versions.
+
 ---
 
 ## Accessing a snapshot: `checkout()`
@@ -192,20 +117,13 @@ ValueError: Atlas validation failed — fix errors before snapshotting:
 `checkout()` is a class method that opens a read-only, validated copy of the atlas pinned to a specific version. The zarr root is opened in read-only mode (`mode="r"`), and each LanceDB table is checked out at the exact Lance version recorded in the snapshot.
 
 ```python
-# Pin to a specific version
-atlas_v0 = RaggedAtlas.checkout(
-    db_uri="s3://my-bucket/my-atlas/lancedb",
-    version=0,
-    obs_schema=MyCellSchema,
-    store=store,
-)
+# Pin to a specific version. obs_schemas is optional — when omitted,
+# pointer fields are inferred from each obs table's Arrow schema, which
+# is sufficient for read-only use.
+atlas_v0 = RaggedAtlas.checkout(db_uri="s3://my-bucket/my-atlas/")
 
 # Or just grab the latest snapshot
-atlas_latest = RaggedAtlas.checkout_latest(
-    db_uri="s3://my-bucket/my-atlas/lancedb",
-    obs_schema=MyCellSchema,
-    store=store,
-)
+atlas_latest = RaggedAtlas.checkout_latest("s3://my-bucket/my-atlas/")
 ```
 
 Once checked out, the atlas is fully queryable:
@@ -222,40 +140,14 @@ adata = (
 To see all available snapshots:
 
 ```python
-RaggedAtlas.list_versions("s3://my-bucket/my-atlas/lancedb")
-# shape: (N, 7)
-# ┌─────────┬────────────────────┬──────────────────────┬───┐
-# │ version ┆ cell_table_version ┆ total_cells          ┆ … │
-# │ 0       ┆ 4                  ┆ 1_234_567            ┆ … │
-# │ 1       ┆ 9                  ┆ 2_891_034            ┆ … │
-# └─────────┴────────────────────┴──────────────────────┴───┘
+RaggedAtlas.list_versions("s3://my-bucket/my-atlas/")
+# shape: (N, …)
+# ┌─────────┬──────────────────────┬──────────────────────┬───┐
+# │ version ┆ obs_table_versions   ┆ total_rows           ┆ … │
+# │ 0       ┆ '{"cells": 4}'       ┆ 1_234_567            ┆ … │
+# │ 1       ┆ '{"cells": 9}'       ┆ 2_891_034            ┆ … │
+# └─────────┴──────────────────────┴──────────────────────┴───┘
 ```
-
----
-
-## Parallel writes and feature registry fragility
-
-`RaggedAtlas` is designed so that multiple ingestion processes can run in parallel without coordination. LanceDB's `merge_insert` operations are used throughout:
-
-- `register_features()` uses `merge_insert(on="uid").when_not_matched_insert_all()` — a feature UID that already exists in the registry is silently skipped.
-- `add_or_reuse_layout()` uses `merge_insert(on=["layout_uid", "feature_uid"]).when_not_matched_insert_all()` — two workers computing the same layout produce identical rows; the second insert is a no-op.
-
-However, **feature registries are the one place where parallel writes can produce fragile state**. The `merge_insert` insert-if-absent semantics prevent strict duplicates (same `uid` appearing twice), but if two workers race on the same feature UID and the LanceDB merge is not atomic, that feature could end up with two rows in the registry. This would cause `optimize()` to assign two different `global_index` values to the same feature, which would make cross-dataset feature queries return inconsistent results.
-
-In practice, the risk is highest when many workers all ingest datasets that share a large common feature set (e.g., a canonical gene panel). The recommended mitigation is to **pre-register features in a single serial step** before launching parallel ingestion:
-
-```python
-# Serial: register all features once before parallel ingestion
-atlas = RaggedAtlas.open(...)
-for dataset in all_datasets:
-    atlas.register_features("gene_expression", dataset.var_df)
-
-# Parallel: write zarr arrays and cell rows concurrently
-with multiprocessing.Pool() as pool:
-    pool.map(ingest_dataset, all_datasets)
-```
-
-We plan to add a reconciliation step to `optimize()` that detects and merges duplicate registry rows, making the registry robust to concurrent registration. Until then, treating feature registration as a serial pre-flight step is the safest approach.
 
 ---
 
@@ -266,18 +158,6 @@ The LanceDB tables that store cell metadata, feature registries, and layouts are
 This is intentional: zarr arrays are append-only in practice. When a new dataset is ingested, new zarr groups are written to new paths under the root. Old groups are never modified.
 
 The versioning story for zarr is maintained implicitly through the **feature layouts and dataset table**. When you check out version N, the `_feature_layouts` table is restored to its state at version N. Any zarr groups added after that snapshot will not have corresponding entries in `_feature_layouts` or the cell table, so the reconstruction layer will never attempt to read them. In this sense, the cell and layout tables act as an index into zarr — the snapshot tells you which groups exist and what their feature ordering is.
-
-### Handling removed features and cells
-
-If a feature is removed from a dataset (e.g., a low-quality gene is dropped during curation), the `global_index` for that feature will not appear in any `_feature_layouts` row for the updated dataset. At query time, the reconstruction layer builds a **remap array** that maps each local zarr position to its global feature index:
-
-```python
-# remap[local_position] = global_index
-# A value of -1 means "this local feature is not in the query's feature space"
-remap = [0, 1, -1, 3, 4, ...]
-```
-
-During reconstruction, indices that map to `-1` are masked out and their corresponding values are dropped before building the output matrix. Removed features therefore produce no output columns — they are silently skipped. The same logic applies to intersection queries across datasets with different feature sets: features present in one dataset but not another get `-1` in that dataset's remap and are excluded from the intersection result.
 
 ### Future: icechunk
 
