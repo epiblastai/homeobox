@@ -141,9 +141,9 @@ def ingest_one(args: argparse.Namespace) -> None:
 
     csr = _coerce_X_to_uint32_csr(adata.X)
     var_df = adata.var.copy()
-    var_df["global_feature_uid"] = var_df.index.astype(str)
+    var_df["uid"] = var_df.index.astype(str)
     n_vars_before = csr.shape[1]
-    csr, var_df = deduplicate_var(csr, var_df, uid_column="global_feature_uid")
+    csr, var_df = deduplicate_var(csr, var_df, uid_column="uid")
     if csr.shape[1] != n_vars_before:
         print(f"  Deduplicated var: {n_vars_before:,} -> {csr.shape[1]:,} genes")
 

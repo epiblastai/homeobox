@@ -8,7 +8,11 @@ if TYPE_CHECKING:
     from lancedb.query import LanceQueryBuilder
 
     from homeobox.batch_types import SpatialTileBatch
-    from homeobox.dataloader import MultimodalHoxDataset, UnimodalHoxDataset
+    from homeobox.dataloader import (
+        MultimodalHoxDataset,
+        UnimodalHoxDataset,
+        UnimodalHoxIterableDataset,
+    )
     from homeobox.fragments.reconstruction import FragmentResult
     from homeobox.multimodal import MultimodalResult
 
@@ -575,15 +579,22 @@ class AtlasQuery:
         field_name: str,
         layer_overrides: list[str] | None = None,
         metadata_columns: list[str] | None = None,
-    ) -> "UnimodalHoxDataset":
+        *,
+        mode: Literal["map", "iterable"] = "map",
+        batch_size: int | None = None,
+        io_batch_size: int | None = None,
+        prefetch: int = 2,
+        shuffle: bool = False,
+        drop_last: bool = False,
+        seed: int = 0,
+    ) -> "UnimodalHoxDataset | UnimodalHoxIterableDataset":
         """Create a UnimodalHoxDataset for fast ML training iteration.
 
         Unlike :meth:`to_batches` (which reconstructs full AnnData per batch),
-        this returns a :class:`~homeobox.dataloader.UnimodalHoxDataset` that yields
-        lightweight :class:`~homeobox.batch_types.SparseBatch`,
+        this returns a dataset that yields lightweight
+        :class:`~homeobox.batch_types.SparseBatch`,
         :class:`~homeobox.batch_types.DenseFeatureBatch`, or
-        :class:`~homeobox.batch_types.SpatialTileBatch` objects via
-        :meth:`~homeobox.dataloader.UnimodalHoxDataset.__getitems__`.
+        :class:`~homeobox.batch_types.SpatialTileBatch` objects.
 
         Use :func:`~homeobox.dataloader.make_loader` to wrap the dataset
         in a ``torch.utils.data.DataLoader``.
@@ -597,6 +608,28 @@ class AtlasQuery:
             When ``None``, all required layers from the spec are read.
         metadata_columns:
             Obs column names to include as metadata on each batch.
+        mode:
+            ``"map"`` (default) returns a map-style
+            :class:`~homeobox.dataloader.UnimodalHoxDataset` that reads one
+            training batch per ``__getitems__`` call. ``"iterable"`` returns a
+            :class:`~homeobox.dataloader.UnimodalHoxIterableDataset` that reads
+            large I/O blocks and slices them into training batches, with
+            in-process prefetch overlap.
+        batch_size:
+            Iterable mode only. Rows per yielded training batch. Required when
+            ``mode == "iterable"``.
+        io_batch_size:
+            Iterable mode only. Rows per zarr fetch. Required when
+            ``mode == "iterable"``.
+        prefetch:
+            Iterable mode only. Number of I/O blocks kept in flight.
+        shuffle:
+            Iterable mode only. Shuffle the global row order each epoch.
+        drop_last:
+            Iterable mode only. Drop the trailing partial training batch.
+        seed:
+            Iterable mode only. Seed for the shuffle RNG (combined with the
+            epoch counter).
 
         Notes
         -----
@@ -606,7 +639,7 @@ class AtlasQuery:
         (``wanted_globals`` is derived from the filter; ``n_features``
         reflects the filtered count).
         """
-        from homeobox.dataloader import UnimodalHoxDataset
+        from homeobox.dataloader import UnimodalHoxDataset, UnimodalHoxIterableDataset
         from homeobox.group_specs import get_spec
 
         pf = self._pointer_fields[field_name]
@@ -624,7 +657,10 @@ class AtlasQuery:
                 self._feature_filter[feature_space],
             )
 
-        return UnimodalHoxDataset(
+        if mode not in ("map", "iterable"):
+            raise ValueError(f"Unknown mode {mode!r}; expected 'map' or 'iterable'")
+
+        inner = UnimodalHoxDataset(
             atlas=self._atlas,
             obs_pl=obs_pl,
             field_name=field_name,
@@ -632,6 +668,21 @@ class AtlasQuery:
             metadata_columns=metadata_columns,
             wanted_globals=wanted_globals,
             obs_table_name=self._obs_table_name,
+        )
+
+        if mode == "map":
+            return inner
+
+        if batch_size is None or io_batch_size is None:
+            raise ValueError("mode='iterable' requires both batch_size and io_batch_size to be set")
+        return UnimodalHoxIterableDataset(
+            inner,
+            batch_size=batch_size,
+            io_batch_size=io_batch_size,
+            prefetch=prefetch,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            seed=seed,
         )
 
     def to_multimodal_dataset(

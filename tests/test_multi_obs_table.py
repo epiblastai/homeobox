@@ -51,7 +51,9 @@ def _make_adata(n_obs: int, gene_uids: list[str], seed: int) -> ad.AnnData:
     X = sp.random(
         n_obs, len(gene_uids), density=0.3, format="csr", dtype=np.uint32, random_state=rng
     )
-    var = pl.DataFrame({"global_feature_uid": gene_uids}).to_pandas()
+    var = pl.DataFrame(
+        {"uid": gene_uids, "gene_name": [f"GENE_{u}" for u in gene_uids]}
+    ).to_pandas()
     return ad.AnnData(X=X, var=var)
 
 

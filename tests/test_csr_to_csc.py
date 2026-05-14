@@ -38,7 +38,9 @@ def _make_sparse_adata(
 ) -> ad.AnnData:
     X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.uint32, random_state=rng)
     X.data[:] = rng.integers(1, 100, size=X.nnz).astype(np.uint32)
-    var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
+    var = pl.DataFrame(
+        {"uid": feature_uids, "gene_name": [f"GENE{i}" for i in range(n_vars)]}
+    ).to_pandas()
     return ad.AnnData(X=X, var=var)
 
 

@@ -267,7 +267,17 @@ class StableUIDBaseSchema(LanceModel):
 
     @classmethod
     def compute_stable_uids(cls, df: "pd.DataFrame") -> "pd.DataFrame":
-        """Populate deterministic ``uid`` values for rows with a stable UID value."""
+        """Populate ``uid`` values on *df*.
+
+        Adds a ``uid`` column when missing. When the schema declares a
+        :class:`StableUIDField`, rows whose stable-uid source value is non-null
+        get a deterministic ``uid = make_stable_uid(source)``; rows with a null
+        source value fall back to a random uid. When the schema has no
+        :class:`StableUIDField`, every row gets a random uid.
+        """
+        if "uid" not in df.columns:
+            df["uid"] = [make_uid() for _ in range(len(df))]
+
         stable_uid_fields = cls.stable_uid_field_names()
         if not stable_uid_fields:
             return df
@@ -275,8 +285,6 @@ class StableUIDBaseSchema(LanceModel):
         field_name = stable_uid_fields[0]
         if field_name not in df.columns:
             raise KeyError(f"{cls.__name__}.compute_stable_uids requires column '{field_name}'")
-        if "uid" not in df.columns:
-            df["uid"] = [make_uid() for _ in range(len(df))]
 
         mask = df[field_name].notna()
         df.loc[mask, "uid"] = df.loc[mask, field_name].map(

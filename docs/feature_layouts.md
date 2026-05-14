@@ -1,353 +1,125 @@
-# Feature Layouts
+# Feature layouts
 
-The `homeobox.feature_layouts` module is the Python API for the `_feature_layouts` LanceDB table and the global feature index system. It provides functions to compute layout identifiers, build and insert layout rows, validate layouts against the registry, assign global indices, and resolve feature UIDs to the dense integer positions used by the reconstruction and training pipeline.
+A feature space's [registry](feature_registries.md) is the global source of truth for "which features exist and what `global_index` does each one have." But each zarr group on disk has its own *local* feature order — the order the columns happen to sit in for that dataset. A feature **layout** is the bridge between the two: a frozen mapping `local_index → global_index` for one specific ordering of features.
 
-For the conceptual overview of how layouts fit into the atlas data model — including the ER diagram and field-level schema — see [Data Structure](data_structure.md). For the `FeatureLayout` Pydantic model definition, see [Schemas](schemas.md#featurelayout). For how layouts are written during ingestion, see [Array Storage](array_storage.md#the-_feature_layouts-feature-mapping).
+Different datasets very often share a feature ordering — every 10x v3 chip in a study, every CellProfiler run with the same panel, every image tile written with the same channel order. So instead of storing the full mapping on every dataset row, layouts are content-addressed and stored once: any dataset whose `var_df` produces the same `layout_uid` reuses the existing layout.
 
-This page focuses on function signatures, parameters, error conditions, and usage patterns.
-
----
-
-## How layouts work
-
-Each unique feature ordering is stored once as a "layout", identified by a content-hash `layout_uid` (SHA-256 of the ordered feature list, truncated to 16 hex chars). Datasets with identical feature orderings share the same `layout_uid`, so row count scales with the number of distinct feature orderings rather than the number of datasets.
-
-Each row in the `_feature_layouts` table maps a `(layout_uid, feature_uid, local_index)` triple to a `global_index`. The `local_index` is the column position in the dataset's zarr array; the `global_index` is the position in the shared global feature space used for scatter/gather at reconstruction and training time.
-
-For the full schema and ER diagram, see [Data Structure](data_structure.md#_feature_layouts-table).
+This page covers the row-level structure of the `_feature_layouts` table, how `layout_uid` enables sharing across datasets, and how `LayoutReader` lets many `GroupReader`s share the same materialised remap array at query time.
 
 ---
 
-## API Reference
+## The `_feature_layouts` table
 
-### `compute_layout_uid`
+Every row in `_feature_layouts` is one entry of one layout:
 
-Compute a deterministic layout identifier from an ordered list of feature UIDs.
+| Column | Meaning |
+|---|---|
+| `layout_uid` | 16-char SHA-256 of the ordered list of `feature_uid`s — same ordering ⇒ same uid. |
+| `feature_uid` | UID of the feature occupying this local slot (joins to the registry's `uid`). |
+| `local_index` | The column index in the dataset's zarr array. |
+| `global_index` | The registry-assigned global index for `feature_uid`. May be `None` between ingest and the next `optimize()`. |
 
-```python
-def compute_layout_uid(feature_uids: list[str]) -> str
-```
+A layout with N features therefore contributes N rows. Reading a layout in `local_index` order reconstructs the dataset's column order; reading the `global_index` column in that same order gives you the remap array (see [The remap array](#the-remap-array) below).
 
-| Name | Type | Description |
-|------|------|-------------|
-| `feature_uids` | `list[str]` | Ordered list of feature UIDs. The order matters — the same features in a different order produce a different hash. |
-
-**Returns:** `str` — SHA-256 hash of the ordered feature list, truncated to 16 hex characters.
-
-```python
-from homeobox.feature_layouts import compute_layout_uid
-
-uid = compute_layout_uid(["ENSG00000141510", "ENSG00000012048", "ENSG00000171862"])
-print(uid)  # e.g. "a3f8c1d09b2e4f67"
-```
+The `dataset_table` carries the back-reference: each dataset row stores the `layout_uid` of the layout it uses, plus a `zarr_group` pointing at the array data. A feature space with `has_var_df=False` (raw images, free text — anything without a per-feature axis) gets `layout_uid = ""` and no `_feature_layouts` rows at all.
 
 ---
 
-### `build_feature_layout_df`
+## Layout sharing across datasets
 
-Build a Polars DataFrame ready for inserting into the `_feature_layouts` table.
+`layout_uid = sha256(",".join(feature_uids))[:16]`. The hash is over the *ordered* list, so reordering the same set of genes produces a different `layout_uid` and a different layout. This is deliberate: a reconstructor that scatters by `global_index` does not care about the local order, but a writer that streams an existing zarr array verbatim does, and the layout has to match the bytes that landed in zarr.
 
-```python
-def build_feature_layout_df(
-    var_df: pl.DataFrame,
-    registry_table: lancedb.table.Table,
-) -> tuple[str, pl.DataFrame]
-```
+During ingestion, `add_from_anndata` (and the other per-modality ingestors) does this in order:
 
-| Name | Type | Description |
-|------|------|-------------|
-| `var_df` | `pl.DataFrame` | One row per local feature, in local feature order. Must contain a `global_feature_uid` column. |
-| `registry_table` | `lancedb.table.Table` | The feature registry table. Used to look up `global_index` for each feature UID. |
+1. Build `layout_uid` from `var_df`'s `global_feature_uid` column.
+2. Look up that `layout_uid` in `_feature_layouts`. If it already exists, no rows are inserted — the new dataset row just stores the existing `layout_uid` and joins to the shared layout.
+3. Otherwise insert N rows (one per feature) with `global_index = None` and the dataset's `local_index`es.
 
-**Returns:** `tuple[str, pl.DataFrame]` — `(layout_uid, df)` where `df` has columns: `layout_uid`, `feature_uid`, `local_index`, `global_index`.
+`atlas.optimize()` later runs `reindex_registry()` to fill in any missing `global_index` in the registry, then `sync_layouts_global_index()` to propagate those values into every `_feature_layouts` row that references them. Both steps are idempotent; running `optimize()` twice in a row does no work the second time.
 
-**Raises:** `ValueError` — if any `global_feature_uid` value in `var_df` is missing from the registry.
-
-!!! note
-    `global_index` values in the returned DataFrame can be `None` for features that have not yet been indexed by `reindex_registry`. This is expected when building layouts before the first reindexing pass.
-
-```python
-from homeobox.feature_layouts import build_feature_layout_df
-
-layout_uid, layout_df = build_feature_layout_df(adata.var, registry_table)
-print(layout_uid)       # "a3f8c1d09b2e4f67"
-print(layout_df.shape)  # (n_features, 4)
-```
+The practical effect: a thousand 10x v3 datasets that all sequenced the same 33 538 Ensembl genes in the same order produce one layout with 33 538 rows, not a thousand layouts with 33 538 each. Row count in `_feature_layouts` scales with the number of *distinct orderings* across the atlas, not the number of datasets. So, while homeobox permits ragged features, there is always a benefit to pre-aligning datasets whenever possible.
 
 ---
 
-### `layout_exists`
+## The remap array
 
-Check whether a layout with the given `layout_uid` already exists in the `_feature_layouts` table.
+At query time, the reconstructor needs to take the local columns that a zarr read produced and place them into the right slots in the output matrix's `var` axis. That placement is described by an integer array — the **remap**:
 
-```python
-def layout_exists(table: lancedb.table.Table, layout_uid: str) -> bool
+```
+remap[local_col] = global_index  (or -1 if the column is masked out)
 ```
 
-| Name | Type | Description |
-|------|------|-------------|
-| `table` | `lancedb.table.Table` | The `_feature_layouts` LanceDB table. |
-| `layout_uid` | `str` | The layout identifier to check. |
+The remap is exactly the `global_index` column of `_feature_layouts` sorted by `local_index`, plus optional `-1` entries for columns the query wants to drop (a feature absent from the intersection, a feature removed from the layout post hoc, etc.). The reconstruction layer never works with `feature_uid`s during a scatter — it works with this dense int32 array. See [Feature registries](feature_registries.md#using-global_index-at-query-time) for how `-1` entries are produced and consumed.
 
-**Returns:** `bool` — `True` if at least one row with this `layout_uid` exists.
+The remap is the same for every dataset that uses the same `layout_uid`. That's the property `LayoutReader` exploits.
 
-```python
-from homeobox.feature_layouts import layout_exists
+---
 
-if not layout_exists(layouts_table, layout_uid):
-    layouts_table.add(layout_df)
+## `LayoutReader`
+
+`LayoutReader` is a thin object that owns a single layout's read state and materialises it lazily:
+
+- The `local_index → global_index` remap array (`int32`, frozen non-writeable).
+- A `var_df` in local feature order — just the `global_feature_uid` column, enough for the reconstructor to attach feature identities to AnnData/MuData outputs.
+
+It is constructed in one of two ways:
+
+1. From a `_feature_layouts` table and a `layout_uid` — `LayoutReader(layout_uid, feature_layouts_table=...)`. The remap and `var_df` are loaded on first access via `read_feature_layout(table, layout_uid)` and then cached on the instance. This is the path the atlas takes.
+2. From a pre-resolved remap array — `LayoutReader.from_remap(layout_uid, remap, var_df=...)`. No table handle is carried. This is the path used inside dataloader workers, after the parent process has already materialised the remap and shipped it across the process boundary.
+
+`LayoutReader` is intentionally narrow: no zarr handle, no obstore client, no awareness of which datasets use it. It is a value object that happens to load itself once. That narrowness is what makes it cheap to share — see [Sharing across groups](#sharing-a-layoutreader-across-groups) below.
+
+If a `LayoutReader` is asked for its remap before `global_index`es have been assigned, it raises with a pointer to `optimize()`:
+
+```
+ValueError: Layout 'a3f8c1d09b2e4f67' has null global_index values; run optimize() first.
 ```
 
 ---
 
-### `read_feature_layout`
+## Sharing a `LayoutReader` across groups
 
-Read all rows for a layout, sorted by `local_index`.
+A `GroupReader` is per-(zarr_group, feature_space) state — the zarr group handle, the per-array `BatchAsyncArray` cache, the obstore client. A `LayoutReader`, in contrast, is per-`layout_uid` state. Many zarr groups can — and routinely do — point at the same layout.
+
+The atlas takes advantage of this by keeping a separate cache for each:
 
 ```python
-def read_feature_layout(
-    table: lancedb.table.Table,
-    layout_uid: str,
-) -> pl.DataFrame
+# atlas.py
+self._group_readers:  OrderedDict[(zarr_group, feature_space), GroupReader]  # LRU
+self._layout_readers: dict[layout_uid, LayoutReader]                          # unbounded
 ```
 
-| Name | Type | Description |
-|------|------|-------------|
-| `table` | `lancedb.table.Table` | The `_feature_layouts` LanceDB table. |
-| `layout_uid` | `str` | The layout identifier to read. |
-
-**Returns:** `pl.DataFrame` — columns `layout_uid`, `feature_uid`, `local_index`, `global_index`, sorted by `local_index`.
+When `get_group_reader(zarr_group, feature_space)` is called, the atlas resolves the dataset's `layout_uid`, looks it up in `_layout_readers`, and constructs one lazily if it is the first time. The resulting `GroupReader` holds a reference to that shared `LayoutReader`:
 
 ```python
-from homeobox.feature_layouts import read_feature_layout
-
-layout_df = read_feature_layout(layouts_table, "a3f8c1d09b2e4f67")
-print(layout_df.columns)  # ['layout_uid', 'feature_uid', 'local_index', 'global_index']
-```
-
----
-
-### `validate_feature_layout`
-
-Run validation checks on the `_feature_layouts` rows for a single layout. Returns a list of error strings — an empty list means the layout is valid.
-
-```python
-def validate_feature_layout(
-    layouts_table: lancedb.table.Table,
-    layout_uid: str,
-    *,
-    spec: ZarrGroupSpec,
-    group: zarr.Group | None = None,
-    expected_feature_count: int | None = None,
-    registry_table: lancedb.table.Table | None = None,
-) -> list[str]
-```
-
-| Name | Type | Description |
-|------|------|-------------|
-| `layouts_table` | `lancedb.table.Table` | The `_feature_layouts` LanceDB table. |
-| `layout_uid` | `str` | The layout identifier to validate. |
-| `spec` | `ZarrGroupSpec` | The group spec for this feature space. Used to derive expected feature count from the zarr group when `group` is provided. |
-| `group` | `zarr.Group \| None` | Optional zarr group. If provided and `expected_feature_count` is `None`, the feature count is derived from the group's array shape. |
-| `expected_feature_count` | `int \| None` | Expected number of features. If provided, the row count is checked against this value. Takes precedence over `group`. |
-| `registry_table` | `lancedb.table.Table \| None` | If provided, each `feature_uid` is checked against the registry. Missing UIDs are reported as errors. |
-
-**Returns:** `list[str]` — validation error messages. Empty means valid.
-
-**Validation checks performed:**
-
-1. **Row count** — if `expected_feature_count` or `group` is provided, verifies the number of layout rows matches
-2. **Null feature UIDs** — checks for null values in the `feature_uid` column
-3. **Duplicate feature UIDs** — checks that all `feature_uid` values are unique
-4. **Registry membership** — if `registry_table` is provided, verifies every `feature_uid` exists in the registry
-
-```python
-from homeobox.feature_layouts import validate_feature_layout
-
-errors = validate_feature_layout(
-    layouts_table,
-    layout_uid="a3f8c1d09b2e4f67",
-    spec=spec,
-    expected_feature_count=33538,
-    registry_table=registry_table,
-)
-if errors:
-    for e in errors:
-        print(f"  - {e}")
-```
-
----
-
-### `reindex_registry`
-
-Assign `global_index` to any features in the registry that do not yet have one.
-
-```python
-def reindex_registry(table: lancedb.table.Table) -> int
-```
-
-| Name | Type | Description |
-|------|------|-------------|
-| `table` | `lancedb.table.Table` | The feature registry table (a `FeatureBaseSchema` subclass table). |
-
-**Returns:** `int` — number of features newly indexed. `0` if all features already have a `global_index`.
-
-Only unindexed rows (`global_index IS NULL`) are modified. Each is assigned a unique integer starting from `max(existing_global_index) + 1`, or `0` if the registry is empty. Features that already have a `global_index` are never changed.
-
-!!! note
-    `atlas.optimize()` calls `reindex_registry` internally, so you typically do not need to call this function directly. See [Building an Atlas](atlas.md) for the recommended workflow.
-
-```python
-# Typically called via atlas.optimize(), but can be used standalone:
-from homeobox.feature_layouts import reindex_registry
-
-n_new = reindex_registry(registry_table)
-print(f"Assigned global_index to {n_new} features")
-```
-
----
-
-### `sync_layouts_global_index`
-
-Propagate updated `global_index` values from the registry into the `_feature_layouts` table.
-
-```python
-def sync_layouts_global_index(
-    layouts_table: lancedb.table.Table,
-    registry_table: lancedb.table.Table,
-) -> int
-```
-
-| Name | Type | Description |
-|------|------|-------------|
-| `layouts_table` | `lancedb.table.Table` | The `_feature_layouts` LanceDB table. |
-| `registry_table` | `lancedb.table.Table` | The feature registry table. |
-
-**Returns:** `int` — number of rows updated.
-
-After `reindex_registry()` assigns new `global_index` values, the `_feature_layouts` table still holds the old (possibly null) values. This function joins the two tables on `feature_uid` and writes updated `global_index` values back into `_feature_layouts` via `merge_insert`.
-
-!!! note
-    `atlas.optimize()` calls both `reindex_registry` and `sync_layouts_global_index` internally, so you typically do not need to call this function directly. See [Building an Atlas](atlas.md) for the recommended workflow.
-
-```python
-from homeobox.feature_layouts import sync_layouts_global_index
-
-n_updated = sync_layouts_global_index(layouts_table, registry_table)
-print(f"Updated {n_updated} layout rows")
-```
-
----
-
-### `resolve_feature_uids_to_global_indices`
-
-Resolve a list of feature UIDs to their sorted global indices. This is the bridge between human-readable feature identifiers (Ensembl IDs, gene symbols, etc.) and the integer positions used by the reconstruction and training pipeline.
-
-```python
-def resolve_feature_uids_to_global_indices(
-    registry_table: lancedb.table.Table,
-    feature_uids: list[str],
-) -> np.ndarray
-```
-
-| Name | Type | Description |
-|------|------|-------------|
-| `registry_table` | `lancedb.table.Table` | The feature registry table with `uid` and `global_index` columns. |
-| `feature_uids` | `list[str]` | List of feature UIDs to resolve. |
-
-**Returns:** `numpy.ndarray` — sorted `int32` array of global indices.
-
-**Raises:** `ValueError` — if any UID is missing from the registry, or if any matched UID has `global_index = None` (run `atlas.optimize()` first).
-
-For how this connects to feature-filtered training, see [PyTorch Data Loading](dataloader.md#feature-filtered-datasets).
-
-```python
-# Use with a feature-filtered query
-adata = (
-    atlas_r.query()
-    .features(
-        ["ENSG00000141510", "ENSG00000012048", "ENSG00000171862"],
-        feature_space="gene_expression",
+layout_reader = self._layout_readers.get(layout_uid)
+if layout_reader is None:
+    layout_reader = LayoutReader(
+        layout_uid=layout_uid,
+        feature_layouts_table=self._feature_layouts_table,
     )
-    .to_anndata()
+    self._layout_readers[layout_uid] = layout_reader
+
+reader = GroupReader.from_atlas_root(
+    zarr_group=zarr_group,
+    feature_space=feature_space,
+    store=self._store,
+    layout_reader=layout_reader,
 )
 ```
 
-If you already have global indices (e.g. from a prior `resolve_feature_uids_to_global_indices` call), pass the UIDs directly to `.features()` — it handles the registry lookup internally.
+Two consequences:
+
+- **The remap is loaded once per layout, not once per group.** A query that touches a thousand zarr groups all using the same 33 538-gene layout reads `_feature_layouts` exactly once. Every `GroupReader.get_remap()` call after the first returns the cached numpy array directly.
+- **The `GroupReader` LRU can evict freely.** `_group_readers` is bounded (long batch loops touching many groups otherwise blow the zarr handle budget), and entries are evicted in LRU order. But `_layout_readers` is unbounded — the number of distinct layouts in an atlas is small (typically a handful) — so an evicted `GroupReader` re-fetched a few iterations later still finds its `LayoutReader` warm, and pays no extra read.
 
 ---
 
-## Typical workflows
+## Workers and pickling
 
-### Ingestion workflow
+`GroupReader`s travel across process boundaries when a dataloader spins up workers. Two design choices keep that cheap:
 
-During ingestion, `add_from_anndata` handles layout creation internally. The underlying sequence is:
+- A `LayoutReader` constructed from a `_feature_layouts` table holds the LanceDB table handle, which is **not safe to pickle** across processes. The dataloader avoids the issue by materialising the remap in the parent process and rebuilding each `LayoutReader` with `LayoutReader.from_remap(...)` before sending the `GroupReader`s to workers. `reconstruction_functional.materialize_layout_readers_for_worker` does this swap.
+- A `GroupReader`'s zarr handle and array reader cache are zeroed out in `__getstate__`, so only the durable identity (`zarr_group` path, `feature_space`, the store config, and the layout reader) is shipped. The zarr handle is reopened lazily in the worker on first array access.
 
-1. `atlas.optimize()` — assigns `global_index` to newly registered features (via `reindex_registry` internally)
-2. Annotate `var` with `global_feature_uid`
-3. `build_feature_layout_df` — build the layout DataFrame
-4. Insert into `_feature_layouts` (skipped if `layout_exists` returns `True`)
-
-```python
-# You don't call these directly — add_from_anndata does it for you:
-from homeobox.ingestion import add_from_anndata
-
-atlas.optimize()  # assigns global_index to new features
-add_from_anndata(atlas, adata, field_name="gene_expression",
-                 zarr_layer="counts", dataset_record=record)
-```
-
-For the full ingestion API, see [Array Storage](array_storage.md).
-
-### Post-ingestion maintenance
-
-After ingesting new datasets, `optimize()` ensures global indices are up to date. Internally it runs `reindex_registry` and `sync_layouts_global_index`:
-
-```python
-# atlas.optimize() handles both steps:
-atlas.optimize()
-atlas.snapshot()
-```
-
-For the full atlas lifecycle, see [Building an Atlas](atlas.md).
-
-### Feature-filtered queries
-
-To query a specific set of features by UID:
-
-1. `resolve_feature_uids_to_global_indices` — convert UIDs to global indices
-2. `.features()` — pass the indices to the query builder
-
-```python
-from homeobox.feature_layouts import resolve_feature_uids_to_global_indices
-
-wanted = resolve_feature_uids_to_global_indices(
-    atlas_r._registry_tables["gene_expression"],
-    feature_uids=["ENSG00000141510", "ENSG00000012048"],
-)
-
-adata = (
-    atlas_r.query()
-    .features(wanted, feature_space="gene_expression")
-    .to_anndata()
-)
-```
-
-For querying details, see [Querying](querying.md). For training with feature filters, see [PyTorch Data Loading](dataloader.md#feature-filtered-datasets).
-
----
-
-## Imports
-
-```python
-from homeobox.feature_layouts import (
-    compute_layout_uid,
-    build_feature_layout_df,
-    layout_exists,
-    read_feature_layout,
-    validate_feature_layout,
-    reindex_registry,
-    sync_layouts_global_index,
-    resolve_feature_uids_to_global_indices,
-)
-```
+Inside a worker, the same sharing property holds: every `GroupReader` for the same `layout_uid` carries a reference to the same `LayoutReader` instance, so the remap array is allocated once per worker per layout — not once per zarr group.

@@ -48,7 +48,9 @@ def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
 def _make_sparse_adata(n_obs: int, n_vars: int, feature_uids: list[str]) -> ad.AnnData:
     rng = np.random.default_rng(0)
     X = sp.random(n_obs, n_vars, density=0.3, format="csr", dtype=np.uint32, random_state=rng)
-    var = pl.DataFrame({"global_feature_uid": feature_uids}).to_pandas()
+    var = pl.DataFrame(
+        {"uid": feature_uids, "gene_name": [f"GENE_{u}" for u in feature_uids]}
+    ).to_pandas()
     return ad.AnnData(X=X, var=var)
 
 

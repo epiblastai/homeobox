@@ -47,8 +47,8 @@ def build_feature_layout_df(
     Parameters
     ----------
     var_df:
-        One row per local feature, in local feature order. Must have
-        ``global_feature_uid``.
+        One row per local feature, in local feature order. Must have a
+        ``uid`` column whose values match registry uids.
     registry_table:
         Feature registry. Used to resolve global_index for each feature_uid.
 
@@ -63,20 +63,20 @@ def build_feature_layout_df(
     ValueError
         If any feature_uid is missing from the registry.
     """
-    if "global_feature_uid" not in var_df.columns:
-        raise ValueError("var_df must have a 'global_feature_uid' column")
+    if "uid" not in var_df.columns:
+        raise ValueError("var_df must have a 'uid' column")
 
     n_total = var_df.height
-    n_unique = var_df["global_feature_uid"].n_unique()
+    n_unique = var_df["uid"].n_unique()
     if n_unique != n_total:
         n_dupes = n_total - n_unique
         raise ValueError(
-            f"var_df has {n_dupes} duplicate global_feature_uid value(s) "
+            f"var_df has {n_dupes} duplicate uid value(s) "
             f"({n_total} rows, {n_unique} unique). "
             f"Deduplicate var (and the corresponding matrix columns) before ingestion."
         )
 
-    feature_uids = var_df["global_feature_uid"].to_list()
+    feature_uids = var_df["uid"].to_list()
     n = len(feature_uids)
     layout_uid = compute_layout_uid(feature_uids)
 
@@ -291,8 +291,13 @@ def reindex_registry(table: lancedb.table.Table) -> int:
     int
         Number of features newly indexed.  0 if all features are already indexed.
     """
+    # Sort by uid so global_index assignment is deterministic across runs.
     unindexed = (
-        table.search().where("global_index IS NULL", prefilter=True).select(["uid"]).to_polars()
+        table.search()
+        .where("global_index IS NULL", prefilter=True)
+        .select(["uid"])
+        .to_polars()
+        .sort("uid")
     )
     if unindexed.is_empty():
         return 0

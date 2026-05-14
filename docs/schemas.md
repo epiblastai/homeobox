@@ -1,20 +1,22 @@
 # Schemas
 
-Every table in a homeobox atlas is backed by a Pydantic schema class that subclasses LanceDB's `LanceModel`. These schemas are the ground-level contracts between your application code and the database: they define what columns each table has, what types those columns hold, and which fields are optional or auto-populated.
+Every Lance table in a homeobox atlas is backed by a Pydantic schema class that subclasses LanceDB's `LanceModel`. These schemas are the ground-level contracts between application code and the database: they define what columns each table has, what types those columns hold, and which fields are optional or auto-populated.
 
-There are two distinct families:
+There are two user-extensible families:
 
-- **Cell schemas** — subclasses of `HoxBaseSchema`. One table per atlas; rows represent individual cells (or nuclei, spatial tiles, etc.).
-- **Feature schemas** — subclasses of `FeatureBaseSchema`. One table per feature space; rows represent features (genes, proteins, peaks, etc.) that have a stable identity across datasets.
+- **Obs schemas** — subclasses of `HoxBaseSchema`. One or more obs tables per atlas; rows represent whatever the table indexes (cells, nuclei, spatial tiles, image crops, perturbation conditions, donors, …). An atlas may declare many obs tables side by side, each with its own schema.
+- **Feature schemas** — subclasses of `FeatureBaseSchema`. One table per feature space; rows represent features (genes, proteins, peaks, image-feature channels, …) that have a stable identity across datasets.
 
-Beyond those two user-extensible families, homeobox maintains several internal tables — `DatasetSchema`, `FeatureLayout`, and `AtlasVersionRecord` — that you interact with indirectly during ingestion and versioning. All are described below.
+Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, and `AtlasVersionRecord`. You interact with these indirectly during ingestion and versioning.
 
 ```python
 from homeobox.schema import (
-    HoxBaseSchema, FeatureBaseSchema, PointerField,
+    HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField,
     DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
+
+For the pointer types that obs schemas reference (`SparseZarrPointer`, `DenseZarrPointer`, `DiscreteSpatialPointer`), see [Pointer types](pointer_types.md).
 
 ---
 
@@ -26,124 +28,99 @@ classDiagram
         +str uid
         +str dataset_uid
     }
-    class UserCellSchema {
+    class UserObsSchema {
         +SparseZarrPointer | None gene_expression
         +DenseZarrPointer | None protein_abundance
+        +DiscreteSpatialPointer | None image_tile
         +str cell_type
     }
-    class FeatureBaseSchema {
+    class StableUIDBaseSchema {
         +str uid
+    }
+    class FeatureBaseSchema {
         +int | None global_index
     }
     class UserFeatureSchema {
         +str gene_symbol
         +str ensembl_id
     }
-    class SparseZarrPointer {
-        +str zarr_group
-        +int start
-        +int end
-        +int zarr_row
-    }
-    class DenseZarrPointer {
-        +str zarr_group
-        +int position
-    }
 
-    HoxBaseSchema <|-- UserCellSchema
+    HoxBaseSchema <|-- UserObsSchema
+    StableUIDBaseSchema <|-- FeatureBaseSchema
     FeatureBaseSchema <|-- UserFeatureSchema
-    UserCellSchema --> SparseZarrPointer : gene_expression
-    UserCellSchema --> DenseZarrPointer : protein_abundance
 ```
-
----
-
-## Pointer types
-
-Pointer types are nested structs stored directly inside each cell row. They link a cell to the precise location of its data in the zarr object store.
-
-### `SparseZarrPointer`
-
-Used for high-dimensional sparse assays — gene expression, chromatin peak counts, and anything else stored in CSR layout.
-
-| Field | Type | Description |
-|---|---|---|
-| `zarr_group` | `str` | Path to the zarr group within the object store. Matches the `zarr_group` field on the corresponding `DatasetSchema`. |
-| `start` | `int` | Start position into `csr/indices` (inclusive). Derived from the CSR `indptr` at ingest time. |
-| `end` | `int` | End position into `csr/indices` (exclusive). The slice `[start:end]` spans all non-zero entries for this cell. |
-| `zarr_row` | `int` | 0-indexed row of this cell within the dataset's zarr group. Used as the lookup key for column-oriented (CSC) reads. |
-
-`start` and `end` are element positions into the flat `csr/indices` and `csr/layers/*` arrays — not byte offsets. The values come from the zarr group's `indptr` array during ingestion: `start = indptr[row]`, `end = indptr[row + 1]`.
-
-The pointer itself does not carry its feature_space — that binding lives on the cell schema via `PointerField.declare(feature_space=...)` and is stamped as Arrow field-level metadata on the column. Kind/spec consistency is validated at class-definition time, not at pointer construction.
-
-### `DenseZarrPointer`
-
-Used for dense assays — protein abundance vectors, image feature embeddings, image tiles, and any other measurement that stores one row per cell in a 2-D array.
-
-| Field | Type | Description |
-|---|---|---|
-| `zarr_group` | `str` | Path to the zarr group within the object store. |
-| `position` | `int` | Row index of this cell in the dense 2-D array (`N_cells × N_features`). |
-
-Like `SparseZarrPointer`, the feature_space binding lives on the declaring `PointerField`, not on the pointer value.
-
-### Choosing between sparse and dense
-
-Use `SparseZarrPointer` when most cells have zero values for most features — the overhead of storing indices pays off as soon as sparsity exceeds roughly 80-90%. Gene expression and chromatin accessibility are almost always sparse.
-
-Use `DenseZarrPointer` when the measurement is inherently dense: every cell has a value for every feature, or the feature count is small enough that storing zeros is cheaper than the index overhead. Protein panels (dozens of features) and image embeddings (fixed-dimension vectors) are typical dense cases.
-
-The choice is fixed at feature-space registration time via `FeatureSpaceSpec.pointer_type`. Pointer field types on your cell schema must match.
 
 ---
 
 ## `HoxBaseSchema`
 
-`HoxBaseSchema` is the base class for the cell table. Every cell in your atlas is one row of a table whose schema is a subclass of this class.
+`HoxBaseSchema` is the base class for obs tables. Every row in an obs table is an instance of a subclass of this class.
 
 ### Auto-populated fields
 
 | Field | Type | Description |
 |---|---|---|
-| `uid` | `str` | 16-character random hex string, generated by `uuid4().hex[:16]`. Unique per cell. Safe for concurrent writers because no coordination is needed to generate it. |
-| `dataset_uid` | `str` | Filled automatically by the ingestion layer to match the `dataset_uid` of the `DatasetSchema` the cell was ingested with. Do not set this manually. |
+| `uid` | `str` | 16-character random hex string, generated by `make_uid()` (which calls `uuid4().hex[:16]`). Unique per row. Safe for concurrent writers because generation needs no coordination. |
+| `dataset_uid` | `str` | Filled automatically by the ingestion layer to match the `dataset_uid` of the `DatasetSchema` the row was ingested with. Do not set manually. |
 
-Both `uid` and `dataset_uid` are defined on the base class and should not be redeclared in subclasses.
+Both are defined on the base class and should not be redeclared in subclasses.
 
 ### Pointer fields
 
-Pointer fields are the only required additions when subclassing. Each pointer field declares that cells in this atlas may have been measured in the corresponding feature space.
-
-Each pointer field is declared with `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. The column name is free — it does not have to match the feature_space — so a schema can declare multiple columns in the same feature space (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`).
+A pointer field tells the atlas that rows in this obs table may be measured in a given feature space, and stores the per-row addressing into that feature space's zarr group. Each pointer field is declared with `PointerField.declare(feature_space=...)`:
 
 ```python
 field_name: SparseZarrPointer | None = PointerField.declare(feature_space="gene_expression")
-field_name: DenseZarrPointer | None = PointerField.declare(feature_space="image_features")
+other_name: DenseZarrPointer | None = PointerField.declare(feature_space="protein_abundance")
+crop_field: DiscreteSpatialPointer | None = PointerField.declare(feature_space="image_tiles")
 ```
 
-The `| None` annotation is required so cells that were not profiled in a given modality can leave that pointer null; the reconstruction layer treats null pointers as absent data and zero-fills accordingly.
+The Python attribute name is independent of the feature_space name — the same feature_space may back several columns (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`). The `| None` annotation is required so that rows not measured in a given modality can leave the pointer null; the reconstruction layer treats null pointers as absent data.
 
-Three invariants are enforced at class-definition time inside `__init_subclass__`:
+Class-definition-time invariants (enforced in `__init_subclass__`):
 
-1. Every pointer-typed field must be declared via `PointerField.declare(...)`. A raw `= None` default raises `TypeError`.
-2. The declared `feature_space` must already be registered via `register_spec()`.
-3. The annotation pointer type must match `spec.pointer_type`.
+1. The subclass declares **at least one** pointer-typed field.
+2. Every pointer-typed field is declared via `PointerField.declare(...)` — a bare `= None` default raises `TypeError`.
+3. The declared `feature_space` is already registered via `register_spec()`.
+4. The annotation's pointer type matches `spec.pointer_type` (`SparseZarrPointer` ↔ sparse spec, `DenseZarrPointer` ↔ dense spec, `DiscreteSpatialPointer` ↔ discrete_spatial spec).
 
-At least one pointer field must be declared on the subclass, and at least one must be non-null per row (enforced by a model validator at instance creation time).
+A model validator additionally requires that at least one pointer column be non-null per row at instance construction.
+
+### `PointerField` and Arrow metadata
+
+`PointerField.declare(feature_space=...)` returns a pydantic `Field` whose `json_schema_extra` carries `{"is_pointer": True, "feature_space": <name>}`. This binding is what the rest of the codebase uses to know which feature space a column points into — the pointer struct itself only carries `zarr_group` plus addressing fields, never the feature_space name.
+
+`HoxBaseSchema.to_arrow_schema()` then **persists the binding on the Arrow schema** of the obs table. For every pointer field it stamps the per-field metadata:
+
+```
+b"homeobox.feature_space" → <feature_space>.encode("utf-8")
+```
+
+(The exact key is `schema.POINTER_FEATURE_SPACE_METADATA_KEY`.) Because Lance stores Arrow field metadata, this binding survives the round-trip into the on-disk table.
+
+The point of this is that **the Python schema class is no longer required to interpret an existing atlas**. When `RaggedAtlas.checkout(...)` is called without obs schemas, `_infer_pointer_fields_from_arrow` walks the Arrow schema, identifies struct columns whose sub-field names match a known pointer type (sparse / dense / discrete_spatial), and reads `homeobox.feature_space` off each field to resolve the binding:
+
+```python
+# Schema-less open path, from RaggedAtlas.checkout(...)
+arrow_schema = obs_table.schema
+pointer_fields = _infer_pointer_fields_from_arrow(arrow_schema)
+# {"gene_expression": PointerField(field_name="gene_expression",
+#                                  feature_space="gene_expression"),
+#  "cycle1_image_tiles": PointerField(field_name="cycle1_image_tiles",
+#                                     feature_space="image_tiles"), ...}
+```
+
+This is why `obs_schemas` is optional on `checkout()`: read paths can recover the full pointer-field map from the on-disk schema alone. Writing still requires the Python class so that pydantic validation can run.
 
 ### Multimodal example
 
 ```python
 from homeobox.pointer_types import (
-     SparseZarrPointer, DenseZarrPointer,
+    SparseZarrPointer, DenseZarrPointer, DiscreteSpatialPointer,
 )
-from homeobox.schema import (
-    HoxBaseSchema, PointerField,
-)
+from homeobox.schema import HoxBaseSchema, PointerField
 
-class MultimodalCellSchema(HoxBaseSchema):
-    # Pointer fields — each binds a column name to a registered feature space
+class MultimodalObs(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = PointerField.declare(
         feature_space="gene_expression"
     )
@@ -153,26 +130,23 @@ class MultimodalCellSchema(HoxBaseSchema):
     protein_abundance: DenseZarrPointer | None = PointerField.declare(
         feature_space="protein_abundance"
     )
-    image_features: DenseZarrPointer | None = PointerField.declare(
-        feature_space="image_features"
+    image_tile: DiscreteSpatialPointer | None = PointerField.declare(
+        feature_space="image_tiles"
     )
 
     # Arbitrary obs metadata — any LanceDB-compatible types
     cell_type: str | None = None
     tissue: str | None = None
-    disease: str | None = None
     donor_id: str | None = None
     assay: str | None = None
 ```
 
-A cell from a CITE-seq experiment might populate `gene_expression` and `protein_abundance` while leaving `chromatin_accessibility` and `image_features` null. A cell from a single-nucleus ATAC-seq dataset would populate only `chromatin_accessibility`. Both are valid rows in the same table.
+A CITE-seq row might populate `gene_expression` and `protein_abundance` while leaving `chromatin_accessibility` and `image_tile` null. A single-nucleus ATAC-seq row would populate only `chromatin_accessibility`. Both are valid rows in the same obs table.
 
 ### Unimodal example
 
 ```python
-from homeobox.schema import HoxBaseSchema, SparseZarrPointer, PointerField
-
-class CensusCell(HoxBaseSchema):
+class CensusObs(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = PointerField.declare(
         feature_space="gene_expression"
     )
@@ -180,137 +154,119 @@ class CensusCell(HoxBaseSchema):
     cell_type: str | None = None
     tissue: str | None = None
     assay: str | None = None
-    self_reported_ethnicity: str | None = None
-    development_stage: str | None = None
-    sex: str | None = None
-    is_primary_data: bool | None = None
 ```
 
-For a unimodal atlas, a single pointer field is sufficient. The `| None` is still required so that pointer validation is enforced via the model validator rather than silently accepting null rows.
+For a unimodal atlas, a single pointer field is sufficient. The `| None` is still required so that pointer validation runs through the model validator rather than silently accepting null rows.
 
 ---
 
 ## `FeatureBaseSchema`
 
-`FeatureBaseSchema` is the base class for feature registry tables. Each feature space that has a stable feature axis (genes, proteins, peaks, image feature channels, etc.) maintains its own registry table whose schema subclasses this class.
+`FeatureBaseSchema` is the base class for feature registry tables. Each feature space with a stable feature axis (genes, proteins, peaks, image-feature channels, …) maintains its own registry whose schema subclasses this class.
+
+`FeatureBaseSchema` itself inherits from `StableUIDBaseSchema`, which contributes the `uid` field and the `StableUIDField.declare(...)` machinery used to derive deterministic `uid` values from a canonical identifier (Ensembl gene ID, UniProt accession, …). See [Feature registries](feature_registries.md) for the design rationale, the dedup semantics, and the bulk `compute_stable_uids` path.
 
 ### Fields
 
 | Field | Type | Description |
 |---|---|---|
-| `uid` | `str` | Stable canonical identifier for the feature. Generated by default as a 16-char hex uid, but you should supply a domain-meaningful value (Ensembl gene ID, UniProt accession, etc.) when a canonical identifier exists. Never reassigned once written. |
-| `global_index` | `int \| None` | Dense integer position in the range `0..N-1`, assigned by `reindex_registry()`. Starts as `None`; remains `None` until the first reindexing pass. |
-
-### The `uid` / `global_index` split
-
-These two fields serve different roles and are intentionally managed separately.
-
-`uid` is the durable, cross-rebuild identifier. Multiple concurrent ingestion processes can register new features simultaneously via `register_features()` without coordination, because generating a `uid` requires no knowledge of what other processes are doing. It is safe to use `uid` in application code, foreign-key relationships, and any reference that must survive an atlas rebuild.
-
-`global_index` is the array-indexing key. It must be a contiguous integer range `0..N-1` so it can be used directly as a scatter/gather key during reconstruction — no hash lookup or sort is needed at training time. Assigning contiguous integers in a concurrent-write scenario would require coordination, so it is done in a single dedicated step: `reindex_registry()` scans the registry once, assigns `global_index` to any feature that does not yet have one (new features get `max(existing_global_index) + 1`), and writes back. Call this after all `register_features()` calls for a batch and before ingestion begins.
-
-Never use `global_index` as a persistent reference outside the atlas. It is stable once assigned (a feature's index does not change when new features are added), but the contiguous range assumption means that rebuilding the registry from scratch would produce different values.
+| `uid` | `str` | 16-character hex identifier. Stable across runs when the schema declares a `StableUIDField`; otherwise random per row. Never reassigned once written. |
+| `global_index` | `int \| None` | Dense integer index assigned by `optimize()` / `reindex_registry()`. Starts as `None`; new features get `max(existing) + 1`. Used as a scatter/gather key during reconstruction. |
 
 ### Subclassing
 
-Add any modality-specific fields as ordinary Pydantic fields:
+Add modality-specific fields as ordinary pydantic fields. Mark the field that drives stable UID generation (if any) with `StableUIDField.declare(...)`:
 
 ```python
-from homeobox.schema import FeatureBaseSchema
+from homeobox.schema import FeatureBaseSchema, StableUIDField
 
 class GeneFeature(FeatureBaseSchema):
-    gene_symbol: str
-    ensembl_id: str
-    feature_biotype: str   # e.g. "protein_coding", "lncRNA"
-    feature_length: int
+    gene_symbol: str | None = None
+    ensembl_id: str | None = StableUIDField.declare(default=None)
+    feature_biotype: str | None = None     # e.g. "protein_coding", "lncRNA"
+    feature_length: int | None = None
 ```
 
 ```python
 class ProteinFeature(FeatureBaseSchema):
-    uniprot_id: str
-    protein_name: str
-    gene_name: str | None = None
-    organism: str
+    uniprot_id: str | None = StableUIDField.declare(default=None)
+    protein_name: str | None = None
+    organism: str | None = None
 ```
 
 ```python
 class ChromatinPeak(FeatureBaseSchema):
-    chrom: str
-    start: int
-    end: int
-    peak_type: str | None = None   # e.g. "promoter", "enhancer"
+    coord: str | None = StableUIDField.declare(default=None)   # e.g. "chr1:100000-100500"
+    peak_type: str | None = None                               # e.g. "promoter", "enhancer"
 ```
 
-The `uid` field carries the canonical identifier for the modality. For genes, use Ensembl gene IDs. For proteins, use UniProt accessions. For peaks, use a stable coordinate string like `chr1:100000-100500`. Consistent `uid` values across atlas builds allow the registry to be extended without losing continuity.
+At most one field per schema may be declared as a `StableUIDField`; declaring two is a class-definition-time error. The `StableUIDField` itself is stamped onto the Arrow schema with metadata key `homeobox.stable_uid = "true"`, so the choice survives to disk alongside the pointer-field metadata above.
 
 ---
 
 ## `DatasetSchema`
 
-`DatasetSchema` is the dataset inventory table. One row is written per zarr group ingested into the atlas. `zarr_group` is the per-row primary key; `dataset_uid` is the logical dataset identifier that is shared across modality rows from the same multimodal batch (one row per feature space).
+`DatasetSchema` is the dataset inventory table. One row is written per zarr group ingested into the atlas.
 
 | Field | Type | Description |
 |---|---|---|
-| `dataset_uid` | `str` | Auto-generated 16-char hex identifier for the logical dataset. Written to `CellIndex.dataset_uid` on every cell row ingested from this dataset. May be shared across rows that represent different modalities of the same multimodal batch. |
-| `zarr_group` | `str` | Path to the zarr group within the object store. The per-row primary key of the datasets table, and the same path stored in pointer fields on cell rows — so the two can be joined. |
+| `dataset_uid` | `str` | Auto-generated 16-char hex identifier for the logical dataset. Written to `HoxBaseSchema.dataset_uid` on every obs row ingested from this dataset. May be shared across rows that represent different modalities of the same multimodal batch. |
+| `zarr_group` | `str` | Path to the zarr group within the object store. The per-row primary key of the datasets table, and the same path stored in pointer structs on obs rows — so the two can be joined. |
 | `feature_space` | `str` | The registered feature space name for this group (e.g. `"gene_expression"`, `"protein_abundance"`). |
-| `n_cells` | `int` | Number of cells in the dataset. Recorded at ingest time; used by `validate()` when checking consistency between the cell table and the zarr arrays. |
-| `layout_uid` | `str` | Content-hash identifying the feature ordering for this dataset. Set by `add_or_reuse_layout()` during ingestion; empty string until that call completes. Used to join datasets against `_feature_layouts` rows. |
+| `n_rows` | `int` | Number of rows in the dataset. Recorded at ingest time; used by `validate()` to check consistency between obs tables and zarr arrays. |
+| `layout_uid` | `str` | Content-hash identifying the feature ordering for this dataset. Set by `register_dataset()` during ingestion; empty string until that call completes. Joins the dataset against `_feature_layouts` rows. |
 | `created_at` | `str` | UTC ISO 8601 timestamp, set automatically at instantiation. |
 
-You construct a `DatasetSchema` explicitly when calling `add_from_anndata()` or the lower-level ingestion functions. If you need to attach provenance fields (source database accession, DOI, release date, etc.), subclass `DatasetSchema` and pass your subclass to `RaggedAtlas.create()` as the `dataset_schema` argument:
+You construct a `DatasetSchema` explicitly when calling `add_from_anndata()` or the lower-level ingestion functions. To attach provenance fields (source database accession, DOI, release date, …), subclass `DatasetSchema` and pass your subclass to `create_or_open_atlas` as the `dataset_schema` argument:
 
 ```python
-from homeobox.schema import DatasetSchema
-
 class CensusDatasetSchema(DatasetSchema):
     cellxgene_dataset_id: str
     census_release_date: str
 ```
 
-`validate()` uses the datasets table to enumerate all expected zarr groups and check that their cell counts match the cell table.
+`validate()` uses the datasets table to enumerate all expected zarr groups and check that their row counts match the obs tables.
 
 ---
 
 ## `FeatureLayout`
 
-`FeatureLayout` stores feature orderings shared across datasets. Each unique feature ordering is stored once as a "layout" identified by a content-hash `layout_uid`. Datasets with identical feature orderings reference the same layout, dramatically reducing row count.
+`FeatureLayout` stores feature orderings shared across datasets. Each unique feature ordering is stored once as a "layout" identified by a content-hash `layout_uid`; datasets with identical feature orderings reference the same layout, dramatically reducing row count.
 
 | Field | Type | Description |
 |---|---|---|
-| `layout_uid` | `str` | Content-hash of the ordered feature list. Shared across datasets with the same feature ordering. Scalar-indexed for layout → features lookup. |
+| `layout_uid` | `str` | Content-hash of the ordered feature list. Shared across datasets with the same ordering. Scalar-indexed for layout → features lookup. |
 | `feature_uid` | `str` | The `uid` from the feature registry. FTS-indexed for feature → layouts lookup. |
-| `local_index` | `int` | 0-based position of this feature in the layout's zarr array (i.e. the column index stored in `csr/indices`). Used as the sort key when building the local→global remap. |
-| `global_index` | `int` | Denormalized copy of the feature's `global_index` from the registry. Written by `optimize()` after `reindex_registry()` has run. Used as the scatter/gather key in the reconstruction hot path — no database lookup needed during training. |
+| `local_index` | `int` | 0-based position of this feature in the layout's zarr array (i.e. the column index stored in `csr/indices`). Used as the sort key when building the local → global remap. |
+| `global_index` | `int \| None` | Denormalized copy of the feature's `global_index` from the registry. Written by `optimize()` after `reindex_registry()` runs. Used as the scatter/gather key in the reconstruction hot path — no database lookup needed during training. |
 
 The `_feature_layouts` table supports two query directions efficiently via an FTS index on `feature_uid` and a scalar index on `layout_uid`:
 
-- **Feature → datasets**: given a feature `uid`, which layouts (and thus datasets) include it? This drives queries like `find_datasets_with_features`.
-- **Layout → features**: given a `layout_uid`, reconstruct the full `local_index → global_index` remap array for vectorized scatter/gather during batch assembly.
+- **Feature → datasets**: given a feature `uid`, which layouts (and thus datasets) include it? Drives queries like `find_datasets_with_features`.
+- **Layout → features**: given a `layout_uid`, reconstruct the full `local_index → global_index` remap array for vectorised scatter/gather during batch assembly.
 
-`FeatureLayout` rows are written by the ingestion layer and updated by `optimize()`. You will rarely construct or query them directly — they are an internal implementation detail of the reconstruction and sampling pipeline. For the Python API that builds, queries, and validates layouts, see [Feature Layouts](feature_layouts.md).
+`FeatureLayout` rows are written by the ingestion layer and updated by `optimize()`. They are an internal implementation detail of the reconstruction and sampling pipeline. For the Python API that builds, queries, and validates layouts, see [Feature Layouts](feature_layouts.md).
 
 ---
 
 ## `AtlasVersionRecord`
 
-`AtlasVersionRecord` captures a consistent snapshot of every Lance table version in the atlas. One row is written each time `snapshot()` is called.
+`AtlasVersionRecord` captures a consistent snapshot of every Lance table in the atlas. One row is written each time `snapshot()` is called.
 
 | Field | Type | Description |
 |---|---|---|
 | `version` | `int` | Monotonically increasing snapshot number. Returned by `snapshot()`. |
-| `obs_table_name` | `str` | Name of the LanceDB cell table at snapshot time. |
-| `cell_table_version` | `int` | Lance internal version number for the cell table. |
-| `dataset_table_name` | `str` | Name of the datasets table. |
-| `dataset_table_version` | `int` | Lance internal version number for the datasets table. |
-| `registry_table_names` | `str` | JSON object mapping feature space name to registry table name, e.g. `{"gene_expression": "gene_expression_registry"}`. |
-| `registry_table_versions` | `str` | JSON object mapping feature space name to the Lance version integer for that table. |
-| `feature_layouts_table_version` | `int` | Lance internal version for the `_feature_layouts` table. |
-| `total_cells` | `int` | Total cell count across all datasets at snapshot time. Written for quick inspection without opening the cell table. |
+| `obs_table_versions` | `str` | JSON object mapping obs-table name to its Lance version integer, e.g. `'{"cells": 4, "donors": 2}'`. Encodes one entry per obs table declared on the atlas. |
+| `dataset_table_name` | `str` | Name of the datasets Lance table. |
+| `dataset_table_version` | `int` | Lance internal version of the datasets table. |
+| `registry_table_names` | `str` | JSON object mapping feature space name to registry table name, e.g. `'{"gene_expression": "gene_expression_registry"}'`. |
+| `registry_table_versions` | `str` | JSON object mapping feature space name to its Lance version integer. |
+| `feature_layouts_table_version` | `int` | Lance internal version of the `_feature_layouts` table. |
+| `total_rows` | `int` | Total row count across all obs tables at snapshot time. Written for quick inspection without opening any obs table. |
 | `created_at` | `str` | UTC ISO 8601 timestamp. |
 
-`checkout(version)` reads the corresponding `AtlasVersionRecord` and reopens every table pinned to the exact Lance version captured there. This makes any checked-out atlas fully reproducible: subsequent writes to the underlying tables do not affect the checked-out view.
+`checkout(version)` reads the matching `AtlasVersionRecord` and reopens every table pinned to the exact Lance version captured there, so any checked-out atlas is fully reproducible: subsequent writes to the underlying tables do not affect the checked-out view.
 
-`registry_table_names` and `registry_table_versions` are stored as JSON strings rather than structured columns because the set of registered feature spaces is user-defined and varies between atlas configurations. The `checkout` implementation deserializes these with `json.loads` and iterates over the pairs.
+The per-table version columns are stored as JSON strings rather than structured columns because the sets of obs tables and feature registries are user-defined and vary between atlas configurations. `checkout` deserialises them with `json.loads` and iterates over the pairs.
 
-You do not construct `AtlasVersionRecord` instances directly. They are created by `snapshot()` and read by `checkout()` and `list_versions()`.
+You do not construct `AtlasVersionRecord` instances directly — they are created by `snapshot()` and read by `checkout()` and `list_versions()`.
