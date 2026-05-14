@@ -10,6 +10,8 @@ A single homeobox atlas can hold sparse single-cell gene expression, dense prote
 
 ## Why homeobox
 
+![Multimodal schema with auxiliary metadata tables](docs/assets/hox_ragged_atlas.svg)
+
 ### Motivating cases
 
 - Hundreds or thousands of `h5ad` or `h5mu` files from different assays, panels, and organisms that you want to query and train on as a single collection.
@@ -24,8 +26,6 @@ Existing tools tend to optimise for single large datasets from a single modality
 Real-world atlases pull together datasets that were not designed to be compatible: different feature panels, different assays and imaging modalities, different metadata fields. Conventional tools handle this by padding to a union matrix (wasteful) or intersecting to shared features (lossy).
 
 A `RaggedAtlas` keeps a single shared `obs` table while letting each dataset retain its own feature axis (or no features at all, for raw images). The obs table lives in LanceDB; each dataset occupies its own Zarr group with its own feature ordering; every row carries a pointer into its group.
-
-![Multimodal schema with auxiliary metadata tables](docs/assets/hox_ragged_atlas.svg)
 
 At query time, the reconstruction layer joins the feature spaces on the fly: it computes the union or intersection of global feature indices, scatters each group's data into the right columns, and returns a single AnnData / MuData with every row correctly placed. Nothing is dropped at ingest, and there is no ambiguity about whether a value is a true zero or padding.
 
