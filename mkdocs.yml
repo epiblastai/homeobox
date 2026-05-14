@@ -37,19 +37,21 @@ plugins:
 
 nav:
   - Overview: index.md
-  - Concepts:
+  - Tutorials:
     - Building an Atlas: atlas.md
+  - Concepts:
     - Feature Registries: feature_registries.md
+    - Feature Layouts: feature_layouts.md
+    - Array Storage: array_storage.md
     - Versioning: versioning.md
   - Reference:
     - Schemas: schemas.md
     - Pointer Types: pointer_types.md
-    - Feature Layouts: feature_layouts.md
-    - Array Storage: array_storage.md
     - BatchArray: batch_array.md
     - Querying: querying.md
     - Reconstructors: reconstructors.md
     - PyTorch Data Loading: dataloader.md
+  - Benchmarks:
     - Dataloader Benchmark: dataloader_benchmark.md
 
 markdown_extensions:
