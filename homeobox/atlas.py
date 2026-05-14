@@ -226,8 +226,11 @@ class RaggedAtlas:
         obs_schemas:
             Mapping of ``{obs_table_name: HoxBaseSchema subclass}`` declaring
             one or more obs tables and their pointer-field schemas. Each obs
-            table is independent; pointer fields are keyed by
-            ``(obs_table_name, field_name)`` internally.
+            table is independent. Pointer fields are keyed by ``field_name``
+            across the atlas: the same field name may appear in multiple obs
+            tables only if every declaration shares the same ``feature_space``
+            (the shared declaration then collapses to one entry); conflicting
+            declarations raise at construction.
         dataset_table_name:
             Name for the dataset metadata table.
         dataset_schema:

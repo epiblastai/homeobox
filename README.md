@@ -92,7 +92,7 @@ atlas.register_features("gene_expression", features)
 
 # 4. Prepare var and ingest. `field_name` selects the cell-schema column
 #    to populate; its feature_space is resolved from PointerField.declare.
-adata.var["global_feature_uid"] = adata.var_names
+adata.var["global_feature_uid"] = adata.var_names  # Required for deduplication
 record = hox.DatasetSchema(
     zarr_group="pbmc3k", feature_space="gene_expression", n_rows=adata.n_obs,
 )
