@@ -2,7 +2,7 @@
 
 Homeobox is a multimodal database for interactive analysis and ML training at scale. It combines the search and versioning capabilities of [LanceDB](https://lancedb.com) with the scalable array storage of [Zarr](https://zarr.dev).
 
-A single homeobox atlas can hold sparse single-cell gene expression, dense protein and embedding features, 2D/3D/4D/5D images, biomolecular structures, and free text. A single dataloader streams batches across all of them with no intermediate ML-only copies and no special modality-specific entrypoints.
+A single homeobox atlas can hold sparse single-cell gene expression, dense protein and embedding features, 2D/3D/4D/5D images, biomolecular structures, and free text. A single dataloader streams batches across all of them with no intermediate ML-only copies and no special modality-specific entrypoints. Our design philosophy is to be *extremely flexible, while still quite fast*.
 
 - **[Documentation](https://epiblastai.github.io/homeobox/)**
 
@@ -144,36 +144,22 @@ The `notebooks/` directory contains self-contained [marimo](https://marimo.io) n
 
 | Notebook | Description |
 |----------|-------------|
-| [`multimodal_perturbation_atlas.py`](https://colab.research.google.com/drive/1-5lQXRLpKrpeYAQ14UIVK7CMq_75tp6Y#scrollTo=87b338c7) | Explore a 120M+ cell atlas with over 130,000 genetic, chemical, and biologic perturbations and 5 modalities. |
-| [`scbasecount_ragged_atlas.py`](notebooks/scbasecount_ragged_atlas.py) | Explore a small 7.3M-cell atlas built from [scBaseCount](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC11885935/) data (human + *C. elegans*). Covers versioning, metadata queries, ragged union/intersection joins, feature selection, AnnData reconstruction, and the PyTorch dataloader. |
+| [`multimodal_perturbation_atlas.py`](https://colab.research.google.com/drive/1-5lQXRLpKrpeYAQ14UIVK7CMq_75tp6Y#scrollTo=87b338c7) | Explore a 120M+, agent-curated, cell atlas with over 130,000 genetic, chemical, and biologic perturbations and 5 modalities. |
 
 ---
 
 ## Performance
 
-Beyond raw numbers, the case for homeobox over a single-modality tabular store like TileDB-SOMA is generality and integration. One library handles cell tables, sparse matrices, dense features, images, embeddings, and text — there is no separate stack for non-tabular modalities. New modalities are added by writing a feature-space spec, not by waiting for upstream support. And because storage is plain LanceDB + Zarr, homeobox plays directly with the broader Python + Rust data ecosystem (Lance, DuckDB, Polars, zarrs).
+Beyond raw numbers, the case for homeobox is generality and integration. One library handles cell tables, sparse matrices, dense features, images, embeddings, and text — there is no separate stack for non-tabular modalities. New modalities are added by writing a feature-space spec, not by waiting for upstream support. And because storage is plain LanceDB + Zarr, homeobox plays directly with the broader Python + Rust data ecosystem (Lance, DuckDB, Polars, zarrs).
 
-On the 44M-cell CellxGene Census mouse atlas streaming from S3, homeobox's PyTorch dataloader is roughly an order of magnitude faster than TileDB-SOMA on a single worker, and AnnData query latency is 1.7–3x lower across cell-, feature-, and combined-filter patterns.
+On a 1M-cell × 20k-gene synthetic atlas, the homeobox iterable dataloader sustains **~70k cells/sec on local NVMe** and **~40k cells/sec streaming from S3** at a single worker — saturating local disk and running roughly an order of magnitude faster than the next remote-capable system in the sweep.
 
-![Dataloader throughput: homeobox vs TileDB-SOMA](docs/assets/benchmark_streaming.png)
+![Remote throughput vs batch size](docs/assets/remote_throughput_vs_batchsize.png)
 
-See [docs/performance.md](docs/performance.md) for full benchmark tables, the `RustShardReader` design, and BP-128 bitpacking details.
+See [docs/dataloader_benchmark.md](docs/dataloader_benchmark.md) for the full sweep across nine dataloaders (SLAF, scDataset, BioNeMo SCDL, annbatch, TileDB-SOMA, cell-load, and the two homeobox surfaces), including local/remote/perturbation workloads, memory profiles, and reproducible scripts.
 
 ---
 
 ## Versioning
 
 Homeobox separates the writable ingest path from the read/query path with an explicit snapshot model: ingest writes Zarr arrays and cell records freely (in parallel if needed), `optimize()` compacts Lance fragments and rebuilds indexes, `snapshot()` validates consistency and records the current Lance table versions, and `checkout(version)` opens a read-only atlas pinned to that snapshot. Queries and training runs execute against a frozen, reproducible view; concurrent ingestion does not affect any checked-out handle. See [docs/versioning.md](docs/versioning.md) for the full lifecycle.
-
----
-
-## Acknowledgements
-
-### Methods
-
-- **BPCells**: Parks and Greenleaf, *Scalable high-performance single cell data analysis with BPCells*, bioRxiv 2025. BP-128 bitpacking in homeobox is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
-
-### Datasets
-
-- **CellxGene Census**: Chan Zuckerberg Initiative, *CellxGene Census*. The mouse atlas used in the benchmark. https://chanzuckerberg.github.io/cellxgene-census/
-- **scBaseCount**: Youngblut et al., *scBaseCount: an AI agent-curated, uniformly processed, and autonomously updated single cell data repository*, bioRxiv 2025. https://www.biorxiv.org/content/10.1101/2025.02.27.640494v3

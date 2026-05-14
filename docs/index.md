@@ -88,11 +88,3 @@ See [dataloader_benchmark.md](dataloader_benchmark.md) for the full sweep across
 ## Versioning
 
 Homeobox separates the writable ingest path from the read/query path with an explicit snapshot model: ingest writes Zarr arrays and cell records freely (in parallel if needed), `optimize()` compacts Lance fragments and rebuilds indexes, `snapshot()` validates consistency and records the current Lance table versions, and `checkout(version)` opens a read-only atlas pinned to that snapshot. Queries and training runs execute against a frozen, reproducible view; concurrent ingestion does not affect any checked-out handle.
-
----
-
-## Acknowledgements
-
-### Methods
-
-- **BPCells**: Parks and Greenleaf, *Scalable high-performance single cell data analysis with BPCells*, bioRxiv 2025. BP-128 bitpacking in homeobox is inspired by this work. https://www.biorxiv.org/content/10.1101/2025.03.27.645853v1.full
