@@ -1,6 +1,6 @@
 [project]
 name = "homeobox"
-version = "0.2.3"
+version = "0.2.4"
 description = "Multimodal biomedical atlas builder"
 readme = "README.md"
 requires-python = ">=3.12"
