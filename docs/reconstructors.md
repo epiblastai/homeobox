@@ -1,206 +1,116 @@
 # Reconstructors
 
-A reconstructor converts raw zarr data into an `AnnData` object. Every `ZarrGroupSpec` carries a `reconstructor` instance; at query time, `AtlasQuery` calls `spec.reconstructor.as_anndata(...)` for each feature space being loaded.
-
-The reconstructor is responsible for:
-
-- Loading the per-group local-to-global feature index remap from [`_feature_layouts`](feature_layouts.md)
-- Reading zarr arrays for each dataset group
-- Remapping per-group local feature indices to the global feature space
-- Assembling the final `AnnData` with obs, var, and X (and any additional layers)
-
-Homeobox ships several built-in reconstructors. Most users will pick one of them when defining a custom `ZarrGroupSpec`; implementing a custom reconstructor from scratch is rarely needed.
+A reconstructor converts raw zarr data behind a feature space into a modality-native object such as an `AnnData`, `SpatialTileBatch`, or `FragmentResult`. Every [`FeatureSpaceSpec`](array_storage.md) carries a reconstructor instance, and `AtlasQuery` terminal methods like `.to_anndata()`, `.to_spatial_batch()`, and `.to_fragments()` dispatch to it. Homeobox ships built-in reconstructors for a few standard feature-space shapes. 
 
 ---
 
-## The `Reconstructor` protocol
+## The `Reconstructor` base class
 
 ```python
-from homeobox.protocols import Reconstructor
+from homeobox.reconstructor_base import Reconstructor, endpoint
 ```
 
-`Reconstructor` is a `runtime_checkable` protocol. Any class that implements `as_anndata` with the following signature satisfies it — no explicit inheritance needed.
+`Reconstructor` is a concrete base class. Subclasses declare what shape of data they handle and what user-facing endpoints they expose. The query layer enumerates endpoints (`Reconstructor.endpoints()`) so that `.to_anndata()` on a spatial-only feature space produces an informative error instead of a `NotImplementedError`.
 
-```python
-class Reconstructor(Protocol):
-    def as_anndata(
-        self,
-        atlas: RaggedAtlas,
-        cells_pl: pl.DataFrame,
-        pf: PointerField,
-        spec: ZarrGroupSpec,
-        layer_overrides: list[str] | None = None,
-        feature_join: Literal["union", "intersection"] = "union",
-        wanted_globals: np.ndarray | None = None,
-    ) -> ad.AnnData: ...
+**Class attributes** that participate in the shared I/O path (see [The shared I/O path](#the-shared-io-path) below):
+
+- `required_arrays: list[str]` — structural zarr arrays the reconstructor needs in addition to layer arrays (e.g. `["csr/indices"]` for CSR readers).
+- `require_var_df: bool` — `True` for reconstructors that join through a feature registry; `False` for var-less spaces like raw images.
+- `read_method: Literal["ranges", "boxes"]` — `"ranges"` for byte-range reads against sparse CSR arrays; `"boxes"` for row/box reads against dense or spatial arrays.
+- `stack_uniform: bool` — only meaningful when `read_method="boxes"`. Controls whether per-row reads are stacked into a single ndarray (dense features) or kept as a list (spatial tiles, where crop shapes vary).
+
+**Endpoint methods** are marked with the `@endpoint` decorator. A reconstructor can declare any subset of `as_anndata`, `as_spatial_batch`, `as_fragments`; the chosen subset determines which `AtlasQuery.to_*` terminals are valid for the feature space.
+
+**Pipeline hooks** that subclasses implement so the shared I/O path can drive them:
+
+- `build_group_batch(group_reader, group_rows, layer_names, results)` — wraps one zarr group's raw read results into a local-space [`SparseBatch`](https://github.com/epiblastai/homeobox/blob/main/homeobox/batch_types.py) / `DenseFeatureBatch` / `SpatialTileBatch`.
+- `build_empty_batch(...)` — the zero-row counterpart used when a query matches no rows.
+
+---
+
+## The shared I/O path
+
+Every `as_anndata` / `as_spatial_batch` implementation — and the streaming dataloader — drives the same three-stage pipeline (defined in `homeobox/reconstruction_functional.py`):
+
+```mermaid
+flowchart LR
+    A["**Plan**<br/>group pointers by zarr_group<br/>load per-group readers"] --> B["**Read**<br/>dispatch ranges/boxes per group<br/>async reads → local-space batches"]
+    B --> C["**Finalize**<br/>remap local → joined feature space<br/>concat groups<br/>optional row reorder"]
 ```
 
-Key parameters:
+1. **Plan** (`build_feature_read_plan`). Group the queried rows by `zarr_group` and resolve a `FeatureReadPlan` for the whole batch. The read plan includes the `FeatureSpaceSpec`, the structural and layer zarr array paths, the maximal per-layer dtype for consistent casting, the joined-feature-space width (`n_features`), and per-group `GroupReader`s and `LayoutReader`s.
+2. **Read** (`read_arrays_by_group`). For each group, dispatch async reads keyed off `read_method`: `"ranges"` calls into the byte ranges produced by `spec.pointer_type.to_ranges(group_rows)`, `"boxes"` into `spec.pointer_type.to_boxes(group_rows)` (honoring `stack_uniform`). The reconstructor's `build_group_batch` wraps each group's raw results into a typed batch — still in the group's local feature order.
+3. **Finalize** (`finalize_grouped_read`). Upcast layer arrays to the plan's resolved dtype, remap each group's local feature indices into the joined feature space, and concatenate. If a `target_row_ids` is passed, also reorder rows to match. The dataloader uses this to align rows to the sampler's order, general reconstruction methods like `as_anndata` leave it unset and accept zarr-group order.
 
-- `cells_pl` — Polars DataFrame of the queried cells. Includes the zarr pointer struct columns used to locate each cell's row within its zarr group.
-- `pf` — `PointerField` identifying which pointer field this reconstructor handles (field name and feature space).
-- `spec` — the `ZarrGroupSpec` for this feature space, carrying the declared array layout and layer names.
-- `layer_overrides` — if set, read these layers instead of `spec.layers.required`.
-- `feature_join` — `"union"` includes all features from any group; `"intersection"` includes only features present in every group. Ignored when `wanted_globals` is set.
-- `wanted_globals` — if set, pin the output feature space to these global feature indices. Overrides `feature_join`.
+The reconstructor then wraps the joined batch's `indices/offsets/layers` (or layer ndarrays / per-row lists) in `AnnData` / `SpatialTileBatch` / etc.
 
 ---
 
 ## Built-in reconstructors
 
-### `SparseCSRReconstructor`
+| Reconstructor | Endpoint | `read_method` | When to use |
+|---|---|---|---|
+| `SparseGeneExpressionReconstructor` | `as_anndata` | `ranges` | Sparse var-df assays (gene expression, ATAC counts). Picks `SparseCSRReconstructor` or `FeatureCSCReconstructor` per query. |
+| `DenseFeatureReconstructor` | `as_anndata` | `boxes` | Dense feature arrays with a registry — protein abundance, embeddings, log-normalized HVGs. Requires `has_var_df=True`. |
+| `SpatialReconstructor` | `as_spatial_batch` | `boxes` | Var-less spatial fields (image tiles, image crops). Sets `stack_uniform=False` so each row's array keeps its native shape. |
+| `IntervalReconstructor` | `as_fragments` | — | Fragment-based modalities (chromatin accessibility). Bespoke flow; doesn't use the shared pipeline. Defined in `homeobox.fragments.reconstruction`. |
+| `SparseCSRReconstructor` | — (internal) | `ranges` | Building block. CSR byte-range reads. |
+| `FeatureCSCReconstructor` | — (internal) | `ranges` | Building block. Per-feature column-slice reads against a feature-oriented (CSC) copy. |
 
-**Use for:** high-dimensional sparse data — gene expression, chromatin accessibility, any assay stored in CSR format.
+### How sparse dispatch works
 
-```python
-from homeobox.reconstruction import SparseCSRReconstructor
+`SparseGeneExpressionReconstructor.as_anndata` chooses CSC vs CSR per query, in `_should_use_csc`:
 
-ZarrGroupSpec(
-    feature_space="gene_expression",
-    pointer_type=SparseZarrPointer,
-    reconstructor=SparseCSRReconstructor(),
-    ...
-)
-```
+- CSC is picked when (a) the query is feature-filtered (`wanted_globals is not None`), (b) the number of obs rows exceeds the number of requested features, and (c) every queried group has a feature-oriented CSC copy on disk.
+- Otherwise — including mid-migration atlases where only some groups have been CSC-populated — it falls back to CSR.
 
-Each sparse cell pointer encodes a byte range `[_start, _end)` into the `csr/indices` array and the corresponding layer arrays. The reconstructor reads the flat index and value segments for each cell, remaps the local feature indices to their global positions using the `_feature_layouts` remap, builds a `scipy.sparse.csr_matrix` per layer, and stacks them vertically across groups.
+Switching a feature space's reconstructor to `SparseGeneExpressionReconstructor` is the entry point; the CSR↔CSC heuristic is not user-tunable.
 
-For union queries, cells from groups that don't measure a given feature simply have no entries in that column; the sparse format represents this without any fill. For intersection queries, the reconstructor masks out any feature index that does not appear in every group's remap before building the CSR, effectively discarding non-shared features.
+### Spatial batches
 
-When `wanted_globals` is provided and the number of queried cells exceeds the number of requested features, the reconstructor automatically delegates to `FeatureCSCReconstructor`. This heuristic — cells outnumber features — identifies the regime where CSC reads are cheaper: reading one column at a time across many cells costs less I/O than reading many full cell rows and then slicing. The delegation is transparent; you do not need to configure anything.
+`SpatialReconstructor` is the only built-in that exposes `as_spatial_batch` rather than `as_anndata`. The returned [`SpatialTileBatch`](https://github.com/epiblastai/homeobox/blob/main/homeobox/batch_types.py) is list-backed: each layer holds one ndarray per present row, preserving native crop shapes. Stack uniform-shape crops at the call site with `np.stack(batch.layers[layer], axis=0)`.
 
-### `DenseFeatureReconstructor`
-
-**Use for:** dense feature assays with a feature registry — protein abundance (CITE-seq ADT), image feature vectors, log-normalized expression where all values are non-zero (e.g., after HVG selection and normalization), any feature-oriented data stored as a 2D dense array. Specs using this reconstructor must set `has_var_df=True`.
-
-```python
-from homeobox.reconstruction import DenseFeatureReconstructor
-
-ZarrGroupSpec(
-    feature_space="protein_abundance",
-    pointer_type=DenseZarrPointer,
-    reconstructor=DenseFeatureReconstructor(),
-    ...
-)
-```
-
-Each dense cell pointer carries a single row index `_pos`. The reconstructor pre-allocates a float32 output array of shape `(n_cells, n_features)`, then fills it group by group: for each group it reads the relevant rows from `layers/{layer_name}`, remaps the local feature columns to their global positions, and scatters the values into the pre-allocated array.
-
-For union queries, positions corresponding to features not measured in a group remain at their initialized value of zero. For intersection queries, only the columns present in every group's remap are written; all other columns remain zero. For `wanted_globals` queries, the same scatter logic applies but the output column set is pinned to the requested global indices.
-
-Dense data does not support a CSC equivalent. Feature-filtered queries on dense data always read the relevant rows in full and then select columns during scatter.
-
-### `FeatureCSCReconstructor`
-
-**Use for:** sparse data where feature-filtered queries are performance-critical — i.e., when users often request a small set of genes or peaks (such as a marker gene panel) across a large number of cells.
-
-```python
-from homeobox.reconstruction import FeatureCSCReconstructor
-
-ZarrGroupSpec(
-    feature_space="gene_expression",
-    pointer_type=SparseZarrPointer,
-    reconstructor=FeatureCSCReconstructor(),
-    ...
-)
-```
-
-When `wanted_globals` is provided, the reconstructor looks up the CSC byte ranges from the zarr `csc/indptr` array for each requested feature. It then reads only those column segments from `csc/indices` and the corresponding `csc/layers/{layer}` arrays — O(nnz for wanted features) instead of O(nnz across all cells). This is a significant win when the atlas is large and only a handful of features are requested.
-
-For groups that do not yet have CSC data — groups where `add_csc()` has not been called — the reconstructor falls back to reading CSR and filtering columns. This fallback produces the same output as `SparseCSRReconstructor` for those groups. The fallback means CSC is optional on a per-group basis: you can add it incrementally to existing groups without breaking reconstruction for groups that don't have it yet.
-
-When `wanted_globals` is not provided, `FeatureCSCReconstructor` delegates entirely to `SparseCSRReconstructor`. The CSC path only activates when a feature filter is in play.
-
----
-
-## Choosing a reconstructor
-
-| Data type | Reconstructor | Notes |
-|---|---|---|
-| Sparse counts (gene expression, ATAC) | `SparseCSRReconstructor` | Default choice for sparse assays |
-| Dense feature arrays (protein, embeddings, log-normalized HVGs) | `DenseFeatureReconstructor` | Requires `has_var_df=True` |
-| Sparse + frequent feature-filtered queries | `FeatureCSCReconstructor` | Requires `add_csc()` on groups; falls back gracefully per group |
-
-Use `FeatureCSCReconstructor` instead of `SparseCSRReconstructor` when:
-
-- Users frequently query specific genes or peaks by UID (e.g., a fixed marker gene panel or a set of GWAS peaks).
-- The atlas is large enough that reading all cell rows and then slicing columns is noticeably slower than reading the column slices directly.
-- You have already run `add_csc()` on your groups, or plan to. Groups without CSC data incur no penalty — they silently fall back to CSR reads.
-
-`SparseCSRReconstructor` is the simpler default and requires no post-processing step. `FeatureCSCReconstructor` is purely additive: switching the reconstructor on a registered spec requires no changes to ingestion code, schema definitions, or existing zarr data.
-
----
-
-## Feature join semantics
-
-Both sparse and dense reconstructors respect the `feature_join` argument passed down from `AtlasQuery.feature_join()`.
-
-**Union (default):** the output feature space is the union of global indices across all groups. Each group contributes values only for the features it measures; positions for unmeasured features are zero (sparse: absent from the matrix; dense: zero-filled).
-
-**Intersection:** the output feature space contains only global indices present in every group's remap. Cells from groups that don't have a feature in the intersection have that feature excluded from the output — not zero-filled, simply not in the matrix.
-
-**`wanted_globals`:** when set (via `AtlasQuery.features()`), the feature space is pinned to exactly the requested global indices regardless of what any group measures. Groups that don't have a given feature contribute nothing to that column; `feature_join` has no effect.
+**NOTE:** We eventually plan to support `to_spatialdata()` as an endpoint for some cases. `spatialdata` is an excessive representation for a list of image tiles without coordinate transformations or associated polygons and points.
 
 ---
 
 ## Implementing a custom reconstructor
 
-If the built-in reconstructors don't match your data format, implement the `Reconstructor` protocol directly:
+Subclass `Reconstructor`, declare the class attributes, mark endpoint methods with `@endpoint`, and call the shared pipeline inside each endpoint:
 
 ```python
-import anndata as ad
-import polars as pl
-import numpy as np
-from typing import Literal
-from homeobox.atlas import RaggedAtlas
-from homeobox.schema import PointerField
-from homeobox.group_specs import ZarrGroupSpec
+from homeobox.reconstructor_base import Reconstructor, endpoint
+from homeobox.reconstruction_functional import (
+    build_feature_read_plan,
+    read_arrays_by_group,
+    finalize_grouped_read,
+)
 
-class MyCustomReconstructor:
-    def as_anndata(
-        self,
-        atlas: RaggedAtlas,
-        cells_pl: pl.DataFrame,
-        pf: PointerField,
-        spec: ZarrGroupSpec,
-        layer_overrides: list[str] | None = None,
-        feature_join: Literal["union", "intersection"] = "union",
-        wanted_globals: np.ndarray | None = None,
-    ) -> ad.AnnData:
-        # Load feature metadata, read zarr arrays, assemble AnnData
+class MyReconstructor(Reconstructor):
+    required_arrays = ["..."]
+    require_var_df = True
+    read_method = "ranges"   # or "boxes"
+    stack_uniform = True     # only for read_method == "boxes"
+
+    def build_group_batch(self, group_reader, group_rows, layer_names, results):
+        ...  # wrap raw read results in SparseBatch / DenseFeatureBatch / SpatialTileBatch
+
+    def build_empty_batch(self, *, n_rows, n_features, layer_dtypes, layer_names):
+        ...
+
+    @endpoint
+    def as_anndata(self, atlas, obs_pl, pf, layer_overrides=None,
+                   feature_join="union", wanted_globals=None):
+        plan = build_feature_read_plan(
+            atlas, groups, pf,
+            layer_overrides=layer_overrides,
+            feature_join=feature_join,
+            wanted_globals=wanted_globals,
+        )
+        group_batches = read_arrays_by_group(plan, groups)
+        batch = finalize_grouped_read(plan, group_batches)
+        # assemble AnnData / SpatialTileBatch / ... from `batch`
         ...
 ```
 
-Pass the instance as the `reconstructor` argument to `ZarrGroupSpec`.
-
-The following helpers from `homeobox.reconstruction` handle the parts that are identical across all built-in reconstructors. Using them avoids reimplementing the feature space join logic.
-
-### `_load_remaps_and_features(atlas, groups, spec, feature_join, wanted_globals)`
-
-Loads the per-group local-to-global remap arrays from `_feature_layouts` and computes the joined feature space. `groups` is the `GroupBy` returned by a `_prepare_*_obs` helper. Returns:
-
-- `joined_globals` — sorted array of unique global indices in the output feature space.
-- `group_remap_to_joined` — `{zarr_group: positions_array}` where `positions[local_i]` is the column in the joined-space output matrix. For intersection or `wanted_globals` mode, local features not in the joined space are mapped to `-1`.
-
-When `wanted_globals` is set, the union/intersection step is skipped and the returned `joined_globals` is exactly `wanted_globals`.
-
-### `_build_obs_df(cells_pl)`
-
-Strips zarr pointer struct columns and any internal `_`-prefixed columns from `cells_pl`, sets `uid` as the index if present, and returns a pandas DataFrame suitable for use as `adata.obs`.
-
-### `_build_var(atlas, feature_space, joined_globals)`
-
-Queries the feature registry table for the rows matching `joined_globals`, sorts them by `global_index`, and returns a pandas DataFrame with `uid` as the index. Used to build `adata.var`.
-
-### `_build_feature_space(remaps, join)`
-
-Lower-level helper used by `_load_remaps_and_features`. Computes the union or intersection of global indices from a `{group: remap_array}` dict and returns `(joined_globals, group_remap_to_joined)`.
-
----
-
-## Imports
-
-```python
-from homeobox.reconstruction import SparseCSRReconstructor, DenseFeatureReconstructor, FeatureCSCReconstructor
-from homeobox.protocols import Reconstructor
-```
+`SparseCSRReconstructor` (ranges, sparse) and `SpatialReconstructor` (boxes, `stack_uniform=False`) are the two minimal reference implementations to copy from.
