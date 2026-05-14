@@ -20,6 +20,7 @@ from homeobox.atlas import create_or_open_atlas
 from homeobox.ingestion import add_csc, add_from_anndata, deduplicate_var
 from homeobox.obs_alignment import align_obs_to_schema
 from homeobox.schema import make_uid
+from homeobox.util import sql_escape
 from homeobox_examples.scbasecount.schema import (
     CellObs,
     GeneFeatureSpace,
@@ -116,6 +117,24 @@ def ingest_one(args: argparse.Namespace) -> None:
     sample_row = rows[0]
     organism = sample_row.get("organism") or "Homo_sapiens"
 
+    atlas = create_or_open_atlas(
+        atlas_path=args.atlas_dir,
+        obs_schemas={OBS_TABLE: CellObs},
+        dataset_table_name="datasets",
+        dataset_schema=ScBasecountDatasetSchema,
+        registry_schemas={FEATURE_SPACE: GeneFeatureSpace},
+    )
+
+    existing = (
+        atlas._dataset_table.search()
+        .where(f"srx_accession = '{sql_escape(srx_accession)}'", prefilter=True)
+        .select(["srx_accession"])
+        .to_polars()
+    )
+    if not existing.is_empty():
+        print(f"  {srx_accession} already ingested; skipping.")
+        return
+
     print(f"Loading {args.h5ad}...")
     adata = ad.read_h5ad(args.h5ad)
     print(f"  {adata.n_obs:,} cells x {adata.n_vars:,} genes")
@@ -132,14 +151,6 @@ def ingest_one(args: argparse.Namespace) -> None:
     obs_df["cell_barcode"] = obs_df.index.astype(str)
     adata = ad.AnnData(X=csr, obs=obs_df, var=var_df)
     adata = align_obs_to_schema(adata, CellObs, obs_to_schema=OBS_RENAME, inplace=True)
-
-    atlas = create_or_open_atlas(
-        atlas_path=args.atlas_dir,
-        obs_schemas={OBS_TABLE: CellObs},
-        dataset_table_name="datasets",
-        dataset_schema=ScBasecountDatasetSchema,
-        registry_schemas={FEATURE_SPACE: GeneFeatureSpace},
-    )
 
     print("Registering genes...")
     n_new = _register_genes(atlas, adata, organism=organism)
