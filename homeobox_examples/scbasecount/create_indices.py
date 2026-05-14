@@ -1,5 +1,5 @@
-import os
 import argparse
+import os
 
 import lancedb
 
@@ -57,6 +57,7 @@ def create_indexes(db: lancedb.DBConnection) -> None:
         _scalar(t, "cell_line")
         _scalar(t, "czi_collection_id")
 
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -83,6 +84,7 @@ def main() -> None:
     print("Create indexes")
     print("=" * 60)
     create_indexes(atlas.db)
+
 
 if __name__ == "__main__":
     main()

@@ -118,9 +118,7 @@ def download_files(
             print(f"  Disk budget reached after {done}/{total} files")
             return
         chunk = pairs[done : done + chunk_size]
-        commands = "\n".join(
-            f"cp s3://{BUCKET}/{key} {local_path}" for key, local_path in chunk
-        )
+        commands = "\n".join(f"cp s3://{BUCKET}/{key} {local_path}" for key, local_path in chunk)
         print(
             f"  s5cmd chunk: files {done + 1}-{done + len(chunk)} of {total} "
             f"({_output_dir_bytes(output_dir) / (1 << 30):.1f} GB staged)"
@@ -207,9 +205,7 @@ def main():
             print(f"    s3://{BUCKET}/{key}")
         return
 
-    max_disk_bytes = (
-        int(args.max_disk_gb * (1 << 30)) if args.max_disk_gb is not None else None
-    )
+    max_disk_bytes = int(args.max_disk_gb * (1 << 30)) if args.max_disk_gb is not None else None
     download_files(
         pairs,
         output_dir=output_dir,

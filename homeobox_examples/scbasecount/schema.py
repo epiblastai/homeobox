@@ -55,6 +55,7 @@ class ScBasecountDatasetSchema(DatasetSchema):
 
 class CellObs(HoxBaseSchema):
     """Cell-level observation schema for scBaseCount data."""
+
     cell_barcode: str | None = None
     srx_accession: str | None = None
     gene_count_unique: int | None = None

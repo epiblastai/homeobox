@@ -52,7 +52,9 @@ def main() -> None:
 
     def _collect_local_only() -> dict[str, set[str]]:
         full = orig_collect()
-        return {fs: {zg for zg in groups if (zarr_path / zg).exists()} for fs, groups in full.items()}
+        return {
+            fs: {zg for zg in groups if (zarr_path / zg).exists()} for fs, groups in full.items()
+        }
 
     atlas._collect_zarr_groups = _collect_local_only
 
