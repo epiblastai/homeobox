@@ -179,7 +179,7 @@ def add_multimodal_batch(
         ``{field_name: AnnData}`` — keyed by pointer field name in the
         cell schema. Each AnnData must have the same number of cells in
         the same barcode order. ``adata.var`` must have a
-        ``global_feature_uid`` column for feature spaces with var_df.
+        ``uid`` column for feature spaces with var_df.
     obs_df
         Shared obs DataFrame for all modalities (validated, schema-aligned).
     zarr_layer
@@ -239,10 +239,9 @@ def add_multimodal_batch(
 
         if spec.has_var_df:
             var_df = pl.from_pandas(adata.var.reset_index())
-            if "global_feature_uid" not in var_df.columns:
+            if "uid" not in var_df.columns:
                 raise ValueError(
-                    "adata.var must have a 'global_feature_uid' column for "
-                    f"feature space '{feature_space}'."
+                    f"adata.var must have a 'uid' column for feature space '{feature_space}'."
                 )
             atlas.register_dataset(ds, var_df=var_df)
         else:
@@ -310,7 +309,7 @@ def add_fragment_batch(
         Validated obs DataFrame. Its index must be cell barcodes that
         appear in the fragment data. Order determines cell record order.
     chrom_uids
-        ``{chromosome_name: global_feature_uid}`` mapping for all
+        ``{chromosome_name: uid}`` mapping for all
         chromosomes that may appear in the fragment data. Chromosomes
         not in this dict are silently dropped.
     field_name
@@ -386,7 +385,7 @@ def add_fragment_batch(
     dataset_record.n_cells = n_cells
     var_df = pl.DataFrame(
         {
-            "global_feature_uid": [chrom_uids[c] for c in chrom_order],
+            "uid": [chrom_uids[c] for c in chrom_order],
         }
     )
     atlas.register_dataset(dataset_record, var_df=var_df)

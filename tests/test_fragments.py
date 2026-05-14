@@ -111,7 +111,7 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
     )
     atlas.register_dataset(
         dataset,
-        var_df=pl.DataFrame({"global_feature_uid": chrom_order}),
+        var_df=pl.DataFrame({"uid": chrom_order, "sequence_name": chrom_order}),
     )
 
     insert_obs_records(

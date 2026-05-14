@@ -385,7 +385,9 @@ def multimodal_crops_and_genes_atlas(tmp_path):
     X = sp.random(2, 5, density=0.6, format="csr", dtype=np.uint32, random_state=rng)
     X.data[:] = rng.integers(1, 100, size=X.nnz).astype(np.uint32)
     obs = {"cell_type": ["A", "B"]}
-    var = pl.DataFrame({"global_feature_uid": gene_uids}).to_pandas()
+    var = pl.DataFrame(
+        {"uid": gene_uids, "gene_name": [f"GENE_{u}" for u in gene_uids]}
+    ).to_pandas()
     adata = ad.AnnData(X=X, obs=obs, var=var)
     adata = align_obs_to_schema(adata, CropAndGeneCellSchema)
     add_from_anndata(

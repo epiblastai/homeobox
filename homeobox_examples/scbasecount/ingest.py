@@ -232,9 +232,9 @@ def ingest_genefull(
     # Rename obs columns
     adata.obs = adata.obs.rename(columns=OBS_RENAME)
 
-    # Attach global_feature_uid to adata.var
+    # Attach uid to adata.var
     gene_ids = list(adata.var.index)
-    adata.var["global_feature_uid"] = [gene_to_uid[gid] for gid in gene_ids]
+    adata.var["uid"] = [gene_to_uid[gid] for gid in gene_ids]
 
     # Get sparse matrices for all 3 layers
     unique = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
@@ -326,7 +326,7 @@ def ingest_genefull(
             dataset_kwargs[field] = sample_row[field]
 
     dataset_record = ScBasecountDatasetSchema(**dataset_kwargs)
-    var_pl = pl.DataFrame({"global_feature_uid": adata.var["global_feature_uid"].tolist()})
+    var_pl = pl.DataFrame({"uid": adata.var["uid"].tolist()})
     atlas.register_dataset(dataset_record, var_df=var_pl)
 
     # Insert cell records

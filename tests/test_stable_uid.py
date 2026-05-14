@@ -115,11 +115,18 @@ def test_compute_stable_uids_adds_uid_column_when_missing():
     assert len(df.loc[1, "uid"]) == 16
 
 
-def test_compute_stable_uids_noops_without_stable_uid_field():
-    df = pd.DataFrame({"label": ["a"]})
+def test_compute_stable_uids_assigns_random_uids_without_stable_uid_field():
+    df = pd.DataFrame({"label": ["a", "b"]})
     result = RandomThing.compute_stable_uids(df)
     assert result is df
-    assert "uid" not in df.columns
+    assert df["uid"].nunique() == 2
+    assert all(isinstance(u, str) and len(u) == 16 for u in df["uid"])
+
+
+def test_compute_stable_uids_preserves_existing_uids_without_stable_uid_field():
+    df = pd.DataFrame({"uid": ["preset-a", "preset-b"], "label": ["a", "b"]})
+    RandomThing.compute_stable_uids(df)
+    assert df["uid"].tolist() == ["preset-a", "preset-b"]
 
 
 def test_small_molecule_schema_accepts_pubchem_stable_uid():

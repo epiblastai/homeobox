@@ -155,7 +155,7 @@ print(f"  {feature_matrix.shape[0]} cells × {feature_matrix.shape[1]} features"
 features_obs = pd.read_parquet(ACCESSION_DIR / "image_features_validated_obs.parquet")
 tiles_obs = pd.read_parquet(ACCESSION_DIR / "image_tiles_validated_obs.parquet")
 
-# Standardized var with global_feature_uid
+# Standardized var with uid
 var_df = pd.read_csv(ACCESSION_DIR / "image_features_standardized_var.csv", index_col=0)
 
 # Tile data (46 cells × 5 × 96 × 96)

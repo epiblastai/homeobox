@@ -203,7 +203,7 @@ def build_atlas(out_dir: str, n_obs, n_vars, density, shard_cells, seed) -> None
     atlas.register_features("gene_expression", gene_records)
     reindex_registry(atlas._registry_tables["gene_expression"])
 
-    var_df = pd.DataFrame({"global_feature_uid": uids})
+    var_df = pd.DataFrame({"uid": uids})
     for shard_idx, csr, obs_df in iter_shards(n_obs, n_vars, density, shard_cells, seed):
         adata = ad.AnnData(X=csr, obs=obs_df.copy(), var=var_df.copy())
         adata = align_obs_to_schema(adata, BenchCellSchema)
@@ -277,7 +277,7 @@ def _var_df(n_vars: int):
     import pandas as pd
 
     uids = gene_uids(n_vars)
-    return pd.DataFrame({"global_feature_uid": uids, "gene_name": uids})
+    return pd.DataFrame({"uid": uids, "gene_name": uids})
 
 
 # ---------------------------------------------------------------------------

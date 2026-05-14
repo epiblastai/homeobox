@@ -137,25 +137,23 @@ pbmc3k = sc.datasets.pbmc3k_processed()
 # obs columns: n_genes, percent_mito, n_counts, louvain
 ```
 
-**Register features.** Features are registered by `uid` — a stable identifier used across registry rebuilds. Because we declared `gene_symbol` as a `StableUIDField`, we can build a feature DataFrame with just the human-readable column and let `compute_stable_uids` populate `uid = make_stable_uid(gene_symbol)` deterministically — no manual uid assignment required. `register_features` accepts either a list of schema records or a Polars DataFrame with at least a `uid` column.
+**Build the var DataFrame and register features.** Ingestion requires `adata.var` to have columns exactly matching the registry schema (minus the auto-managed `global_index`), plus a `uid` column whose values are the registry uids for each local feature. An explicit `uid` column is used rather than `var.index` because AnnData only warns (not errors) on duplicate var indexes — a duplicated uid would silently corrupt feature remapping at query time.
+
+Because we declared `gene_symbol` as a `StableUIDField`, the same `compute_stable_uids` call that produces deterministic registry uids also produces the matching var uids. We build one DataFrame and use it for both: registering features in the global registry, and as the per-dataset `adata.var`. `register_features` accepts a Polars DataFrame with at minimum a `uid` column; extra columns are merged into the registry.
 
 ```python
 import pandas as pd
 import polars as pl
 
-features_df = pd.DataFrame({"gene_symbol": pbmc3k.var.index.tolist()})
-features_df = GeneFeature.compute_stable_uids(features_df)
-atlas.register_features("lognorm_rna", pl.from_pandas(features_df))
-# register_features uses merge_insert — safe to call concurrently from multiple processes
-```
+var_df = pd.DataFrame(
+    {"gene_symbol": pbmc3k.var.index.tolist()},
+    index=pbmc3k.var.index,
+)
+GeneFeature.compute_stable_uids(var_df)  # writes 'uid' inline
 
-**Annotate var with `global_feature_uid`.** The ingestion function looks for this column to build the `_feature_layouts` feature mapping; each entry must match a `uid` in the registry. An explicit column is used rather than `var.index` because AnnData only warns (not errors) when the var index has duplicates. A duplicated uid silently corrupts feature remapping at query time. Populating `global_feature_uid` ourselves lets ingestion validate uniqueness up front against a column of our choosing.
-
-Because `StableUIDField` made the registry uid a deterministic function of `gene_symbol`, the `features_df` we just built already has the mapping — we just look up each gene symbol from `var.index`:
-
-```python
-uid_by_symbol = dict(zip(features_df["gene_symbol"], features_df["uid"]))
-pbmc3k.var["global_feature_uid"] = pbmc3k.var.index.map(uid_by_symbol)
+# Register the features and update adata.var
+atlas.register_features("lognorm_rna", pl.from_pandas(var_df))
+pbmc3k.var = var_df
 ```
 
 **Align obs to the obs schema.** `align_obs_to_schema` renames columns according to `obs_to_schema`, adds `None` for optional fields not present in obs, and drops any columns that have no corresponding schema field.
@@ -238,15 +236,15 @@ pbmc68k = sc.datasets.pbmc68k_reduced()
 Register only the new features — `register_features` uses `merge_insert` and will silently skip any gene already in the registry.
 
 ```python
-features_68k = pd.DataFrame({"gene_symbol": pbmc68k.var.index.tolist()})
-features_68k = GeneFeature.compute_stable_uids(features_68k)
-atlas.register_features("lognorm_rna", pl.from_pandas(features_68k))
+var_df_68k = pd.DataFrame(
+    {"gene_symbol": pbmc68k.var.index.tolist()},
+    index=pbmc68k.var.index,
+)
+GeneFeature.compute_stable_uids(var_df_68k)
 
-# 557 genes are new (765 - 208 shared); they get the next available global_index values
-atlas.optimize()
-
-uid_by_symbol_68k = dict(zip(features_68k["gene_symbol"], features_68k["uid"]))
-pbmc68k.var["global_feature_uid"] = pbmc68k.var.index.map(uid_by_symbol_68k)
+# Register features and update adata.var. This uses merge_insert so stable uid that have already been registered are not duplicated
+atlas.register_features("lognorm_rna", pl.from_pandas(var_df_68k))
+pbmc68k.var = var_df_68k
 
 # pbmc68k uses "bulk_labels" for cell type — map it to the same "cell_type" field
 pbmc68k_aligned = align_obs_to_schema(

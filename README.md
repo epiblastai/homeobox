@@ -57,16 +57,19 @@ maturin develop --release
 ## Quickstart
 
 ```python
-import os
 import numpy as np
+import pandas as pd
+import polars as pl
 import scanpy as sc
 import homeobox as hox
 
 # 1. Define schemas: one for gene features, one for cell metadata.
-#    Each pointer column is declared with PointerField.declare, which
-#    binds the column name to a registered feature_space.
+#    `StableUIDField` marks `gene_symbol` as the deterministic source of
+#    `uid` (so parallel ingest jobs converge on the same uid for the same
+#    gene). Each pointer column is declared with `PointerField.declare`,
+#    which binds the column name to a registered feature_space.
 class GeneFeature(hox.FeatureBaseSchema):
-    gene_symbol: str
+    gene_symbol: str = hox.StableUIDField.declare(default=...)
 
 class CellSchema(hox.HoxBaseSchema):
     gene_expression: hox.SparseZarrPointer | None = hox.PointerField.declare(
@@ -74,25 +77,31 @@ class CellSchema(hox.HoxBaseSchema):
     )
 
 # 2. Create an atlas
-atlas_dir = "./hox_example_atlas/"
-os.makedirs(atlas_dir, exist_ok=True)
 atlas = hox.create_or_open_atlas(
-    atlas_path=atlas_dir,
+    atlas_path="./hox_example_atlas",
     obs_schemas={"cells": CellSchema},
     dataset_table_name="datasets",
     dataset_schema=hox.DatasetSchema,
     registry_schemas={"gene_expression": GeneFeature},
 )
 
-# 3. Load a dataset and register its genes
+# 3. Load a dataset
 adata = sc.datasets.pbmc3k()  # 2 700 PBMCs, raw counts, sparse CSR
 adata.X = adata.X.astype(np.uint32)  # the counts layer must be np.uint32
-features = [GeneFeature(uid=g, gene_symbol=g) for g in adata.var_names]
-atlas.register_features("gene_expression", features)
 
-# 4. Prepare var and ingest. `field_name` selects the cell-schema column
-#    to populate; its feature_space is resolved from PointerField.declare.
-adata.var["global_feature_uid"] = adata.var_names  # Required for deduplication
+# 4. Build the var DataFrame (one row per local feature, columns matching
+#    the registry schema + `uid`), use it for both feature registration and
+#    as adata.var. `compute_stable_uids` writes deterministic uids in place.
+var_df = pd.DataFrame(
+    {"gene_symbol": adata.var_names.tolist()},
+    index=adata.var_names,
+)
+GeneFeature.compute_stable_uids(var_df)
+atlas.register_features("gene_expression", pl.from_pandas(var_df))
+adata.var = var_df
+
+# 5. Ingest. `field_name` selects the cell-schema column to populate;
+#    its feature_space is resolved from PointerField.declare.
 record = hox.DatasetSchema(
     zarr_group="pbmc3k", feature_space="gene_expression", n_rows=adata.n_obs,
 )
@@ -101,12 +110,12 @@ hox.add_from_anndata(
     zarr_layer="counts", dataset_record=record,
 )
 
-# 5. Optimize tables and create a snapshot
+# 6. Optimize tables and create a snapshot
 atlas.optimize()
 atlas.snapshot()
 
-# 6. Open the atlas and query
-atlas_r = hox.RaggedAtlas.checkout_latest(atlas_dir)
+# 7. Open the atlas and query
+atlas_r = hox.RaggedAtlas.checkout_latest("./hox_example_atlas")
 result = atlas_r.query().limit(500).to_anndata()
 print(result)  # AnnData object with n_obs × n_vars = 500 × 32738
 ```
