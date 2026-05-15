@@ -215,6 +215,18 @@ filtered_cells_adata
 #
 # All `by_*` methods compose via AND, and they compose with the full query
 # API (feature spaces, limits, output formats).
+#
+# Under the hood, every `by_*` method resolves identifiers to UIDs and then
+# filters cells through the full-text search index on the obs table's
+# `perturbation_search_string` column. When the atlas lives on remote object
+# storage (S3/R2), the *first* perturbation query is slow because LanceDB has
+# to fetch that FTS index over the network before it can search. Prewarming
+# loads the entire index into memory once, up front, so it doesn't dominate
+# the latency of the first `by_*` query below. This is a one-time cost per
+# session — subsequent queries reuse the in-memory index.
+
+# %%
+atlas.obs_table.prewarm_index("perturbation_search_string_idx")
 
 # %% [markdown]
 # ### Find cells by gene target
