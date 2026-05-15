@@ -204,7 +204,7 @@ filtered_cells_adata = (
 )
 filtered_cells_adata
 
-# %% [markdown]
+# %% [markdown] jp-MarkdownHeadingCollapsed=true
 # ---
 # ## 4. Perturbation-aware queries
 #
@@ -403,12 +403,13 @@ marker_uids = marker_genes["uid"].tolist()
 
 adata_markers = (
     atlas.query()
+    .where("has_gene_expression IS NOT NULL")
     .features(marker_uids, "gene_expression")
-    .limit(200_000)
+    .limit(20_000)
     .to_anndata()
 )
 print(f"Marker panel: {adata_markers.n_obs:,} cells x {adata_markers.n_vars:,} features")
-adata_markers.var[["gene_name"]].head(10)
+# adata_markers.var[["gene_name"]].head(10)
 
 # %% [markdown]
 # ### Composing perturbation + feature queries
@@ -420,7 +421,7 @@ adata_markers.var[["gene_name"]].head(10)
 adata_pparg = (
     atlas.query()
     .by_gene("PPARG")
-    .where("gene_expression.zarr_group != ''")
+    .where("has_gene_expression IS NOT NULL")
     .features(marker_uids, "gene_expression")
     .limit(5_000)
     .to_anndata()
@@ -449,7 +450,7 @@ adata_pparg
 # AnnData — auto-selects the right feature space
 adata_sample = (
     atlas.query()
-    .where("dataset_uid == '147bedf751c9483b'")
+    .where("dataset_uid == '76452cf4c88e4330'")
     .limit(5_000)
     .to_anndata()
 )
@@ -506,7 +507,7 @@ atlas.list_datasets()
 
 # %%
 n_cells_streamed = 0
-for batch in atlas.query().feature_spaces("gene_expression").limit(10_000).to_batches(batch_size=2048):
+for batch in atlas.query().where("has_gene_expression IS NOT NULL").feature_spaces("gene_expression").limit(10_000).to_batches(batch_size=2048):
     n_cells_streamed += batch.n_obs
 
 print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
@@ -531,14 +532,14 @@ print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
 # %%
 dataset = (
     atlas.query()
+    .where("has_gene_expression IS NOT NULL")
     .feature_spaces("gene_expression")
     .limit(50_000)
-    .to_cell_dataset(
-        feature_space="gene_expression",
-        layer="counts",
+    .to_unimodal_dataset(
+        field_name="gene_expression",
     )
 )
-print(f"CellDataset: {dataset.n_cells:,} cells, {dataset.n_features:,} features")
+print(f"CellDataset: {dataset.n_rows:,} cells, {dataset.n_features:,} features")
 
 # %%
 import torch  # noqa: E402
@@ -557,8 +558,6 @@ loader = hox.make_loader(
 
 batch_idx = 0
 for batch in tqdm(loader):
-    result = hox.sparse_to_dense_collate(batch)
-    X = result["X"]
     batch_idx += 1
 
 print(f"\nProcessed {batch_idx} batches, last X shape: {X.shape}")
@@ -581,7 +580,7 @@ print(f"\nProcessed {batch_idx} batches, last X shape: {X.shape}")
 frag_result = (
     atlas.query()
     .where("cell_line = 'K-562'")
-    .where("chromatin_accessibility.zarr_group != ''")
+    .where("has_chromatin_accessibility IS NOT NULL")
     .limit(500)
     .to_fragments()
 )
@@ -671,7 +670,7 @@ peak_adata.var
 tiles, tiles_obs = (
     atlas.query()
     .where("cell_line = 'HeLa'")
-    .where("image_tiles.zarr_group != ''")
+    .where("has_image_tiles IS NOT NULL")
     .limit(500)
     .to_array(feature_space="image_tiles")
 )
@@ -738,7 +737,7 @@ plt.show()
 # %%
 tile_dataset = (
     atlas.query()
-    .where("image_tiles.zarr_group != ''")
+    .where("has_image_tiles IS NOT NULL")
     .limit(500)
     .to_cell_dataset("image_tiles")
 )
