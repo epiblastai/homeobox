@@ -17,6 +17,7 @@ from homeobox.schema import (
     PointerField,
     StableUIDBaseSchema,
     StableUIDField,
+    _iter_pointer_annotations,
     make_uid,
 )
 
@@ -510,8 +511,22 @@ class CellIndex(HoxBaseSchema):
     # would be channel names probably.
     image_tiles: DenseZarrPointer | None = PointerField.declare(feature_space="image_tiles")
 
-    # Auto-filled field
+    # Auto-filled fields
     perturbation_search_string: str = ""
+
+    # Auto-filled presence flags. For every pointer field there is an
+    # equivalent ``has_{field}`` boolean that is True when the pointer is
+    # populated (not None) and False otherwise. These are cheap to scan and
+    # BITMAP-indexable, so queries can filter cells by available modality
+    # without touching the (large) pointer struct columns. They are kept in
+    # sync automatically by :meth:`generate_has_pointer_flags` (instance
+    # writes) and :meth:`compute_auto_fields` (bulk obs DataFrames), mirroring
+    # how ``perturbation_search_string`` is derived.
+    has_gene_expression: bool = False
+    has_chromatin_accessibility: bool = False
+    has_protein_abundance: bool = False
+    has_image_features: bool = False
+    has_image_tiles: bool = False
 
     @model_validator(mode="after")
     def validate_perturbation_types(self) -> Self:
@@ -543,6 +558,23 @@ class CellIndex(HoxBaseSchema):
         return self
 
     @classmethod
+    def has_pointer_field_map(cls) -> dict[str, str]:
+        """Map each ``has_{field}`` flag to its source pointer field name.
+
+        Derived by introspecting the declared :class:`PointerField` columns,
+        so adding a new pointer to the schema automatically extends the set
+        of presence flags (the matching ``has_{field}: bool`` attribute must
+        also be declared on the model for it to persist as a column).
+        """
+        return {f"has_{name}": name for name, _ in _iter_pointer_annotations(cls)}
+
+    @model_validator(mode="after")
+    def generate_has_pointer_flags(self) -> Self:
+        for flag, source in type(self).has_pointer_field_map().items():
+            setattr(self, flag, getattr(self, source) is not None)
+        return self
+
+    @classmethod
     def compute_auto_fields(cls, obs_df: "pd.DataFrame") -> "pd.DataFrame":
         import json
 
@@ -561,6 +593,16 @@ class CellIndex(HoxBaseSchema):
             obs_df["perturbation_search_string"] = obs_df.apply(_row_search_string, axis=1)
         else:
             obs_df["perturbation_search_string"] = ""
+
+        # NOTE: the has_{pointer} presence flags are deliberately NOT computed
+        # here. ``obs_df`` is user-supplied cell metadata; pointer fields are
+        # attached separately during ingestion (as zarr/AnnData), so the
+        # ``gene_expression`` etc. columns are absent from ``obs_df`` and
+        # presence cannot be derived from it. The flags are backfilled from
+        # the materialized Lance table (where absence is encoded as a NULL
+        # ``zarr_group`` subfield) by scripts/add_has_pointer_columns.py. For
+        # programmatically constructed CellIndex instances the flags are set
+        # correctly by the generate_has_pointer_flags validator instead.
         return obs_df
 
 
