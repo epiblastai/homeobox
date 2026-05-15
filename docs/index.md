@@ -1,14 +1,25 @@
-# homeobox
+# Homeobox
 
-Homeobox is a multimodal database for interactive analysis and ML training at scale. It combines the search and versioning capabilities of [LanceDB](https://lancedb.com) with the scalable array storage of [Zarr](https://zarr.dev).
+Homeobox is a database for multimodal biomedical atlases that do **not** fit cleanly into one matrix, one modality, or one shared feature space.
 
-A single homeobox atlas can hold sparse single-cell gene expression, dense protein and embedding features, 2D/3D/4D/5D images, biomolecular structures, and free text. A single dataloader streams batches across all of them with no intermediate ML-only copies and no special modality-specific entrypoints. Our design philosophy is to be *extremely flexible, while still quite fast*.
+A single Homeobox atlas can hold sparse single-cell gene expression, dense protein and embedding features, 2D/3D/4D/5D images, biomolecular structures, free text, and auxiliary metadata tables. You can query it, snapshot it, reconstruct results as `AnnData` / `MuData`, and stream batches to PyTorch without creating separate ML-only copies.
+
+Under the hood, Homeobox combines the search and versioning capabilities of [LanceDB](https://lancedb.com) with the array storage of [Zarr](https://zarr.dev).
 
 ---
 
-## Why homeobox
+## Why Homeobox
 
 ![Multimodal schema with auxiliary metadata tables](assets/hox_ragged_atlas.svg)
+
+### How it compares to existing tools
+
+| If your main problem is... | You probably want... |
+|---|---|
+| Querying, versioning, reconstructing, and training from many heterogeneous biomedical datasets with different feature spaces | Homeobox |
+| Dissatisfaction with TileDB ML-support and developer experience | Homeobox |
+| Analyzing one clean matrix or a small number of aligned modalities | `AnnData` / `MuData` directly |
+| Metadata, vector, or text search without large array payloads | LanceDB, a vector database, or a regular database |
 
 ### Motivating cases
 
@@ -33,7 +44,7 @@ The same shape scales to any number of modalities — one pointer column per fea
 
 ## Installation
 
-Prebuilt wheels are available on PyPI. Requires Python 3.13.
+Prebuilt wheels are available on PyPI. Requires Python 3.12 or newer.
 
 ```bash
 pip install homeobox          # core: atlas, querying, ingestion
@@ -49,7 +60,7 @@ To build from source (requires a Rust toolchain):
 curl -LsSf https://astral.sh/uv/install.sh | sh
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 uv sync
-maturin develop --release
+uv run maturin develop --release
 ```
 
 ---
@@ -69,13 +80,15 @@ The rest of the Reference nav — Feature Layouts, Array Storage, BatchArray, Re
 
 | Notebook | Description |
 |----------|-------------|
-| [`multimodal_perturbation_atlas.py`](https://colab.research.google.com/drive/1-5lQXRLpKrpeYAQ14UIVK7CMq_75tp6Y#scrollTo=87b338c7) | Explore a 120M+, agent-curated cell atlas with over 130,000 genetic, chemical, and biologic perturbations across 5 modalities. |
+| [`explore_perturbation_atlas_colab.py`](https://github.com/epiblastai/homeobox/blob/main/homeobox_examples/multimodal_perturbation_atlas/notebooks/explore_perturbation_atlas_colab.py) ([Colab](https://colab.research.google.com/drive/1-5lQXRLpKrpeYAQ14UIVK7CMq_75tp6Y#scrollTo=87b338c7)) | Explore an atlas with 120M+ cells, over 130,000 genetic, chemical, and biologic perturbations, and 5 modalities. |
 
 ---
 
 ## Performance
 
-Beyond raw numbers, the case for homeobox is generality and integration. One library handles cell tables, sparse matrices, dense features, images, embeddings, and text — there is no separate stack for non-tabular modalities. New modalities are added by writing a feature-space spec, not by waiting for upstream support. And because storage is plain LanceDB + Zarr, homeobox plays directly with the broader Python + Rust data ecosystem (Lance, DuckDB, Polars, zarrs).
+Homeobox is intended to be the source of truth for analysis and model training, not just a staging format. The same snapshot you query can feed a PyTorch training loop.
+
+Beyond raw numbers, the case for Homeobox is generality and integration. One library handles cell tables, sparse matrices, dense features, images, embeddings, and text — there is no separate stack for non-tabular modalities. New modalities are added by writing a feature-space spec, not by waiting for upstream support. And because storage is plain LanceDB + Zarr, Homeobox plays directly with the broader Python + Rust data ecosystem (Lance, DuckDB, Polars, zarrs).
 
 On a 1M-cell × 20k-gene synthetic atlas, the homeobox iterable dataloader sustains **~70k cells/sec on local NVMe** and **~40k cells/sec streaming from S3** at a single worker — saturating local disk and running roughly an order of magnitude faster than the next remote-capable system in the sweep.
 
