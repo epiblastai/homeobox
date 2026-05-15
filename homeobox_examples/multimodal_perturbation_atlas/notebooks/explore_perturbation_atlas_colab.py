@@ -56,15 +56,24 @@
 # # !pip install -q "homeobox"
 
 # %%
+import gc
 import os
 
-import homeobox as hox
+import matplotlib.pyplot as plt
 import numpy as np
 import polars as pl
-import matplotlib.pyplot as plt
-
-from homeobox_examples.multimodal_perturbation_atlas.atlas import PerturbationAtlas
 from tqdm.auto import tqdm
+
+import homeobox as hox
+from homeobox.fragments.peak_matrix import FragmentCounter, GenomicRange
+from homeobox_examples.multimodal_perturbation_atlas.atlas import PerturbationAtlas
+
+
+def release_memory(*names: str) -> None:
+    for name in names:
+        globals().pop(name, None)
+    plt.close("all")
+    gc.collect()
 
 # %% [markdown]
 # ---
@@ -79,9 +88,10 @@ from tqdm.auto import tqdm
 ATLAS_DIR = "s3://epiblast-public/multimodal_perturbation_atlas"
 STORE_KWARGS = {
     "config": {
-        "endpoint": f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
-        "aws_access_key_id": os.environ["R2_ACCESS_KEY_ID"],
-        "aws_secret_access_key": os.environ["R2_SECRET_ACCESS_KEY"],
+        "endpoint": "https://61be05560bebc4714cdd9913fb075bc9.r2.cloudflarestorage.com",
+        # Read only public credentials
+        "aws_access_key_id": "087ee61ad71e3fc431f7c8031545c4e4",
+        "aws_secret_access_key": "3c94e43945c4e49a466930527f368756810315f68ad26a2c10c8adac2ed08b8d",
         "aws_region": "auto",
     }
 }
@@ -93,7 +103,7 @@ hox.RaggedAtlas.list_versions(ATLAS_DIR, store_kwargs=STORE_KWARGS)
 # %%
 # Checkout the latest snapshot (read-only)
 atlas = PerturbationAtlas.checkout_latest(ATLAS_DIR, store_kwargs=STORE_KWARGS)
-atlas
+print(atlas)
 
 # %% [markdown]
 # ## 2. Browsing metadata tables
@@ -101,7 +111,7 @@ atlas
 # A homeobox `RaggedAtlas` stores all metadata in LanceDB. Every atlas has
 # three core table types:
 #
-# - **cells** — one row per cell, with metadata columns and *pointer fields*
+# - **obs** — one row per observation, with metadata columns and *pointer fields*
 #   that link each cell to its zarr arrays (gene expression, images, etc.). This is like the `obs` of an `AnnData`
 # - **feature registries** — one per feature space (e.g. `gene_expression_registry`,
 #   `image_features_registry`), mapping feature UIDs to biological annotations
@@ -198,13 +208,17 @@ datasets.head(5)
 # Pick one dataset for exploration, and load some cells
 filtered_cells_adata = (
     atlas.query()
-    .where(f"dataset_uid = 'ef136950a0314d24'")
+    .select_fields("gene_expression")
+    .where("dataset_uid = 'ef136950a0314d24'")
     .limit(5_000)
     .to_anndata()
 )
-filtered_cells_adata
+print(filtered_cells_adata)
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %%
+release_memory("filtered_cells_adata")
+
+# %% [markdown]
 # ---
 # ## 4. Perturbation-aware queries
 #
@@ -215,6 +229,18 @@ filtered_cells_adata
 #
 # All `by_*` methods compose via AND, and they compose with the full query
 # API (feature spaces, limits, output formats).
+#
+# Under the hood, every `by_*` method resolves identifiers to UIDs and then
+# filters cells through the full-text search index on the obs table's
+# `perturbation_search_string` column. When the atlas lives on remote object
+# storage (S3/R2), the *first* perturbation query is slow because LanceDB has
+# to fetch that FTS index over the network before it can search. Prewarming
+# loads the entire index into memory once, up front, so it doesn't dominate
+# the latency of the first `by_*` query below. This is a one-time cost per
+# session. Subsequent queries reuse the in-memory index.
+
+# %%
+atlas.obs_table.prewarm_index("perturbation_search_string_idx")
 
 # %% [markdown]
 # ### Find cells by gene target
@@ -238,7 +264,7 @@ pparg_cells["cell_line"].value_counts()
 
 # %%
 # Which datasets contain PPARG perturbations?
-pparg_dataset_uids = pparg_cells["dataset_uid"].unique()  
+pparg_dataset_uids = pparg_cells["dataset_uid"].unique()
 datasets.filter(pl.col("dataset_uid").is_in(pparg_dataset_uids))
 
 # %% [markdown]
@@ -308,7 +334,18 @@ controls = (
     .to_polars()
 )
 print(f"{controls.height} control cells from GSE153056")
-controls.head(10)
+controls.head(5)
+
+# %%
+release_memory(
+    "pparg_cells",
+    "pparg_dataset_uids",
+    "multi_or",
+    "multi_and",
+    "drug_cells",
+    "controls",
+    "datasets",
+)
 
 # %% [markdown]
 # ---
@@ -341,7 +378,10 @@ adata_im = (
     .limit(5_000)
     .to_anndata()
 )
-adata_im
+print(adata_im)
+
+# %%
+release_memory("adata_im")
 
 # %% [markdown]
 # ### Union vs. intersection feature join
@@ -377,6 +417,9 @@ adata_inter = (
 )
 print(f"Intersection: {adata_inter.n_obs:,} cells x {adata_inter.n_vars:,} features")
 
+# %%
+release_memory("adata_union", "adata_inter")
+
 # %% [markdown]
 # ### Feature-filtered queries (gene panel selection)
 #
@@ -403,7 +446,6 @@ marker_uids = marker_genes["uid"].tolist()
 
 adata_markers = (
     atlas.query()
-    .where("has_gene_expression IS NOT NULL")
     .features(marker_uids, "gene_expression")
     .limit(20_000)
     .to_anndata()
@@ -411,23 +453,8 @@ adata_markers = (
 print(f"Marker panel: {adata_markers.n_obs:,} cells x {adata_markers.n_vars:,} features")
 # adata_markers.var[["gene_name"]].head(10)
 
-# %% [markdown]
-# ### Composing perturbation + feature queries
-#
-# All query methods compose naturally. Here we combine a perturbation
-# filter with feature space selection and reconstruction.
-
 # %%
-adata_pparg = (
-    atlas.query()
-    .by_gene("PPARG")
-    .where("has_gene_expression IS NOT NULL")
-    .features(marker_uids, "gene_expression")
-    .limit(5_000)
-    .to_anndata()
-)
-print(f"PPARG perturbed cells: {adata_pparg.n_obs:,} cells x {adata_pparg.n_vars:,} genes")
-adata_pparg
+release_memory("registry", "marker_genes", "marker_uids", "adata_markers")
 
 # %% [markdown]
 # ---
@@ -450,11 +477,15 @@ adata_pparg
 # AnnData — auto-selects the right feature space
 adata_sample = (
     atlas.query()
+    .feature_spaces("gene_expression")
     .where("dataset_uid == '76452cf4c88e4330'")
     .limit(5_000)
     .to_anndata()
 )
-adata_sample
+print(adata_sample)
+
+# %%
+release_memory("adata_sample")
 
 # %%
 # MuData — gene expression + protein abundance from CITE-seq (THP-1 cells)
@@ -465,11 +496,14 @@ mdata = (
     .limit(5_000)
     .to_mudata()
 )
-mdata
+print(mdata)
 
 # %%
 for mod_name, mod_adata in mdata.mod.items():
     print(f"  {mod_name}: {mod_adata.n_obs:,} cells x {mod_adata.n_vars:,} features")
+
+# %%
+release_memory("mdata", "mod_name", "mod_adata")
 
 # %% [markdown]
 # ### Multimodal reconstruction for a single perturbation
@@ -479,9 +513,6 @@ for mod_name, mod_adata in mdata.mod.items():
 # `ndarray` for image tiles — under a single `MultimodalResult`.
 # This is the most general output format, useful when a perturbation
 # spans multiple assay types.
-
-# %%
-atlas.obs_table.search().limit(10).to_polars()
 
 # %%
 mm = (
@@ -496,7 +527,7 @@ for name, data in mm.mod.items():
     print(f"  {name}: {type(data).__name__}, {n_present:,} cells with data")
 
 # %%
-atlas.list_datasets()
+release_memory("mm", "name", "data", "n_present")
 
 # %% [markdown]
 # ### Streaming with `.to_batches()`
@@ -507,10 +538,19 @@ atlas.list_datasets()
 
 # %%
 n_cells_streamed = 0
-for batch in atlas.query().where("has_gene_expression IS NOT NULL").feature_spaces("gene_expression").limit(10_000).to_batches(batch_size=2048):
+for batch in (
+    atlas.query()
+    .feature_spaces("gene_expression")
+    .limit(10_000)
+    .to_batches(batch_size=2048)
+):
+    print("Loaded batch with ", batch.n_obs, " rows")
     n_cells_streamed += batch.n_obs
 
 print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
+
+# %%
+release_memory("batch")
 
 # %% [markdown]
 # ---
@@ -532,11 +572,16 @@ print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
 # %%
 dataset = (
     atlas.query()
-    .where("has_gene_expression IS NOT NULL")
     .feature_spaces("gene_expression")
-    .limit(50_000)
+    .limit(40_960)
     .to_unimodal_dataset(
         field_name="gene_expression",
+        mode="iterable",
+        batch_size=128,
+        io_batch_size=4096,
+        prefetch=2,
+        shuffle=True,
+        drop_last=True,
     )
 )
 print(f"CellDataset: {dataset.n_rows:,} cells, {dataset.n_features:,} features")
@@ -544,23 +589,18 @@ print(f"CellDataset: {dataset.n_rows:,} cells, {dataset.n_features:,} features")
 # %%
 import torch  # noqa: E402
 
-BATCH_SIZE = 1024
-NUM_WORKERS = 0
-
-loader = hox.make_loader(
-    dataset,
-    batch_size=BATCH_SIZE,
-    shuffle=True,
-    drop_last=True,
-    num_workers=NUM_WORKERS,
-    generator=torch.Generator().manual_seed(42),
-)
+loader = hox.make_loader(dataset, generator=torch.Generator().manual_seed(42))
 
 batch_idx = 0
+last_batch_shape = None
 for batch in tqdm(loader):
     batch_idx += 1
+    last_batch_shape = (len(batch), batch.n_features)
 
-print(f"\nProcessed {batch_idx} batches, last X shape: {X.shape}")
+print(f"\nProcessed {batch_idx} batches, last sparse batch shape: {last_batch_shape}")
+
+# %%
+release_memory("dataset", "loader", "batch", "batch_idx", "last_batch_shape")
 
 # %% [markdown]
 # ---
@@ -579,8 +619,7 @@ print(f"\nProcessed {batch_idx} batches, last X shape: {X.shape}")
 # Query 500 K-562 cells and reconstruct fragments
 frag_result = (
     atlas.query()
-    .where("cell_line = 'K-562'")
-    .where("has_chromatin_accessibility IS NOT NULL")
+    .feature_spaces("chromatin_accessibility")
     .limit(500)
     .to_fragments()
 )
@@ -608,6 +647,9 @@ ax.set_title("Fragment length distribution (500 K-562 cells)")
 fig.tight_layout()
 plt.show()
 
+# %%
+release_memory("fig", "ax")
+
 # %% [markdown]
 # ### Per-cell fragment count distribution
 
@@ -624,6 +666,9 @@ ax.set_title("Per-cell fragment count distribution")
 fig.tight_layout()
 plt.show()
 
+# %%
+release_memory("fig", "ax", "per_cell_counts")
+
 # %% [markdown]
 # ### Peak count matrix from fragments
 #
@@ -632,8 +677,6 @@ plt.show()
 # overlapping fragments per cell.
 
 # %%
-from homeobox.fragments.peak_matrix import FragmentCounter, GenomicRange
-
 example_peaks = [
     GenomicRange("chr1", 1_000_000, 1_010_000, name="chr1_peak1"),
     GenomicRange("chr1", 1_500_000, 1_510_000, name="chr1_peak2"),
@@ -648,7 +691,10 @@ peak_adata = counter.to_anndata(frag_result)
 
 print(f"Peak matrix: {peak_adata.n_obs} cells x {peak_adata.n_vars} peaks")
 print(f"Total fragment count: {peak_adata.X.sum()}")
-peak_adata.var
+print(peak_adata.var)
+
+# %%
+release_memory("frag_result", "example_peaks", "counter", "peak_adata")
 
 # %% [markdown]
 # ---
@@ -667,13 +713,15 @@ peak_adata.var
 
 # %%
 # Load raw image tiles
-tiles, tiles_obs = (
+tile_batch = (
     atlas.query()
     .where("cell_line = 'HeLa'")
-    .where("has_image_tiles IS NOT NULL")
+    .where("has_image_tiles = true")
     .limit(500)
-    .to_array(feature_space="image_tiles")
+    .to_spatial_batch(field_name="image_tiles")
 )
+tiles = np.stack(tile_batch.layers["raw"], axis=0)
+tiles_obs = tile_batch.metadata
 print(f"Tile array shape: {tiles.shape} ({tiles.dtype})")
 print(f"Cells: {len(tiles_obs)}")
 
@@ -707,6 +755,19 @@ fig.suptitle("Cell Painting tiles (false-color composite: ch0=R, ch1=G, ch2=B)",
 fig.tight_layout()
 plt.show()
 
+# %%
+release_memory(
+    "fig",
+    "axes",
+    "axes_flat",
+    "ax",
+    "rgb",
+    "i",
+    "n_show",
+    "ncols",
+    "nrows",
+)
+
 # %% [markdown]
 # ### Individual channels
 #
@@ -726,6 +787,20 @@ fig.suptitle(f"Cell {cell_idx} — all 5 Cell Painting channels", y=1.02)
 fig.tight_layout()
 plt.show()
 
+# %%
+release_memory(
+    "tiles",
+    "tiles_obs",
+    "channel_names",
+    "cell_idx",
+    "fig",
+    "axes",
+    "ax",
+    "img",
+    "c",
+    "name",
+)
+
 # %% [markdown]
 # ### Image tiles with `CellDataset`
 #
@@ -737,19 +812,19 @@ plt.show()
 # %%
 tile_dataset = (
     atlas.query()
-    .where("has_image_tiles IS NOT NULL")
+    .where("has_image_tiles = true")
     .limit(500)
-    .to_cell_dataset("image_tiles")
+    .to_unimodal_dataset(
+        field_name="image_tiles",
+        mode="map"
+    )
 )
-print(
-    f"TileDataset: {tile_dataset.n_cells:,} cells, "
-    f"per_row_shape={tile_dataset.per_row_shape}"
-)
+print(f"TileDataset: {tile_dataset.n_rows:,} cells")
 
 # %%
 tile_loader = hox.make_loader(
     tile_dataset,
-    batch_size=64,
+    batch_size=50,
     shuffle=True,
     drop_last=True,
     num_workers=0,
@@ -757,12 +832,10 @@ tile_loader = hox.make_loader(
 )
 
 for batch in tqdm(tile_loader):
-    print(f"DenseBatch: data.shape={batch.data.shape}, dtype={batch.data.dtype}")
+    print(f"SpatialBatch: num_images={len(batch.layers["raw"])}")
 
 # %%
-# Convert to torch tensors via dense_to_tensor_collate
-result = hox.dense_to_tensor_collate(batch)
-print(f"Torch tensor: shape={result['X'].shape}, dtype={result['X'].dtype}")
+release_memory("tile_dataset", "tile_loader", "batch", "result")
 
 # %% [markdown]
 # ---
