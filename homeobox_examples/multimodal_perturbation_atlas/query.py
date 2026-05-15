@@ -221,12 +221,11 @@ class PerturbationQuery(AtlasQuery):
 
     # -- Internal helpers ---------------------------------------------------
 
-    def _and_where(self, condition: str) -> None:
-        """AND a condition onto the existing WHERE clause."""
-        if self._where_clause is None:
-            self._where_clause = condition
-        else:
-            self._where_clause = f"({self._where_clause}) AND ({condition})"
+    @staticmethod
+    def _pointer_presence_filter(field_names: list[str] | tuple[str, ...]) -> str | None:
+        if not field_names:
+            return None
+        return " AND ".join(f"has_{field} = true" for field in field_names)
 
     def _and_perturbation_fts(self, fts: FullTextQuery | None) -> None:
         """AND an FTS query onto the accumulated perturbation filter.
@@ -237,7 +236,7 @@ class PerturbationQuery(AtlasQuery):
         """
         if fts is None:
             # No matching UIDs — force an impossible WHERE so no rows match.
-            self._and_where("1 = 0")
+            self._where_clause = self._combine_where_clauses(self._where_clause, "1 = 0")
             return
         if self._perturbation_fts is None:
             if self._search_query is not None:
@@ -434,7 +433,7 @@ class PerturbationQuery(AtlasQuery):
         where = " AND ".join(clauses)
         pub_uids = _query_uids(self._atlas, _TABLE_PUBLICATIONS, where)
         if not pub_uids:
-            self._and_where("1 = 0")
+            self._where_clause = self._combine_where_clauses(self._where_clause, "1 = 0")
             return self
 
         # Find dataset UIDs linked to these publications
@@ -482,9 +481,13 @@ class PerturbationQuery(AtlasQuery):
         control_type:
             Optional specific control type (e.g. ``"nontargeting"``, ``"DMSO"``).
         """
-        self._and_where("is_negative_control = true")
+        self._where_clause = self._combine_where_clauses(
+            self._where_clause, "is_negative_control = true"
+        )
         if control_type is not None:
-            self._and_where(f"negative_control_type = '{sql_escape(control_type)}'")
+            self._where_clause = self._combine_where_clauses(
+                self._where_clause, f"negative_control_type = '{sql_escape(control_type)}'"
+            )
         return self
 
     def with_perturbation_metadata(
@@ -529,15 +532,17 @@ class PerturbationQuery(AtlasQuery):
 
     def _add_dataset_filter(self, dataset_uids: list[str]) -> None:
         if not dataset_uids:
-            self._and_where("1 = 0")
+            self._where_clause = self._combine_where_clauses(self._where_clause, "1 = 0")
             return
         in_clause = ", ".join(f"'{sql_escape(u)}'" for u in dataset_uids)
-        self._and_where(f"dataset_uid IN ({in_clause})")
+        self._where_clause = self._combine_where_clauses(
+            self._where_clause, f"dataset_uid IN ({in_clause})"
+        )
 
     # -- Execution overrides ------------------------------------------------
 
-    def _materialize_cells(self) -> pl.DataFrame:
-        df = super()._materialize_cells()
+    def _materialize_rows(self, require_present_fields: list[str] | None = None) -> pl.DataFrame:
+        df = super()._materialize_rows(require_present_fields=require_present_fields)
         if self._enrich_perturbations:
             df = resolve_perturbation_metadata(
                 df,
