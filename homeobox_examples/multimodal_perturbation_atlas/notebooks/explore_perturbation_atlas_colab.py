@@ -95,7 +95,7 @@ hox.RaggedAtlas.list_versions(ATLAS_DIR, store_kwargs=STORE_KWARGS)
 atlas = PerturbationAtlas.checkout_latest(ATLAS_DIR, store_kwargs=STORE_KWARGS)
 atlas
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %% [markdown]
 # ## 2. Browsing metadata tables
 #
 # A homeobox `RaggedAtlas` stores all metadata in LanceDB. Every atlas has
@@ -169,7 +169,7 @@ atlas.feature_registry("gene_expression").head(10).to_pandas()
 # %%
 atlas.feature_registry("image_features").head(10).to_pandas()
 
-# %% [markdown] jp-MarkdownHeadingCollapsed=true
+# %% [markdown]
 # ---
 # ## 3. Metadata queries and filtering
 #
@@ -403,7 +403,7 @@ marker_uids = marker_genes["uid"].tolist()
 
 adata_markers = (
     atlas.query()
-    .where("gene_expression.zarr_group != ''")
+    .where("has_gene_expression IS NOT NULL")
     .features(marker_uids, "gene_expression")
     .limit(20_000)
     .to_anndata()
@@ -421,7 +421,7 @@ print(f"Marker panel: {adata_markers.n_obs:,} cells x {adata_markers.n_vars:,} f
 adata_pparg = (
     atlas.query()
     .by_gene("PPARG")
-    .where("gene_expression.zarr_group != ''")
+    .where("has_gene_expression IS NOT NULL")
     .features(marker_uids, "gene_expression")
     .limit(5_000)
     .to_anndata()
@@ -507,7 +507,7 @@ atlas.list_datasets()
 
 # %%
 n_cells_streamed = 0
-for batch in atlas.query().where("gene_expression.zarr_group != ''").feature_spaces("gene_expression").limit(10_000).to_batches(batch_size=2048):
+for batch in atlas.query().where("has_gene_expression IS NOT NULL").feature_spaces("gene_expression").limit(10_000).to_batches(batch_size=2048):
     n_cells_streamed += batch.n_obs
 
 print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
@@ -532,7 +532,7 @@ print(f"Streamed {n_cells_streamed:,} cells in batches of 2048")
 # %%
 dataset = (
     atlas.query()
-    .where("gene_expression.zarr_group != ''")
+    .where("has_gene_expression IS NOT NULL")
     .feature_spaces("gene_expression")
     .limit(50_000)
     .to_unimodal_dataset(
@@ -580,7 +580,7 @@ print(f"\nProcessed {batch_idx} batches, last X shape: {X.shape}")
 frag_result = (
     atlas.query()
     .where("cell_line = 'K-562'")
-    .where("chromatin_accessibility.zarr_group != ''")
+    .where("has_chromatin_accessibility IS NOT NULL")
     .limit(500)
     .to_fragments()
 )
@@ -670,7 +670,7 @@ peak_adata.var
 tiles, tiles_obs = (
     atlas.query()
     .where("cell_line = 'HeLa'")
-    .where("image_tiles.zarr_group != ''")
+    .where("has_image_tiles IS NOT NULL")
     .limit(500)
     .to_array(feature_space="image_tiles")
 )
@@ -737,7 +737,7 @@ plt.show()
 # %%
 tile_dataset = (
     atlas.query()
-    .where("image_tiles.zarr_group != ''")
+    .where("has_image_tiles IS NOT NULL")
     .limit(500)
     .to_cell_dataset("image_tiles")
 )
