@@ -23,6 +23,7 @@ from homeobox.query import AtlasQuery
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
+    ForeignKeyField,
     HoxBaseSchema,
     PointerField,
     StableUIDBaseSchema,
@@ -47,6 +48,7 @@ __all__ = [
     "FeatureBaseSchema",
     "DatasetSchema",
     "PointerField",
+    "ForeignKeyField",
     "StableUIDBaseSchema",
     "StableUIDField",
     "SparseZarrPointer",

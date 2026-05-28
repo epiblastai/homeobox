@@ -30,9 +30,12 @@ from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
     FeatureLayout,
+    ForeignKeyField,
     HoxBaseSchema,
     PointerField,
+    _extract_foreign_key_fields,
     _extract_pointer_fields,
+    _infer_foreign_key_fields_from_arrow,
     _infer_pointer_fields_from_arrow,
 )
 from homeobox.util import sql_escape
@@ -41,6 +44,38 @@ from homeobox.util import sql_escape
 # Each reader holds BatchAsyncArray handles and a Rust shard-index cache, so
 # this bounds how much memory stays pinned across a long batch-read loop.
 _MAX_GROUP_READERS: int = 128
+
+
+def _foreign_key_record(source_table: str, fk: ForeignKeyField) -> dict[str, str]:
+    return {
+        "source_table": source_table,
+        "source_field": fk.field_name,
+        "target_table": fk.target_table,
+        "target_field": fk.target_field,
+    }
+
+
+def _validate_foreign_key_source_schemas(
+    schema_by_table: dict[str, type],
+    *,
+    registry_table_names: dict[str, str],
+) -> None:
+    """Validate FK declarations on schemas registered with create()."""
+    for _source_table, schema_cls in schema_by_table.items():
+        for fk in _extract_foreign_key_fields(schema_cls).values():
+            if fk.target_table in registry_table_names:
+                raise TypeError(
+                    f"{schema_cls.__name__}.{fk.field_name}: foreign key target_table "
+                    f"must be the actual LanceDB table name {registry_table_names[fk.target_table]!r}, "
+                    f"not feature space alias {fk.target_table!r}"
+                )
+            target_schema = schema_by_table.get(fk.target_table)
+            if target_schema is not None and fk.target_field not in target_schema.model_fields:
+                raise TypeError(
+                    f"{schema_cls.__name__}.{fk.field_name}: foreign key target field "
+                    f"{fk.target_table}.{fk.target_field} does not exist"
+                )
+
 
 # ---------------------------------------------------------------------------
 # Store URI helpers
@@ -146,6 +181,7 @@ class RaggedAtlas:
         *,
         version_table: lancedb.table.Table,
         feature_layouts_table: lancedb.table.Table,
+        foreign_keys: list[dict[str, str]] | None = None,
     ) -> None:
         # REVIEW: Add a docstring that __init__ should not be called
         # directly, use create, open or checkout classmethods instead.
@@ -188,6 +224,11 @@ class RaggedAtlas:
         self._dataset_table = dataset_table
         self._version_table = version_table
         self._feature_layouts_table = feature_layouts_table
+        self._foreign_keys: list[dict[str, str]] = (
+            list(foreign_keys)
+            if foreign_keys is not None
+            else self._compile_foreign_key_manifest_from_tables()
+        )
 
         self._checked_out_version: int | None = None
 
@@ -249,6 +290,18 @@ class RaggedAtlas:
         if not obs_schemas:
             raise ValueError("obs_schemas must contain at least one obs table.")
         db_uri = _resolve_db_uri(db_uri)
+        registry_table_names = {fs: f"{fs}_registry" for fs in registry_schemas}
+        _validate_foreign_key_source_schemas(
+            {
+                **obs_schemas,
+                dataset_table_name: dataset_schema,
+                **{
+                    registry_table_names[fs]: schema_cls
+                    for fs, schema_cls in registry_schemas.items()
+                },
+            },
+            registry_table_names=registry_table_names,
+        )
         db = lancedb.connect(db_uri, storage_options=_store_kwargs_to_storage_options(store_kwargs))
         obs_tables: dict[str, lancedb.table.Table] = {}
         for name, schema_cls in obs_schemas.items():
@@ -257,7 +310,7 @@ class RaggedAtlas:
 
         registry_tables: dict[str, lancedb.table.Table] = {}
         for fs, schema_cls in registry_schemas.items():
-            table_name = f"{fs}_registry"
+            table_name = registry_table_names[fs]
             registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
 
         version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
@@ -543,6 +596,11 @@ class RaggedAtlas:
         }
 
     @property
+    def foreign_keys(self) -> list[dict[str, str]]:
+        """Compiled scalar foreign-key manifest for this atlas view."""
+        return list(self._foreign_keys)
+
+    @property
     def registry_tables(self) -> dict[str, lancedb.table.Table]:
         """Feature registry tables, keyed by feature space."""
         return self._registry_tables
@@ -556,6 +614,112 @@ class RaggedAtlas:
     def db_uri(self) -> str:
         """LanceDB connection URI this atlas was opened from."""
         return self._db_uri
+
+    def _compile_foreign_key_manifest_from_tables(self) -> list[dict[str, str]]:
+        """Compile FK declarations from managed Lance table schemas."""
+        records: list[dict[str, str]] = []
+        for table_name, table in self._obs_tables.items():
+            for fk in _infer_foreign_key_fields_from_arrow(table.schema).values():
+                records.append(_foreign_key_record(table_name, fk))
+        for fk in _infer_foreign_key_fields_from_arrow(self._dataset_table.schema).values():
+            records.append(_foreign_key_record(self._dataset_table.name, fk))
+        for table in self._registry_tables.values():
+            for fk in _infer_foreign_key_fields_from_arrow(table.schema).values():
+                records.append(_foreign_key_record(table.name, fk))
+        return records
+
+    def _managed_table_by_name(self, table_name: str) -> lancedb.table.Table | None:
+        if table_name in self._obs_tables:
+            return self._obs_tables[table_name]
+        if table_name == self._dataset_table.name:
+            return self._dataset_table
+        if table_name == self._feature_layouts_table.name:
+            return self._feature_layouts_table
+        for table in self._registry_tables.values():
+            if table.name == table_name:
+                return table
+        return None
+
+    def _validate_foreign_key_rows(
+        self,
+        *,
+        source_table_name: str,
+        source_arrow: pa.Table | None = None,
+    ) -> list[str]:
+        """Validate FK constraints for one source table or pending Arrow batch.
+
+        Returns one human-readable error string per violated or unresolvable
+        constraint (empty when valid), so callers can aggregate alongside other
+        validators. When *source_arrow* is given, only those rows are checked;
+        otherwise the full source table column is read.
+        """
+        errors: list[str] = []
+        for fk in self._foreign_keys:
+            if fk["source_table"] != source_table_name:
+                continue
+            source_field = fk["source_field"]
+            target_table_name = fk["target_table"]
+            target_field = fk["target_field"]
+            label = (
+                f"FOREIGN KEY ({source_table_name}.{source_field}) "
+                f"REFERENCES {target_table_name} ({target_field})"
+            )
+
+            # Resolve the source values: a pending Arrow batch, or the full table.
+            if source_arrow is not None:
+                if source_arrow.schema.get_field_index(source_field) < 0:
+                    errors.append(f"{label}: source field cannot be resolved")
+                    continue
+                src_values = pl.from_arrow(source_arrow.select([source_field]))[source_field]
+            else:
+                source_table = self._managed_table_by_name(source_table_name)
+                if source_table is None:
+                    errors.append(f"{label}: source table cannot be opened")
+                    continue
+                if source_table.schema.get_field_index(source_field) < 0:
+                    errors.append(f"{label}: source field cannot be resolved")
+                    continue
+                src_values = source_table.search().select([source_field]).to_polars()[source_field]
+
+            # The target table may live outside the atlas; opening it can fail.
+            target_table = self._managed_table_by_name(target_table_name)
+            if target_table is None:
+                try:
+                    target_table = self.db.open_table(target_table_name)
+                except Exception as exc:
+                    errors.append(f"{label}: target table cannot be opened/resolved: {exc}")
+                    continue
+            if target_table.schema.get_field_index(target_field) < 0:
+                errors.append(f"{label}: target field cannot be resolved")
+                continue
+            tgt_values = target_table.search().select([target_field]).to_polars()[target_field]
+
+            # Anti-join: non-null source values absent from the target column.
+            non_null = src_values.drop_nulls()
+            invalid = non_null.filter(~non_null.is_in(tgt_values.implode()))
+            if invalid.is_empty():
+                continue
+            sample = invalid.unique().head(5).to_list()
+            errors.append(
+                f"{label}: {invalid.len()} invalid non-null value(s); "
+                f"sample missing values={sample!r}"
+            )
+        return errors
+
+    def _validate_foreign_key_rows_or_raise(
+        self,
+        *,
+        source_table_name: str,
+        source_arrow: pa.Table,
+    ) -> None:
+        errors = self._validate_foreign_key_rows(
+            source_table_name=source_table_name,
+            source_arrow=source_arrow,
+        )
+        if errors:
+            raise ValueError(
+                "Foreign key validation failed:\n" + "\n".join(f"  • {e}" for e in errors)
+            )
 
     # -- Dataset / zarr helpers --------------------------------------------
 
@@ -610,6 +774,10 @@ class RaggedAtlas:
             [dataset_record.model_dump()],
             schema=type(dataset_record).to_arrow_schema(),
         )
+        self._validate_foreign_key_rows_or_raise(
+            source_table_name=self._dataset_table.name,
+            source_arrow=arrow_table,
+        )
         self._dataset_table.add(arrow_table)
 
     def add_obs_records(
@@ -644,6 +812,10 @@ class RaggedAtlas:
                 [r.model_dump() for r in records],
                 schema=schema_cls.to_arrow_schema(),
             )
+        self._validate_foreign_key_rows_or_raise(
+            source_table_name=name,
+            source_arrow=arrow,
+        )
         table.add(arrow)
 
     def find_datasets(
@@ -864,6 +1036,8 @@ class RaggedAtlas:
         if check_var_dfs:
             errors.extend(self._validate_feature_layouts(zarr_groups_by_space))
 
+        errors.extend(self._validate_foreign_keys())
+
         return errors
 
     def _collect_zarr_groups(self) -> dict[str, set[str]]:
@@ -1060,6 +1234,12 @@ class RaggedAtlas:
                     errors.append(f"_feature_layouts '{lid}': {e}")
         return errors
 
+    def _validate_foreign_keys(self) -> list[str]:
+        errors: list[str] = []
+        for source_table_name in sorted({fk["source_table"] for fk in self._foreign_keys}):
+            errors.extend(self._validate_foreign_key_rows(source_table_name=source_table_name))
+        return errors
+
     # -- Versioning ---------------------------------------------------------
 
     def snapshot(self) -> int:
@@ -1112,10 +1292,16 @@ class RaggedAtlas:
             registry_table_names=json.dumps(registry_names),
             registry_table_versions=json.dumps(registry_versions),
             feature_layouts_table_version=self._feature_layouts_table.version,
+            foreign_keys=json.dumps(self._foreign_keys, sort_keys=True),
             total_rows=total_rows,
         )
         self._version_table.add([record])
         return next_version
+
+    @staticmethod
+    def _foreign_keys_from_version_row(row: dict) -> list[dict[str, str]]:
+        """Read the FK manifest persisted by :meth:`snapshot` for one version row."""
+        return json.loads(row.get("foreign_keys") or "[]")
 
     @staticmethod
     def _read_obs_tables_from_record(
@@ -1232,6 +1418,7 @@ class RaggedAtlas:
         feature_layouts_table.checkout(row["feature_layouts_table_version"])
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
+        foreign_keys = cls._foreign_keys_from_version_row(row)
 
         atlas = cls(
             db=db,
@@ -1242,6 +1429,7 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             feature_layouts_table=feature_layouts_table,
+            foreign_keys=foreign_keys,
         )
         atlas._checked_out_version = version
         return atlas
@@ -1328,6 +1516,7 @@ class RaggedAtlas:
         feature_layouts_table.restore()
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
+        foreign_keys = cls._foreign_keys_from_version_row(row)
 
         return cls(
             db=db,
@@ -1338,6 +1527,7 @@ class RaggedAtlas:
             dataset_table=dataset_table,
             version_table=version_table,
             feature_layouts_table=feature_layouts_table,
+            foreign_keys=foreign_keys,
         )
 
     @classmethod

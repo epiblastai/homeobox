@@ -1,5 +1,6 @@
 import dataclasses
 import datetime
+import json
 import uuid
 from types import UnionType
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
@@ -24,6 +25,18 @@ POINTER_FEATURE_SPACE_METADATA_KEY: bytes = b"homeobox.feature_space"
 
 # Arrow field metadata key used to persist which column drives stable UID generation.
 STABLE_UID_METADATA_KEY: bytes = b"homeobox.stable_uid"
+
+# Arrow field metadata key used to persist scalar foreign-key declarations.
+FOREIGN_KEY_METADATA_KEY: bytes = b"homeobox.foreign_key"
+
+
+def _is_list_arrow_type(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_list(data_type)
+        or pa.types.is_large_list(data_type)
+        or pa.types.is_fixed_size_list(data_type)
+        or pa.types.is_map(data_type)
+    )
 
 
 def make_uid() -> str:
@@ -92,6 +105,35 @@ class StableUIDField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+@dataclasses.dataclass(frozen=True)
+class ForeignKeyField:
+    """Runtime metadata for a scalar foreign-key field."""
+
+    field_name: str
+    target_table: str
+    target_field: str = "uid"
+
+    @staticmethod
+    def declare(
+        *,
+        target_table: str,
+        target_field: str = "uid",
+        default: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark a scalar foreign key."""
+        if not isinstance(target_table, str) or not target_table:
+            raise TypeError("ForeignKeyField.declare requires a non-empty target_table")
+        if not isinstance(target_field, str) or not target_field:
+            raise TypeError("ForeignKeyField.declare requires a non-empty target_field")
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["foreign_key"] = {
+            "target_table": target_table,
+            "target_field": target_field,
+        }
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
 def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
     """Read the ``json_schema_extra`` dict for a field on *cls*.
 
@@ -131,6 +173,76 @@ def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:
                 result.append((name, t))
                 break
     return result
+
+
+def _foreign_key_from_extra(field_name: str, fk_extra: dict, context: str) -> ForeignKeyField:
+    """Validate a ``{"target_table", "target_field"}`` blob and build a ForeignKeyField.
+
+    Shared by the class-introspection and Arrow-metadata read paths so the
+    non-empty-string validation lives in one place.
+    """
+    target_table = fk_extra.get("target_table")
+    target_field = fk_extra.get("target_field")
+    if not isinstance(target_table, str) or not target_table:
+        raise TypeError(f"{context}: ForeignKeyField requires a non-empty target_table")
+    if not isinstance(target_field, str) or not target_field:
+        raise TypeError(f"{context}: ForeignKeyField requires a non-empty target_field")
+    return ForeignKeyField(
+        field_name=field_name,
+        target_table=target_table,
+        target_field=target_field,
+    )
+
+
+def _extract_foreign_key_fields(schema_cls: type) -> dict[str, ForeignKeyField]:
+    """Return scalar foreign-key declarations from a Pydantic/Lance schema class."""
+    result: dict[str, ForeignKeyField] = {}
+    for name in getattr(schema_cls, "model_fields", {}):
+        fk_extra = (_read_field_json_schema_extra(schema_cls, name) or {}).get("foreign_key")
+        if fk_extra is None:
+            continue
+        result[name] = _foreign_key_from_extra(name, fk_extra, f"{schema_cls.__name__}.{name}")
+    return result
+
+
+def _infer_foreign_key_fields_from_arrow(
+    arrow_schema: pa.Schema,
+) -> dict[str, ForeignKeyField]:
+    """Infer scalar foreign-key declarations from Arrow field metadata."""
+    result: dict[str, ForeignKeyField] = {}
+    for field in arrow_schema:
+        raw = (field.metadata or {}).get(FOREIGN_KEY_METADATA_KEY)
+        if raw is None:
+            continue
+        fk_extra = json.loads(raw.decode("utf-8"))
+        result[field.name] = _foreign_key_from_extra(
+            field.name, fk_extra, f"Arrow field '{field.name}'"
+        )
+    return result
+
+
+def _stamp_foreign_key_metadata(schema_cls: type, arrow_schema: pa.Schema) -> pa.Schema:
+    """Stamp foreign-key declarations onto Arrow field metadata.
+
+    Also the single point that rejects list-valued foreign keys: scalar-only is
+    enforced here against the resolved Arrow type, so no other path needs to
+    re-check it.
+    """
+    for name, fk in _extract_foreign_key_fields(schema_cls).items():
+        idx = arrow_schema.get_field_index(name)
+        field = arrow_schema.field(idx)
+        if _is_list_arrow_type(field.type):
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: ForeignKeyField only supports scalar fields "
+                "in v1; list-valued fields are not supported"
+            )
+        new_metadata = dict(field.metadata or {})
+        new_metadata[FOREIGN_KEY_METADATA_KEY] = json.dumps(
+            {"target_table": fk.target_table, "target_field": fk.target_field},
+            sort_keys=True,
+        ).encode("utf-8")
+        arrow_schema = arrow_schema.set(idx, field.with_metadata(new_metadata))
+    return arrow_schema
 
 
 def _validate_pointer_field(
@@ -241,7 +353,20 @@ def _infer_pointer_fields_from_arrow(
     return result
 
 
-class StableUIDBaseSchema(LanceModel):
+class _ForeignKeyStampedModel(LanceModel):
+    """LanceModel base that persists foreign-key declarations as Arrow metadata.
+
+    Every table schema that may declare a :class:`ForeignKeyField` inherits this
+    so the stamping happens once in ``super().to_arrow_schema()`` rather than
+    being repeated in each subclass override.
+    """
+
+    @classmethod
+    def to_arrow_schema(cls) -> pa.Schema:
+        return _stamp_foreign_key_metadata(cls, super().to_arrow_schema())
+
+
+class StableUIDBaseSchema(_ForeignKeyStampedModel):
     """Base schema for tables whose ``uid`` may be derived from one stable field."""
 
     uid: str = Field(default_factory=make_uid)
@@ -313,7 +438,7 @@ class StableUIDBaseSchema(LanceModel):
 
     @classmethod
     def to_arrow_schema(cls) -> pa.Schema:
-        """Return the Arrow schema with stable UID field metadata stamped."""
+        """Return the Arrow schema with stable UID (and foreign-key) metadata stamped."""
         schema: pa.Schema = super().to_arrow_schema()
         for name in cls.stable_uid_field_names():
             idx = schema.get_field_index(name)
@@ -324,7 +449,7 @@ class StableUIDBaseSchema(LanceModel):
         return schema
 
 
-class HoxBaseSchema(LanceModel):
+class HoxBaseSchema(_ForeignKeyStampedModel):
     """
     Base schema for all homeobox datasets. The only requirements are a uid string
     that allows for safe parallel-write scenarios, and at least one ZarrPointer
@@ -433,7 +558,7 @@ class FeatureBaseSchema(StableUIDBaseSchema):
     global_index: int | None = None
 
 
-class DatasetSchema(LanceModel):
+class DatasetSchema(_ForeignKeyStampedModel):
     """Metadata for a single ingested dataset.
 
     ``zarr_group`` is the per-row primary key (unique per modality write).
@@ -517,6 +642,7 @@ class AtlasVersionRecord(LanceModel):
     registry_table_names: str
     registry_table_versions: str
     feature_layouts_table_version: int
+    foreign_keys: str = "[]"
     total_rows: int
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
