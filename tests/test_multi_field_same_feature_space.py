@@ -24,6 +24,7 @@ from homeobox.pointer_types import DenseZarrPointer
 from homeobox.schema import (
     POINTER_FEATURE_SPACE_METADATA_KEY,
     DatasetSchema,
+    FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
     _extract_pointer_fields,
@@ -42,6 +43,24 @@ class DualCycleTileSchema(HoxBaseSchema):
     cell_type: str | None = None
 
 
+class ImageFeatureSchema(FeatureBaseSchema):
+    feature_name: str
+
+
+class AnnotatedImageFeatureSchema(HoxBaseSchema):
+    image_features: DenseZarrPointer | None = PointerField.declare(
+        feature_space="image_features",
+        feature_registry_schema=ImageFeatureSchema,
+    )
+
+
+class StringAnnotatedImageFeatureSchema(HoxBaseSchema):
+    image_features: DenseZarrPointer | None = PointerField.declare(
+        feature_space="image_features",
+        feature_registry_schema="ImageFeatureSchema",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Schema-level tests
 # ---------------------------------------------------------------------------
@@ -55,6 +74,19 @@ class TestPointerFieldDeclare:
         for name, pf in pfs.items():
             assert pf.field_name == name
             assert pf.feature_space == "image_tiles"
+            assert pf.feature_registry_schema is None
+
+    def test_feature_registry_schema_metadata_extract(self):
+        """Pointer fields can carry an optional feature registry schema name."""
+        pfs = _extract_pointer_fields(AnnotatedImageFeatureSchema)
+        assert pfs["image_features"].feature_registry_schema == "ImageFeatureSchema"
+
+        extra = AnnotatedImageFeatureSchema.model_fields["image_features"].json_schema_extra
+        assert extra["feature_registry_schema"] == "ImageFeatureSchema"
+
+    def test_feature_registry_schema_accepts_string(self):
+        pfs = _extract_pointer_fields(StringAnnotatedImageFeatureSchema)
+        assert pfs["image_features"].feature_registry_schema == "ImageFeatureSchema"
 
     def test_pointer_without_declare_raises(self):
         """Pointer-typed fields that skip PointerField.declare fail at class definition."""
@@ -80,6 +112,14 @@ class TestPointerFieldDeclare:
             assert field.metadata is not None
             assert field.metadata[POINTER_FEATURE_SPACE_METADATA_KEY] == b"image_tiles"
 
+    def test_feature_registry_schema_not_stamped_to_arrow(self):
+        """Feature registry schema metadata is Python-only."""
+        schema = AnnotatedImageFeatureSchema.to_arrow_schema()
+        field = schema.field("image_features")
+        assert field.metadata is not None
+        assert field.metadata[POINTER_FEATURE_SPACE_METADATA_KEY] == b"image_features"
+        assert b"feature_registry_schema" not in field.metadata
+
     def test_infer_from_arrow_round_trip(self):
         """Arrow-schema-only read path recovers PointerField info correctly."""
         schema = DualCycleTileSchema.to_arrow_schema()
@@ -88,6 +128,7 @@ class TestPointerFieldDeclare:
         for name, pf in pfs.items():
             assert pf.field_name == name
             assert pf.feature_space == "image_tiles"
+            assert pf.feature_registry_schema is None
 
 
 # ---------------------------------------------------------------------------

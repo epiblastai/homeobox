@@ -103,13 +103,14 @@ class GeneFeature(hox.FeatureBaseSchema):
     gene_symbol: str = hox.StableUIDField.declare(default=...)
 ```
 
-An obs schema extends `HoxBaseSchema` and declares one pointer field per column the obs table will hold. Each pointer is declared with `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. Column names are free-form — a schema may declare multiple columns in the same feature space. In a multimodal schema, pointer fields are typed `| None` so that rows profiled in only one modality can leave the other pointers null.
+An obs schema extends `HoxBaseSchema` and declares one pointer field per column the obs table will hold. Each pointer is declared with `PointerField.declare(feature_space=...)`, which binds the column name to a registered feature space. If the space has a registry, `feature_registry_schema` can annotate the linked schema for code parsing and visualization. Column names are free-form — a schema may declare multiple columns in the same feature space. In a multimodal schema, pointer fields are typed `| None` so that rows profiled in only one modality can leave the other pointers null.
 
 ```python
 class CellSchema(hox.HoxBaseSchema):
     cell_type: str | None = None     # user-defined obs metadata
     lognorm_rna: hox.DenseZarrPointer | None = hox.PointerField.declare(
-        feature_space="lognorm_rna"
+        feature_space="lognorm_rna",
+        feature_registry_schema=GeneFeature,
     )
 ```
 
