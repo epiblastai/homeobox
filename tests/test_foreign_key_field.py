@@ -4,9 +4,14 @@ import pytest
 from lancedb.pydantic import LanceModel
 from pydantic import ValidationError
 
-from homeobox.schema import ForeignKeyField, _extract_foreign_key_fields
+from homeobox.schema import (
+    ForeignKeyField,
+    _extract_foreign_key_fields,
+    _extract_polymorphic_foreign_key_fields,
+)
 from homeobox_examples.multimodal_perturbation_atlas.schema import (
     CellIndex,
+    DatasetPerturbationIndex,
     GeneticPerturbationSchema,
     PublicationSectionSchema,
 )
@@ -86,3 +91,19 @@ def test_multimodal_atlas_schema_foreign_key_markers():
     chromosome_fk = _extract_foreign_key_fields(GeneticPerturbationSchema)["target_chromosome"]
     assert chromosome_fk.target_schema == "ReferenceSequenceSchema"
     assert chromosome_fk.target_field == "genbank_accession"
+
+
+def test_multimodal_atlas_schema_polymorphic_foreign_key_markers():
+    cell_pfk = _extract_polymorphic_foreign_key_fields(CellIndex)["perturbation_uids"]
+    assert cell_pfk.type_field == "perturbation_types"
+    assert cell_pfk.variants == {
+        "small_molecule": "SmallMoleculeSchema",
+        "genetic_perturbation": "GeneticPerturbationSchema",
+        "biologic_perturbation": "BiologicPerturbationSchema",
+    }
+
+    index_pfk = _extract_polymorphic_foreign_key_fields(DatasetPerturbationIndex)[
+        "perturbation_uid"
+    ]
+    assert index_pfk.type_field == "perturbation_type"
+    assert index_pfk.variants == cell_pfk.variants

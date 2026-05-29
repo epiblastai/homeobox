@@ -27,6 +27,7 @@ from homeobox.schema import (
     HoxBaseSchema,
     OntologyAlignedField,
     PointerField,
+    PolymorphicForeignKeyField,
     StableUIDBaseSchema,
     StableUIDField,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "FeatureBaseSchema",
     "DatasetSchema",
     "ForeignKeyField",
+    "PolymorphicForeignKeyField",
     "OntologyAlignedField",
     "PointerField",
     "StableUIDBaseSchema",
