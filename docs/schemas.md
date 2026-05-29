@@ -12,7 +12,8 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
-    OntologyAlignedField, DatasetSchema, FeatureLayout, AtlasVersionRecord,
+    PolymorphicForeignKeyField, OntologyAlignedField, DatasetSchema, FeatureLayout,
+    AtlasVersionRecord,
 )
 ```
 
@@ -136,6 +137,24 @@ target_chromosome: str | None = ForeignKeyField.declare(
 ```
 
 This is lightweight metadata only. It is not stored in Arrow metadata, and homeobox does not currently enforce it as a database constraint. Future versions may use this metadata to validate or enforce relationships.
+
+### `PolymorphicForeignKeyField`
+
+Like `ForeignKeyField`, but the target schema is selected by a parallel discriminator column rather than fixed at declaration time:
+
+```python
+perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+    type_field="perturbation_types",
+    variants={
+        "small_molecule": SmallMoleculeSchema,
+        "genetic_perturbation": GeneticPerturbationSchema,
+        "biologic_perturbation": BiologicPerturbationSchema,
+    },
+)
+perturbation_types: list[str] | None
+```
+
+Use this when the same value column can refer to different tables depending on another field; use `ForeignKeyField` when the target is always one schema.
 
 ### `OntologyAlignedField`
 

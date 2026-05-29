@@ -153,6 +153,67 @@ class ForeignKeyField:
 
 
 @dataclasses.dataclass(frozen=True)
+class PolymorphicForeignKeyField:
+    """Runtime metadata for a value field whose target schema depends on another field.
+
+    The value field (marked with :meth:`declare`) holds foreign-key values. The
+    parallel ``type_field`` holds discriminator values that select which target
+    schema each value refers to. This marker is informational only.
+    """
+
+    field_name: str
+    type_field: str
+    target_field: str
+    variants: dict[str, str]
+
+    @staticmethod
+    def declare(
+        *,
+        type_field: str,
+        variants: dict[str, type | str],
+        target_field: str = "uid",
+        default: Any = ...,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark a polymorphic foreign-key field."""
+        if not isinstance(type_field, str) or not type_field:
+            raise TypeError(
+                "PolymorphicForeignKeyField.declare requires a non-empty type_field string"
+            )
+        if not isinstance(target_field, str) or not target_field:
+            raise TypeError(
+                "PolymorphicForeignKeyField.declare requires a non-empty target_field string"
+            )
+        if not variants:
+            raise TypeError("PolymorphicForeignKeyField.declare requires a non-empty variants dict")
+
+        variant_names: dict[str, str] = {}
+        for key, target_schema in variants.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError(
+                    "PolymorphicForeignKeyField.declare variants keys must be non-empty strings"
+                )
+            if isinstance(target_schema, str):
+                target_schema_name = target_schema
+            else:
+                target_schema_name = target_schema.__name__
+            if not target_schema_name:
+                raise TypeError(
+                    "PolymorphicForeignKeyField.declare requires a non-empty target schema "
+                    f"for variant {key!r}"
+                )
+            variant_names[key] = target_schema_name
+
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["polymorphic_foreign_key"] = {
+            "type_field": type_field,
+            "target_field": target_field,
+            "variants": variant_names,
+        }
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
+@dataclasses.dataclass(frozen=True)
 class OntologyAlignedField:
     """Runtime metadata marking a schema field as aligned to an ontology.
 
@@ -224,6 +285,74 @@ def _extract_foreign_key_fields(schema_cls: type) -> dict[str, ForeignKeyField]:
             field_name=name,
             target_schema=target_schema,
             target_field=target_field,
+        )
+    return result
+
+
+def _extract_polymorphic_foreign_key_fields(
+    schema_cls: type,
+) -> dict[str, PolymorphicForeignKeyField]:
+    """Return polymorphic foreign-key metadata from :meth:`PolymorphicForeignKeyField.declare`."""
+    model_fields = getattr(schema_cls, "model_fields", {})
+    result: dict[str, PolymorphicForeignKeyField] = {}
+    type_fields_seen: dict[str, str] = {}
+
+    for name in model_fields:
+        extra = _read_field_json_schema_extra(schema_cls, name) or {}
+        polymorphic_foreign_key = extra.get("polymorphic_foreign_key")
+        if not isinstance(polymorphic_foreign_key, dict):
+            continue
+
+        type_field = polymorphic_foreign_key.get("type_field")
+        target_field = polymorphic_foreign_key.get("target_field")
+        variants = polymorphic_foreign_key.get("variants")
+        if not isinstance(type_field, str) or not type_field:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: polymorphic_foreign_key metadata must include "
+                f"a non-empty type_field string"
+            )
+        if not isinstance(target_field, str) or not target_field:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: polymorphic_foreign_key metadata must include "
+                f"a non-empty target_field string"
+            )
+        if not isinstance(variants, dict) or not variants:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: polymorphic_foreign_key metadata must include "
+                f"a non-empty variants dict"
+            )
+
+        normalized_variants: dict[str, str] = {}
+        for key, target_schema in variants.items():
+            if not isinstance(key, str) or not key:
+                raise TypeError(
+                    f"{schema_cls.__name__}.{name}: polymorphic_foreign_key variants keys must "
+                    f"be non-empty strings"
+                )
+            if not isinstance(target_schema, str) or not target_schema:
+                raise TypeError(
+                    f"{schema_cls.__name__}.{name}: polymorphic_foreign_key variants values must "
+                    f"be non-empty target_schema strings"
+                )
+            normalized_variants[key] = target_schema
+
+        if type_field not in model_fields:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: polymorphic_foreign_key type_field "
+                f"{type_field!r} is not declared on the schema"
+            )
+        if type_field in type_fields_seen:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: polymorphic_foreign_key type_field "
+                f"{type_field!r} is already used by {type_fields_seen[type_field]!r}"
+            )
+        type_fields_seen[type_field] = name
+
+        result[name] = PolymorphicForeignKeyField(
+            field_name=name,
+            type_field=type_field,
+            target_field=target_field,
+            variants=normalized_variants,
         )
     return result
 

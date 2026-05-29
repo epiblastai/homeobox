@@ -16,6 +16,7 @@ from homeobox.schema import (
     ForeignKeyField,
     HoxBaseSchema,
     PointerField,
+    PolymorphicForeignKeyField,
     StableUIDBaseSchema,
     StableUIDField,
     _iter_pointer_annotations,
@@ -413,6 +414,13 @@ class BiologicPerturbationSchema(LanceModel):
         return self
 
 
+_PERTURBATION_FK_VARIANTS: dict[str, type] = {
+    "small_molecule": SmallMoleculeSchema,
+    "genetic_perturbation": GeneticPerturbationSchema,
+    "biologic_perturbation": BiologicPerturbationSchema,
+}
+
+
 # ---------------------------------------------------------------------------
 # Registry schemas mapping (feature space → registry schema)
 # ---------------------------------------------------------------------------
@@ -479,10 +487,13 @@ class CellIndex(HoxBaseSchema):
 
     # Cumulative lists of all the perturbations effected on a cell. Could be
     # combinatorial CRISPR guides, or a small molecule and a CRISPR guide, or
-    # any other such combination. Lists must have exactly matching lengths
-    # UIDs and types go together to specify foreign keys. The uid is a foreign
-    # key value and the perturbation type determines which table it is a key in.
-    perturbation_uids: list[str] | None
+    # any other such combination. Lists must have exactly matching lengths.
+    # UIDs and types go together: the type selects which perturbation table
+    # the uid refers to.
+    perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+        type_field="perturbation_types",
+        variants=_PERTURBATION_FK_VARIANTS,
+    )
     perturbation_types: list[str] | None  # one of PerturbationType
     # Concentrations for the perturbation in micromolar, if applicable, else use -1
     # to keep the lists equally long
@@ -625,7 +636,10 @@ class DatasetPerturbationIndex(LanceModel):
     """
 
     dataset_uid: str
-    perturbation_uid: str
+    perturbation_uid: str = PolymorphicForeignKeyField.declare(
+        type_field="perturbation_type",
+        variants=_PERTURBATION_FK_VARIANTS,
+    )
     perturbation_type: PerturbationType
 
     # Denormalized for search convenience — avoids a join to the
