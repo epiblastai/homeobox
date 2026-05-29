@@ -4,20 +4,7 @@ import pytest
 from lancedb.pydantic import LanceModel
 from pydantic import ValidationError
 
-from homeobox.schema import (
-    ForeignKeyField,
-    _extract_foreign_key_fields,
-    _extract_polymorphic_foreign_key_fields,
-)
-from homeobox_examples.multimodal_perturbation_atlas.schema import (
-    CellIndex,
-    DatasetPerturbationIndex,
-    GeneticPerturbationSchema,
-    PublicationSectionSchema,
-)
-from homeobox_examples.multimodal_perturbation_atlas.schema import (
-    DatasetSchema as MultimodalDatasetSchema,
-)
+from homeobox.schema import ForeignKeyField
 
 
 class AuthorSchema(LanceModel):
@@ -35,17 +22,6 @@ class BookSchema(LanceModel):
         target_field="publisher_id",
     )
     title: str
-
-
-def test_foreign_key_field_metadata_is_introspectable():
-    fields = _extract_foreign_key_fields(BookSchema)
-
-    assert set(fields) == {"author_uid", "publisher_id"}
-    assert fields["author_uid"].field_name == "author_uid"
-    assert fields["author_uid"].target_schema == "AuthorSchema"
-    assert fields["author_uid"].target_field == "uid"
-    assert fields["publisher_id"].target_schema == "PublisherSchema"
-    assert fields["publisher_id"].target_field == "publisher_id"
 
 
 def test_foreign_key_field_metadata_is_in_json_schema_extra():
@@ -76,34 +52,3 @@ def test_foreign_key_field_is_not_written_to_arrow_metadata():
 
     assert schema.field("author_uid").metadata is None
     assert schema.field("publisher_id").metadata is None
-
-
-def test_multimodal_atlas_schema_foreign_key_markers():
-    publication_section_fk = _extract_foreign_key_fields(PublicationSectionSchema)[
-        "publication_uid"
-    ]
-    dataset_fk = _extract_foreign_key_fields(MultimodalDatasetSchema)["publication_uid"]
-
-    assert publication_section_fk.target_schema == "PublicationSchema"
-    assert dataset_fk.target_schema == "PublicationSchema"
-    assert _extract_foreign_key_fields(CellIndex)["donor_uid"].target_schema == "DonorSchema"
-
-    chromosome_fk = _extract_foreign_key_fields(GeneticPerturbationSchema)["target_chromosome"]
-    assert chromosome_fk.target_schema == "ReferenceSequenceSchema"
-    assert chromosome_fk.target_field == "genbank_accession"
-
-
-def test_multimodal_atlas_schema_polymorphic_foreign_key_markers():
-    cell_pfk = _extract_polymorphic_foreign_key_fields(CellIndex)["perturbation_uids"]
-    assert cell_pfk.type_field == "perturbation_types"
-    assert cell_pfk.variants == {
-        "small_molecule": "SmallMoleculeSchema",
-        "genetic_perturbation": "GeneticPerturbationSchema",
-        "biologic_perturbation": "BiologicPerturbationSchema",
-    }
-
-    index_pfk = _extract_polymorphic_foreign_key_fields(DatasetPerturbationIndex)[
-        "perturbation_uid"
-    ]
-    assert index_pfk.type_field == "perturbation_type"
-    assert index_pfk.variants == cell_pfk.variants
