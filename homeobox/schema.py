@@ -92,6 +92,44 @@ class StableUIDField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+@dataclasses.dataclass(frozen=True)
+class ForeignKeyField:
+    """Runtime metadata for a schema field that references another schema field.
+
+    This marker is informational only. It is not written to Arrow metadata and
+    does not add validation or database constraints.
+    """
+
+    field_name: str
+    target_schema: str
+    target_field: str
+
+    @staticmethod
+    def declare(
+        *,
+        target_schema: type | str,
+        target_field: str = "uid",
+        default: Any = ...,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark a foreign-key-like field."""
+        if isinstance(target_schema, str):
+            target_schema_name = target_schema
+        else:
+            target_schema_name = target_schema.__name__
+        if not target_schema_name:
+            raise TypeError("ForeignKeyField.declare requires a non-empty target_schema")
+        if not isinstance(target_field, str) or not target_field:
+            raise TypeError("ForeignKeyField.declare requires a non-empty target_field string")
+
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["foreign_key"] = {
+            "target_schema": target_schema_name,
+            "target_field": target_field,
+        }
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
 def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
     """Read the ``json_schema_extra`` dict for a field on *cls*.
 
@@ -109,6 +147,34 @@ def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
     if not isinstance(extra, dict):
         return None
     return extra
+
+
+def _extract_foreign_key_fields(schema_cls: type) -> dict[str, ForeignKeyField]:
+    """Return foreign-key metadata declared with :meth:`ForeignKeyField.declare`."""
+    result: dict[str, ForeignKeyField] = {}
+    for name in getattr(schema_cls, "model_fields", {}):
+        extra = _read_field_json_schema_extra(schema_cls, name) or {}
+        foreign_key = extra.get("foreign_key")
+        if not isinstance(foreign_key, dict):
+            continue
+        target_schema = foreign_key.get("target_schema")
+        target_field = foreign_key.get("target_field")
+        if not isinstance(target_schema, str) or not target_schema:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: foreign_key metadata must include "
+                f"a non-empty target_schema string"
+            )
+        if not isinstance(target_field, str) or not target_field:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: foreign_key metadata must include "
+                f"a non-empty target_field string"
+            )
+        result[name] = ForeignKeyField(
+            field_name=name,
+            target_schema=target_schema,
+            target_field=target_field,
+        )
+    return result
 
 
 def _iter_pointer_annotations(cls: type) -> list[tuple[str, type]]:

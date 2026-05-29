@@ -11,7 +11,7 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 
 ```python
 from homeobox.schema import (
-    HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField,
+    HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
     DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
@@ -111,6 +111,21 @@ pointer_fields = _infer_pointer_fields_from_arrow(arrow_schema)
 ```
 
 This is why `obs_schemas` is optional on `checkout()`: read paths can recover the full pointer-field map from the on-disk schema alone. Writing still requires the Python class so that pydantic validation can run.
+
+### `ForeignKeyField`
+
+Use `ForeignKeyField.declare(...)` to mark a normal schema column as referring to another schema field:
+
+```python
+publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+target_chromosome: str | None = ForeignKeyField.declare(
+    target_schema=ReferenceSequenceSchema,
+    target_field="genbank_accession",
+    default=None,
+)
+```
+
+This is lightweight metadata only. It is not stored in Arrow metadata, and homeobox does not currently enforce it as a database constraint. Future versions may use this metadata to validate or enforce relationships.
 
 ### Multimodal example
 
