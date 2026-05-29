@@ -67,15 +67,23 @@ Both are defined on the base class and should not be redeclared in subclasses.
 
 ### Pointer fields
 
-A pointer field tells the atlas that rows in this obs table may be measured in a given feature space, and stores the per-row addressing into that feature space's zarr group. Each pointer field is declared with `PointerField.declare(feature_space=...)`:
+A pointer field tells the atlas that rows in this obs table may be measured in a given feature space, and stores the per-row addressing into that feature space's zarr group. Each pointer field is declared with `PointerField.declare(feature_space=...)`. When the feature space has a registry schema, you can also annotate it with `feature_registry_schema`:
 
 ```python
-field_name: SparseZarrPointer | None = PointerField.declare(feature_space="gene_expression")
-other_name: DenseZarrPointer | None = PointerField.declare(feature_space="protein_abundance")
+field_name: SparseZarrPointer | None = PointerField.declare(
+    feature_space="gene_expression",
+    feature_registry_schema=GeneFeatureSchema,
+)
+other_name: DenseZarrPointer | None = PointerField.declare(
+    feature_space="protein_abundance",
+    feature_registry_schema=ProteinFeatureSchema,
+)
 crop_field: DiscreteSpatialPointer | None = PointerField.declare(feature_space="image_tiles")
 ```
 
 The Python attribute name is independent of the feature_space name — the same feature_space may back several columns (e.g. `cycle1_image_tiles` and `cycle2_image_tiles`, both `feature_space="image_tiles"`). The `| None` annotation is required so that rows not measured in a given modality can leave the pointer null; the reconstruction layer treats null pointers as absent data.
+
+`feature_registry_schema` is lightweight Python metadata only. It is not stored in Arrow metadata and is not required for feature spaces without a registry.
 
 Class-definition-time invariants (enforced in `__init_subclass__`):
 
@@ -88,15 +96,15 @@ A model validator additionally requires that at least one pointer column be non-
 
 ### `PointerField` and Arrow metadata
 
-`PointerField.declare(feature_space=...)` returns a pydantic `Field` whose `json_schema_extra` carries `{"is_pointer": True, "feature_space": <name>}`. This binding is what the rest of the codebase uses to know which feature space a column points into — the pointer struct itself only carries `zarr_group` plus addressing fields, never the feature_space name.
+`PointerField.declare(feature_space=..., feature_registry_schema=...)` returns a pydantic `Field` whose `json_schema_extra` carries `{"is_pointer": True, "feature_space": <name>}` and, optionally, `{"feature_registry_schema": <schema name>}`. This binding is what the rest of the codebase uses to know which feature space a column points into — the pointer struct itself only carries `zarr_group` plus addressing fields, never the feature_space name.
 
-`HoxBaseSchema.to_arrow_schema()` then **persists the binding on the Arrow schema** of the obs table. For every pointer field it stamps the per-field metadata:
+`HoxBaseSchema.to_arrow_schema()` then **persists the feature-space binding on the Arrow schema** of the obs table. For every pointer field it stamps the per-field metadata:
 
 ```
 b"homeobox.feature_space" → <feature_space>.encode("utf-8")
 ```
 
-(The exact key is `schema.POINTER_FEATURE_SPACE_METADATA_KEY`.) Because Lance stores Arrow field metadata, this binding survives the round-trip into the on-disk table.
+(The exact key is `schema.POINTER_FEATURE_SPACE_METADATA_KEY`.) Because Lance stores Arrow field metadata, this binding survives the round-trip into the on-disk table. `feature_registry_schema` is deliberately not persisted.
 
 The point of this is that **the Python schema class is no longer required to interpret an existing atlas**. When `RaggedAtlas.checkout(...)` is called without obs schemas, `_infer_pointer_fields_from_arrow` walks the Arrow schema, identifies struct columns whose sub-field names match a known pointer type (sparse / dense / discrete_spatial), and reads `homeobox.feature_space` off each field to resolve the binding:
 
@@ -105,9 +113,11 @@ The point of this is that **the Python schema class is no longer required to int
 arrow_schema = obs_table.schema
 pointer_fields = _infer_pointer_fields_from_arrow(arrow_schema)
 # {"gene_expression": PointerField(field_name="gene_expression",
-#                                  feature_space="gene_expression"),
+#                                  feature_space="gene_expression",
+#                                  feature_registry_schema=None),
 #  "cycle1_image_tiles": PointerField(field_name="cycle1_image_tiles",
-#                                     feature_space="image_tiles"), ...}
+#                                     feature_space="image_tiles",
+#                                     feature_registry_schema=None), ...}
 ```
 
 This is why `obs_schemas` is optional on `checkout()`: read paths can recover the full pointer-field map from the on-disk schema alone. Writing still requires the Python class so that pydantic validation can run.
@@ -135,15 +145,19 @@ from homeobox.pointer_types import (
 )
 from homeobox.schema import HoxBaseSchema, PointerField
 
+# Assume GeneFeature, ChromatinPeak, and ProteinFeature are FeatureBaseSchema subclasses.
 class MultimodalObs(HoxBaseSchema):
     gene_expression: SparseZarrPointer | None = PointerField.declare(
-        feature_space="gene_expression"
+        feature_space="gene_expression",
+        feature_registry_schema=GeneFeature,
     )
     chromatin_accessibility: SparseZarrPointer | None = PointerField.declare(
-        feature_space="chromatin_accessibility"
+        feature_space="chromatin_accessibility",
+        feature_registry_schema=ChromatinPeak,
     )
     protein_abundance: DenseZarrPointer | None = PointerField.declare(
-        feature_space="protein_abundance"
+        feature_space="protein_abundance",
+        feature_registry_schema=ProteinFeature,
     )
     image_tile: DiscreteSpatialPointer | None = PointerField.declare(
         feature_space="image_tiles"

@@ -59,23 +59,45 @@ class PointerField:
     ``feature_space="image_tiles"``).
 
     The concrete pointer type is carried by the matching FeatureSpaceSpec.
+    ``feature_registry_schema`` is optional, informational metadata for code
+    parsers and visualizers; it is not stored in Arrow metadata.
     """
 
     field_name: str
     feature_space: str
+    feature_registry_schema: str | None = None
 
     @staticmethod
-    def declare(*, feature_space: str, default: Any = None, **kwargs: Any) -> Any:
+    def declare(
+        *,
+        feature_space: str,
+        feature_registry_schema: type | str | None = None,
+        default: Any = None,
+        **kwargs: Any,
+    ) -> Any:
         """Factory used in schema class bodies to mark a pointer field.
 
         Returns a pydantic ``Field`` whose ``json_schema_extra`` carries
-        ``{"is_pointer": True, "feature_space": feature_space}``. The feature
-        space is resolved against the registered spec at schema definition
-        time by :meth:`HoxBaseSchema.__init_subclass__`.
+        ``{"is_pointer": True, "feature_space": feature_space}``. When
+        provided, ``feature_registry_schema`` is recorded as lightweight
+        Python-level metadata only. The feature space is resolved against the
+        registered spec at schema definition time by
+        :meth:`HoxBaseSchema.__init_subclass__`.
         """
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["is_pointer"] = True
+        extra["feature_space"] = feature_space
+        if feature_registry_schema is not None:
+            if isinstance(feature_registry_schema, str):
+                feature_registry_schema_name = feature_registry_schema
+            else:
+                feature_registry_schema_name = feature_registry_schema.__name__
+            if not feature_registry_schema_name:
+                raise TypeError("PointerField.declare requires a non-empty feature_registry_schema")
+            extra["feature_registry_schema"] = feature_registry_schema_name
         return Field(
             default=default,
-            json_schema_extra={"is_pointer": True, "feature_space": feature_space},
+            json_schema_extra=extra,
             **kwargs,
         )
 
@@ -204,6 +226,7 @@ def _validate_pointer_field(
     field_name: str,
     pointer_type: type,
     feature_space: str,
+    feature_registry_schema: str | None = None,
     context: str,
 ) -> PointerField:
     """Validate feature-space metadata and return runtime pointer metadata."""
@@ -217,6 +240,7 @@ def _validate_pointer_field(
     return PointerField(
         field_name=field_name,
         feature_space=feature_space,
+        feature_registry_schema=feature_registry_schema,
     )
 
 
@@ -239,10 +263,19 @@ def _extract_pointer_fields(
                 f"{schema_cls.__name__}.{name}: pointer field missing feature_space "
                 f"metadata; declare with PointerField.declare(feature_space=...)"
             )
+        feature_registry_schema = extra.get("feature_registry_schema")
+        if feature_registry_schema is not None and (
+            not isinstance(feature_registry_schema, str) or not feature_registry_schema
+        ):
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: feature_registry_schema metadata must be "
+                f"a non-empty string when provided"
+            )
         result[name] = _validate_pointer_field(
             field_name=name,
             pointer_type=pointer_type,
             feature_space=feature_space,
+            feature_registry_schema=feature_registry_schema,
             context=f"{schema_cls.__name__}.{name}",
         )
     return result
@@ -440,10 +473,19 @@ class HoxBaseSchema(LanceModel):
                     f"{cls.__name__}.{name}: PointerField.declare must be called with "
                     f"a non-empty feature_space string"
                 )
+            feature_registry_schema = extra.get("feature_registry_schema")
+            if feature_registry_schema is not None and (
+                not isinstance(feature_registry_schema, str) or not feature_registry_schema
+            ):
+                raise TypeError(
+                    f"{cls.__name__}.{name}: PointerField.declare must be called with "
+                    f"a non-empty feature_registry_schema when provided"
+                )
             _validate_pointer_field(
                 field_name=name,
                 pointer_type=pointer_type,
                 feature_space=feature_space,
+                feature_registry_schema=feature_registry_schema,
                 context=f"{cls.__name__}.{name}",
             )
 

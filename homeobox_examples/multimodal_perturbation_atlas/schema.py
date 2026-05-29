@@ -494,19 +494,21 @@ class CellIndex(HoxBaseSchema):
 
     # Pointers for each of the feature spaces. These all have a corresponding
     # feature registry table
-    gene_expression: SparseZarrPointer | None = PointerField.declare(  # GenomicFeatureSchema
-        feature_space="gene_expression"
+    gene_expression: SparseZarrPointer | None = PointerField.declare(
+        feature_space="gene_expression",
+        feature_registry_schema=GenomicFeatureSchema,
     )
-    chromatin_accessibility: SparseZarrPointer | None = (
-        PointerField.declare(  # ReferenceSequenceSchema
-            feature_space="chromatin_accessibility"
-        )
+    chromatin_accessibility: SparseZarrPointer | None = PointerField.declare(
+        feature_space="chromatin_accessibility",
+        feature_registry_schema=ReferenceSequenceSchema,
     )
-    protein_abundance: DenseZarrPointer | None = PointerField.declare(  # ProteinSchema
-        feature_space="protein_abundance"
+    protein_abundance: DenseZarrPointer | None = PointerField.declare(
+        feature_space="protein_abundance",
+        feature_registry_schema=ProteinSchema,
     )
-    image_features: DenseZarrPointer | None = PointerField.declare(  # ImageFeatureSchema
-        feature_space="image_features"
+    image_features: DenseZarrPointer | None = PointerField.declare(
+        feature_space="image_features",
+        feature_registry_schema=ImageFeatureSchema,
     )
 
     # Image tiles don't have a schema because they aren't features!
