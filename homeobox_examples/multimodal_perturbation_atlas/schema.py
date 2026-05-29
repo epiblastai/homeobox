@@ -13,6 +13,7 @@ from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
+    ForeignKeyField,
     HoxBaseSchema,
     PointerField,
     StableUIDBaseSchema,
@@ -129,7 +130,7 @@ class PublicationSchema(StableUIDBaseSchema):
 
 
 class PublicationSectionSchema(LanceModel):
-    publication_uid: str  # Foreign key to PublicationSchema.uid
+    publication_uid: str = ForeignKeyField.declare(target_schema=PublicationSchema)
 
     # Section-level fields (one row per section)
     # The text content of this section
@@ -145,8 +146,7 @@ class PublicationSectionSchema(LanceModel):
 
 
 class DatasetSchema(DatasetSchema):
-    # Foreign key: The uid for an associated publication
-    publication_uid: str | None
+    publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
     # Database from which the dataset was downloaded, if applicable
     accession_database: str | None
     accession_id: str | None
@@ -346,7 +346,11 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
 
     # genbank_accession code for the chromosome where the guide is targeting,
     # e.g. "CM000663.2" for chr1 in GRCh38
-    target_chromosome: str | None = None
+    target_chromosome: str | None = ForeignKeyField.declare(
+        target_schema=ReferenceSequenceSchema,
+        target_field="genbank_accession",
+        default=None,
+    )
     # Genomic target coordinates — where the reagent physically acts
     target_start: int | None = None
     target_end: int | None = None
@@ -451,7 +455,7 @@ class CellIndex(HoxBaseSchema):
     development_stage: str | None
     disease: str | None
     tissue: str | None
-    donor_uid: str | None  # Foreign key to a DonorSchema.uid if available
+    donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
     # Json dump string with additional metadata that doesn't fit in the schema
