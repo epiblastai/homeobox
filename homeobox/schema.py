@@ -152,6 +152,35 @@ class ForeignKeyField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+@dataclasses.dataclass(frozen=True)
+class OntologyAlignedField:
+    """Runtime metadata marking a schema field as aligned to an ontology.
+
+    This marker is informational only. It is not written to Arrow metadata and
+    does not add validation or database constraints.
+    """
+
+    field_name: str
+    ontology_name: str
+
+    @staticmethod
+    def declare(
+        *,
+        ontology_name: str,
+        default: Any = ...,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark an ontology-aligned field."""
+        if not isinstance(ontology_name, str) or not ontology_name:
+            raise TypeError(
+                "OntologyAlignedField.declare requires a non-empty ontology_name string"
+            )
+
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["ontology_aligned"] = {"ontology_name": ontology_name}
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
 def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
     """Read the ``json_schema_extra`` dict for a field on *cls*.
 
@@ -195,6 +224,27 @@ def _extract_foreign_key_fields(schema_cls: type) -> dict[str, ForeignKeyField]:
             field_name=name,
             target_schema=target_schema,
             target_field=target_field,
+        )
+    return result
+
+
+def _extract_ontology_aligned_fields(schema_cls: type) -> dict[str, OntologyAlignedField]:
+    """Return ontology metadata declared with :meth:`OntologyAlignedField.declare`."""
+    result: dict[str, OntologyAlignedField] = {}
+    for name in getattr(schema_cls, "model_fields", {}):
+        extra = _read_field_json_schema_extra(schema_cls, name) or {}
+        ontology_aligned = extra.get("ontology_aligned")
+        if not isinstance(ontology_aligned, dict):
+            continue
+        ontology_name = ontology_aligned.get("ontology_name")
+        if not isinstance(ontology_name, str) or not ontology_name:
+            raise TypeError(
+                f"{schema_cls.__name__}.{name}: ontology_aligned metadata must include "
+                f"a non-empty ontology_name string"
+            )
+        result[name] = OntologyAlignedField(
+            field_name=name,
+            ontology_name=ontology_name,
         )
     return result
 
