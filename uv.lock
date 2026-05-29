@@ -1159,7 +1159,7 @@ wheels = [
 
 [[package]]
 name = "homeobox"
-version = "0.2.5"
+version = "0.2.6"
 source = { editable = "." }
 dependencies = [
     { name = "anndata" },

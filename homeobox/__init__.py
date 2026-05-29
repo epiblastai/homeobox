@@ -1,5 +1,6 @@
 import homeobox.builtins  # noqa: F401  # register built-in specs
 import homeobox.codecs  # noqa: F401  # register bitpacking codec
+from homeobox._version import __version__
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.dataloader import (
     DenseFeatureBatch,
@@ -33,6 +34,7 @@ from homeobox.schema import (
 )
 
 __all__ = [
+    "__version__",
     "RaggedAtlas",
     "create_or_open_atlas",
     "AtlasQuery",
