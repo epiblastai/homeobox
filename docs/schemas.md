@@ -12,8 +12,8 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
-    PolymorphicForeignKeyField, OntologyAlignedField, DatasetSchema, FeatureLayout,
-    AtlasVersionRecord,
+    PolymorphicForeignKeyField, OntologyAlignedField, CrossReferenceField,
+    DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
 
@@ -165,6 +165,17 @@ gene_id: str = OntologyAlignedField.declare(ontology_name="ensembl")
 ```
 
 Like `ForeignKeyField`, this is lightweight informational metadata only. It is not stored in Arrow metadata and homeobox does not currently enforce it as a database constraint.
+
+### `CrossReferenceField`
+
+Use `CrossReferenceField.declare(...)` to mark a normal schema column as a cross-reference into an external database (DOI, PubMed, PubChem, UniProt, …):
+
+```python
+doi: str | None = CrossReferenceField.declare(database_name="doi")
+pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
+```
+
+This is the database analogue of `OntologyAlignedField`: use `OntologyAlignedField` when the column aligns to an ontology and `CrossReferenceField` when it references an external database record. Like the other relationship markers, this is lightweight informational metadata only. It is not stored in Arrow metadata and homeobox does not currently enforce it as a database constraint.
 
 ### Multimodal example
 
