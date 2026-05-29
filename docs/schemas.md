@@ -12,7 +12,7 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
-    DatasetSchema, FeatureLayout, AtlasVersionRecord,
+    OntologyAlignedField, DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
 
@@ -136,6 +136,16 @@ target_chromosome: str | None = ForeignKeyField.declare(
 ```
 
 This is lightweight metadata only. It is not stored in Arrow metadata, and homeobox does not currently enforce it as a database constraint. Future versions may use this metadata to validate or enforce relationships.
+
+### `OntologyAlignedField`
+
+Use `OntologyAlignedField.declare(...)` to mark a normal schema column as aligned to an ontology:
+
+```python
+gene_id: str = OntologyAlignedField.declare(ontology_name="ensembl")
+```
+
+Like `ForeignKeyField`, this is lightweight informational metadata only. It is not stored in Arrow metadata and homeobox does not currently enforce it as a database constraint.
 
 ### Multimodal example
 
