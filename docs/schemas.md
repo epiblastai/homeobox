@@ -12,8 +12,8 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
-    PolymorphicForeignKeyField, OntologyAlignedField, DatasetSchema, FeatureLayout,
-    AtlasVersionRecord,
+    PolymorphicForeignKeyField, OntologyAlignedField, CrossReferenceField,
+    DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
 
@@ -123,7 +123,11 @@ pointer_fields = _infer_pointer_fields_from_arrow(arrow_schema)
 
 This is why `obs_schemas` is optional on `checkout()`: read paths can recover the full pointer-field map from the on-disk schema alone. Writing still requires the Python class so that pydantic validation can run.
 
-### `ForeignKeyField`
+### Informational field markers
+
+The markers below annotate ordinary schema columns to describe how their values relate to other tables, ontologies, or external databases. They make schema definitions more self-documenting and let tooling (code parsers, agents, visualizers, validators) reason about relationships. None of them currently have any runtime effect: they are not written to Arrow metadata and homeobox does not enforce them as database constraints. Future versions may use this metadata to validate or enforce relationships.
+
+#### `ForeignKeyField`
 
 Use `ForeignKeyField.declare(...)` to mark a normal schema column as referring to another schema field:
 
@@ -136,9 +140,7 @@ target_chromosome: str | None = ForeignKeyField.declare(
 )
 ```
 
-This is lightweight metadata only. It is not stored in Arrow metadata, and homeobox does not currently enforce it as a database constraint. Future versions may use this metadata to validate or enforce relationships.
-
-### `PolymorphicForeignKeyField`
+#### `PolymorphicForeignKeyField`
 
 Like `ForeignKeyField`, but the target schema is selected by a parallel discriminator column rather than fixed at declaration time:
 
@@ -156,7 +158,7 @@ perturbation_types: list[str] | None
 
 Use this when the same value column can refer to different tables depending on another field; use `ForeignKeyField` when the target is always one schema.
 
-### `OntologyAlignedField`
+#### `OntologyAlignedField`
 
 Use `OntologyAlignedField.declare(...)` to mark a normal schema column as aligned to an ontology:
 
@@ -164,7 +166,16 @@ Use `OntologyAlignedField.declare(...)` to mark a normal schema column as aligne
 gene_id: str = OntologyAlignedField.declare(ontology_name="ensembl")
 ```
 
-Like `ForeignKeyField`, this is lightweight informational metadata only. It is not stored in Arrow metadata and homeobox does not currently enforce it as a database constraint.
+#### `CrossReferenceField`
+
+Use `CrossReferenceField.declare(...)` to mark a normal schema column as a cross-reference into an external database (DOI, PubMed, PubChem, UniProt, …):
+
+```python
+doi: str | None = CrossReferenceField.declare(database_name="doi")
+pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
+```
+
+This is the database analogue of `OntologyAlignedField`: use `OntologyAlignedField` when the column aligns to an ontology and `CrossReferenceField` when it references an external database record.
 
 ### Multimodal example
 

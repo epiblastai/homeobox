@@ -242,6 +242,35 @@ class OntologyAlignedField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+@dataclasses.dataclass(frozen=True)
+class CrossReferenceField:
+    """Runtime metadata marking a schema field as a cross-reference to a database.
+
+    Like :class:`OntologyAlignedField`, but the field references an external
+    database (e.g. ``doi``, ``pubmed``, ``pubchem``, ``uniprot``) rather than an
+    ontology. This marker is informational only. It is not written to Arrow
+    metadata and does not add validation or database constraints.
+    """
+
+    field_name: str
+    database_name: str
+
+    @staticmethod
+    def declare(
+        *,
+        database_name: str,
+        default: Any = ...,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark a cross-reference field."""
+        if not isinstance(database_name, str) or not database_name:
+            raise TypeError("CrossReferenceField.declare requires a non-empty database_name string")
+
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["cross_reference"] = {"database_name": database_name}
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
 def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
     """Read the ``json_schema_extra`` dict for a field on *cls*.
 
