@@ -63,8 +63,6 @@ def run_bench(
         str(measure_seconds),
         "--run-idx",
         str(run_idx),
-        "--only",
-        "annbatch",
     ]
     if output_csv:
         cmd += ["--output-csv", output_csv]
