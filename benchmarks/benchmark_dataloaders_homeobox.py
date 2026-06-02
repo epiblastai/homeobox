@@ -687,23 +687,21 @@ class HomeoboxDataloaderBenchmark:
             )
             return None
 
-        try:
-            import zarrs  # noqa: F401
-
-            zarr.config.set({"codec_pipeline.path": "zarrs.ZarrsCodecPipeline"})
-        except ImportError:
-            self.console.print("[yellow]zarrs not installed; annbatch will run slower[/yellow]")
-
         if self.is_remote:
-            # List shards via fsspec — zarr's URL handling already pulls it in.
-            import fsspec
+            # List shards via obstore. `from_url` roots the store at the
+            # annbatch prefix, so list_with_delimiter returns the immediate
+            # dataset_*.zarr directories as common prefixes.
+            import obstore
 
-            fs, root = fsspec.core.url_to_fs(self.annbatch_path)
-            scheme = self.annbatch_path.split("://", 1)[0] + "://"
+            store = obstore.store.from_url(self.annbatch_path, **self.store_kwargs)
+            names = [
+                p.rstrip("/").rsplit("/", 1)[-1]
+                for p in obstore.list_with_delimiter(store)["common_prefixes"]
+            ]
             zarr_paths = sorted(
-                f"{scheme}{e.lstrip('/')}"
-                for e in fs.ls(root, detail=False)
-                if e.rsplit("/", 1)[-1].startswith("dataset_") and e.endswith(".zarr")
+                _joinpath(self.annbatch_path, name)
+                for name in names
+                if name.startswith("dataset_") and name.endswith(".zarr")
             )
         else:
             zarr_paths = sorted(
