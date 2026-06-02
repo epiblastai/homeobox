@@ -680,6 +680,8 @@ class HomeoboxDataloaderBenchmark:
             self.console.print("[yellow]annbatch not installed — skip[/yellow]")
             return None
 
+        import obstore
+
         self.console.print("\n[bold blue]Benchmarking annbatch[/bold blue]")
         if not self.is_remote and not os.path.isdir(self.annbatch_path):
             self.console.print(
@@ -691,8 +693,6 @@ class HomeoboxDataloaderBenchmark:
             # List shards via obstore. `from_url` roots the store at the
             # annbatch prefix, so list_with_delimiter returns the immediate
             # dataset_*.zarr directories as common prefixes.
-            import obstore
-
             store = obstore.store.from_url(self.annbatch_path, **self.store_kwargs)
             names = [
                 p.rstrip("/").rsplit("/", 1)[-1]
@@ -713,13 +713,24 @@ class HomeoboxDataloaderBenchmark:
             self.console.print("[yellow]no dataset_*.zarr files found — skip[/yellow]")
             return None
 
-        anndatas = [
-            ad.AnnData(
-                X=ad.io.sparse_dataset(zarr.open(p)["X"]),
-                obs=ad.io.read_elem(zarr.open(p)["obs"]),
+        def _open_group(path):
+            # Remote: read each shard through an obstore ObjectStore so the
+            # zarr range reads go via obstore rather than fsspec — that's the
+            # I/O path the benchmark is measuring. Local paths open directly.
+            if self.is_remote:
+                store = obstore.store.from_url(path, **self.store_kwargs)
+                return zarr.open_group(zarr.storage.ObjectStore(store), mode="r")
+            return zarr.open(path)
+
+        anndatas = []
+        for p in zarr_paths:
+            g = _open_group(p)
+            anndatas.append(
+                ad.AnnData(
+                    X=ad.io.sparse_dataset(g["X"]),
+                    obs=ad.io.read_elem(g["obs"]),
+                )
             )
-            for p in zarr_paths
-        ]
         dataloader = Loader(
             batch_size=self.batch_size,
             chunk_size=32,
