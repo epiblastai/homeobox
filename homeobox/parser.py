@@ -18,9 +18,11 @@ the known base fields.
 """
 
 import ast
+import inspect
+import types
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, get_args, get_origin
+from typing import Any, Union, get_args, get_origin
 
 # homeobox base classes mapped to the table "kind" the review UI renders, in
 # priority order (most specific first) so a class is bucketed by its tightest
@@ -107,25 +109,30 @@ def _schema_name(node: ast.AST | None) -> str | None:
 
 
 def _annotation_to_string(annotation: Any) -> str:
-    """Render a runtime annotation similarly to ``ast.unparse`` output."""
-    if annotation is None:
+    """Render a runtime annotation similarly to ``ast.unparse`` output.
+
+    Unions are rendered as ``A | B`` and custom classes as their bare name, so
+    ``SparseZarrPointer | None`` and ``list[str] | None`` come out the same way
+    the static parser reports them from source.
+    """
+    if annotation is None or annotation is type(None):
         return "None"
     if annotation is Any:
         return "Any"
+
+    origin = get_origin(annotation)
+    if origin is Union or isinstance(annotation, types.UnionType):
+        return " | ".join(_annotation_to_string(arg) for arg in get_args(annotation))
+    if origin is not None:
+        args = get_args(annotation)
+        name = getattr(origin, "__name__", None) or str(origin).replace("typing.", "")
+        if not args:
+            return name
+        return f"{name}[{', '.join(_annotation_to_string(arg) for arg in args)}]"
     if isinstance(annotation, type):
         return annotation.__name__
 
-    origin = get_origin(annotation)
-    if origin is not None:
-        args = get_args(annotation)
-        if origin in (list, dict, tuple, set, frozenset):
-            name = origin.__name__
-            if not args:
-                return name
-            return f"{name}[{', '.join(_annotation_to_string(arg) for arg in args)}]"
-
-    value = str(annotation)
-    return value.replace("typing.", "").replace("<class '", "").replace("'>", "")
+    return str(annotation).replace("typing.", "").replace("<class '", "").replace("'>", "")
 
 
 def _field_copy(field: dict) -> dict:
@@ -210,6 +217,57 @@ def _literal_jsonish(node: ast.AST | None) -> object:
     return None
 
 
+def _marker_metadata_from_extra(extra: dict) -> dict:
+    """Translate a field's ``json_schema_extra`` into parser field metadata.
+
+    Shared by the static path (where ``extra`` is reconstructed from a literal
+    ``Field(json_schema_extra=...)`` call) and the runtime path (where ``extra``
+    is read directly off ``model_fields[...].json_schema_extra``). The two markers
+    that combine onto one field via ``combine_markers`` land in the same dict, so
+    every key is read independently and no key is mutually exclusive.
+    """
+    metadata: dict = {}
+    if extra.get("is_pointer") and isinstance(extra.get("feature_space"), str):
+        pointer = {"feature_space": extra["feature_space"]}
+        if isinstance(extra.get("feature_registry_schema"), str):
+            pointer["feature_registry_schema"] = extra["feature_registry_schema"]
+        metadata["pointer"] = pointer
+
+    foreign_key = extra.get("foreign_key")
+    if isinstance(foreign_key, dict) and isinstance(foreign_key.get("target_schema"), str):
+        metadata["foreign_key"] = {
+            "target_schema": foreign_key["target_schema"],
+            "target_field": foreign_key.get("target_field", "uid"),
+        }
+
+    polymorphic = extra.get("polymorphic_foreign_key")
+    if isinstance(polymorphic, dict) and isinstance(polymorphic.get("type_field"), str):
+        variants = polymorphic.get("variants")
+        if isinstance(variants, dict):
+            metadata["polymorphic_foreign_key"] = {
+                "type_field": polymorphic["type_field"],
+                "target_field": polymorphic.get("target_field", "uid"),
+                "variants": {
+                    key: value
+                    for key, value in variants.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                },
+            }
+
+    ontology = extra.get("ontology_aligned")
+    if isinstance(ontology, dict) and isinstance(ontology.get("ontology_name"), str):
+        metadata["ontology_aligned"] = {"ontology_name": ontology["ontology_name"]}
+
+    cross_reference = extra.get("cross_reference")
+    if isinstance(cross_reference, dict) and isinstance(cross_reference.get("database_name"), str):
+        metadata["cross_reference"] = {"database_name": cross_reference["database_name"]}
+
+    if extra.get("stable_uid"):
+        metadata["stable_uid"] = True
+
+    return metadata
+
+
 def _field_call_metadata(value: ast.AST | None, aliases: dict[str, str]) -> dict:
     """Extract homeobox Field.declare metadata without importing the schema."""
     if not isinstance(value, ast.Call):
@@ -275,40 +333,7 @@ def _field_call_metadata(value: ast.AST | None, aliases: dict[str, str]) -> dict
     if parts and parts[-1] == "Field":
         extra = _literal_jsonish(_keyword(value, "json_schema_extra"))
         if isinstance(extra, dict):
-            if extra.get("is_pointer") and isinstance(extra.get("feature_space"), str):
-                pointer = {"feature_space": extra["feature_space"]}
-                if isinstance(extra.get("feature_registry_schema"), str):
-                    pointer["feature_registry_schema"] = extra["feature_registry_schema"]
-                metadata["pointer"] = pointer
-            foreign_key = extra.get("foreign_key")
-            if isinstance(foreign_key, dict) and isinstance(foreign_key.get("target_schema"), str):
-                metadata["foreign_key"] = {
-                    "target_schema": foreign_key["target_schema"],
-                    "target_field": foreign_key.get("target_field", "uid"),
-                }
-            polymorphic = extra.get("polymorphic_foreign_key")
-            if isinstance(polymorphic, dict) and isinstance(polymorphic.get("type_field"), str):
-                variants = polymorphic.get("variants")
-                if isinstance(variants, dict):
-                    metadata["polymorphic_foreign_key"] = {
-                        "type_field": polymorphic["type_field"],
-                        "target_field": polymorphic.get("target_field", "uid"),
-                        "variants": {
-                            key: value
-                            for key, value in variants.items()
-                            if isinstance(key, str) and isinstance(value, str)
-                        },
-                    }
-            ontology = extra.get("ontology_aligned")
-            if isinstance(ontology, dict) and isinstance(ontology.get("ontology_name"), str):
-                metadata["ontology_aligned"] = {"ontology_name": ontology["ontology_name"]}
-            cross_reference = extra.get("cross_reference")
-            if isinstance(cross_reference, dict) and isinstance(
-                cross_reference.get("database_name"), str
-            ):
-                metadata["cross_reference"] = {"database_name": cross_reference["database_name"]}
-            if extra.get("stable_uid"):
-                metadata["stable_uid"] = True
+            metadata.update(_marker_metadata_from_extra(extra))
 
     return metadata
 
@@ -495,40 +520,27 @@ def _relationships_for_table(table: dict) -> list[dict]:
     return relationships
 
 
-def parse_schema_source(source: str) -> dict:
-    tree = ast.parse(source)
-    aliases = _import_aliases(tree)
+def _assemble_parse_result(parsed_tables: list[dict]) -> dict:
+    """Bucket ``{class_name, kind, fields}`` tables into the parser result shape.
 
-    class_defs = [node for node in tree.body if isinstance(node, ast.ClassDef)]
-    class_defs_by_name = {node.name: node for node in class_defs}
-    bases_by_class = {node.name: _base_names(node, aliases) for node in class_defs}
-
+    Selects the single obs and datasets tables (warning on duplicates and on
+    absence), attaches the default ``dataset_uid`` relationship, and derives the
+    relationship list. Shared by the static and runtime entry points so they
+    produce identical output structure.
+    """
     obs: dict | None = None
     dataset: dict | None = None
     tables: list[dict] = []
     warnings: list[str] = []
 
-    for node in class_defs:
-        kind = _resolve_kind(node.name, bases_by_class)
-        if kind is None:
-            continue
-        table = {
-            "class_name": node.name,
-            "kind": kind,
-            "fields": _fields_for_class(
-                node.name,
-                class_defs_by_name,
-                bases_by_class,
-                aliases,
-            ),
-        }
-
+    for table in parsed_tables:
+        kind = table["kind"]
         if kind == "obs":
             if obs is None:
                 obs = table
             else:
                 warnings.append(
-                    f"Multiple obs tables found ({obs['class_name']}, {node.name}); "
+                    f"Multiple obs tables found ({obs['class_name']}, {table['class_name']}); "
                     f"using {obs['class_name']}."
                 )
                 tables.append(table)
@@ -538,7 +550,7 @@ def parse_schema_source(source: str) -> dict:
             else:
                 warnings.append(
                     f"Multiple dataset tables found ({dataset['class_name']}, "
-                    f"{node.name}); using {dataset['class_name']}."
+                    f"{table['class_name']}); using {dataset['class_name']}."
                 )
                 tables.append(table)
         else:
@@ -565,5 +577,147 @@ def parse_schema_source(source: str) -> dict:
     }
 
 
+def parse_schema_source(source: str) -> dict:
+    """Statically parse schema *source* into the structured table/relationship result.
+
+    Never imports or executes the source. Field types and marker metadata are
+    recovered from the AST, which means constructs the parser cannot evaluate
+    statically (e.g. ``variants=SOME_MODULE_CONSTANT``) are reported as absent.
+    Use :func:`parse_schema_classes` / :func:`parse_schema_module` when the schema
+    is importable and you want metadata read straight from the live classes.
+    """
+    tree = ast.parse(source)
+    aliases = _import_aliases(tree)
+
+    class_defs = [node for node in tree.body if isinstance(node, ast.ClassDef)]
+    class_defs_by_name = {node.name: node for node in class_defs}
+    bases_by_class = {node.name: _base_names(node, aliases) for node in class_defs}
+
+    parsed_tables: list[dict] = []
+    for node in class_defs:
+        kind = _resolve_kind(node.name, bases_by_class)
+        if kind is None:
+            continue
+        parsed_tables.append(
+            {
+                "class_name": node.name,
+                "kind": kind,
+                "fields": _fields_for_class(
+                    node.name,
+                    class_defs_by_name,
+                    bases_by_class,
+                    aliases,
+                ),
+            }
+        )
+
+    return _assemble_parse_result(parsed_tables)
+
+
 def parse_schema_file(schema_path: Path) -> dict:
     return parse_schema_source(schema_path.read_text(encoding="utf-8"))
+
+
+# ---------------------------------------------------------------------------
+# Runtime parsing
+# ---------------------------------------------------------------------------
+#
+# When the schema module is importable, introspecting the live pydantic classes
+# is exact where static parsing is brittle: marker metadata is read straight off
+# ``model_fields[...].json_schema_extra`` (already fully resolved -- polymorphic
+# variants as schema names, combine_markers merged into one dict, etc.), and the
+# table kind comes from real ``issubclass`` checks rather than base-name matching.
+# The trade-off is that importing executes the module, so only use this on schemas
+# you trust. The output structure is identical to ``parse_schema_source``.
+
+
+@lru_cache
+def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
+    """Homeobox base classes paired with their table kind, most specific first.
+
+    Mirrors ``_BASE_KINDS`` but with the real classes so the runtime path can use
+    ``issubclass``. Lazily imported to avoid an import cycle with ``homeobox``.
+    """
+    from lancedb.pydantic import LanceModel
+
+    from homeobox.schema import (
+        DatasetSchema,
+        FeatureBaseSchema,
+        HoxBaseSchema,
+        StableUIDBaseSchema,
+    )
+
+    return (
+        (HoxBaseSchema, "obs"),
+        (DatasetSchema, "dataset"),
+        (FeatureBaseSchema, "feature_registry"),
+        (StableUIDBaseSchema, "entity"),
+        (LanceModel, "table"),
+    )
+
+
+def _runtime_kind(cls: type) -> str | None:
+    """Resolve a live schema class to its table kind via ``issubclass``."""
+    for base, kind in _runtime_base_kinds():
+        if issubclass(cls, base):
+            return kind
+    return None
+
+
+def _runtime_fields(cls: type) -> list[dict]:
+    """Build field dicts from a live pydantic model's ``model_fields``.
+
+    A field is marked ``inherited`` when it is not declared in *cls*'s own
+    annotations (i.e. it comes from a base class), matching the static parser.
+    ``inspect.get_annotations`` returns own-only annotations and is robust to the
+    PEP 649 change (Python 3.14 no longer stores ``__annotations__`` on the class
+    ``__dict__``).
+    """
+    own_annotations = inspect.get_annotations(cls)
+    fields: list[dict] = []
+    for name, field_info in cls.model_fields.items():
+        field = {"name": name, "type": _annotation_to_string(field_info.annotation)}
+        if name not in own_annotations:
+            field["inherited"] = True
+        extra = field_info.json_schema_extra
+        if isinstance(extra, dict):
+            field.update(_marker_metadata_from_extra(extra))
+        fields.append(field)
+    return fields
+
+
+def parse_schema_classes(classes: list[type]) -> dict:
+    """Parse an explicit list of live schema classes into the parser result shape.
+
+    Each class is classified by ``issubclass`` and its fields and marker metadata
+    are read from the live pydantic model. Classes that are not homeobox schema
+    tables (no recognised base) are skipped. Output matches ``parse_schema_source``.
+    """
+    parsed_tables: list[dict] = []
+    for cls in classes:
+        kind = _runtime_kind(cls)
+        if kind is None:
+            continue
+        parsed_tables.append(
+            {
+                "class_name": cls.__name__,
+                "kind": kind,
+                "fields": _runtime_fields(cls),
+            }
+        )
+
+    return _assemble_parse_result(parsed_tables)
+
+
+def parse_schema_module(module: Any) -> dict:
+    """Parse every schema table defined in an imported *module*.
+
+    Collects classes defined in the module itself (in definition order, skipping
+    classes merely imported into it) and delegates to :func:`parse_schema_classes`.
+    """
+    classes = [
+        obj
+        for obj in vars(module).values()
+        if isinstance(obj, type) and getattr(obj, "__module__", None) == module.__name__
+    ]
+    return parse_schema_classes(classes)
