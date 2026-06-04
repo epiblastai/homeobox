@@ -31,6 +31,7 @@ from homeobox.schema import (
     PolymorphicForeignKeyField,
     StableUIDBaseSchema,
     StableUIDField,
+    combine_markers,
 )
 
 __all__ = [
@@ -57,6 +58,7 @@ __all__ = [
     "PointerField",
     "StableUIDBaseSchema",
     "StableUIDField",
+    "combine_markers",
     "SparseZarrPointer",
     "DenseZarrPointer",
     "FragmentResult",
