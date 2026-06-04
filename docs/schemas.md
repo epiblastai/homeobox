@@ -12,7 +12,7 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
-    PolymorphicForeignKeyField, OntologyAlignedField, CrossReferenceField,
+    PolymorphicForeignKeyField, OntologyAlignedField, CrossReferenceField, combine_markers,
     DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
@@ -176,6 +176,18 @@ pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
 ```
 
 This is the database analogue of `OntologyAlignedField`: use `OntologyAlignedField` when the column aligns to an ontology and `CrossReferenceField` when it references an external database record.
+
+#### Combining markers with `combine_markers`
+
+A single column often plays more than one role at once: a PubChem CID, for instance, is both the value that drives stable-UID generation **and** a cross-reference into an external database. Each marker factory writes its metadata under a distinct top-level key in the field's `json_schema_extra` (`stable_uid`, `cross_reference`, `foreign_key`, …), so the markers are orthogonal and can be merged onto one field with `combine_markers(...)`:
+
+```python
+pubchem_cid: int | None = combine_markers(
+    StableUIDField.declare(),
+    CrossReferenceField.declare(database_name="pubchem"),
+    default=None,
+)
+```
 
 ### Multimodal example
 

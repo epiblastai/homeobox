@@ -271,6 +271,55 @@ class CrossReferenceField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+def combine_markers(*markers: Any, default: Any = ...) -> Any:
+    """Attach several informational field markers to a single schema field.
+
+    Each marker factory (``StableUIDField.declare``, ``CrossReferenceField.declare``,
+    ``ForeignKeyField.declare``, …) writes its metadata under a distinct top-level
+    key in the field's ``json_schema_extra``. Because those keys are orthogonal, the
+    markers can be merged into one field without conflict:
+
+    ```python
+    pubchem_cid: int | None = combine_markers(
+        StableUIDField.declare(),
+        CrossReferenceField.declare(database_name="pubchem"),
+        default=None,
+    )
+    ```
+
+    The resulting field's ``json_schema_extra`` is the union of every marker's
+    metadata, so readers that look up a single key (e.g. ``extra.get("stable_uid")``)
+    keep working unchanged whether the field carries one marker or several.
+
+    ``combine_markers`` owns the field's ``default``; the ``default`` passed to the
+    inner ``declare()`` calls is ignored (each marker factory supplies its own factory
+    default, which is not meaningful once combined). Two markers writing the same
+    metadata key (e.g. two ``CrossReferenceField`` markers) is a class-definition-time
+    ``TypeError``.
+    """
+    if len(markers) < 2:
+        raise TypeError("combine_markers requires at least two markers")
+
+    combined_extra: dict[str, Any] = {}
+    for marker in markers:
+        extra = getattr(marker, "json_schema_extra", None)
+        if not isinstance(extra, dict):
+            raise TypeError(
+                "combine_markers expects marker fields produced by a "
+                "<Marker>.declare(...) factory; got an object without "
+                "json_schema_extra metadata"
+            )
+        for key, value in extra.items():
+            if key in combined_extra:
+                raise TypeError(
+                    f"combine_markers: conflicting marker metadata for key {key!r}; "
+                    "two markers cannot both write the same key onto one field"
+                )
+            combined_extra[key] = value
+
+    return Field(default=default, json_schema_extra=combined_extra)
+
+
 def _read_field_json_schema_extra(cls: type, name: str) -> dict | None:
     """Read the ``json_schema_extra`` dict for a field on *cls*.
 
