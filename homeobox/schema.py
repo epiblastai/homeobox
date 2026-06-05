@@ -680,6 +680,12 @@ class FeatureBaseSchema(StableUIDBaseSchema):
 
     global_index: int | None = None
 
+    @model_validator(mode="after")
+    def _validate_global_index_unset(self):
+        if self.global_index is not None:
+            raise ValueError("global_index must be None when creating feature records")
+        return self
+
 
 class DatasetSchema(LanceModel):
     """Metadata for a single ingested dataset.

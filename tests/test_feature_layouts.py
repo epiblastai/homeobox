@@ -7,6 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 import zarr
+from pydantic import ValidationError
 
 from homeobox.feature_layouts import (
     build_feature_layout_df,
@@ -39,11 +40,11 @@ def _make_registry(
     """Create a LanceDB table with a GeneFeatureSchema registry."""
     db = lancedb.connect(str(tmp_path / db_name))
     records = [
-        GeneFeatureSchema(
-            uid=uid,
-            global_index=i if indexed else None,
-            gene_name=f"GENE{i}",
-        )
+        {
+            "uid": uid,
+            "global_index": i if indexed else None,
+            "gene_name": f"GENE{i}",
+        }
         for i, uid in enumerate(uids)
     ]
     return db.create_table("genes", data=records, schema=GeneFeatureSchema)
@@ -562,12 +563,12 @@ class TestFeatureBaseSchema:
         f = FeatureBaseSchema(uid="test")
         assert f.global_index is None
 
-    def test_accepts_global_index(self):
-        f = FeatureBaseSchema(uid="test", global_index=42)
-        assert f.global_index == 42
+    def test_rejects_global_index(self):
+        with pytest.raises(ValidationError, match="global_index must be None"):
+            FeatureBaseSchema(uid="test", global_index=42)
 
     def test_subclass(self):
-        g = GeneFeatureSchema(uid="g1", global_index=0, gene_name="TP53")
+        g = GeneFeatureSchema(uid="g1", gene_name="TP53")
         assert g.uid == "g1"
-        assert g.global_index == 0
+        assert g.global_index is None
         assert g.gene_name == "TP53"
