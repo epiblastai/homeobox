@@ -26,11 +26,15 @@ from typing import Any, Union, get_args, get_origin
 
 # homeobox base classes mapped to the table "kind" the review UI renders, in
 # priority order (most specific first) so a class is bucketed by its tightest
-# recognised base -- FeatureBaseSchema is itself a StableUIDBaseSchema, etc.
+# recognised base -- FeatureBaseSchema is a RegistryBaseSchema is a
+# StableUIDBaseSchema, etc. RegistryBaseSchema and StableUIDBaseSchema share the
+# "entity" kind; the separate entry exists so registry tables declared directly
+# against RegistryBaseSchema are still recognised by the name-matching AST path.
 _BASE_KINDS: list[tuple[str, str]] = [
     ("HoxBaseSchema", "obs"),
     ("DatasetSchema", "dataset"),
     ("FeatureBaseSchema", "feature_registry"),
+    ("RegistryBaseSchema", "entity"),
     ("StableUIDBaseSchema", "entity"),
     ("LanceModel", "table"),
 ]
@@ -53,6 +57,7 @@ _FALLBACK_HOMEBOX_BASE_FIELDS: dict[str, list[dict]] = {
         {"name": "uid", "type": "str"},
         {"name": "global_index", "type": "int | None"},
     ],
+    "RegistryBaseSchema": [{"name": "uid", "type": "str"}],
     "StableUIDBaseSchema": [{"name": "uid", "type": "str"}],
     "LanceModel": [],
 }
@@ -233,18 +238,18 @@ def _marker_metadata_from_extra(extra: dict) -> dict:
             pointer["feature_registry_schema"] = extra["feature_registry_schema"]
         metadata["pointer"] = pointer
 
-    foreign_key = extra.get("foreign_key")
-    if isinstance(foreign_key, dict) and isinstance(foreign_key.get("target_schema"), str):
-        metadata["foreign_key"] = {
-            "target_schema": foreign_key["target_schema"],
-            "target_field": foreign_key.get("target_field", "uid"),
+    registry_key = extra.get("registry_key")
+    if isinstance(registry_key, dict) and isinstance(registry_key.get("target_schema"), str):
+        metadata["registry_key"] = {
+            "target_schema": registry_key["target_schema"],
+            "target_field": registry_key.get("target_field", "uid"),
         }
 
-    polymorphic = extra.get("polymorphic_foreign_key")
+    polymorphic = extra.get("polymorphic_registry_key")
     if isinstance(polymorphic, dict) and isinstance(polymorphic.get("type_field"), str):
         variants = polymorphic.get("variants")
         if isinstance(variants, dict):
-            metadata["polymorphic_foreign_key"] = {
+            metadata["polymorphic_registry_key"] = {
                 "type_field": polymorphic["type_field"],
                 "target_field": polymorphic.get("target_field", "uid"),
                 "variants": {
@@ -296,21 +301,21 @@ def _field_call_metadata(value: ast.AST | None, aliases: dict[str, str]) -> dict
         if pointer:
             metadata["pointer"] = pointer
 
-    elif marker == "ForeignKeyField":
+    elif marker == "RegistryKeyField":
         target_schema = _schema_name(_keyword(value, "target_schema"))
         target_field = _string_value(_keyword(value, "target_field")) or "uid"
         if target_schema:
-            metadata["foreign_key"] = {
+            metadata["registry_key"] = {
                 "target_schema": target_schema,
                 "target_field": target_field,
             }
 
-    elif marker == "PolymorphicForeignKeyField":
+    elif marker == "PolymorphicRegistryKeyField":
         type_field = _string_value(_keyword(value, "type_field"))
         variants = _string_schema_dict(_keyword(value, "variants"))
         target_field = _string_value(_keyword(value, "target_field")) or "uid"
         if type_field and variants:
-            metadata["polymorphic_foreign_key"] = {
+            metadata["polymorphic_registry_key"] = {
                 "type_field": type_field,
                 "target_field": target_field,
                 "variants": variants,
@@ -466,7 +471,7 @@ def _add_default_relationship_metadata(obs: dict | None, dataset: dict | None) -
     if obs_dataset_uid is None or dataset_dataset_uid is None:
         return
     obs_dataset_uid.setdefault(
-        "foreign_key",
+        "registry_key",
         {
             "target_schema": dataset["class_name"],
             "target_field": "dataset_uid",
@@ -493,23 +498,23 @@ def _relationships_for_table(table: dict) -> list[dict]:
                 }
             )
 
-        foreign_key = field.get("foreign_key")
-        if isinstance(foreign_key, dict):
+        registry_key = field.get("registry_key")
+        if isinstance(registry_key, dict):
             relationships.append(
                 {
-                    "kind": "foreign_key",
+                    "kind": "registry_key",
                     **source,
-                    "target_schema": foreign_key["target_schema"],
-                    "target_field": foreign_key.get("target_field", "uid"),
+                    "target_schema": registry_key["target_schema"],
+                    "target_field": registry_key.get("target_field", "uid"),
                 }
             )
 
-        polymorphic = field.get("polymorphic_foreign_key")
+        polymorphic = field.get("polymorphic_registry_key")
         if isinstance(polymorphic, dict):
             for variant, target_schema in polymorphic.get("variants", {}).items():
                 relationships.append(
                     {
-                        "kind": "polymorphic_foreign_key",
+                        "kind": "polymorphic_registry_key",
                         **source,
                         "target_schema": target_schema,
                         "target_field": polymorphic.get("target_field", "uid"),
@@ -644,6 +649,7 @@ def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
         DatasetSchema,
         FeatureBaseSchema,
         HoxBaseSchema,
+        RegistryBaseSchema,
         StableUIDBaseSchema,
     )
 
@@ -651,6 +657,7 @@ def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
         (HoxBaseSchema, "obs"),
         (DatasetSchema, "dataset"),
         (FeatureBaseSchema, "feature_registry"),
+        (RegistryBaseSchema, "entity"),
         (StableUIDBaseSchema, "entity"),
         (LanceModel, "table"),
     )

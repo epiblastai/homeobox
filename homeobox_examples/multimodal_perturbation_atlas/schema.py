@@ -14,11 +14,11 @@ from homeobox.schema import (
     CrossReferenceField,
     DatasetSchema,
     FeatureBaseSchema,
-    ForeignKeyField,
     HoxBaseSchema,
     PointerField,
-    PolymorphicForeignKeyField,
-    StableUIDBaseSchema,
+    PolymorphicRegistryKeyField,
+    RegistryBaseSchema,
+    RegistryKeyField,
     StableUIDField,
     _iter_pointer_annotations,
     combine_markers,
@@ -119,7 +119,7 @@ def _build_perturbation_search_string(uids: list[str] | None, types: list[str] |
 # ---------------------------------------------------------------------------
 
 
-class PublicationSchema(StableUIDBaseSchema):
+class PublicationSchema(RegistryBaseSchema):
     # The doi for the paper, there is almost always one
     doi: str
     # PubMed id for the paper, there is almost always one
@@ -137,7 +137,7 @@ class PublicationSchema(StableUIDBaseSchema):
 
 
 class PublicationSectionSchema(LanceModel):
-    publication_uid: str = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str = RegistryKeyField.declare(target_schema=PublicationSchema)
 
     # Section-level fields (one row per section)
     # The text content of this section
@@ -153,7 +153,7 @@ class PublicationSectionSchema(LanceModel):
 
 
 class DatasetSchema(DatasetSchema):
-    publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
     # Database from which the dataset was downloaded, if applicable
     accession_database: str | None
     accession_id: str | None
@@ -168,7 +168,7 @@ class DatasetSchema(DatasetSchema):
     disease: list[str] | None  # ["ALS", "healthy"] for case-control
 
 
-class DonorSchema(StableUIDBaseSchema):
+class DonorSchema(RegistryBaseSchema):
     # Primary key
     age_years: float | None = None
     sex: str | None = None
@@ -310,7 +310,7 @@ class ImageFeatureSchema(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class SmallMoleculeSchema(StableUIDBaseSchema):
+class SmallMoleculeSchema(RegistryBaseSchema):
     """Small molecule data, either perturbations or features in themselves."""
 
     # The smiles string for the molecule
@@ -341,7 +341,7 @@ class SmallMoleculeSchema(StableUIDBaseSchema):
         return self
 
 
-class GeneticPerturbationSchema(StableUIDBaseSchema):
+class GeneticPerturbationSchema(RegistryBaseSchema):
     """A single genetic perturbation reagent and its genomic target.
 
     Perturbations are anchored to genomic coordinates rather than gene
@@ -364,7 +364,7 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
 
     # genbank_accession code for the chromosome where the guide is targeting,
     # e.g. "CM000663.2" for chr1 in GRCh38
-    target_chromosome: str | None = ForeignKeyField.declare(
+    target_chromosome: str | None = RegistryKeyField.declare(
         target_schema=ReferenceSequenceSchema,
         target_field="genbank_accession",
         default=None,
@@ -403,7 +403,7 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
         return self
 
 
-class BiologicPerturbationSchema(StableUIDBaseSchema):
+class BiologicPerturbationSchema(RegistryBaseSchema):
     """A biologic agent (protein, cytokine, antibody, etc.) applied to cells.
 
     Biologic perturbations are identified by the agent's name and, where
@@ -478,7 +478,7 @@ class CellIndex(HoxBaseSchema):
     development_stage: str | None
     disease: str | None
     tissue: str | None
-    donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
+    donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
     # Json dump string with additional metadata that doesn't fit in the schema
@@ -505,7 +505,7 @@ class CellIndex(HoxBaseSchema):
     # any other such combination. Lists must have exactly matching lengths.
     # UIDs and types go together: the type selects which perturbation table
     # the uid refers to.
-    perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+    perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
         type_field="perturbation_types",
         variants=_PERTURBATION_FK_VARIANTS,
     )
@@ -651,7 +651,7 @@ class DatasetPerturbationIndex(LanceModel):
     """
 
     dataset_uid: str
-    perturbation_uid: str = PolymorphicForeignKeyField.declare(
+    perturbation_uid: str = PolymorphicRegistryKeyField.declare(
         type_field="perturbation_type",
         variants=_PERTURBATION_FK_VARIANTS,
     )

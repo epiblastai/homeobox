@@ -115,7 +115,7 @@ class StableUIDField:
 
 
 @dataclasses.dataclass(frozen=True)
-class ForeignKeyField:
+class RegistryKeyField:
     """Runtime metadata for a schema field that references another schema field.
 
     This marker is informational only. It is not written to Arrow metadata and
@@ -140,12 +140,12 @@ class ForeignKeyField:
         else:
             target_schema_name = target_schema.__name__
         if not target_schema_name:
-            raise TypeError("ForeignKeyField.declare requires a non-empty target_schema")
+            raise TypeError("RegistryKeyField.declare requires a non-empty target_schema")
         if not isinstance(target_field, str) or not target_field:
-            raise TypeError("ForeignKeyField.declare requires a non-empty target_field string")
+            raise TypeError("RegistryKeyField.declare requires a non-empty target_field string")
 
         extra = dict(kwargs.pop("json_schema_extra", {}) or {})
-        extra["foreign_key"] = {
+        extra["registry_key"] = {
             "target_schema": target_schema_name,
             "target_field": target_field,
         }
@@ -153,7 +153,7 @@ class ForeignKeyField:
 
 
 @dataclasses.dataclass(frozen=True)
-class PolymorphicForeignKeyField:
+class PolymorphicRegistryKeyField:
     """Runtime metadata for a value field whose target schema depends on another field.
 
     The value field (marked with :meth:`declare`) holds foreign-key values. The
@@ -178,20 +178,22 @@ class PolymorphicForeignKeyField:
         """Factory used in schema class bodies to mark a polymorphic foreign-key field."""
         if not isinstance(type_field, str) or not type_field:
             raise TypeError(
-                "PolymorphicForeignKeyField.declare requires a non-empty type_field string"
+                "PolymorphicRegistryKeyField.declare requires a non-empty type_field string"
             )
         if not isinstance(target_field, str) or not target_field:
             raise TypeError(
-                "PolymorphicForeignKeyField.declare requires a non-empty target_field string"
+                "PolymorphicRegistryKeyField.declare requires a non-empty target_field string"
             )
         if not variants:
-            raise TypeError("PolymorphicForeignKeyField.declare requires a non-empty variants dict")
+            raise TypeError(
+                "PolymorphicRegistryKeyField.declare requires a non-empty variants dict"
+            )
 
         variant_names: dict[str, str] = {}
         for key, target_schema in variants.items():
             if not isinstance(key, str) or not key:
                 raise TypeError(
-                    "PolymorphicForeignKeyField.declare variants keys must be non-empty strings"
+                    "PolymorphicRegistryKeyField.declare variants keys must be non-empty strings"
                 )
             if isinstance(target_schema, str):
                 target_schema_name = target_schema
@@ -199,13 +201,13 @@ class PolymorphicForeignKeyField:
                 target_schema_name = target_schema.__name__
             if not target_schema_name:
                 raise TypeError(
-                    "PolymorphicForeignKeyField.declare requires a non-empty target schema "
+                    "PolymorphicRegistryKeyField.declare requires a non-empty target schema "
                     f"for variant {key!r}"
                 )
             variant_names[key] = target_schema_name
 
         extra = dict(kwargs.pop("json_schema_extra", {}) or {})
-        extra["polymorphic_foreign_key"] = {
+        extra["polymorphic_registry_key"] = {
             "type_field": type_field,
             "target_field": target_field,
             "variants": variant_names,
@@ -275,7 +277,7 @@ def combine_markers(*markers: Any, default: Any = ...) -> Any:
     """Attach several informational field markers to a single schema field.
 
     Each marker factory (``StableUIDField.declare``, ``CrossReferenceField.declare``,
-    ``ForeignKeyField.declare``, …) writes its metadata under a distinct top-level
+    ``RegistryKeyField.declare``, …) writes its metadata under a distinct top-level
     key in the field's ``json_schema_extra``. Because those keys are orthogonal, the
     markers can be merged into one field without conflict:
 
@@ -563,6 +565,21 @@ class StableUIDBaseSchema(LanceModel):
         return schema
 
 
+class RegistryBaseSchema(StableUIDBaseSchema):
+    """Base schema for registry tables referenced by foreign keys.
+
+    A registry table holds a set of unique, dedup-able entities (genes,
+    proteins, molecules, perturbations, publications, donors, …) keyed by a
+    stable ``uid``. By convention — though not enforced — the
+    ``target_schema`` of every :class:`RegistryKeyField` in a database should be
+    a :class:`RegistryBaseSchema` subclass.
+
+    This adds no behavior over :class:`StableUIDBaseSchema`; it exists to give
+    foreign-key targets an explicit, greppable type name that documents intent
+    and aids schema parsers and visualizers.
+    """
+
+
 class HoxBaseSchema(LanceModel):
     """
     Base schema for all homeobox datasets. The only requirements are a uid string
@@ -664,7 +681,7 @@ class HoxBaseSchema(LanceModel):
 AUTO_FIELDS: frozenset[str] = frozenset(HoxBaseSchema.model_fields)
 
 
-class FeatureBaseSchema(StableUIDBaseSchema):
+class FeatureBaseSchema(RegistryBaseSchema):
     """
     Minimal schema for a global feature registry entry.
 

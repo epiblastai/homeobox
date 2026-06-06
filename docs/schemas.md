@@ -11,8 +11,8 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 
 ```python
 from homeobox.schema import (
-    HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, ForeignKeyField,
-    PolymorphicForeignKeyField, OntologyAlignedField, CrossReferenceField, combine_markers,
+    HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, RegistryKeyField,
+    PolymorphicRegistryKeyField, OntologyAlignedField, CrossReferenceField, combine_markers,
     DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
@@ -127,25 +127,25 @@ This is why `obs_schemas` is optional on `checkout()`: read paths can recover th
 
 The markers below annotate ordinary schema columns to describe how their values relate to other tables, ontologies, or external databases. They make schema definitions more self-documenting and let tooling (code parsers, agents, visualizers, validators) reason about relationships. None of them currently have any runtime effect: they are not written to Arrow metadata and homeobox does not enforce them as database constraints. Future versions may use this metadata to validate or enforce relationships.
 
-#### `ForeignKeyField`
+#### `RegistryKeyField`
 
-Use `ForeignKeyField.declare(...)` to mark a normal schema column as referring to another schema field:
+Use `RegistryKeyField.declare(...)` to mark a normal schema column as referring to another schema field:
 
 ```python
-publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
-target_chromosome: str | None = ForeignKeyField.declare(
+publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
+target_chromosome: str | None = RegistryKeyField.declare(
     target_schema=ReferenceSequenceSchema,
     target_field="genbank_accession",
     default=None,
 )
 ```
 
-#### `PolymorphicForeignKeyField`
+#### `PolymorphicRegistryKeyField`
 
-Like `ForeignKeyField`, but the target schema is selected by a parallel discriminator column rather than fixed at declaration time:
+Like `RegistryKeyField`, but the target schema is selected by a parallel discriminator column rather than fixed at declaration time:
 
 ```python
-perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
     type_field="perturbation_types",
     variants={
         "small_molecule": SmallMoleculeSchema,
@@ -156,7 +156,7 @@ perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
 perturbation_types: list[str] | None
 ```
 
-Use this when the same value column can refer to different tables depending on another field; use `ForeignKeyField` when the target is always one schema.
+Use this when the same value column can refer to different tables depending on another field; use `RegistryKeyField` when the target is always one schema.
 
 #### `OntologyAlignedField`
 
@@ -179,7 +179,7 @@ This is the database analogue of `OntologyAlignedField`: use `OntologyAlignedFie
 
 #### Combining markers with `combine_markers`
 
-A single column often plays more than one role at once: a PubChem CID, for instance, is both the value that drives stable-UID generation **and** a cross-reference into an external database. Each marker factory writes its metadata under a distinct top-level key in the field's `json_schema_extra` (`stable_uid`, `cross_reference`, `foreign_key`, …), so the markers are orthogonal and can be merged onto one field with `combine_markers(...)`:
+A single column often plays more than one role at once: a PubChem CID, for instance, is both the value that drives stable-UID generation **and** a cross-reference into an external database. Each marker factory writes its metadata under a distinct top-level key in the field's `json_schema_extra` (`stable_uid`, `cross_reference`, `registry_key`, …), so the markers are orthogonal and can be merged onto one field with `combine_markers(...)`:
 
 ```python
 pubchem_cid: int | None = combine_markers(
