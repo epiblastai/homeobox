@@ -79,8 +79,8 @@ def test_parse_module_resolves_variable_polymorphic_variants():
     runtime_field = _field(runtime["obs"], "perturbation_uids")
     static_field = _field(static["obs"], "perturbation_uids")
 
-    assert static_field.get("polymorphic_foreign_key") is None
-    assert runtime_field["polymorphic_foreign_key"] == {
+    assert static_field.get("polymorphic_registry_key") is None
+    assert runtime_field["polymorphic_registry_key"] == {
         "type_field": "perturbation_types",
         "target_field": "uid",
         "variants": {
@@ -91,7 +91,7 @@ def test_parse_module_resolves_variable_polymorphic_variants():
     }
 
     # Those resolved variants become real relationships the static parser misses.
-    poly = [r for r in runtime["relationships"] if r["kind"] == "polymorphic_foreign_key"]
+    poly = [r for r in runtime["relationships"] if r["kind"] == "polymorphic_registry_key"]
     assert len(poly) == 6  # two polymorphic fields x three variants
     assert len(runtime["relationships"]) > len(static["relationships"])
 
@@ -178,8 +178,8 @@ def test_runtime_and_static_agree_on_combined_markers():
 AST_SCHEMA_SOURCE = """
 from homeobox.schema import (
     HoxBaseSchema, DatasetSchema, StableUIDBaseSchema, FeatureBaseSchema,
-    PointerField, StableUIDField, CrossReferenceField, ForeignKeyField,
-    OntologyAlignedField, PolymorphicForeignKeyField, combine_markers,
+    PointerField, StableUIDField, CrossReferenceField, RegistryKeyField,
+    OntologyAlignedField, PolymorphicRegistryKeyField, combine_markers,
 )
 from homeobox.schema import DatasetSchema as HoxDatasetSchema
 from homeobox.pointer_types import SparseZarrPointer
@@ -198,9 +198,9 @@ class Molecule(StableUIDBaseSchema):
         CrossReferenceField.declare(database_name="pubchem"),
         default=None,
     )
-    # combined foreign_key + cross_reference
+    # combined registry_key + cross_reference
     linked: str | None = combine_markers(
-        ForeignKeyField.declare(target_schema=GeneFeature),
+        RegistryKeyField.declare(target_schema=GeneFeature),
         CrossReferenceField.declare(database_name="uniprot"),
         default=None,
     )
@@ -211,7 +211,7 @@ class Cells(HoxBaseSchema):
         feature_space="gene_expression",
         feature_registry_schema=GeneFeature,
     )
-    molecule_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+    molecule_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
         type_field="molecule_types",
         variants={"small": Molecule},
     )
@@ -254,22 +254,22 @@ def test_ast_parser_reads_combined_and_standalone_markers():
     assert pubchem["cross_reference"] == {"database_name": "pubchem"}
 
     linked = _field(molecule, "linked")
-    assert linked["foreign_key"] == {"target_schema": "GeneFeature", "target_field": "uid"}
+    assert linked["registry_key"] == {"target_schema": "GeneFeature", "target_field": "uid"}
     assert linked["cross_reference"] == {"database_name": "uniprot"}
 
 
 def test_ast_parser_extracts_relationships_including_from_combine_markers():
     result = parse_schema_source(AST_SCHEMA_SOURCE)
 
-    # foreign_key nested inside combine_markers still produces a relationship.
+    # registry_key nested inside combine_markers still produces a relationship.
     fk = [
         r
         for r in result["relationships"]
-        if r["kind"] == "foreign_key" and r["source_field"] == "linked"
+        if r["kind"] == "registry_key" and r["source_field"] == "linked"
     ]
     assert fk == [
         {
-            "kind": "foreign_key",
+            "kind": "registry_key",
             "source_table": "Molecule",
             "source_field": "linked",
             "target_schema": "GeneFeature",
@@ -280,7 +280,7 @@ def test_ast_parser_extracts_relationships_including_from_combine_markers():
     # pointer + inline-dict polymorphic variants are resolvable statically.
     pointer = [r for r in result["relationships"] if r["kind"] == "pointer_feature_registry"]
     assert pointer[0]["target_schema"] == "GeneFeature"
-    poly = [r for r in result["relationships"] if r["kind"] == "polymorphic_foreign_key"]
+    poly = [r for r in result["relationships"] if r["kind"] == "polymorphic_registry_key"]
     assert {r["target_schema"] for r in poly} == {"Molecule"}
 
 
@@ -306,7 +306,7 @@ def test_ast_parser_cannot_resolve_variable_variants():
     # supplied as a module-level constant cannot be resolved from the AST.
     result = parse_schema_file(EXAMPLE_SCHEMA)
     field = _field(result["obs"], "perturbation_uids")
-    assert field.get("polymorphic_foreign_key") is None
+    assert field.get("polymorphic_registry_key") is None
 
 
 def test_ast_parser_warns_on_missing_obs_and_dataset():

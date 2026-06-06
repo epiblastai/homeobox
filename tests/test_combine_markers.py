@@ -7,7 +7,7 @@ from pydantic import ValidationError
 from homeobox.schema import (
     STABLE_UID_METADATA_KEY,
     CrossReferenceField,
-    ForeignKeyField,
+    RegistryKeyField,
     StableUIDBaseSchema,
     StableUIDField,
     combine_markers,
@@ -93,13 +93,13 @@ def test_combine_markers_rejects_non_marker_arguments():
 
 def test_combine_markers_composes_heterogeneous_markers():
     extra = combine_markers(
-        ForeignKeyField.declare(target_schema=TargetSchema),
+        RegistryKeyField.declare(target_schema=TargetSchema),
         CrossReferenceField.declare(database_name="uniprot"),
         default=None,
     ).json_schema_extra
 
     assert extra == {
-        "foreign_key": {"target_schema": "TargetSchema", "target_field": "uid"},
+        "registry_key": {"target_schema": "TargetSchema", "target_field": "uid"},
         "cross_reference": {"database_name": "uniprot"},
     }
 

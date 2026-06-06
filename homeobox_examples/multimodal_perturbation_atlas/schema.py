@@ -14,11 +14,11 @@ from homeobox.schema import (
     CrossReferenceField,
     DatasetSchema,
     FeatureBaseSchema,
-    ForeignKeyField,
     HoxBaseSchema,
     PointerField,
-    PolymorphicForeignKeyField,
+    PolymorphicRegistryKeyField,
     RegistryBaseSchema,
+    RegistryKeyField,
     StableUIDField,
     _iter_pointer_annotations,
     combine_markers,
@@ -137,7 +137,7 @@ class PublicationSchema(RegistryBaseSchema):
 
 
 class PublicationSectionSchema(LanceModel):
-    publication_uid: str = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str = RegistryKeyField.declare(target_schema=PublicationSchema)
 
     # Section-level fields (one row per section)
     # The text content of this section
@@ -153,7 +153,7 @@ class PublicationSectionSchema(LanceModel):
 
 
 class DatasetSchema(DatasetSchema):
-    publication_uid: str | None = ForeignKeyField.declare(target_schema=PublicationSchema)
+    publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
     # Database from which the dataset was downloaded, if applicable
     accession_database: str | None
     accession_id: str | None
@@ -364,7 +364,7 @@ class GeneticPerturbationSchema(RegistryBaseSchema):
 
     # genbank_accession code for the chromosome where the guide is targeting,
     # e.g. "CM000663.2" for chr1 in GRCh38
-    target_chromosome: str | None = ForeignKeyField.declare(
+    target_chromosome: str | None = RegistryKeyField.declare(
         target_schema=ReferenceSequenceSchema,
         target_field="genbank_accession",
         default=None,
@@ -478,7 +478,7 @@ class CellIndex(HoxBaseSchema):
     development_stage: str | None
     disease: str | None
     tissue: str | None
-    donor_uid: str | None = ForeignKeyField.declare(target_schema=DonorSchema)
+    donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
     # Number of days the cells were cultured in vitro before profiling, if applicable.
     days_in_vitro: float | None
     # Json dump string with additional metadata that doesn't fit in the schema
@@ -505,7 +505,7 @@ class CellIndex(HoxBaseSchema):
     # any other such combination. Lists must have exactly matching lengths.
     # UIDs and types go together: the type selects which perturbation table
     # the uid refers to.
-    perturbation_uids: list[str] | None = PolymorphicForeignKeyField.declare(
+    perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
         type_field="perturbation_types",
         variants=_PERTURBATION_FK_VARIANTS,
     )
@@ -651,7 +651,7 @@ class DatasetPerturbationIndex(LanceModel):
     """
 
     dataset_uid: str
-    perturbation_uid: str = PolymorphicForeignKeyField.declare(
+    perturbation_uid: str = PolymorphicRegistryKeyField.declare(
         type_field="perturbation_type",
         variants=_PERTURBATION_FK_VARIANTS,
     )
