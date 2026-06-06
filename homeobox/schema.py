@@ -563,6 +563,21 @@ class StableUIDBaseSchema(LanceModel):
         return schema
 
 
+class RegistryBaseSchema(StableUIDBaseSchema):
+    """Base schema for registry tables referenced by foreign keys.
+
+    A registry table holds a set of unique, dedup-able entities (genes,
+    proteins, molecules, perturbations, publications, donors, …) keyed by a
+    stable ``uid``. By convention — though not enforced — the
+    ``target_schema`` of every :class:`ForeignKeyField` in a database should be
+    a :class:`RegistryBaseSchema` subclass.
+
+    This adds no behavior over :class:`StableUIDBaseSchema`; it exists to give
+    foreign-key targets an explicit, greppable type name that documents intent
+    and aids schema parsers and visualizers.
+    """
+
+
 class HoxBaseSchema(LanceModel):
     """
     Base schema for all homeobox datasets. The only requirements are a uid string
@@ -664,7 +679,7 @@ class HoxBaseSchema(LanceModel):
 AUTO_FIELDS: frozenset[str] = frozenset(HoxBaseSchema.model_fields)
 
 
-class FeatureBaseSchema(StableUIDBaseSchema):
+class FeatureBaseSchema(RegistryBaseSchema):
     """
     Minimal schema for a global feature registry entry.
 

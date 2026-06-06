@@ -18,7 +18,7 @@ from homeobox.schema import (
     HoxBaseSchema,
     PointerField,
     PolymorphicForeignKeyField,
-    StableUIDBaseSchema,
+    RegistryBaseSchema,
     StableUIDField,
     _iter_pointer_annotations,
     combine_markers,
@@ -119,7 +119,7 @@ def _build_perturbation_search_string(uids: list[str] | None, types: list[str] |
 # ---------------------------------------------------------------------------
 
 
-class PublicationSchema(StableUIDBaseSchema):
+class PublicationSchema(RegistryBaseSchema):
     # The doi for the paper, there is almost always one
     doi: str
     # PubMed id for the paper, there is almost always one
@@ -168,7 +168,7 @@ class DatasetSchema(DatasetSchema):
     disease: list[str] | None  # ["ALS", "healthy"] for case-control
 
 
-class DonorSchema(StableUIDBaseSchema):
+class DonorSchema(RegistryBaseSchema):
     # Primary key
     age_years: float | None = None
     sex: str | None = None
@@ -310,7 +310,7 @@ class ImageFeatureSchema(FeatureBaseSchema):
 # ---------------------------------------------------------------------------
 
 
-class SmallMoleculeSchema(StableUIDBaseSchema):
+class SmallMoleculeSchema(RegistryBaseSchema):
     """Small molecule data, either perturbations or features in themselves."""
 
     # The smiles string for the molecule
@@ -341,7 +341,7 @@ class SmallMoleculeSchema(StableUIDBaseSchema):
         return self
 
 
-class GeneticPerturbationSchema(StableUIDBaseSchema):
+class GeneticPerturbationSchema(RegistryBaseSchema):
     """A single genetic perturbation reagent and its genomic target.
 
     Perturbations are anchored to genomic coordinates rather than gene
@@ -403,7 +403,7 @@ class GeneticPerturbationSchema(StableUIDBaseSchema):
         return self
 
 
-class BiologicPerturbationSchema(StableUIDBaseSchema):
+class BiologicPerturbationSchema(RegistryBaseSchema):
     """A biologic agent (protein, cytokine, antibody, etc.) applied to cells.
 
     Biologic perturbations are identified by the agent's name and, where
