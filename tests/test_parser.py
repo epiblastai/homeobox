@@ -50,8 +50,9 @@ def test_parse_module_classifies_tables_by_subclass():
     kinds = {t["class_name"]: t["kind"] for t in result["tables"]}
     assert kinds["GenomicFeatureSchema"] == "feature_registry"
     assert kinds["ProteinSchema"] == "feature_registry"
-    assert kinds["SmallMoleculeSchema"] == "entity"  # StableUIDBaseSchema, not a feature
-    assert kinds["DonorSchema"] == "table"  # plain LanceModel
+    assert kinds["SmallMoleculeSchema"] == "entity"  # RegistryBaseSchema, not a feature
+    assert kinds["DonorSchema"] == "entity"  # RegistryBaseSchema, not a feature
+    assert kinds["PublicationSectionSchema"] == "table"  # plain LanceModel
 
 
 def test_parse_module_reads_combined_markers_from_live_fields():

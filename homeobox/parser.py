@@ -26,11 +26,15 @@ from typing import Any, Union, get_args, get_origin
 
 # homeobox base classes mapped to the table "kind" the review UI renders, in
 # priority order (most specific first) so a class is bucketed by its tightest
-# recognised base -- FeatureBaseSchema is itself a StableUIDBaseSchema, etc.
+# recognised base -- FeatureBaseSchema is a RegistryBaseSchema is a
+# StableUIDBaseSchema, etc. RegistryBaseSchema and StableUIDBaseSchema share the
+# "entity" kind; the separate entry exists so registry tables declared directly
+# against RegistryBaseSchema are still recognised by the name-matching AST path.
 _BASE_KINDS: list[tuple[str, str]] = [
     ("HoxBaseSchema", "obs"),
     ("DatasetSchema", "dataset"),
     ("FeatureBaseSchema", "feature_registry"),
+    ("RegistryBaseSchema", "entity"),
     ("StableUIDBaseSchema", "entity"),
     ("LanceModel", "table"),
 ]
@@ -53,6 +57,7 @@ _FALLBACK_HOMEBOX_BASE_FIELDS: dict[str, list[dict]] = {
         {"name": "uid", "type": "str"},
         {"name": "global_index", "type": "int | None"},
     ],
+    "RegistryBaseSchema": [{"name": "uid", "type": "str"}],
     "StableUIDBaseSchema": [{"name": "uid", "type": "str"}],
     "LanceModel": [],
 }
@@ -644,6 +649,7 @@ def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
         DatasetSchema,
         FeatureBaseSchema,
         HoxBaseSchema,
+        RegistryBaseSchema,
         StableUIDBaseSchema,
     )
 
@@ -651,6 +657,7 @@ def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
         (HoxBaseSchema, "obs"),
         (DatasetSchema, "dataset"),
         (FeatureBaseSchema, "feature_registry"),
+        (RegistryBaseSchema, "entity"),
         (StableUIDBaseSchema, "entity"),
         (LanceModel, "table"),
     )
