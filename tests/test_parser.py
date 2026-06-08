@@ -44,7 +44,7 @@ def test_parse_module_classifies_tables_by_subclass():
     assert result["warnings"] == []
     assert result["obs"]["class_name"] == "CellIndex"
     assert result["obs"]["kind"] == "obs"
-    assert result["dataset"]["class_name"] == "DatasetSchema"
+    assert result["dataset"]["class_name"] == "AtlasDatasetSchema"
     assert result["dataset"]["kind"] == "dataset"
 
     kinds = {t["class_name"]: t["kind"] for t in result["tables"]}
@@ -118,6 +118,37 @@ def test_parse_module_renders_field_types():
     assert _field(obs, "gene_expression")["type"] == "SparseZarrPointer | None"
 
 
+def test_parse_module_extracts_summary_field_metadata_and_relationships():
+    result = parse_schema_module(ex)
+    dataset = result["dataset"]
+
+    n_rows = _field(dataset, "n_rows")
+    assert n_rows["summary"] == {
+        "target_schema": "CellIndex",
+        "target_field": "uid",
+        "op": "count",
+    }
+
+    organism = _field(dataset, "organism")
+    assert organism["summary"] == {
+        "target_schema": "CellIndex",
+        "target_field": "organism",
+        "op": "unique",
+    }
+
+    summary_rels = [r for r in result["relationships"] if r["kind"] == "summary"]
+    assert {
+        (r["source_table"], r["source_field"], r["target_schema"], r["target_field"], r["op"])
+        for r in summary_rels
+    } == {
+        ("AtlasDatasetSchema", "n_rows", "CellIndex", "uid", "count"),
+        ("AtlasDatasetSchema", "organism", "CellIndex", "organism", "unique"),
+        ("AtlasDatasetSchema", "tissue", "CellIndex", "tissue", "unique"),
+        ("AtlasDatasetSchema", "cell_line", "CellIndex", "cell_line", "unique"),
+        ("AtlasDatasetSchema", "disease", "CellIndex", "disease", "unique"),
+    }
+
+
 def test_parse_module_extracts_pointer_relationships():
     result = parse_schema_module(ex)
     pointer_rels = {
@@ -179,7 +210,7 @@ AST_SCHEMA_SOURCE = """
 from homeobox.schema import (
     HoxBaseSchema, DatasetSchema, StableUIDBaseSchema, FeatureBaseSchema,
     PointerField, StableUIDField, CrossReferenceField, RegistryKeyField,
-    OntologyAlignedField, PolymorphicRegistryKeyField, combine_markers,
+    OntologyAlignedField, PolymorphicRegistryKeyField, SummaryField, combine_markers,
 )
 from homeobox.schema import DatasetSchema as HoxDatasetSchema
 from homeobox.pointer_types import SparseZarrPointer
@@ -220,6 +251,12 @@ class Cells(HoxBaseSchema):
 
 class Datasets(HoxDatasetSchema):
     source: str | None
+    n_rows: int = SummaryField.declare(
+        target_schema=Cells,
+        target_field="uid",
+        op="count",
+        default=0,
+    )
 """
 
 
@@ -256,6 +293,29 @@ def test_ast_parser_reads_combined_and_standalone_markers():
     linked = _field(molecule, "linked")
     assert linked["registry_key"] == {"target_schema": "GeneFeature", "target_field": "uid"}
     assert linked["cross_reference"] == {"database_name": "uniprot"}
+
+
+def test_ast_parser_extracts_summary_relationships():
+    result = parse_schema_source(AST_SCHEMA_SOURCE)
+    dataset = result["dataset"]
+
+    assert _field(dataset, "n_rows")["summary"] == {
+        "target_schema": "Cells",
+        "target_field": "uid",
+        "op": "count",
+    }
+
+    summary_rels = [r for r in result["relationships"] if r["kind"] == "summary"]
+    assert summary_rels == [
+        {
+            "kind": "summary",
+            "source_table": "Datasets",
+            "source_field": "n_rows",
+            "target_schema": "Cells",
+            "target_field": "uid",
+            "op": "count",
+        }
+    ]
 
 
 def test_ast_parser_extracts_relationships_including_from_combine_markers():
@@ -322,6 +382,16 @@ def test_ast_parser_warns_on_missing_obs_and_dataset():
     assert "No obs table (HoxBaseSchema subclass) found." in result["warnings"]
     assert "No datasets table (DatasetSchema subclass) found." in result["warnings"]
     assert _field(_table(result, "Thing"), "external_id")["stable_uid"] is True
+
+
+def test_runtime_and_static_agree_on_summary_fields():
+    runtime = parse_schema_module(ex)
+    static = parse_schema_file(EXAMPLE_SCHEMA)
+
+    for field_name in ("n_rows", "organism", "tissue", "cell_line", "disease"):
+        rt = _field(runtime["dataset"], field_name)
+        st = _field(static["dataset"], field_name)
+        assert rt["summary"] == st["summary"]
 
 
 def test_ast_and_runtime_agree_on_example_table_classification():

@@ -164,33 +164,33 @@ class AtlasDatasetSchema(DatasetSchema):
 
     # High-level metadata fields that are useful for searching and grouping datasets.
     organism: list[str] | None = SummaryField.declare(
-        source_schema="CellIndex",
-        source_field="organism",
+        target_schema="CellIndex",
+        target_field="organism",
         op="unique",
         default=None,
     )
     tissue: list[str] | None = SummaryField.declare(
-        source_schema="CellIndex",
-        source_field="tissue",
+        target_schema="CellIndex",
+        target_field="tissue",
         op="unique",
         default=None,
     )
     cell_line: list[str] | None = SummaryField.declare(
-        source_schema="CellIndex",
-        source_field="cell_line",
+        target_schema="CellIndex",
+        target_field="cell_line",
         op="unique",
         default=None,
     )
     disease: list[str] | None = SummaryField.declare(
-        source_schema="CellIndex",
-        source_field="disease",
+        target_schema="CellIndex",
+        target_field="disease",
         op="unique",
         default=None,
     )
 
     n_rows: int = SummaryField.declare(
-        source_schema="CellIndex",
-        source_field="uid",
+        target_schema="CellIndex",
+        target_field="uid",
         op="count",
         default=0,
     )

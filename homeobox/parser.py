@@ -270,6 +270,19 @@ def _marker_metadata_from_extra(extra: dict) -> dict:
     if extra.get("stable_uid"):
         metadata["stable_uid"] = True
 
+    summary = extra.get("summary")
+    if (
+        isinstance(summary, dict)
+        and isinstance(summary.get("target_schema"), str)
+        and isinstance(summary.get("target_field"), str)
+        and isinstance(summary.get("op"), str)
+    ):
+        metadata["summary"] = {
+            "target_schema": summary["target_schema"],
+            "target_field": summary["target_field"],
+            "op": summary["op"],
+        }
+
     return metadata
 
 
@@ -333,6 +346,17 @@ def _field_call_metadata(value: ast.AST | None, aliases: dict[str, str]) -> dict
 
     elif marker == "StableUIDField":
         metadata["stable_uid"] = True
+
+    elif marker == "SummaryField":
+        target_schema = _schema_name(_keyword(value, "target_schema"))
+        target_field = _string_value(_keyword(value, "target_field"))
+        op = _string_value(_keyword(value, "op"))
+        if target_schema and target_field and op:
+            metadata["summary"] = {
+                "target_schema": target_schema,
+                "target_field": target_field,
+                "op": op,
+            }
 
     parts = _call_parts(value, aliases)
     if parts and parts[-1] == "Field":
@@ -522,6 +546,18 @@ def _relationships_for_table(table: dict) -> list[dict]:
                         "variant": variant,
                     }
                 )
+
+        summary = field.get("summary")
+        if isinstance(summary, dict):
+            relationships.append(
+                {
+                    "kind": "summary",
+                    **source,
+                    "target_schema": summary["target_schema"],
+                    "target_field": summary["target_field"],
+                    "op": summary["op"],
+                }
+            )
     return relationships
 
 
