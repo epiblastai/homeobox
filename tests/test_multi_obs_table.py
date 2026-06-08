@@ -21,6 +21,7 @@ from homeobox.schema import (
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
+    make_uid,
 )
 
 
@@ -316,8 +317,9 @@ def _build_bare_atlas(tmp_path, schemas: dict[str, type[HoxBaseSchema]]):
 
 def _empty_obs_arrow(schema_cls: type[HoxBaseSchema], uids: list[str]) -> pa.Table:
     """Build a pa.Table conforming to ``schema_cls`` with null pointer columns."""
+    dataset_uid = make_uid()
     return pa.Table.from_pylist(
-        [{"uid": u, "dataset_uid": "", "gene_expression": None} for u in uids],
+        [{"uid": u, "dataset_uid": dataset_uid, "gene_expression": None} for u in uids],
         schema=schema_cls.to_arrow_schema(),
     )
 

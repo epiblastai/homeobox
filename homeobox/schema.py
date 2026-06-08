@@ -583,12 +583,13 @@ class RegistryBaseSchema(StableUIDBaseSchema):
 class HoxBaseSchema(LanceModel):
     """
     Base schema for all homeobox datasets. The only requirements are a uid string
-    that allows for safe parallel-write scenarios, and at least one ZarrPointer
-    into a feature space declared via :meth:`PointerField.declare`.
+    that allows for safe parallel-write scenarios, a ``dataset_uid`` linking the
+    row to a ``DatasetSchema`` record, and at least one ZarrPointer into a
+    feature space declared via :meth:`PointerField.declare`.
     """
 
     uid: str = Field(default_factory=make_uid)
-    dataset_uid: str = ""
+    dataset_uid: str
 
     @classmethod
     def compute_auto_fields(cls, obs_df: "pd.DataFrame") -> "pd.DataFrame":
