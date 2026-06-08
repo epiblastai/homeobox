@@ -167,6 +167,8 @@ class DatasetSchema(DatasetSchema):
     cell_line: list[str] | None  # ["A549", "MCF7", "K562"] for village-in-a-dish
     disease: list[str] | None  # ["ALS", "healthy"] for case-control
 
+    n_rows: int = 0
+
 
 class DonorSchema(RegistryBaseSchema):
     # Primary key

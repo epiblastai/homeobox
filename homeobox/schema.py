@@ -718,7 +718,6 @@ class DatasetSchema(LanceModel):
     dataset_uid: str = Field(default_factory=make_uid)
     zarr_group: str = Field(default_factory=make_uid)
     feature_space: str  # FeatureSpace value
-    n_rows: int
     layout_uid: str = ""
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()

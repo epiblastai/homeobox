@@ -44,7 +44,7 @@ class NucleusSchema(HoxBaseSchema):
 
 
 def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
-    return DatasetSchema(zarr_group=zarr_group, feature_space="gene_expression", n_rows=adata.n_obs)
+    return DatasetSchema(zarr_group=zarr_group, feature_space="gene_expression")
 
 
 def _make_adata(n_obs: int, gene_uids: list[str], seed: int) -> ad.AnnData:

@@ -92,7 +92,6 @@ def _make_tile_atlas(
         ds = DatasetSchema(
             zarr_group=group_uid,
             feature_space="image_tiles",
-            n_rows=n_cells,
         )
         ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
         atlas._dataset_table.add(ds_arrow)
