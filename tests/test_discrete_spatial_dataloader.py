@@ -156,7 +156,6 @@ def _make_crop_atlas(
         ds = DatasetSchema(
             zarr_group=group_uid,
             feature_space="image_crops",
-            n_rows=n_cells,
         )
         ds_arrow = pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
         atlas._dataset_table.add(ds_arrow)
@@ -398,7 +397,6 @@ def multimodal_crops_and_genes_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds_genes/gene_expression",
             feature_space="gene_expression",
-            n_rows=2,
         ),
     )
 
@@ -407,7 +405,7 @@ def multimodal_crops_and_genes_atlas(tmp_path):
     crop_group = atlas._root.create_group(crop_group_uid)
     _write_image_zarr(crop_group, image)
     crop_ds_uid = make_uid()
-    crop_ds = DatasetSchema(zarr_group=crop_group_uid, feature_space="image_crops", n_rows=2)
+    crop_ds = DatasetSchema(zarr_group=crop_group_uid, feature_space="image_crops")
     atlas._dataset_table.add(
         pa.Table.from_pylist([crop_ds.model_dump()], schema=DatasetSchema.to_arrow_schema())
     )

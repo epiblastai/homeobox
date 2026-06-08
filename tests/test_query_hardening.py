@@ -80,7 +80,6 @@ def image_first_mixed_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds/image_features",
             feature_space="image_features",
-            n_rows=image_adata.n_obs,
         ),
     )
 
@@ -102,7 +101,6 @@ def image_first_mixed_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds/gene_expression",
             feature_space="gene_expression",
-            n_rows=gene_adata.n_obs,
         ),
     )
 

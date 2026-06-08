@@ -77,7 +77,6 @@ def _create_atlas_with_data(tmp_path, n_obs=100, n_vars=50, seed=42):
         dataset_record=DatasetSchema(
             zarr_group=zarr_group,
             feature_space="gene_expression",
-            n_rows=n_obs,
         ),
     )
 

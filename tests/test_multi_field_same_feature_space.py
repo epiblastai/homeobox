@@ -203,7 +203,6 @@ def dual_cycle_atlas(tmp_path):
             dataset_uid=dataset_uid,
             zarr_group=zg,
             feature_space="image_tiles",
-            n_rows=n_cells,
         )
         atlas._dataset_table.add(
             pa.Table.from_pylist([ds.model_dump()], schema=DatasetSchema.to_arrow_schema())

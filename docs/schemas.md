@@ -12,8 +12,8 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 ```python
 from homeobox.schema import (
     HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, RegistryKeyField,
-    PolymorphicRegistryKeyField, OntologyAlignedField, CrossReferenceField, combine_markers,
-    DatasetSchema, FeatureLayout, AtlasVersionRecord,
+    PolymorphicRegistryKeyField, OntologyAlignedField, CrossReferenceField, SummaryField,
+    combine_markers, DatasetSchema, FeatureLayout, AtlasVersionRecord,
 )
 ```
 
@@ -125,7 +125,7 @@ This is why `obs_schemas` is optional on `checkout()`: read paths can recover th
 
 ### Informational field markers
 
-The markers below annotate ordinary schema columns to describe how their values relate to other tables, ontologies, or external databases. They make schema definitions more self-documenting and let tooling (code parsers, agents, visualizers, validators) reason about relationships. None of them currently have any runtime effect: they are not written to Arrow metadata and homeobox does not enforce them as database constraints. Future versions may use this metadata to validate or enforce relationships.
+The markers below annotate ordinary schema columns to describe how their values relate to other tables, ontologies, external databases, or aggregations over another schema. They make schema definitions more self-documenting and let tooling (code parsers, agents, visualizers, validators) reason about relationships. None of them currently have any runtime effect: they are not written to Arrow metadata and homeobox does not enforce them as database constraints. Future versions may use this metadata to validate or enforce relationships.
 
 #### `RegistryKeyField`
 
@@ -177,9 +177,30 @@ pubchem_cid: str | None = CrossReferenceField.declare(database_name="pubchem")
 
 This is the database analogue of `OntologyAlignedField`: use `OntologyAlignedField` when the column aligns to an ontology and `CrossReferenceField` when it references an external database record.
 
+#### `SummaryField`
+
+Use `SummaryField.declare(...)` to mark a normal schema column as derived by aggregating a column on another schema:
+
+```python
+n_rows: int = SummaryField.declare(
+    target_schema=ObsSchema,
+    target_field="uid",
+    op="count",
+    default=0,
+)
+organism: list[str] | None = SummaryField.declare(
+    target_schema=ObsSchema,
+    target_field="organism",
+    op="unique",
+    default=None,
+)
+```
+
+`op` must be one of `count`, `nunique`, or `unique`. A common pattern is to declare summary fields on a `DatasetSchema` subclass that aggregate over the atlas's obs table — for example, row count via `op="count"` and high-level metadata such as distinct organisms or tissues via `op="unique"`. The schema parser surfaces these as `summary` relationships between the declaring table and the target schema.
+
 #### Combining markers with `combine_markers`
 
-A single column often plays more than one role at once: a PubChem CID, for instance, is both the value that drives stable-UID generation **and** a cross-reference into an external database. Each marker factory writes its metadata under a distinct top-level key in the field's `json_schema_extra` (`stable_uid`, `cross_reference`, `registry_key`, …), so the markers are orthogonal and can be merged onto one field with `combine_markers(...)`:
+A single column often plays more than one role at once: a PubChem CID, for instance, is both the value that drives stable-UID generation **and** a cross-reference into an external database. Each marker factory writes its metadata under a distinct top-level key in the field's `json_schema_extra` (`stable_uid`, `cross_reference`, `registry_key`, `summary`, …), so the markers are orthogonal and can be merged onto one field with `combine_markers(...)`:
 
 ```python
 pubchem_cid: int | None = combine_markers(

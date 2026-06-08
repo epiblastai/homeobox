@@ -107,7 +107,6 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
     dataset = DatasetSchema(
         zarr_group=group_uid,
         feature_space="chromatin_accessibility",
-        n_rows=len(cell_ids),
     )
     atlas.register_dataset(
         dataset,

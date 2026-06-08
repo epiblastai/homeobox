@@ -26,7 +26,7 @@ from homeobox.schema import (
 
 
 def _ds(adata: ad.AnnData, zarr_group: str) -> DatasetSchema:
-    return DatasetSchema(zarr_group=zarr_group, feature_space="gene_expression", n_rows=adata.n_obs)
+    return DatasetSchema(zarr_group=zarr_group, feature_space="gene_expression")
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,6 @@ def two_group_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds1/gene_expression",
             feature_space="gene_expression",
-            n_rows=20,
         ),
     )
 
@@ -125,7 +124,6 @@ def two_group_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds2/gene_expression",
             feature_space="gene_expression",
-            n_rows=15,
         ),
     )
 
@@ -168,7 +166,6 @@ def single_group_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds/gene_expression",
             feature_space="gene_expression",
-            n_rows=10,
         ),
     )
 
@@ -213,7 +210,6 @@ def single_group_dense_feature_atlas(tmp_path):
         dataset_record=DatasetSchema(
             zarr_group="ds/image_features",
             feature_space="image_features",
-            n_rows=4,
         ),
     )
 
@@ -260,7 +256,6 @@ def shared_layout_atlas(tmp_path):
             dataset_record=DatasetSchema(
                 zarr_group=f"ds{idx}/gene_expression",
                 feature_space="gene_expression",
-                n_rows=n_obs,
             ),
         )
 

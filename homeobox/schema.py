@@ -273,6 +273,54 @@ class CrossReferenceField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+@dataclasses.dataclass(frozen=True)
+class SummaryField:
+    """Runtime metadata for a schema field derived by aggregating a target column.
+
+    Declares that the marked field should be populated from ``target_field`` on
+    ``target_schema`` using aggregation ``op`` (``count``, ``nunique``, or
+    ``unique``). This marker is informational only. It is not written to Arrow
+    metadata and does not add validation or automatic computation by itself.
+    """
+
+    field_name: str
+    target_schema: str
+    target_field: str
+    op: str
+
+    @staticmethod
+    def declare(
+        *,
+        target_schema: type | str,
+        target_field: str,
+        op: str,
+        default: Any = ...,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark a summary field."""
+        allowed_ops = {"count", "nunique", "unique"}
+        if isinstance(target_schema, str):
+            target_schema_name = target_schema
+        else:
+            target_schema_name = target_schema.__name__
+        if not target_schema_name:
+            raise TypeError("SummaryField.declare requires a non-empty target_schema")
+        if not isinstance(target_field, str) or not target_field:
+            raise TypeError("SummaryField.declare requires a non-empty target_field string")
+        if not isinstance(op, str) or op not in allowed_ops:
+            raise TypeError(
+                f"SummaryField.declare requires op to be one of {sorted(allowed_ops)!r}; got {op!r}"
+            )
+
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["summary"] = {
+            "target_schema": target_schema_name,
+            "target_field": target_field,
+            "op": op,
+        }
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
 def combine_markers(*markers: Any, default: Any = ...) -> Any:
     """Attach several informational field markers to a single schema field.
 
@@ -583,12 +631,13 @@ class RegistryBaseSchema(StableUIDBaseSchema):
 class HoxBaseSchema(LanceModel):
     """
     Base schema for all homeobox datasets. The only requirements are a uid string
-    that allows for safe parallel-write scenarios, and at least one ZarrPointer
-    into a feature space declared via :meth:`PointerField.declare`.
+    that allows for safe parallel-write scenarios, a ``dataset_uid`` linking the
+    row to a ``DatasetSchema`` record, and at least one ZarrPointer into a
+    feature space declared via :meth:`PointerField.declare`.
     """
 
     uid: str = Field(default_factory=make_uid)
-    dataset_uid: str = ""
+    dataset_uid: str
 
     @classmethod
     def compute_auto_fields(cls, obs_df: "pd.DataFrame") -> "pd.DataFrame":
@@ -717,7 +766,6 @@ class DatasetSchema(LanceModel):
     dataset_uid: str = Field(default_factory=make_uid)
     zarr_group: str = Field(default_factory=make_uid)
     feature_space: str  # FeatureSpace value
-    n_rows: int
     layout_uid: str = ""
     created_at: str = Field(
         default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
