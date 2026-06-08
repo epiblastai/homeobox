@@ -707,14 +707,15 @@ class FeatureBaseSchema(RegistryBaseSchema):
 class DatasetSchema(LanceModel):
     """Metadata for a single ingested dataset.
 
-    ``zarr_group`` is the per-row primary key (unique per modality write).
-    ``dataset_uid`` is the logical dataset identifier referenced by ``HoxBaseSchema.dataset_uid``;
-    it is shared across rows that belong to the same multimodal batch (one row per
-    feature space).
+    ``zarr_group`` is the per-row primary key (unique per modality write) and
+    auto-generates a random uid when not supplied. ``dataset_uid`` is the logical
+    dataset identifier referenced by ``HoxBaseSchema.dataset_uid``; it also
+    auto-generates, but is shared across rows that belong to the same multimodal
+    batch (one row per feature space) by passing the same value to each row.
     """
 
     dataset_uid: str = Field(default_factory=make_uid)
-    zarr_group: str
+    zarr_group: str = Field(default_factory=make_uid)
     feature_space: str  # FeatureSpace value
     n_rows: int
     layout_uid: str = ""
