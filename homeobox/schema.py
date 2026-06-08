@@ -273,6 +273,54 @@ class CrossReferenceField:
         return Field(default=default, json_schema_extra=extra, **kwargs)
 
 
+@dataclasses.dataclass(frozen=True)
+class SummaryField:
+    """Runtime metadata for a schema field derived by aggregating a source column.
+
+    Declares that the marked field should be populated from ``source_field`` on
+    ``source_schema`` using aggregation ``op`` (``count``, ``nunique``, or
+    ``unique``). This marker is informational only. It is not written to Arrow
+    metadata and does not add validation or automatic computation by itself.
+    """
+
+    field_name: str
+    source_schema: str
+    source_field: str
+    op: str
+
+    @staticmethod
+    def declare(
+        *,
+        source_schema: type | str,
+        source_field: str,
+        op: str,
+        default: Any = ...,
+        **kwargs: Any,
+    ) -> Any:
+        """Factory used in schema class bodies to mark a summary field."""
+        allowed_ops = {"count", "nunique", "unique"}
+        if isinstance(source_schema, str):
+            source_schema_name = source_schema
+        else:
+            source_schema_name = source_schema.__name__
+        if not source_schema_name:
+            raise TypeError("SummaryField.declare requires a non-empty source_schema")
+        if not isinstance(source_field, str) or not source_field:
+            raise TypeError("SummaryField.declare requires a non-empty source_field string")
+        if not isinstance(op, str) or op not in allowed_ops:
+            raise TypeError(
+                f"SummaryField.declare requires op to be one of {sorted(allowed_ops)!r}; got {op!r}"
+            )
+
+        extra = dict(kwargs.pop("json_schema_extra", {}) or {})
+        extra["summary"] = {
+            "source_schema": source_schema_name,
+            "source_field": source_field,
+            "op": op,
+        }
+        return Field(default=default, json_schema_extra=extra, **kwargs)
+
+
 def combine_markers(*markers: Any, default: Any = ...) -> Any:
     """Attach several informational field markers to a single schema field.
 
