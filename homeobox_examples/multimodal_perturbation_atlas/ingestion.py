@@ -132,8 +132,7 @@ def add_multimodal_batch(
 ) -> int:
     """Ingest aligned multimodal data, creating one cell record per cell.
 
-    Unlike ``add_anndata_batch`` (which fills a single pointer per call),
-    this writes zarr arrays for all modalities and creates cell records
+    This writes zarr arrays for all modalities and creates cell records
     with ALL pointer fields populated in a single insert.
 
     Parameters

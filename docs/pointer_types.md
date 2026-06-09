@@ -117,4 +117,4 @@ When defining a new `FeatureSpaceSpec`, the pointer type is determined by how th
 - The data is one dense vector per cell, indexed by axis-0 → `DenseZarrPointer`.
 - Each obs row references a region (tile, crop, sub-volume) of a larger zarr array → `DiscreteSpatialPointer`.
 
-The pointer type also constrains how ingestion writes the data. `add_anndata_batch`, for example, only supports `SparseZarrPointer` for the matrix layer; dense and spatial pointers go through other ingestion entrypoints (see [Building an Atlas](atlas.md)). At ingestion time the writer is responsible for filling in the pointer struct on each obs row — the `start` / `end` / `position` / `min_corner` / `max_corner` values that the reconstruction loop will later batch up.
+The pointer type also constrains how ingestion writes the data. At ingestion time the writer is responsible for filling in the pointer struct on each obs row — the `start` / `end` / `position` / `min_corner` / `max_corner` values that the reconstruction loop will later batch up.
