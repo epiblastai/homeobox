@@ -103,21 +103,6 @@ def _pointer_struct_from_columns(
     return pa.StructArray.from_arrays(arrays, names=[field.name for field in fields])
 
 
-def _check_var_no_duplicate_uids(var: pd.DataFrame) -> None:
-    """Raise if adata.var has duplicate uid values."""
-    if "uid" not in var.columns:
-        return
-    n_total = len(var)
-    n_unique = var["uid"].nunique()
-    if n_unique != n_total:
-        n_dupes = n_total - n_unique
-        raise ValueError(
-            f"adata.var has {n_dupes} duplicate uid value(s) "
-            f"({n_total} rows, {n_unique} unique). "
-            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
-        )
-
-
 def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
     """Raise if a polars var DataFrame has duplicate uid values."""
     if "uid" not in var_df.columns:
@@ -134,20 +119,23 @@ def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
 
 
 def _validate_var_columns_against_registry(
-    adata_var: pd.DataFrame, registry_table: lancedb.table.Table, feature_space: str
+    var: pd.DataFrame | pl.DataFrame,
+    registry_table: lancedb.table.Table,
+    feature_space: str,
 ) -> None:
-    """Validate that adata.var columns exactly match the registry schema (minus ``global_index``).
+    """Validate that var columns exactly match the registry schema (minus ``global_index``).
 
-    The registry table's arrow schema is the source of truth. ``global_index``
-    is assigned by :meth:`optimize` and must not appear on ``adata.var``.
+    Accepts a pandas or polars var table (only ``.columns`` is inspected). The
+    registry table's arrow schema is the source of truth. ``global_index`` is
+    assigned by :meth:`optimize` and must not appear on the var table.
     """
     expected = set(registry_table.schema.names) - {"global_index"}
-    actual = set(adata_var.columns)
+    actual = set(var.columns)
     if actual != expected:
         missing = sorted(expected - actual)
         extra = sorted(actual - expected)
         raise ValueError(
-            f"adata.var columns do not match the '{feature_space}' registry schema. "
+            f"var columns do not match the '{feature_space}' registry schema. "
             f"Expected exactly {sorted(expected)}; got {sorted(actual)}. "
             f"Missing: {missing}. Unexpected: {extra}. "
             f"Tip: if the registry schema uses StableUIDField, set the stable-uid "
@@ -1185,6 +1173,149 @@ def insert_obs_records(
     return len(obs_df)
 
 
+def ingest_dataset(
+    atlas: RaggedAtlas,
+    reader: Reader,
+    *,
+    obs_df: pd.DataFrame,
+    field_name: str,
+    zarr_layer: str,
+    dataset_record: DatasetSchema,
+    n_vars: int,
+    var_df: pd.DataFrame | None = None,
+    source_layer: str = "X",
+    required_pointer_type: type | None = None,
+    batch_size: int = _DEFAULT_BATCH_ROWS,
+    chunk_shape: tuple[int, ...] | None = None,
+    shard_shape: tuple[int, ...] | None = None,
+    obs_table_name: str | None = None,
+) -> int:
+    """Stream one feature space from a reader into the atlas and stamp obs rows.
+
+    The shared spine behind :func:`add_from_anndata` and :func:`add_coo_batch`:
+    given any :class:`Reader` plus the obs (and, where the spec needs it, var)
+    tables it was built from, this validates obs and var, registers the dataset,
+    writes the matrix feature-space-first via :func:`write_feature_space`, and
+    stamps the resulting pointer column onto the obs rows. The reader decides the
+    source format; the converter and writer are resolved from the spec.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas to ingest into. Features must already be registered.
+    reader:
+        A :class:`Reader` that streams the matrix as row-batches. It must emit
+        exactly ``len(obs_df)`` rows, in obs order.
+    obs_df:
+        Validated obs DataFrame with schema-aligned columns, one row per cell.
+    field_name:
+        Obs-schema attribute name for the pointer column to populate.
+    zarr_layer:
+        Destination layer name within the spec's ``layers/`` group.
+    dataset_record:
+        Dataset record to register; ``dataset_record.zarr_group`` is the zarr
+        group path.
+    n_vars:
+        Number of features (matrix width). Only used to size dense-writer
+        chunks/shards; ignored for sparse layouts.
+    var_df:
+        Pandas var table (one row per feature, in positional order); its index
+        is dropped before use. Required for feature spaces whose spec sets
+        ``has_var_df``; validated against the registry schema and checked for
+        duplicate uids. Ignored otherwise.
+    source_layer:
+        The key the reader maps to ``zarr_layer`` (e.g. ``"X"`` for AnnData).
+    required_pointer_type:
+        If given, fail fast unless the spec's pointer type matches — lets a
+        reader that only feeds one layout family (e.g. ``COOReader`` → sparse)
+        reject a mismatched feature space before any data is written.
+    batch_size:
+        Rows read and written per batch.
+    chunk_shape, shard_shape:
+        Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
+        dense). Default to this module's constants.
+    obs_table_name:
+        Which obs table to ingest into. May be ``None`` only when the atlas has
+        exactly one obs table.
+
+    Returns
+    -------
+    int
+        Number of cells ingested.
+    """
+    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+    obs_schema = atlas.obs_schemas[name]
+    if obs_schema is None:
+        raise ValueError(
+            f"Cannot ingest into obs table {name!r}: opened without an obs schema. "
+            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+        )
+
+    pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
+    feature_space = pointer_field.feature_space
+    spec = get_spec(feature_space)
+    if required_pointer_type is not None and spec.pointer_type is not required_pointer_type:
+        raise ValueError(
+            f"This reader requires {required_pointer_type.pointer_type_name} feature "
+            f"spaces, but '{feature_space}' is {spec.pointer_type.pointer_type_name}."
+        )
+
+    obs_errors = validate_obs_columns(obs_df, obs_schema)
+    if obs_errors:
+        raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
+
+    if spec.has_var_df:
+        if var_df is None:
+            raise ValueError(
+                f"Feature space '{feature_space}' requires a var_df, but none was provided."
+            )
+        var_df_pl = pl.from_pandas(var_df.reset_index(drop=True))
+        registry_table = atlas._registry_tables[feature_space]
+        _validate_var_columns_against_registry(var_df_pl, registry_table, feature_space)
+        _check_var_no_duplicate_uids_pl(var_df_pl)
+        atlas.register_dataset(dataset_record, var_df=var_df_pl)
+    else:
+        atlas.register_dataset(dataset_record)
+
+    zarr_group = dataset_record.zarr_group
+    group = atlas.create_zarr_group(zarr_group)
+
+    # The matrix write: converter + writer resolved from the spec. zarr_layer
+    # conformance (allowed/required layers) is enforced inside the converter.
+    pointer_columns = write_feature_space(
+        reader,
+        spec,
+        group,
+        batch_size=batch_size,
+        layer_mapping={source_layer: zarr_layer},
+        layer_names=[zarr_layer],
+        zarr_group_name=zarr_group,
+        **_writer_create_kwargs(spec, n_vars, chunk_shape, shard_shape),
+    )
+
+    # The reader must cover every obs row exactly once, in order, so the pointer
+    # table aligns positionally with obs_df.
+    n_emitted = len(next(iter(pointer_columns.values()))) if pointer_columns else 0
+    if n_emitted != len(obs_df):
+        raise ValueError(
+            f"reader emitted {n_emitted} rows but obs_df has {len(obs_df)}; they must match."
+        )
+
+    arrow_schema = obs_schema.to_arrow_schema()
+    pointer_struct = _pointer_struct_from_columns(
+        pointer_columns, arrow_schema.field(pointer_field.field_name).type
+    )
+    arrow_table = _build_row_arrow_table(
+        atlas,
+        obs_df,
+        dataset_uid=dataset_record.dataset_uid,
+        pointer_data={pointer_field.field_name: pointer_struct},
+        obs_table_name=name,
+    )
+    atlas.add_obs_records(arrow_table, obs_table_name=name)
+    return len(obs_df)
+
+
 def add_from_anndata(
     atlas: RaggedAtlas,
     adata: ad.AnnData | str | Path,
@@ -1200,15 +1331,11 @@ def add_from_anndata(
 ) -> int:
     """Ingest an AnnData (or .h5ad path) into the atlas.
 
-    Built on the streaming reader/converter/writer engine in this module: the
-    matrix is written feature-space first via ``write_feature_space`` (which
-    resolves the converter and writer from the spec), then the returned pointer
-    table is stamped onto the obs rows alongside the finalized identity columns.
-
-    Always ingests ``adata.X`` into the destination layer ``zarr_layer`` (e.g.
-    ``"counts"``). The feature space is derived from ``field_name``'s
-    registered ``PointerField``; the spec decides whether a var_df is needed
-    and which converter/writer apply.
+    A thin source adapter over :func:`ingest_dataset`: it opens the AnnData
+    (honoring ``backed``), extracts obs and var, and streams ``adata.X`` into
+    ``zarr_layer`` via an :class:`AnnDataReader`. The feature space is derived
+    from ``field_name``'s registered ``PointerField``; the spec decides whether
+    a var_df is needed and which converter/writer apply.
 
     Parameters
     ----------
@@ -1243,62 +1370,21 @@ def add_from_anndata(
     if not isinstance(adata, ad.AnnData):
         adata = ad.read_h5ad(adata, backed=backed)
 
-    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
-    obs_schema = atlas.obs_schemas[name]
-    if obs_schema is None:
-        raise ValueError(
-            f"Cannot ingest into obs table {name!r}: opened without an obs schema. "
-            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
-        )
-
-    pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
-    feature_space = pointer_field.feature_space
-    spec = get_spec(feature_space)
-
-    obs_errors = validate_obs_columns(adata.obs, obs_schema)
-    if obs_errors:
-        raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
-
-    if spec.has_var_df:
-        registry_table = atlas._registry_tables[feature_space]
-        _validate_var_columns_against_registry(adata.var, registry_table, feature_space)
-        _check_var_no_duplicate_uids(adata.var)
-        var_df = pl.from_pandas(adata.var.reset_index(drop=True))
-        atlas.register_dataset(dataset_record, var_df=var_df)
-    else:
-        atlas.register_dataset(dataset_record)
-
-    zarr_group = dataset_record.zarr_group
-    group = atlas.create_zarr_group(zarr_group)
-
-    # The matrix write: converter + writer resolved from the spec. zarr_layer
-    # conformance (allowed/required layers) is enforced inside the converter.
-    pointer_columns = write_feature_space(
-        AnnDataReader(adata),
-        spec,
-        group,
-        batch_size=batch_size,
-        layer_mapping={"X": zarr_layer},
-        layer_names=[zarr_layer],
-        zarr_group_name=zarr_group,
-        **_writer_create_kwargs(spec, adata.n_vars, chunk_shape, shard_shape),
-    )
-
-    # Stamp the pointer table onto the obs rows. Pointers come back in row
-    # order, aligning positionally with adata.obs.
-    arrow_schema = obs_schema.to_arrow_schema()
-    pointer_struct = _pointer_struct_from_columns(
-        pointer_columns, arrow_schema.field(pointer_field.field_name).type
-    )
-    arrow_table = _build_row_arrow_table(
+    return ingest_dataset(
         atlas,
-        adata.obs,
-        dataset_uid=dataset_record.dataset_uid,
-        pointer_data={pointer_field.field_name: pointer_struct},
-        obs_table_name=name,
+        AnnDataReader(adata),
+        obs_df=adata.obs,
+        field_name=field_name,
+        zarr_layer=zarr_layer,
+        dataset_record=dataset_record,
+        n_vars=adata.n_vars,
+        var_df=adata.var,
+        source_layer="X",
+        batch_size=batch_size,
+        chunk_shape=chunk_shape,
+        shard_shape=shard_shape,
+        obs_table_name=obs_table_name,
     )
-    atlas.add_obs_records(arrow_table, obs_table_name=name)
-    return adata.n_obs
 
 
 def add_coo_batch(
@@ -1306,7 +1392,7 @@ def add_coo_batch(
     coo_path: Path,
     *,
     obs_df: pd.DataFrame,
-    var_df: pl.DataFrame,
+    var_df: pd.DataFrame,
     field_name: str,
     zarr_layer: str,
     dataset_record: DatasetSchema,
@@ -1345,9 +1431,9 @@ def add_coo_batch(
         Validated obs DataFrame with schema-aligned columns. Must have
         exactly ``n_rows`` rows.
     var_df:
-        Polars DataFrame with a ``uid`` column (one row per feature in the
-        matrix's var space, in positional order). The ``uid`` values are the
-        registry uids for each local feature.
+        Pandas var table (one row per feature in the matrix's var space, in
+        positional order). Its columns must match the feature space's registry
+        schema exactly, just like ``adata.var`` for :func:`add_from_anndata`.
     field_name:
         Cell-schema attribute name for the pointer column to populate.
         The feature_space is derived from its registered ``PointerField``.
@@ -1383,43 +1469,9 @@ def add_coo_batch(
     int
         Number of cells ingested.
     """
-    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
-    obs_schema = atlas.obs_schemas[name]
-    if obs_schema is None:
-        raise ValueError(
-            f"Cannot ingest into obs table {name!r}: opened without a cell schema. "
-            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
-        )
-
-    pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
-    feature_space = pointer_field.feature_space
-    spec = get_spec(feature_space)
-    if spec.pointer_type is not SparseZarrPointer:
-        raise ValueError(
-            f"add_coo_batch only supports sparse feature spaces, "
-            f"but '{feature_space}' is {spec.pointer_type.pointer_type_name}"
-        )
-
-    obs_errors = validate_obs_columns(obs_df, obs_schema)
-    if obs_errors:
-        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
     if len(obs_df) != n_rows:
         raise ValueError(f"obs_df has {len(obs_df)} rows but n_rows={n_rows}; they must match.")
 
-    if "uid" not in var_df.columns:
-        raise ValueError("var_df must have a 'uid' column")
-    _check_var_no_duplicate_uids_pl(var_df)
-
-    if spec.has_var_df:
-        atlas.register_dataset(dataset_record, var_df=var_df)
-    else:
-        atlas.register_dataset(dataset_record)
-
-    zarr_group = dataset_record.zarr_group
-    group = atlas.create_zarr_group(zarr_group)
-
-    # The matrix write: COOReader yields CSR row-batches; the converter and
-    # writer are resolved from the spec, exactly as for an AnnData source.
     reader = COOReader(
         coo_path,
         n_rows=n_rows,
@@ -1431,32 +1483,22 @@ def add_coo_batch(
         one_indexed=one_indexed,
         read_batch_rows=read_batch_rows,
     )
-    pointer_columns = write_feature_space(
-        reader,
-        spec,
-        group,
-        batch_size=batch_size,
-        layer_mapping={"values": zarr_layer},
-        layer_names=[zarr_layer],
-        zarr_group_name=zarr_group,
-        **_writer_create_kwargs(spec, n_features, chunk_shape, shard_shape),
-    )
-
-    # Stamp the pointer table onto the obs rows. The reader emits every row in
-    # [0, n_rows), so pointers align positionally with obs_df.
-    arrow_schema = obs_schema.to_arrow_schema()
-    pointer_struct = _pointer_struct_from_columns(
-        pointer_columns, arrow_schema.field(pointer_field.field_name).type
-    )
-    arrow_table = _build_row_arrow_table(
+    return ingest_dataset(
         atlas,
-        obs_df,
-        dataset_uid=dataset_record.dataset_uid,
-        pointer_data={pointer_field.field_name: pointer_struct},
-        obs_table_name=name,
+        reader,
+        obs_df=obs_df,
+        field_name=field_name,
+        zarr_layer=zarr_layer,
+        dataset_record=dataset_record,
+        n_vars=n_features,
+        var_df=var_df,
+        source_layer="values",
+        required_pointer_type=SparseZarrPointer,
+        batch_size=batch_size,
+        chunk_shape=chunk_shape,
+        shard_shape=shard_shape,
+        obs_table_name=obs_table_name,
     )
-    atlas.add_obs_records(arrow_table, obs_table_name=name)
-    return n_rows
 
 
 def add_csc(
