@@ -252,7 +252,7 @@ class ArrayConverter:
       counter without reaching into a pointer-type-specific field).
     """
 
-    input_type: ClassVar[type]
+    input_type: ClassVar[type | tuple[type, ...]]
     pointer_type: ClassVar[type]
 
     def __init__(self, spec: FeatureSpaceSpec) -> None:
@@ -340,22 +340,32 @@ def converter_for(spec: FeatureSpaceSpec, sample: Any) -> ArrayConverter:
         )
     converter = cls(spec)
     if not isinstance(sample, converter.input_type):
+        accepted = converter.input_type
+        accepted_names = (
+            accepted.__name__
+            if isinstance(accepted, type)
+            else ", ".join(t.__name__ for t in accepted)
+        )
         raise TypeError(
             f"{cls.__name__} for '{spec.feature_space}' expects "
-            f"{converter.input_type.__name__}, got {type(sample).__name__}"
+            f"{accepted_names}, got {type(sample).__name__}"
         )
     return converter
 
 
 @register_converter("gene_expression")
 class CSRSparseConverter(ArrayConverter):
-    """CSR matrices -> any sparse (one structural index array + flat layers)
-    layout addressed by ``SparseZarrPointer``-style range pointers."""
+    """CSR (or dense) matrices -> any sparse (one structural index array + flat
+    layers) layout addressed by ``SparseZarrPointer``-style range pointers.
 
-    input_type = sp.csr_matrix
+    Dense ``ndarray`` blocks are accepted and coerced to CSR, so a dense-stored
+    matrix can feed a sparse feature space; explicit zeros are dropped, as in
+    any dense-to-sparse conversion."""
+
+    input_type = (sp.csr_matrix, np.ndarray)
     pointer_type = SparseZarrPointer
 
-    def convert(self, layers: dict[str, sp.csr_matrix]) -> dict[str, Any]:
+    def convert(self, layers: dict[str, Any]) -> dict[str, Any]:
         # The sparsity structure is a property of the matrix, shared by every
         # layer, so it's computed once from a reference and the other layers
         # contribute only their values. Asserting the structures match turns
@@ -367,10 +377,16 @@ class CSRSparseConverter(ArrayConverter):
             )
         (indices_name,) = self.structural_names
 
-        ref = next(iter(layers.values()))
-        for name, matrix in layers.items():
-            if not sp.issparse(matrix):
-                raise TypeError(f"layer '{name}' is not sparse: {type(matrix).__name__}")
+        # Normalize every layer to CSR up front: sparse inputs are re-cast to
+        # CSR if needed, dense inputs are converted. The structure check then
+        # runs on a uniform representation.
+        csr_layers = {
+            name: matrix.tocsr() if sp.issparse(matrix) else sp.csr_matrix(matrix)
+            for name, matrix in layers.items()
+        }
+
+        ref = next(iter(csr_layers.values()))
+        for name, matrix in csr_layers.items():
             if not (
                 np.array_equal(matrix.indptr, ref.indptr)
                 and np.array_equal(matrix.indices, ref.indices)
@@ -380,7 +396,7 @@ class CSRSparseConverter(ArrayConverter):
         return self._validated(
             {
                 "required_arrays": {indices_name: ref.indices},
-                "layers": {name: matrix.data for name, matrix in layers.items()},
+                "layers": {name: matrix.data for name, matrix in csr_layers.items()},
                 "pointer_fields": {
                     "start": ref.indptr[:-1].astype(np.int64),
                     "end": ref.indptr[1:].astype(np.int64),
