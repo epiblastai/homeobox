@@ -14,7 +14,7 @@ from homeobox.dataloader import (
 from homeobox.fragments.genome_query import GenomeSortedReader, RegionResult
 from homeobox.fragments.peak_matrix import FragmentCounter, GenomicRange
 from homeobox.fragments.reconstruction import FragmentResult, IntervalReconstructor
-from homeobox.ingestion import add_anndata_batch, add_csc, add_from_anndata
+from homeobox.ingestion import add_csc, add_from_anndata
 from homeobox.multimodal import MultimodalResult
 from homeobox.pointer_types import (
     DenseZarrPointer,
@@ -47,7 +47,6 @@ __all__ = [
     "MultimodalBatch",
     "make_loader",
     "add_from_anndata",
-    "add_anndata_batch",
     "add_csc",
     "HoxBaseSchema",
     "FeatureBaseSchema",

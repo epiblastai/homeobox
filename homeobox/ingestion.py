@@ -6,7 +6,9 @@ that calls the lower-level ``var_df`` helpers directly.
 """
 
 import subprocess
+from collections.abc import Generator
 from pathlib import Path
+from typing import Any, ClassVar, Protocol
 
 import anndata as ad
 import lancedb
@@ -34,337 +36,847 @@ from homeobox.util import sql_escape
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
 _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
-
-
-def _check_var_no_duplicate_uids(var: pd.DataFrame) -> None:
-    """Raise if adata.var has duplicate uid values."""
-    if "uid" not in var.columns:
-        return
-    n_total = len(var)
-    n_unique = var["uid"].nunique()
-    if n_unique != n_total:
-        n_dupes = n_total - n_unique
-        raise ValueError(
-            f"adata.var has {n_dupes} duplicate uid value(s) "
-            f"({n_total} rows, {n_unique} unique). "
-            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
-        )
-
-
-def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
-    """Raise if a polars var DataFrame has duplicate uid values."""
-    if "uid" not in var_df.columns:
-        return
-    n_total = var_df.height
-    n_unique = var_df["uid"].n_unique()
-    if n_unique != n_total:
-        n_dupes = n_total - n_unique
-        raise ValueError(
-            f"var_df has {n_dupes} duplicate uid value(s) "
-            f"({n_total} rows, {n_unique} unique). "
-            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
-        )
-
-
-def _validate_var_columns_against_registry(
-    adata_var: pd.DataFrame, registry_table: lancedb.table.Table, feature_space: str
-) -> None:
-    """Validate that adata.var columns exactly match the registry schema (minus ``global_index``).
-
-    The registry table's arrow schema is the source of truth. ``global_index``
-    is assigned by :meth:`optimize` and must not appear on ``adata.var``.
-    """
-    expected = set(registry_table.schema.names) - {"global_index"}
-    actual = set(adata_var.columns)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
-        raise ValueError(
-            f"adata.var columns do not match the '{feature_space}' registry schema. "
-            f"Expected exactly {sorted(expected)}; got {sorted(actual)}. "
-            f"Missing: {missing}. Unexpected: {extra}. "
-            f"Tip: if the registry schema uses StableUIDField, set the stable-uid "
-            f"source column on var and run "
-            f"<RegistrySchema>.compute_stable_uids(adata.var) to populate 'uid'."
-        )
-
-
-def deduplicate_var(
-    mat: sp.spmatrix,
-    var_df: pd.DataFrame,
-    uid_column: str = "uid",
-) -> tuple[sp.csr_matrix, pd.DataFrame]:
-    """Merge matrix columns that share the same feature UID by summing.
-
-    When multiple original features (e.g. Ensembl IDs) map to the same
-    canonical feature UID, this function collapses them by summing the
-    corresponding matrix columns. The returned var keeps the first row
-    for each unique UID.
-
-    Uses a sparse aggregation matrix (n_orig × n_deduped) so the cost is
-    a single sparse matmul — no Python loops over columns.
-
-    Returns the input unchanged if there are no duplicates.
-    """
-    if uid_column not in var_df.columns:
-        return sp.csr_matrix(mat), var_df
-
-    uids = var_df[uid_column].values
-    unique_uids, inverse = np.unique(uids, return_inverse=True)
-
-    if len(unique_uids) == len(uids):
-        return sp.csr_matrix(mat), var_df
-
-    n_orig = len(uids)
-    n_dedup = len(unique_uids)
-
-    # Build aggregation matrix: A[i, j] = 1 iff original col i maps to deduped col j
-    agg = sp.csc_matrix(
-        (np.ones(n_orig, dtype=mat.dtype), (np.arange(n_orig), inverse)),
-        shape=(n_orig, n_dedup),
-    )
-    mat_dedup = sp.csr_matrix(mat @ agg)
-
-    # Keep the first row in var for each unique UID
-    first_indices = np.unique(inverse, return_index=True)[1]
-    var_dedup = var_df.iloc[first_indices].copy()
-
-    return mat_dedup, var_dedup
-
-
-def _is_backed_csr(adata: ad.AnnData) -> bool:
-    """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
-    import h5py
-
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and isinstance(adata.file._file["X"], h5py.Group)
-        and "data" in adata.file._file["X"]
-    )
-
-
-def _is_backed_dense(adata: ad.AnnData) -> bool:
-    """Return True if adata.X is a backed HDF5 dense matrix."""
-    import h5py
-
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and isinstance(adata.file._file["X"], h5py.Dataset)
-    )
-
-
-def _count_nnz_batched(h5_dataset, batch_rows: int) -> tuple[int, np.ndarray]:
-    """Count nonzeros in a backed dense HDF5 dataset without loading it all.
-
-    Returns ``(total_nnz, nnz_per_row)`` where ``nnz_per_row`` has one entry
-    per row in the dataset.
-    """
-    n_rows = h5_dataset.shape[0]
-    nnz_per_row = np.empty(n_rows, dtype=np.int64)
-    total_nnz = 0
-    for start in range(0, n_rows, batch_rows):
-        end = min(start + batch_rows, n_rows)
-        batch = h5_dataset[start:end]
-        row_nnz = np.count_nonzero(batch, axis=1)
-        nnz_per_row[start:end] = row_nnz
-        total_nnz += int(row_nnz.sum())
-    return total_nnz, nnz_per_row
+_DEFAULT_BATCH_ROWS = 8_192
 
 
 # ---------------------------------------------------------------------------
-# Streaming sparse ingestion helpers
+# Reader / converter / writer ingestion engine
 # ---------------------------------------------------------------------------
+#
+# The streaming ingestion path behind ``add_from_anndata``: a reader streams a
+# source as row-batches of layer arrays, a converter adapts each batch onto the
+# arrays a zarr group spec wants, and a writer owns the zarr group and the
+# running offsets. The trio is resolved from the spec, so a new feature space
+# generally needs no new ingestion code.
+
+# Reserved pointer column. Every pointer field a pointer type declares (the keys
+# of ``offset_axes``) sits alongside this one in the emitted pointer table.
+_ZARR_GROUP_COLUMN = "zarr_group"
 
 
-class SparseZarrWriter:
-    """Incrementally write CSR data into a zarr group.
+# ---------------------------------------------------------------------------
+# Converters: array type -> zarr-group-spec-aligned arrays + pointer fields
+# ---------------------------------------------------------------------------
+#
+# Extensibility note. A converter is the adapter between one in-memory array
+# type (CSR, dense, COO, ...) and one *pointer-type layout family* (the sparse
+# range layout, the dense row layout, ...). It is NOT bound to a single feature
+# space. The thing that varies between feature spaces of the same family is only
+# the *names* — the structural array name (``csr/indices`` vs ``gene/indices``)
+# and the layer names — and those are read from the spec, never hardcoded. A
+# converter is therefore constructed against a concrete spec and validates that:
+#   * it targets that spec's pointer type, and
+#   * the fields it emits exactly match that pointer type's vocabulary.
+# Add a new sparse feature space (any structural-array name) and the existing
+# CSR converter handles it. Add a new *pointer type* and you must register a
+# converter for it — `converter_for` raises rather than silently mis-mapping.
 
-    Use this when the total number of nonzeros is not known upfront
-    (e.g., streaming from a remote source). The zarr arrays are created
-    with an initial capacity and resized as needed.
 
-    Usage::
+class ArrayConverter:
+    """Maps one in-memory array type onto the arrays a zarr group spec wants.
 
-        writer = SparseZarrWriter.create(group, "counts", data_dtype=np.float32)
-        starts, ends = writer.append_csr(csr_matrix_1)
-        starts, ends = writer.append_csr(csr_matrix_2)
-        writer.trim()  # shrink to actual size
+    A converter is **pure and per-batch**: given the layers of a single
+    row-batch (all sharing one structure), it returns the batch-relative
+    arrays to append and the batch-relative pointer fields. It knows nothing
+    about how much has already been written — every batch looks like it
+    starts at zero. Rebasing to absolute coordinates is the writer's job.
 
-    Parameters returned by ``append_csr`` are absolute offsets into the
-    flat arrays, suitable for constructing ``SparseZarrPointer`` structs.
+    ``convert`` returns a dict with keys:
+
+    * ``required_arrays`` — structural arrays keyed by their spec-declared
+      name; empty for dense layouts.
+    * ``layers`` — ``{layer_name: values}`` for each requested layer.
+    * ``pointer_fields`` — origin-zero pointer components whose names match
+      the pointer type's ``offset_axes`` vocabulary.
+    * ``n_rows`` — rows in this batch (lets the writer advance its row
+      counter without reaching into a pointer-type-specific field).
+    """
+
+    input_type: ClassVar[type | tuple[type, ...]]
+    pointer_type: ClassVar[type]
+
+    def __init__(self, spec: FeatureSpaceSpec) -> None:
+        if spec.pointer_type is not self.pointer_type:
+            raise ValueError(
+                f"{type(self).__name__} targets {self.pointer_type.__name__}, but spec "
+                f"'{getattr(spec, 'feature_space', spec)}' uses {spec.pointer_type.__name__}"
+            )
+        self.spec = spec
+        # Authoritative names, read from the spec / pointer type — never literal.
+        self.structural_names = [a.array_name for a in spec.zarr_group_spec.required_arrays]
+        self.pointer_fields = set(spec.pointer_type.offset_axes)
+        layers_spec = spec.zarr_group_spec.layers
+        self.required_layers = set(layers_spec.required_names)
+        # A non-empty whitelist means only those (plus required) may be written;
+        # an empty whitelist means any layer name is allowed (None == no limit).
+        allowed = set(layers_spec.allowed_names)
+        self.permitted_layers = (allowed | self.required_layers) if allowed else None
+
+    def convert(self, layers: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _validated(self, converted: dict[str, Any]) -> dict[str, Any]:
+        produced_structural = set(converted["required_arrays"])
+        if produced_structural != set(self.structural_names):
+            raise ValueError(
+                f"{type(self).__name__} produced structural arrays {produced_structural}, "
+                f"but the spec declares {set(self.structural_names)}"
+            )
+        produced_fields = set(converted["pointer_fields"])
+        if produced_fields != self.pointer_fields:
+            raise ValueError(
+                f"{type(self).__name__} produced pointer fields {produced_fields}, but "
+                f"{self.pointer_type.__name__} expects {self.pointer_fields}"
+            )
+        produced_layers = set(converted["layers"])
+        missing = self.required_layers - produced_layers
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__} is missing required layers {sorted(missing)} for "
+                f"feature space '{self.spec.feature_space}'"
+            )
+        if self.permitted_layers is not None and not produced_layers <= self.permitted_layers:
+            extra = produced_layers - self.permitted_layers
+            raise ValueError(
+                f"{type(self).__name__} produced layers {sorted(extra)} not allowed by the "
+                f"spec (allowed: {sorted(self.permitted_layers)})"
+            )
+        return converted
+
+
+# Converters are selected by spec identity (feature space), NOT pointer type:
+# two feature spaces can share a pointer type yet need entirely different
+# layouts (gene_expression and chromatin_accessibility are both
+# SparseZarrPointer but one is a CSR value-layout and the other an interval
+# layout). A converter class can still be generic across feature spaces of the
+# same layout family — bind it to each one by name.
+_CONVERTERS: dict[str, type[ArrayConverter]] = {}
+
+
+def register_converter(*feature_spaces: str):
+    """Bind a converter class to one or more feature spaces (by name)."""
+
+    def decorate(cls: type[ArrayConverter]) -> type[ArrayConverter]:
+        for feature_space in feature_spaces:
+            _CONVERTERS[feature_space] = cls
+        return cls
+
+    return decorate
+
+
+def converter_for(spec: FeatureSpaceSpec, sample: Any) -> ArrayConverter:
+    """Resolve the converter for ``spec`` and validate the input array type.
+
+    Selection is by ``spec.feature_space``; the resolved converter then checks
+    that ``sample`` matches its declared ``input_type``. Both an unregistered
+    feature space and a mismatched array type raise loudly — a new feature
+    space can never silently borrow a converter that shares its pointer type.
+    """
+    cls = _CONVERTERS.get(spec.feature_space)
+    if cls is None:
+        raise KeyError(
+            f"No converter registered for feature space '{spec.feature_space}'. "
+            f"Bind one with @register_converter('{spec.feature_space}')."
+        )
+    converter = cls(spec)
+    if not isinstance(sample, converter.input_type):
+        accepted = converter.input_type
+        accepted_names = (
+            accepted.__name__
+            if isinstance(accepted, type)
+            else ", ".join(t.__name__ for t in accepted)
+        )
+        raise TypeError(
+            f"{cls.__name__} for '{spec.feature_space}' expects "
+            f"{accepted_names}, got {type(sample).__name__}"
+        )
+    return converter
+
+
+@register_converter("gene_expression")
+class CSRSparseConverter(ArrayConverter):
+    """CSR (or dense) matrices -> any sparse (one structural index array + flat
+    layers) layout addressed by ``SparseZarrPointer``-style range pointers.
+
+    Dense ``ndarray`` blocks are accepted and coerced to CSR, so a dense-stored
+    matrix can feed a sparse feature space; explicit zeros are dropped, as in
+    any dense-to-sparse conversion."""
+
+    input_type = (sp.csr_matrix, np.ndarray)
+    pointer_type = SparseZarrPointer
+
+    def convert(self, layers: dict[str, Any]) -> dict[str, Any]:
+        # The sparsity structure is a property of the matrix, shared by every
+        # layer, so it's computed once from a reference and the other layers
+        # contribute only their values. Asserting the structures match turns
+        # the old "assume identical sparsity" hazard into a loud failure.
+        if len(self.structural_names) != 1:
+            raise ValueError(
+                f"{type(self).__name__} fills exactly one structural array, but the spec "
+                f"declares {self.structural_names}"
+            )
+        (indices_name,) = self.structural_names
+
+        # Normalize every layer to CSR up front: sparse inputs are re-cast to
+        # CSR if needed, dense inputs are converted. The structure check then
+        # runs on a uniform representation.
+        csr_layers = {
+            name: matrix.tocsr() if sp.issparse(matrix) else sp.csr_matrix(matrix)
+            for name, matrix in layers.items()
+        }
+
+        ref = next(iter(csr_layers.values()))
+        for name, matrix in csr_layers.items():
+            if not (
+                np.array_equal(matrix.indptr, ref.indptr)
+                and np.array_equal(matrix.indices, ref.indices)
+            ):
+                raise ValueError(f"layer '{name}' has a different sparsity structure than {ref!r}")
+
+        return self._validated(
+            {
+                "required_arrays": {indices_name: ref.indices},
+                "layers": {name: matrix.data for name, matrix in csr_layers.items()},
+                "pointer_fields": {
+                    "start": ref.indptr[:-1].astype(np.int64),
+                    "end": ref.indptr[1:].astype(np.int64),
+                    "zarr_row": np.arange(ref.shape[0], dtype=np.int64),
+                },
+                "n_rows": ref.shape[0],
+            }
+        )
+
+
+@register_converter("image_features", "protein_abundance")
+class DenseConverter(ArrayConverter):
+    """Dense 2-D arrays -> any row-addressed dense layout (``DenseZarrPointer``)."""
+
+    input_type = np.ndarray
+    pointer_type = DenseZarrPointer
+
+    def convert(self, layers: dict[str, np.ndarray]) -> dict[str, Any]:
+        ref = next(iter(layers.values()))
+        n_rows = ref.shape[0]
+        for name, block in layers.items():
+            if block.shape[0] != n_rows:
+                raise ValueError(
+                    f"layer '{name}' has {block.shape[0]} rows; expected {n_rows} to match {ref!r}"
+                )
+        return self._validated(
+            {
+                "required_arrays": {},
+                "layers": dict(layers),
+                "pointer_fields": {"position": np.arange(n_rows, dtype=np.int64)},
+                "n_rows": n_rows,
+            }
+        )
+
+
+# ---------------------------------------------------------------------------
+# Readers: a source -> a stream of layer batches
+# ---------------------------------------------------------------------------
+#
+# A reader maps source -> target layer names and streams row-batches. It is
+# fully spec-agnostic — layer-set conformance to the spec (required present,
+# whitelist respected) is the converter's job. One reader works for any
+# feature space.
+
+
+class Reader(Protocol):
+    """A source adapter: streams a source as row-batches of layer arrays.
+
+    Implementations yield ``{target_layer: array}`` dicts, one per row-batch,
+    where every layer in a batch shares one sparsity structure. The array type
+    (CSR or dense) selects the converter downstream, so a reader is free to
+    decode whatever source it wants as long as it emits in row order.
+    """
+
+    def iter_layer_batches(
+        self, batch_size: int, layer_mapping: dict[str, str]
+    ) -> Generator[dict[str, Any]]: ...
+
+
+class AnnDataReader:
+    """Streams an AnnData as row-batches of layer arrays.
+
+    The source mirrors ``add_from_anndata``: an in-memory :class:`AnnData`, or
+    a path to an ``.h5ad`` file. ``open`` reads a path; an already-open AnnData
+    is returned as-is.
+
+    Backed sources (``backed="r"``) are streamed lazily: each row-batch is read
+    straight from the open HDF5 file, so only ``batch_size`` rows are
+    materialized at a time. Backed sparse layers must be CSR (row-major);
+    backed dense layers are read as row slices.
+    """
+
+    def __init__(self, source: ad.AnnData | str | Path) -> None:
+        self.source = source
+
+    def open(self, backed: str | None = None, **kwargs) -> ad.AnnData:
+        if isinstance(self.source, ad.AnnData):
+            return self.source
+        return ad.read_h5ad(self.source, backed=backed, **kwargs)
+
+    def iter_layer_batches(
+        self,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+        **open_kwargs,
+    ) -> Generator[dict[str, Any]]:
+        adata = self.open(**open_kwargs)
+        if adata.isbacked:
+            yield from self._iter_backed_batches(adata, batch_size, layer_mapping)
+        else:
+            yield from self._iter_in_memory_batches(adata, batch_size, layer_mapping)
+
+    def _iter_in_memory_batches(
+        self,
+        adata: ad.AnnData,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, Any]]:
+        """Yield ``{target_layer: array}`` per row-slice of an in-memory AnnData.
+
+        ``layer_mapping`` maps a source layer name (``"X"`` or a key in
+        ``adata.layers``) to a target layer name.
+        """
+        for start_idx in range(0, len(adata), batch_size):
+            batch = adata[start_idx : start_idx + batch_size]
+            batch_layers: dict[str, Any] = {}
+            for src_name, tgt_name in layer_mapping.items():
+                source = batch.X if src_name == "X" else batch.layers[src_name]
+                if sp.issparse(source):
+                    source = source.tocsr()
+                else:
+                    source = np.asarray(source)
+                batch_layers[tgt_name] = source
+            yield batch_layers
+
+    def _iter_backed_batches(
+        self,
+        adata: ad.AnnData,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, Any]]:
+        """Yield row-batches by reading the backing HDF5 file lazily.
+
+        Each source layer is resolved to its HDF5 node once (``X`` or a member
+        of the ``layers`` group), caching the CSR ``indptr`` so only the rows of
+        the current batch are read. The per-batch arrays match the in-memory
+        path: a ``csr_matrix`` for sparse layers, a dense ``ndarray`` otherwise.
+        """
+        import h5py
+
+        n_rows = adata.n_obs
+        n_vars = adata.n_vars
+        h5file = adata.file._file
+
+        nodes: dict[str, Any] = {}
+        indptrs: dict[str, np.ndarray] = {}
+        for src_name in layer_mapping:
+            node = h5file["X"] if src_name == "X" else h5file["layers"][src_name]
+            if isinstance(node, h5py.Group):
+                encoding = node.attrs.get("encoding-type", "")
+                if encoding and encoding != "csr_matrix":
+                    raise ValueError(
+                        f"Backed ingestion of source layer '{src_name}' requires CSR "
+                        f"(row-major) storage, but it is encoded as '{encoding}'. "
+                        f"Re-save the h5ad with a CSR X or load it in memory."
+                    )
+                indptrs[src_name] = node["indptr"][:]
+            nodes[src_name] = node
+
+        for r0 in range(0, n_rows, batch_size):
+            r1 = min(r0 + batch_size, n_rows)
+            batch_layers: dict[str, Any] = {}
+            for src_name, tgt_name in layer_mapping.items():
+                node = nodes[src_name]
+                if isinstance(node, h5py.Group):
+                    indptr = indptrs[src_name]
+                    o0, o1 = int(indptr[r0]), int(indptr[r1])
+                    batch_layers[tgt_name] = sp.csr_matrix(
+                        (node["data"][o0:o1], node["indices"][o0:o1], indptr[r0 : r1 + 1] - o0),
+                        shape=(r1 - r0, n_vars),
+                    )
+                else:
+                    batch_layers[tgt_name] = np.asarray(node[r0:r1])
+            yield batch_layers
+
+
+class COOReader:
+    """Streams a cell-sorted COO triplet file as CSR row-batches.
+
+    The source is a gzipped or plain text file of
+    ``(feature_idx, cell_idx, value)`` triplets that **must be sorted by cell
+    index**. Each emitted batch is a ``csr_matrix`` of ``batch_size``
+    consecutive cells spanning the full ``[0, n_rows)`` row space: cells absent
+    from the file appear as empty rows, so the batch stream stays positionally
+    aligned with the obs table. The existing :class:`CSRSparseConverter` then
+    handles the sparse layout, exactly as for an AnnData source — no COO-aware
+    converter or writer is needed.
+
+    Because each batch is built directly from a contiguous file slice, the
+    cell-sorted invariant is load-bearing; the reader checks monotonicity and
+    index ranges and fails loudly rather than emitting a corrupt matrix. Only
+    ``batch_size`` cells' worth of triplets (plus one in-flight read chunk) are
+    materialized at a time, so peak memory is bounded regardless of file size.
     """
 
     def __init__(
         self,
-        zarr_indices: zarr.Array,
-        zarr_values: zarr.Array,
-        shard_elems: int,
+        coo_path: str | Path,
+        *,
+        n_rows: int,
+        n_features: int,
+        separator: str = "\t",
+        gene_col: int = 0,
+        cell_col: int = 1,
+        value_col: int = 2,
+        one_indexed: bool = True,
+        read_batch_rows: int = 5_000_000,
     ) -> None:
-        self._zarr_indices = zarr_indices
-        self._zarr_values = zarr_values
-        self._written = 0
-        self._capacity = int(zarr_indices.shape[0])
-        self._shard_elems = shard_elems
+        self.coo_path = coo_path
+        self.n_rows = n_rows
+        self.n_features = n_features
+        self.separator = separator
+        self.gene_col = gene_col
+        self.cell_col = cell_col
+        self.value_col = value_col
+        self.offset = 1 if one_indexed else 0
+        self.read_batch_rows = read_batch_rows
+
+    def _iter_triplet_chunks(
+        self,
+    ) -> Generator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Yield ``(cells, genes, values)`` per raw read chunk, 0-based indices.
+
+        Validates each chunk: indices stay in range, and the cell column is
+        non-decreasing both within and across chunks (the cell-sorted invariant
+        the CSR-by-batch construction depends on).
+        """
+        cell_col_name = f"column_{self.cell_col + 1}"
+        gene_col_name = f"column_{self.gene_col + 1}"
+        value_col_name = f"column_{self.value_col + 1}"
+
+        # gzip via subprocess is faster than the Python gzip module for the
+        # large files this reader targets; plain files are opened directly.
+        is_gzip = str(self.coo_path).endswith(".gz")
+        if is_gzip:
+            proc = subprocess.Popen(["gzip", "-dc", str(self.coo_path)], stdout=subprocess.PIPE)
+            source = proc.stdout
+        else:
+            proc = None
+            source = open(self.coo_path, "rb")
+
+        prev_last_cell = -1
+        try:
+            reader = pl.read_csv_batched(
+                source,
+                has_header=False,
+                separator=self.separator,
+                batch_size=self.read_batch_rows,
+                schema_overrides={
+                    gene_col_name: pl.Int32,
+                    cell_col_name: pl.Int32,
+                    value_col_name: pl.Int32,
+                },
+            )
+            while True:
+                batches = reader.next_batches(1)
+                if not batches:
+                    break
+                batch = batches[0]
+                cells = batch[cell_col_name].to_numpy().astype(np.int64) - self.offset
+                genes = batch[gene_col_name].to_numpy().astype(np.int64) - self.offset
+                vals = batch[value_col_name].to_numpy()
+                if cells.size == 0:
+                    continue
+
+                if not np.all(cells[1:] >= cells[:-1]) or cells[0] < prev_last_cell:
+                    raise ValueError(
+                        "COO file is not sorted by cell index; COOReader requires "
+                        "cell-sorted input. Sort the file by the cell column first."
+                    )
+                prev_last_cell = int(cells[-1])
+
+                cmin, cmax = int(cells[0]), int(cells[-1])
+                if cmin < 0 or cmax >= self.n_rows:
+                    raise ValueError(
+                        f"cell index out of range [0, {self.n_rows}): saw [{cmin}, {cmax}]. "
+                        f"Check one_indexed ({self.offset == 1}) and n_rows."
+                    )
+                gmin, gmax = int(genes.min()), int(genes.max())
+                if gmin < 0 or gmax >= self.n_features:
+                    raise ValueError(
+                        f"feature index out of range [0, {self.n_features}): saw [{gmin}, {gmax}]. "
+                        f"Check one_indexed ({self.offset == 1}) and n_features."
+                    )
+                yield cells, genes, vals
+        finally:
+            source.close()
+            if proc is not None:
+                proc.wait()
+
+    def _emit(
+        self,
+        r0: int,
+        r1: int,
+        cells: np.ndarray,
+        genes: np.ndarray,
+        vals: np.ndarray,
+    ) -> sp.csr_matrix:
+        """Build a CSR for cell rows ``[r0, r1)`` from the (sorted) buffer.
+
+        Cells absent from the slice become empty rows, so the matrix always has
+        exactly ``r1 - r0`` rows regardless of which cells carried entries.
+        """
+        n_batch = r1 - r0
+        lo = int(np.searchsorted(cells, r0, side="left"))
+        hi = int(np.searchsorted(cells, r1, side="left"))
+        local = cells[lo:hi] - r0
+        indptr = np.zeros(n_batch + 1, dtype=np.int64)
+        np.cumsum(np.bincount(local, minlength=n_batch), out=indptr[1:])
+        return sp.csr_matrix((vals[lo:hi], genes[lo:hi], indptr), shape=(n_batch, self.n_features))
+
+    def iter_layer_batches(
+        self,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, Any]]:
+        if len(layer_mapping) != 1:
+            raise ValueError(
+                f"COOReader writes a single value layer, but layer_mapping has "
+                f"{len(layer_mapping)} entries: {sorted(layer_mapping)}"
+            )
+        (tgt_name,) = layer_mapping.values()
+
+        buf_cells = np.empty(0, dtype=np.int64)
+        buf_genes = np.empty(0, dtype=np.int64)
+        buf_vals: np.ndarray | None = None
+        next_row = 0
+
+        for cells, genes, vals in self._iter_triplet_chunks():
+            if buf_vals is None:
+                buf_vals = np.empty(0, dtype=vals.dtype)
+            buf_cells = np.concatenate([buf_cells, cells])
+            buf_genes = np.concatenate([buf_genes, genes])
+            buf_vals = np.concatenate([buf_vals, vals])
+
+            # The highest cell in the buffer may continue in the next chunk, so
+            # only cells strictly below it are complete and safe to emit.
+            safe_upto = int(buf_cells[-1])
+            while next_row + batch_size <= safe_upto:
+                r1 = next_row + batch_size
+                yield {tgt_name: self._emit(next_row, r1, buf_cells, buf_genes, buf_vals)}
+                next_row = r1
+
+            # Drop fully-emitted triplets (cells < next_row) from the buffer.
+            keep = int(np.searchsorted(buf_cells, next_row, side="left"))
+            buf_cells = buf_cells[keep:]
+            buf_genes = buf_genes[keep:]
+            buf_vals = buf_vals[keep:]
+
+        # Flush the remainder, padding empty rows out to n_rows so the batch
+        # stream covers every obs row even past the last cell with entries.
+        if buf_vals is None:
+            buf_vals = np.empty(0, dtype=np.int64)
+        while next_row < self.n_rows:
+            r1 = min(next_row + batch_size, self.n_rows)
+            yield {tgt_name: self._emit(next_row, r1, buf_cells, buf_genes, buf_vals)}
+            next_row = r1
+
+
+# ---------------------------------------------------------------------------
+# Writers: own the zarr group and the running offsets
+# ---------------------------------------------------------------------------
+
+
+class _BaseZarrWriter:
+    """Owns a zarr group and the running offsets for one feature space.
+
+    The converter emits batch-relative arrays and pointer fields. The writer
+    is the only thing that knows how much has already been written, so it
+    does the two things the converter and reader cannot:
+
+    1. Appends each batch's arrays into the (growable) zarr arrays.
+    2. Rebases the converter's origin-zero pointer fields into absolute
+       coordinates by adding the relevant running counter.
+
+    Which counter rebases which field lives on the pointer type
+    (``pointer_type.offset_axes``), so the writer body stays generic across
+    pointer types: it holds the counters, advances each by however much the
+    subclass reports it appended, and emits a pointer table whose columns are
+    exactly the pointer type's fields plus ``zarr_group``.
+    """
+
+    pointer_type: ClassVar[type]
+
+    def __init__(
+        self,
+        spec: FeatureSpaceSpec,
+        group: zarr.Group,
+        *,
+        zarr_group_name: str,
+        layer_names: list[str],
+    ) -> None:
+        self._spec = spec
+        self._group = group
+        self._zarr_group_name = zarr_group_name
+        self._layer_names = layer_names
+        # One running total per distinct counter the pointer type references.
+        self._counters: dict[str, int] = {
+            axis: 0 for axis in set(self.pointer_type.offset_axes.values())
+        }
+        self._capacity = 0
 
     @classmethod
-    def create(
+    def for_feature_space(
         cls,
         group: zarr.Group,
-        zarr_layer: str,
+        feature_space: str,
         *,
-        data_dtype: np.dtype | None = None,
-        feature_space: str = "gene_expression",
+        layer_names: list[str],
+        zarr_group_name: str | None = None,
+        **create_kwargs,
+    ) -> "_BaseZarrWriter":
+        spec = get_spec(feature_space)
+        writer = cls(
+            spec,
+            group,
+            zarr_group_name=zarr_group_name or group.name,
+            layer_names=layer_names,
+        )
+        writer._create_arrays(**create_kwargs)
+        return writer
+
+    def append(self, converted: dict[str, Any]) -> dict[str, np.ndarray]:
+        """Append one converted batch; return its pointer fields, absolute."""
+        offset_axes = self.pointer_type.offset_axes
+        # Rebase BEFORE advancing: this batch starts where the last one ended.
+        rebased = {
+            field: values + self._counters[offset_axes[field]]
+            for field, values in converted["pointer_fields"].items()
+        }
+        advances = self._append(converted)
+        for axis, amount in advances.items():
+            self._counters[axis] += amount
+        return rebased
+
+    def to_pointers(self, rebased: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+        """Pointer table columns for a batch: the pointer fields + zarr_group.
+
+        Generic across pointer types — the columns are whatever fields the
+        converter produced, so a new pointer type needs no new code here.
+        """
+        n = len(next(iter(rebased.values())))
+        columns: dict[str, np.ndarray] = {
+            _ZARR_GROUP_COLUMN: np.full(n, self._zarr_group_name, dtype=object)
+        }
+        columns.update(rebased)
+        return columns
+
+    def _append(self, converted: dict[str, Any]) -> dict[str, int]:
+        """Write the batch's arrays; return ``{counter_name: advance}``."""
+        raise NotImplementedError
+
+    def _create_arrays(self, **kwargs) -> None:
+        raise NotImplementedError
+
+    def trim(self) -> None:
+        raise NotImplementedError
+
+
+class SparseZarrWriter(_BaseZarrWriter):
+    pointer_type = SparseZarrPointer
+
+    def _create_arrays(
+        self,
+        *,
         initial_capacity: int = _SHARD_ELEMS,
         chunk_elems: int = _CHUNK_ELEMS,
         shard_elems: int = _SHARD_ELEMS,
-    ) -> "SparseZarrWriter":
-        """Create zarr arrays for incremental sparse writes.
+    ) -> None:
+        self._shard_elems = shard_elems
+        zgs = self._spec.zarr_group_spec
+        # Structural array names come from the spec, not a literal — so a spec
+        # using "gene/indices" instead of "csr/indices" works with no changes.
+        self._structural_arrays = {
+            spec_array.array_name: zgs.create_array(
+                self._group,
+                spec_array.array_name,
+                (initial_capacity,),
+                chunks=(chunk_elems,),
+                shards=(shard_elems,),
+            )
+            for spec_array in zgs.required_arrays
+        }
+        self._layer_arrays = {
+            name: zgs.create_array(
+                self._group,
+                name,
+                (initial_capacity,),
+                chunks=(chunk_elems,),
+                shards=(shard_elems,),
+            )
+            for name in self._layer_names
+        }
+        self._capacity = initial_capacity
 
-        Parameters
-        ----------
-        group
-            Zarr group (e.g., ``atlas.create_zarr_group(uid)``).
-        zarr_layer
-            Layer name (e.g., ``"counts"``).
-        data_dtype
-            Data type for the values array. If ``None``, the first entry of
-            the layer's ``allowed_dtypes`` in the spec is used.
-        feature_space
-            Feature space name, used to look up the zarr group spec. The
-            spec supplies dtype, ndim, and compressor for both the indices
-            and values arrays.
-        initial_capacity
-            Initial size for the flat arrays. Will be grown as needed.
-        chunk_elems
-            Chunk size for zarr arrays.
-        shard_elems
-            Shard size for zarr arrays.
-        """
-        spec = get_spec(feature_space)
-        chunk_shape = (chunk_elems,)
-        shard_shape = (shard_elems,)
-        indices_name = (
-            f"{spec.zarr_group_spec.layers.prefix}/indices"
-            if spec.zarr_group_spec.layers.prefix
-            else "indices"
-        )
+    def _flat_arrays(self) -> Generator[zarr.Array]:
+        yield from self._structural_arrays.values()
+        yield from self._layer_arrays.values()
 
-        zarr_indices = spec.zarr_group_spec.create_array(
-            group,
-            indices_name,
-            (initial_capacity,),
-            chunks=chunk_shape,
-            shards=shard_shape,
-        )
-        zarr_values = spec.zarr_group_spec.create_array(
-            group,
-            zarr_layer,
-            (initial_capacity,),
-            dtype=data_dtype,
-            chunks=chunk_shape,
-            shards=shard_shape,
-        )
-        return cls(zarr_indices, zarr_values, shard_elems)
-
-    @classmethod
-    def open(
-        cls,
-        group: zarr.Group,
-        zarr_layer: str,
-        *,
-        feature_space: str = "gene_expression",
-        written: int = 0,
-        shard_elems: int = _SHARD_ELEMS,
-    ) -> "SparseZarrWriter":
-        """Reopen existing zarr arrays for resumed appending.
-
-        Parameters
-        ----------
-        group
-            Existing zarr group containing the arrays.
-        zarr_layer
-            Layer name (e.g., ``"counts"``).
-        feature_space
-            Feature space name, used to look up the zarr group spec.
-        written
-            Number of nonzero elements already written (from checkpoint).
-        shard_elems
-            Shard size, must match the original arrays.
-        """
-        spec = get_spec(feature_space)
-        prefix = spec.zarr_group_spec.layers.prefix
-
-        if prefix:
-            zarr_indices = group[f"{prefix}/indices"]
-            zarr_values = group[f"{prefix}/layers/{zarr_layer}"]
-        else:
-            zarr_indices = group["indices"]
-            zarr_values = group[f"layers/{zarr_layer}"]
-
-        writer = cls(zarr_indices, zarr_values, shard_elems)
-        writer._written = written
-        writer._capacity = int(zarr_indices.shape[0])
-        return writer
-
-    def _ensure_capacity(self, needed: int) -> None:
-        """Grow arrays if needed to fit ``needed`` more elements."""
-        required = self._written + needed
+    def _ensure_capacity(self, extra: int) -> None:
+        required = self._counters["elems"] + extra
         if required <= self._capacity:
             return
-        # Grow by at least 2x or to required, rounded up to shard boundary.
         new_cap = max(self._capacity * 2, required)
         new_cap = ((new_cap + self._shard_elems - 1) // self._shard_elems) * self._shard_elems
-        self._zarr_indices.resize(new_cap)
-        self._zarr_values.resize(new_cap)
+        for arr in self._flat_arrays():
+            arr.resize((new_cap,))
         self._capacity = new_cap
 
-    def append_csr(self, csr: sp.csr_matrix) -> tuple[np.ndarray, np.ndarray]:
-        """Append a CSR matrix's flat arrays. Returns (starts, ends).
-
-        The returned starts/ends are absolute offsets into the flat zarr
-        arrays, suitable for ``SparseZarrPointer.start`` / ``.end``.
-        """
-        nnz = csr.nnz
-        if nnz == 0:
-            n_rows = csr.shape[0]
-            pos = self._written
-            starts = np.full(n_rows, pos, dtype=np.int64)
-            ends = np.full(n_rows, pos, dtype=np.int64)
-            return starts, ends
-
+    def _append(self, converted: dict[str, Any]) -> dict[str, int]:
+        structural = converted["required_arrays"]
+        layers = converted["layers"]
+        nnz = len(next(iter(structural.values())))
+        offset = self._counters["elems"]
         self._ensure_capacity(nnz)
 
-        offset = self._written
-        batch_size = self._shard_elems
-        written = 0
-        while written < nnz:
-            end = min(written + batch_size, nnz)
-            self._zarr_indices[offset + written : offset + end] = csr.indices[written:end].astype(
-                np.uint32, copy=False
-            )
-            self._zarr_values[offset + written : offset + end] = csr.data[written:end]
-            written = end
+        for name, values in structural.items():
+            arr = self._structural_arrays[name]
+            arr[offset : offset + nnz] = values.astype(arr.dtype, copy=False)
+        for name, values in layers.items():
+            arr = self._layer_arrays[name]
+            arr[offset : offset + nnz] = values.astype(arr.dtype, copy=False)
 
-        # Build per-row start/end from indptr
-        starts = csr.indptr[:-1].astype(np.int64) + offset
-        ends = csr.indptr[1:].astype(np.int64) + offset
-
-        self._written += nnz
-        return starts, ends
-
-    @property
-    def n_written(self) -> int:
-        """Total number of nonzero elements written so far."""
-        return self._written
+        return {"elems": nnz, "rows": converted["n_rows"]}
 
     def trim(self) -> None:
-        """Shrink arrays to actual written size. Call after all appends."""
-        if self._written < self._capacity:
-            self._zarr_indices.resize(self._written)
-            self._zarr_values.resize(self._written)
-            self._capacity = self._written
+        written = self._counters["elems"]
+        if written < self._capacity:
+            for arr in self._flat_arrays():
+                arr.resize((written,))
+            self._capacity = written
+
+
+class DenseZarrWriter(_BaseZarrWriter):
+    pointer_type = DenseZarrPointer
+
+    def _create_arrays(self, *, chunk_rows: int = 4096, shard_rows: int = 4096 * 8) -> None:
+        # Dense arrays need the feature count, which is only known once the
+        # first batch arrives, so creation is deferred to the first append.
+        self._chunk_rows = chunk_rows
+        self._shard_rows = shard_rows
+        self._layer_arrays: dict[str, zarr.Array] | None = None
+
+    def _create_layer_arrays(self, n_features: int) -> None:
+        zgs = self._spec.zarr_group_spec
+        self._layer_arrays = {
+            name: zgs.create_array(
+                self._group,
+                name,
+                (self._shard_rows, n_features),
+                chunks=(self._chunk_rows, n_features),
+                shards=(self._shard_rows, n_features),
+            )
+            for name in self._layer_names
+        }
+        self._capacity = self._shard_rows
+
+    def _ensure_capacity(self, extra: int) -> None:
+        required = self._counters["rows"] + extra
+        if required <= self._capacity:
+            return
+        new_cap = max(self._capacity * 2, required)
+        new_cap = ((new_cap + self._shard_rows - 1) // self._shard_rows) * self._shard_rows
+        for arr in self._layer_arrays.values():
+            arr.resize((new_cap, arr.shape[1]))
+        self._capacity = new_cap
+
+    def _append(self, converted: dict[str, Any]) -> dict[str, int]:
+        layers = converted["layers"]
+        ref = next(iter(layers.values()))
+        if self._layer_arrays is None:
+            self._create_layer_arrays(ref.shape[1])
+
+        n_rows = converted["n_rows"]
+        offset = self._counters["rows"]
+        self._ensure_capacity(n_rows)
+        for name, block in layers.items():
+            arr = self._layer_arrays[name]
+            arr[offset : offset + n_rows] = block.astype(arr.dtype, copy=False)
+
+        return {"rows": n_rows}
+
+    def trim(self) -> None:
+        if self._layer_arrays is None:
+            return
+        written = self._counters["rows"]
+        if written < self._capacity:
+            for arr in self._layer_arrays.values():
+                arr.resize((written, arr.shape[1]))
+            self._capacity = written
+
+
+_WRITERS: dict[type, type[_BaseZarrWriter]] = {
+    SparseZarrPointer: SparseZarrWriter,
+    DenseZarrPointer: DenseZarrWriter,
+}
+
+
+def writer_for(spec: FeatureSpaceSpec, group: zarr.Group, **kwargs) -> _BaseZarrWriter:
+    """Resolve the writer for ``spec`` by its pointer type."""
+    cls = _WRITERS.get(spec.pointer_type)
+    if cls is None:
+        raise KeyError(
+            f"No writer registered for pointer type {spec.pointer_type.__name__}. "
+            f"Register one in _WRITERS."
+        )
+    return cls.for_feature_space(group, spec.feature_space, **kwargs)
+
+
+def write_feature_space(
+    reader: Reader,
+    spec: FeatureSpaceSpec,
+    group: zarr.Group,
+    *,
+    batch_size: int,
+    layer_mapping: dict[str, str],
+    layer_names: list[str],
+    zarr_group_name: str | None = None,
+    **create_kwargs,
+) -> dict[str, np.ndarray]:
+    """Stream a feature space into ``group``, resolving converter + writer.
+
+    Given any registered feature space spec, the converter and writer are
+    resolved automatically (by array type and pointer type), so a brand-new
+    spec needs no new ingestion code. Returns the pointer table (columnar
+    dict) ready to merge onto the obs table.
+    """
+    writer = writer_for(
+        spec,
+        group,
+        layer_names=layer_names,
+        zarr_group_name=zarr_group_name,
+        **create_kwargs,
+    )
+    converter: ArrayConverter | None = None
+    columns: dict[str, list[np.ndarray]] | None = None
+    for batch_layers in reader.iter_layer_batches(batch_size, layer_mapping):
+        if converter is None:
+            converter = converter_for(spec, next(iter(batch_layers.values())))
+        rebased = writer.append(converter.convert(batch_layers))
+        batch_columns = writer.to_pointers(rebased)
+        if columns is None:
+            columns = {name: [values] for name, values in batch_columns.items()}
+        else:
+            for name, values in batch_columns.items():
+                columns[name].append(values)
+    writer.trim()
+    if columns is None:
+        return {}
+    return {name: np.concatenate(chunks) for name, chunks in columns.items()}
 
 
 def _build_row_arrow_table(
@@ -454,6 +966,111 @@ def _make_sparse_pointer(
     )
 
 
+def _writer_create_kwargs(
+    spec: FeatureSpaceSpec,
+    n_vars: int,
+    chunk_shape: tuple[int, ...] | None,
+    shard_shape: tuple[int, ...] | None,
+) -> dict[str, int]:
+    """Translate chunk/shard shapes into the new writer's create kwargs.
+
+    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers
+    take ``chunk_rows``/``shard_rows`` (the feature dimension is the full
+    width). Defaults match the rest of this module's constants.
+    """
+    if spec.pointer_type is SparseZarrPointer:
+        chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
+        shard_shape = shard_shape or (_SHARD_ELEMS,)
+        if len(chunk_shape) != 1 or len(shard_shape) != 1:
+            raise ValueError(
+                f"Sparse feature space '{spec.feature_space}' requires 1-element chunk_shape "
+                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
+            )
+        return {"chunk_elems": chunk_shape[0], "shard_elems": shard_shape[0]}
+
+    if spec.pointer_type is DenseZarrPointer:
+        if chunk_shape is None:
+            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
+        elif len(chunk_shape) == 2:
+            chunk_rows = chunk_shape[0]
+        else:
+            raise ValueError(
+                f"Dense feature space '{spec.feature_space}' requires a 2-element chunk_shape, "
+                f"got {chunk_shape}"
+            )
+        if shard_shape is None:
+            shard_rows = max(1, _SHARD_ELEMS // n_vars)
+            shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
+        elif len(shard_shape) == 2:
+            shard_rows = shard_shape[0]
+        else:
+            raise ValueError(
+                f"Dense feature space '{spec.feature_space}' requires a 2-element shard_shape, "
+                f"got {shard_shape}"
+            )
+        return {"chunk_rows": chunk_rows, "shard_rows": shard_rows}
+
+    raise NotImplementedError(
+        f"add_from_anndata does not support {spec.pointer_type.pointer_type_name} "
+        f"feature space '{spec.feature_space}'"
+    )
+
+
+def _pointer_struct_from_columns(
+    columns: dict[str, np.ndarray], struct_type: pa.StructType
+) -> pa.StructArray:
+    """Assemble a pointer StructArray from ``write_feature_space``'s columns.
+
+    Generic over pointer type: fields are taken in the struct type's declared
+    order and cast to its declared arrow types, so any pointer type whose
+    columns the writer emits works without special-casing.
+    """
+    fields = [struct_type.field(i) for i in range(struct_type.num_fields)]
+    arrays = [pa.array(columns[field.name], type=field.type) for field in fields]
+    return pa.StructArray.from_arrays(arrays, names=[field.name for field in fields])
+
+
+def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
+    """Raise if a polars var DataFrame has duplicate uid values."""
+    if "uid" not in var_df.columns:
+        return
+    n_total = var_df.height
+    n_unique = var_df["uid"].n_unique()
+    if n_unique != n_total:
+        n_dupes = n_total - n_unique
+        raise ValueError(
+            f"var_df has {n_dupes} duplicate uid value(s) "
+            f"({n_total} rows, {n_unique} unique). "
+            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
+        )
+
+
+def _validate_var_columns_against_registry(
+    var: pd.DataFrame | pl.DataFrame,
+    registry_table: lancedb.table.Table,
+    feature_space: str,
+) -> None:
+    """Validate that var columns exactly match the registry schema (minus ``global_index``).
+
+    Accepts a pandas or polars var table (only ``.columns`` is inspected). The
+    registry table's arrow schema is the source of truth. ``global_index`` is
+    assigned by :meth:`optimize` and must not appear on the var table.
+    """
+    expected = set(registry_table.schema.names) - {"global_index"}
+    actual = set(var.columns)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(
+            f"var columns do not match the '{feature_space}' registry schema. "
+            f"Expected exactly {sorted(expected)}; got {sorted(actual)}. "
+            f"Missing: {missing}. Unexpected: {extra}. "
+            f"Tip: if the registry schema uses StableUIDField, set the stable-uid "
+            f"source column on var and run "
+            f"<RegistrySchema>.compute_stable_uids(adata.var) to populate 'uid'."
+        )
+
+
 def insert_obs_records(
     atlas: RaggedAtlas,
     obs_df: pd.DataFrame,
@@ -513,195 +1130,74 @@ def insert_obs_records(
     return len(obs_df)
 
 
-def _write_sparse_batched(
-    group: zarr.Group,
-    adata: ad.AnnData,
-    zarr_layer: str,
-    chunk_shape: tuple[int, ...],
-    shard_shape: tuple[int, ...],
-    spec: FeatureSpaceSpec,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pre-allocate and stream-write CSR data in shard-sized batches.
-
-    Supports three input modes:
-
-    1. **Backed CSR** — reads directly from HDF5 CSR datasets (data/indices/indptr).
-    2. **Backed dense** — reads row batches from HDF5, converts each to CSR,
-       and streams without loading the full matrix.  Requires two passes: one
-       to count nonzeros, one to write.
-    3. **In-memory** — converts to scipy CSR then streams the flat arrays.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        ``(starts, ends)`` — per-obs indptr start/end positions.
-    """
-    backed_dense = _is_backed_dense(adata)
-
-    if _is_backed_csr(adata):
-        h5x = adata.file._file["X"]
-        nnz = int(h5x["data"].shape[0])
-        indptr = h5x["indptr"][:]
-        src_indices = h5x["indices"]
-        src_data = h5x["data"]
-        data_dtype = src_data.dtype
-    elif backed_dense:
-        # Two-pass approach to avoid loading the full dense matrix.
-        h5x = adata.file._file["X"]
-        data_dtype = h5x.dtype
-        # Pass 1: count nonzeros per row in batches.
-        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
-        batch_rows = max(batch_rows, 256)  # floor to avoid tiny batches
-        nnz, nnz_per_row = _count_nnz_batched(h5x, batch_rows)
-        # Build indptr from nnz_per_row.
-        indptr = np.zeros(len(nnz_per_row) + 1, dtype=np.int64)
-        np.cumsum(nnz_per_row, out=indptr[1:])
-        src_indices = None  # sentinel: pass 2 will stream
-        src_data = None
-    else:
-        csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-        nnz = csr.nnz
-        indptr = csr.indptr
-        src_indices = csr.indices
-        src_data = csr.data
-        data_dtype = csr.data.dtype
-
-    indices_name = (
-        f"{spec.zarr_group_spec.layers.prefix}/indices"
-        if spec.zarr_group_spec.layers.prefix
-        else "indices"
-    )
-    zarr_indices = spec.zarr_group_spec.create_array(
-        group, indices_name, (nnz,), chunks=chunk_shape, shards=shard_shape
-    )
-    zarr_values = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (nnz,),
-        dtype=data_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    if backed_dense:
-        # Pass 2: read row batches, convert to CSR, write flat arrays.
-        n_rows = adata.n_obs
-        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
-        batch_rows = max(batch_rows, 256)
-        written = 0
-        for row_start in range(0, n_rows, batch_rows):
-            row_end = min(row_start + batch_rows, n_rows)
-            batch_csr = sp.csr_matrix(h5x[row_start:row_end])
-            batch_nnz = batch_csr.nnz
-            if batch_nnz == 0:
-                continue
-            zarr_indices[written : written + batch_nnz] = batch_csr.indices.astype(
-                np.uint32, copy=False
-            )
-            zarr_values[written : written + batch_nnz] = batch_csr.data
-            written += batch_nnz
-    else:
-        # Stream flat CSR arrays (backed CSR or in-memory).
-        batch_size = shard_shape[0]
-        written = 0
-        while written < nnz:
-            end = min(written + batch_size, nnz)
-            zarr_indices[written:end] = src_indices[written:end].astype(np.uint32, copy=False)
-            zarr_values[written:end] = src_data[written:end]
-            written = end
-
-    starts = indptr[:-1].astype(np.int64)
-    ends = indptr[1:].astype(np.int64)
-    return starts, ends
-
-
-def _write_dense_batched(
-    group: zarr.Group,
-    adata: ad.AnnData,
-    zarr_layer: str,
-    chunk_shape: tuple[int, ...],
-    shard_shape: tuple[int, ...],
-    spec: FeatureSpaceSpec,
-) -> None:
-    """Pre-allocate and stream-write dense 2D data in shard-sized row batches.
-
-    Slices ``adata.X[start:end, :]`` per batch; anndata handles backed vs
-    in-memory transparently for dense arrays.
-    """
-    n_rows, n_vars = adata.shape
-    batch_size = shard_shape[0]
-    data_dtype = adata.X.dtype
-
-    zarr_arr = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (n_rows, n_vars),
-        dtype=data_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    written = 0
-    while written < n_rows:
-        end = min(written + batch_size, n_rows)
-        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
-        written = end
-
-
-def add_anndata_batch(
+def ingest_dataset(
     atlas: RaggedAtlas,
-    adata: ad.AnnData,
+    reader: Reader,
     *,
+    obs_df: pd.DataFrame,
     field_name: str,
-    zarr_layer: str,
+    layer_mapping: dict[str, str],
     dataset_record: DatasetSchema,
+    n_vars: int,
+    var_df: pd.DataFrame | None = None,
+    required_pointer_type: type | None = None,
+    batch_size: int = _DEFAULT_BATCH_ROWS,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
     obs_table_name: str | None = None,
 ) -> int:
-    """Ingest an AnnData into the atlas using batched zarr writes.
+    """Stream one feature space from a reader into the atlas and stamp obs rows.
 
-    Always ingests ``adata.X``. ``zarr_layer`` is the *destination* layer name
-    within the zarr group (e.g. ``"counts"``), not a source AnnData layer.
-
-    Writes zarr arrays, var_df sidecar, remap, and inserts row records into
-    the obs table. Features must already be registered via
-    :meth:`RaggedAtlas.register_features`. For feature spaces with
-    ``has_var_df=True``, ``adata.var`` must have columns exactly matching the
-    registry schema (minus ``global_index``) — including a ``uid`` column whose
-    values are the registry uids for each local feature (use
-    ``<RegistrySchema>.compute_stable_uids(adata.var)`` when the schema declares
-    a ``StableUIDField``).
+    The shared spine behind :func:`add_from_anndata`: given any :class:`Reader`
+    plus the obs (and, where the spec needs it, var) tables it was built from,
+    this validates obs and var, registers the dataset, writes the matrix
+    feature-space-first via :func:`write_feature_space`, and stamps the resulting
+    pointer column onto the obs rows. The reader decides the source format; the
+    converter and writer are resolved from the spec. One or many layers can be
+    written in a single pass — they share the feature space's structure.
 
     Parameters
     ----------
     atlas:
-        The atlas to ingest into.
-    adata:
-        The AnnData to ingest. Use ``backed="r"`` for large files to avoid
-        materialising the full matrix; see :func:`add_from_anndata` for a
-        convenience wrapper that opens h5ad paths automatically.
+        The atlas to ingest into. Features must already be registered.
+    reader:
+        A :class:`Reader` that streams the matrix as row-batches. It must emit
+        exactly ``len(obs_df)`` rows, in obs order.
+    obs_df:
+        Validated obs DataFrame with schema-aligned columns, one row per cell.
     field_name:
         Obs-schema attribute name for the pointer column to populate.
-        The feature_space is derived from its registered ``PointerField``.
-    zarr_layer:
-        Destination layer name within the zarr ``layers/`` group
-        (e.g. ``"counts"``). Must be one of the allowed values for the
-        feature space.
+    layer_mapping:
+        Maps each source layer the reader should read to its destination layer
+        name in the spec's ``layers/`` group, e.g. ``{"X": "counts"}`` or
+        ``{"X": "counts", "spliced": "spliced"}`` for a multi-layer write. All
+        layers share one structure (sparsity / row count); destination names
+        must be unique.
     dataset_record:
-        Dataset record to register. ``dataset_record.zarr_group`` is used as
-        the zarr group path (relative to the atlas store). Construct with
-        :class:`DatasetSchema` or a subclass for richer metadata.
-    chunk_shape:
-        Zarr chunk shape. For sparse feature spaces this must be a 1-element
-        tuple; for dense a 2-element tuple ``(n_rows_per_chunk, n_features)``.
-        Defaults to ``(_CHUNK_ELEMS,)`` for sparse and
-        ``(max(1, _CHUNK_ELEMS // n_vars), n_vars)`` for dense.
-        Values should be multiples of 128 for optimal BP-128 bitpacking.
-    shard_shape:
-        Zarr shard shape, same dimensionality rules as ``chunk_shape``.
-        Defaults to ``(_SHARD_ELEMS,)`` for sparse and
-        ``(max(1, _SHARD_ELEMS // n_vars), n_vars)`` for dense.
+        Dataset record to register; ``dataset_record.zarr_group`` is the zarr
+        group path.
+    n_vars:
+        Number of features (matrix width). Only used to size dense-writer
+        chunks/shards; ignored for sparse layouts.
+    var_df:
+        Pandas var table (one row per feature, in positional order); its index
+        is dropped before use. Required for feature spaces whose spec sets
+        ``has_var_df``; validated against the registry schema and checked for
+        duplicate uids. Ignored otherwise.
+    source_layer:
+        The key the reader maps to ``zarr_layer`` (e.g. ``"X"`` for AnnData).
+    required_pointer_type:
+        If given, fail fast unless the spec's pointer type matches — lets a
+        reader that only feeds one layout family (e.g. ``COOReader`` → sparse)
+        reject a mismatched feature space before any data is written.
+    batch_size:
+        Rows read and written per batch.
+    chunk_shape, shard_shape:
+        Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
+        dense). Default to this module's constants.
+    obs_table_name:
+        Which obs table to ingest into. May be ``None`` only when the atlas has
+        exactly one obs table.
 
     Returns
     -------
@@ -716,108 +1212,75 @@ def add_anndata_batch(
             "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    pointer_fields = atlas.pointer_fields_for(name)
-    pointer_field: PointerField = pointer_fields[field_name]
+    if not layer_mapping:
+        raise ValueError("layer_mapping must map at least one source layer to a destination.")
+    layer_names = list(layer_mapping.values())
+    if len(set(layer_names)) != len(layer_names):
+        raise ValueError(f"layer_mapping destination names must be unique, got {layer_names}.")
+
+    pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
-
-    if (
-        spec.zarr_group_spec.layers.allowed
-        and zarr_layer not in spec.zarr_group_spec.layers.allowed_names
-    ):
+    if required_pointer_type is not None and spec.pointer_type is not required_pointer_type:
         raise ValueError(
-            f"zarr_layer '{zarr_layer}' is not allowed for feature space "
-            f"'{feature_space}'. Allowed: {spec.zarr_group_spec.layers.allowed_names}"
+            f"This reader requires {required_pointer_type.pointer_type_name} feature "
+            f"spaces, but '{feature_space}' is {spec.pointer_type.pointer_type_name}."
         )
 
-    obs_errors = validate_obs_columns(adata.obs, obs_schema)
+    obs_errors = validate_obs_columns(obs_df, obs_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
 
     if spec.has_var_df:
+        if var_df is None:
+            raise ValueError(
+                f"Feature space '{feature_space}' requires a var_df, but none was provided."
+            )
+        var_df_pl = pl.from_pandas(var_df.reset_index(drop=True))
         registry_table = atlas._registry_tables[feature_space]
-        _validate_var_columns_against_registry(adata.var, registry_table, feature_space)
-        _check_var_no_duplicate_uids(adata.var)
-
-    n_rows = adata.n_obs
-    zarr_group = dataset_record.zarr_group
-
-    if spec.pointer_type is SparseZarrPointer:
-        chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
-        shard_shape = shard_shape or (_SHARD_ELEMS,)
-        if len(chunk_shape) != 1 or len(shard_shape) != 1:
-            raise ValueError(
-                f"Sparse feature space '{feature_space}' requires 1-element chunk_shape "
-                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
-            )
-    elif spec.pointer_type is DenseZarrPointer:
-        n_vars = adata.n_vars
-        if chunk_shape is None:
-            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
-            chunk_shape = (chunk_rows, n_vars)
-        else:
-            chunk_rows = chunk_shape[0]
-        if shard_shape is None:
-            shard_rows = max(1, _SHARD_ELEMS // n_vars)
-            # Shard must contain a whole number of chunks.
-            shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
-            shard_shape = (shard_rows, n_vars)
-        if len(chunk_shape) != 2 or len(shard_shape) != 2:
-            raise ValueError(
-                f"Dense feature space '{feature_space}' requires 2-element chunk_shape "
-                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
-            )
-    else:
-        raise NotImplementedError(
-            f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
-            f"feature space '{feature_space}'"
-        )
-
-    if spec.has_var_df:
-        var_df = pl.from_pandas(adata.var.reset_index(drop=True))
-        atlas.register_dataset(dataset_record, var_df=var_df)
+        _validate_var_columns_against_registry(var_df_pl, registry_table, feature_space)
+        _check_var_no_duplicate_uids_pl(var_df_pl)
+        atlas.register_dataset(dataset_record, var_df=var_df_pl)
     else:
         atlas.register_dataset(dataset_record)
 
+    zarr_group = dataset_record.zarr_group
     group = atlas.create_zarr_group(zarr_group)
-    if spec.pointer_type is SparseZarrPointer:
-        starts, ends = _write_sparse_batched(
-            group, adata, zarr_layer, chunk_shape, shard_shape, spec
-        )
-    elif spec.pointer_type is DenseZarrPointer:
-        _write_dense_batched(group, adata, zarr_layer, chunk_shape, shard_shape, spec)
-    else:
-        raise NotImplementedError(
-            f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
-            f"feature space '{feature_space}'"
+
+    # The matrix write: converter + writer resolved from the spec. Layer
+    # conformance (allowed/required layers) is enforced inside the converter.
+    pointer_columns = write_feature_space(
+        reader,
+        spec,
+        group,
+        batch_size=batch_size,
+        layer_mapping=layer_mapping,
+        layer_names=layer_names,
+        zarr_group_name=zarr_group,
+        **_writer_create_kwargs(spec, n_vars, chunk_shape, shard_shape),
+    )
+
+    # The reader must cover every obs row exactly once, in order, so the pointer
+    # table aligns positionally with obs_df.
+    n_emitted = len(next(iter(pointer_columns.values()))) if pointer_columns else 0
+    if n_emitted != len(obs_df):
+        raise ValueError(
+            f"reader emitted {n_emitted} rows but obs_df has {len(obs_df)}; they must match."
         )
 
-    # Build pointer struct for the active feature space
-    if spec.pointer_type is SparseZarrPointer:
-        pointer_struct = _make_sparse_pointer(zarr_group, starts, ends)
-    elif spec.pointer_type is DenseZarrPointer:
-        pointer_struct = pa.StructArray.from_arrays(
-            [
-                pa.array([zarr_group] * n_rows, type=pa.string()),
-                pa.array(np.arange(n_rows, dtype=np.int64), type=pa.int64()),
-            ],
-            names=["zarr_group", "position"],
-        )
-    else:
-        raise NotImplementedError(
-            f"add_anndata_batch does not support {spec.pointer_type.pointer_type_name} "
-            f"feature space '{feature_space}'"
-        )
-
+    arrow_schema = obs_schema.to_arrow_schema()
+    pointer_struct = _pointer_struct_from_columns(
+        pointer_columns, arrow_schema.field(pointer_field.field_name).type
+    )
     arrow_table = _build_row_arrow_table(
         atlas,
-        adata.obs,
+        obs_df,
         dataset_uid=dataset_record.dataset_uid,
         pointer_data={pointer_field.field_name: pointer_struct},
         obs_table_name=name,
     )
     atlas.add_obs_records(arrow_table, obs_table_name=name)
-    return n_rows
+    return len(obs_df)
 
 
 def add_from_anndata(
@@ -826,302 +1289,76 @@ def add_from_anndata(
     *,
     field_name: str,
     zarr_layer: str,
+    layer_mapping: dict[str, str] | None = None,
     dataset_record: DatasetSchema,
+    batch_size: int = _DEFAULT_BATCH_ROWS,
+    backed: str | None = None,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
     obs_table_name: str | None = None,
 ) -> int:
-    """Convenience wrapper around :func:`add_anndata_batch`.
+    """Ingest an AnnData (or .h5ad path) into the atlas.
 
-    Accepts an in-memory :class:`anndata.AnnData` or a path to an ``.h5ad``
-    file.  Paths are opened with ``backed="r"`` so the full matrix is never
-    materialised into memory.
-
-    All other parameters are forwarded to :func:`add_anndata_batch`; see that
-    function for full documentation.
-    """
-    if not isinstance(adata, ad.AnnData):
-        adata = ad.read_h5ad(adata, backed="r")
-    return add_anndata_batch(
-        atlas,
-        adata,
-        field_name=field_name,
-        zarr_layer=zarr_layer,
-        dataset_record=dataset_record,
-        chunk_shape=chunk_shape,
-        shard_shape=shard_shape,
-        obs_table_name=obs_table_name,
-    )
-
-
-def add_coo_batch(
-    atlas: RaggedAtlas,
-    coo_path: Path,
-    *,
-    obs_df: pd.DataFrame,
-    var_df: pl.DataFrame,
-    field_name: str,
-    zarr_layer: str,
-    dataset_record: DatasetSchema,
-    n_rows: int,
-    n_features: int,
-    separator: str = "\t",
-    gene_col: int = 0,
-    cell_col: int = 1,
-    value_col: int = 2,
-    one_indexed: bool = True,
-    value_dtype: np.dtype | None = None,
-    chunk_shape: tuple[int, ...] | None = None,
-    shard_shape: tuple[int, ...] | None = None,
-    obs_table_name: str | None = None,
-) -> int:
-    """Ingest a cell-sorted COO triplet matrix into the atlas via streaming.
-
-    Streams a gzipped (or plain) text file of (feature_idx, cell_idx, value)
-    triplets directly into zarr + LanceDB without loading the full matrix.
-    The file **must be sorted by cell index**.
-
-    Two-pass approach:
-
-    1. Count nonzeros per cell to determine array sizes and CSR indptr.
-    2. Stream triplets into pre-allocated zarr arrays in shard-sized batches.
-
-    Peak memory is bounded by two numpy buffers of ``shard_shape[0]`` elements
-    (~320 MB at default shard size) plus the per-cell indptr array.
+    A thin source adapter over :func:`ingest_dataset`: it opens the AnnData
+    (honoring ``backed``), extracts obs and var, and streams ``adata.X`` into
+    ``zarr_layer`` (plus any extra ``layer_mapping`` entries) via an
+    :class:`AnnDataReader`. The feature space is derived from ``field_name``'s
+    registered ``PointerField``; the spec decides whether a var_df is needed and
+    which converter/writer apply.
 
     Parameters
     ----------
     atlas:
-        The atlas to ingest into.
-    coo_path:
-        Path to the COO triplet file (gzipped or plain text).
-    obs_df:
-        Validated obs DataFrame with schema-aligned columns. Must have
-        exactly ``n_rows`` rows.
-    var_df:
-        Polars DataFrame with a ``uid`` column (one row per feature in the
-        matrix's var space, in positional order). The ``uid`` values are the
-        registry uids for each local feature.
+        The atlas to ingest into. Features must already be registered.
+    adata:
+        In-memory AnnData or a path to an ``.h5ad`` file.
     field_name:
-        Cell-schema attribute name for the pointer column to populate.
-        The feature_space is derived from its registered ``PointerField``.
+        Obs-schema attribute name for the pointer column to populate.
     zarr_layer:
-        Destination layer name (e.g. ``"counts"``).
+        Destination layer name within the spec's ``layers/`` group for
+        ``adata.X``.
+    layer_mapping:
+        Extra source→destination layer pairs to write alongside ``X``, e.g.
+        ``{"spliced": "spliced"}`` to also write ``adata.layers["spliced"]``.
+        Empty by default (only ``adata.X`` → ``zarr_layer``); a key of ``"X"``
+        overrides the default X destination.
     dataset_record:
-        Dataset record to register.
-    n_rows:
-        Number of cells (rows) in the matrix.
-    n_features:
-        Number of features (columns) in the matrix.
-    separator:
-        Column separator in the COO file.
-    gene_col:
-        0-based column index for the feature/gene identifier.
-    cell_col:
-        0-based column index for the cell identifier.
-    value_col:
-        0-based column index for the value.
-    one_indexed:
-        Whether the file uses 1-based indexing (True) or 0-based (False).
-    value_dtype:
-        Numpy dtype for values. If ``None`` (default), the first entry of
-        the layer's ``allowed_dtypes`` in the spec is used.
-    chunk_shape:
-        Zarr chunk shape (1-element tuple). Defaults to ``(_CHUNK_ELEMS,)``.
-    shard_shape:
-        Zarr shard shape (1-element tuple). Defaults to ``(_SHARD_ELEMS,)``.
+        Dataset record to register; ``dataset_record.zarr_group`` is the
+        zarr group path.
+    batch_size:
+        Rows read and written per batch.
+    backed:
+        When ``adata`` is a path, the ``backed`` mode passed to
+        ``anndata.read_h5ad`` (e.g. ``"r"``). In backed mode the matrix is
+        streamed off disk one batch at a time instead of being read fully into
+        memory; a backed sparse ``X`` must be CSR (row-major). Ignored when
+        ``adata`` is already an in-memory AnnData.
+    chunk_shape, shard_shape:
+        Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
+        dense). Default to this module's constants.
 
     Returns
     -------
     int
         Number of cells ingested.
     """
-    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
-    obs_schema = atlas.obs_schemas[name]
-    if obs_schema is None:
-        raise ValueError(
-            f"Cannot ingest into obs table {name!r}: opened without a cell schema. "
-            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
-        )
+    if not isinstance(adata, ad.AnnData):
+        adata = ad.read_h5ad(adata, backed=backed)
 
-    pointer_fields = atlas.pointer_fields_for(name)
-    pointer_field: PointerField = pointer_fields[field_name]
-    feature_space = pointer_field.feature_space
-    spec = get_spec(feature_space)
-    if spec.pointer_type is not SparseZarrPointer:
-        raise ValueError(
-            f"add_coo_batch only supports sparse feature spaces, "
-            f"but '{feature_space}' is {spec.pointer_type.pointer_type_name}"
-        )
-
-    if (
-        spec.zarr_group_spec.layers.allowed
-        and zarr_layer not in spec.zarr_group_spec.layers.allowed_names
-    ):
-        raise ValueError(
-            f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
-            f"Allowed: {spec.zarr_group_spec.layers.allowed_names}"
-        )
-
-    obs_errors = validate_obs_columns(obs_df, obs_schema)
-    if obs_errors:
-        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
-
-    if "uid" not in var_df.columns:
-        raise ValueError("var_df must have a 'uid' column")
-
-    _check_var_no_duplicate_uids_pl(var_df)
-
-    chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
-    shard_shape = shard_shape or (_SHARD_ELEMS,)
-
-    if value_dtype is None:
-        value_dtype = spec.zarr_group_spec.layers.array_specs_by_name[zarr_layer].allowed_dtypes[0]
-
-    zarr_group = dataset_record.zarr_group
-    offset = 1 if one_indexed else 0
-
-    # Column names for polars (headerless CSV uses column_1, column_2, ...)
-    cell_col_name = f"column_{cell_col + 1}"
-    gene_col_name = f"column_{gene_col + 1}"
-    value_col_name = f"column_{value_col + 1}"
-
-    # -----------------------------------------------------------------------
-    # Pass 1: Count nonzeros per cell using polars streaming aggregation
-    # -----------------------------------------------------------------------
-    counts_df = (
-        pl.scan_csv(coo_path, has_header=False, separator=separator)
-        .select(pl.col(cell_col_name))
-        .group_by(cell_col_name)
-        .agg(pl.len().alias("count"))
-        .collect(streaming=True)
+    return ingest_dataset(
+        atlas,
+        AnnDataReader(adata),
+        obs_df=adata.obs,
+        field_name=field_name,
+        layer_mapping={"X": zarr_layer, **(layer_mapping or {})},
+        dataset_record=dataset_record,
+        n_vars=adata.n_vars,
+        var_df=adata.var,
+        batch_size=batch_size,
+        chunk_shape=chunk_shape,
+        shard_shape=shard_shape,
+        obs_table_name=obs_table_name,
     )
-
-    row_nnz = np.zeros(n_rows, dtype=np.int64)
-    cell_indices = counts_df[cell_col_name].to_numpy() - offset
-    cell_counts = counts_df["count"].to_numpy()
-    row_nnz[cell_indices] = cell_counts
-    total_nnz = int(cell_counts.sum())
-    del counts_df, cell_indices, cell_counts
-
-    # Build CSR indptr
-    indptr = np.zeros(n_rows + 1, dtype=np.int64)
-    np.cumsum(row_nnz, out=indptr[1:])
-    del row_nnz
-
-    starts = indptr[:-1].copy()
-    ends = indptr[1:].copy()
-
-    # -----------------------------------------------------------------------
-    # Register dataset record (computes layout_uid from var_df up front)
-    # -----------------------------------------------------------------------
-    atlas.register_dataset(dataset_record, var_df=var_df if spec.has_var_df else None)
-
-    # -----------------------------------------------------------------------
-    # Pass 2: Stream triplet chunks into zarr
-    # -----------------------------------------------------------------------
-    group = atlas.create_zarr_group(zarr_group)
-    indices_name = (
-        f"{spec.zarr_group_spec.layers.prefix}/indices"
-        if spec.zarr_group_spec.layers.prefix
-        else "indices"
-    )
-    zarr_indices = spec.zarr_group_spec.create_array(
-        group, indices_name, (total_nnz,), chunks=chunk_shape, shards=shard_shape
-    )
-    zarr_values = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (total_nnz,),
-        dtype=value_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    # Use subprocess for gzip decompression (faster than Python gzip module)
-    # and polars batched CSV reader for vectorized chunk processing.
-    is_gzip = str(coo_path).endswith(".gz")
-    batch_rows = 5_000_000
-    written = 0
-
-    if is_gzip:
-        proc = subprocess.Popen(
-            ["gzip", "-dc", str(coo_path)],
-            stdout=subprocess.PIPE,
-        )
-        source = proc.stdout
-    else:
-        source = open(coo_path, "rb")
-
-    try:
-        reader = pl.read_csv_batched(
-            source,
-            has_header=False,
-            separator=separator,
-            batch_size=batch_rows,
-            schema_overrides={
-                gene_col_name: pl.Int32,
-                cell_col_name: pl.Int32,
-                value_col_name: pl.Int32,
-            },
-        )
-        while True:
-            batches = reader.next_batches(1)
-            if not batches:
-                break
-            batch = batches[0]
-            genes = batch[gene_col_name].to_numpy() - offset
-            vals = batch[value_col_name].to_numpy()
-            n = len(genes)
-            zarr_indices[written : written + n] = genes.astype(np.uint32)
-            zarr_values[written : written + n] = vals.astype(value_dtype)
-            written += n
-    finally:
-        if is_gzip:
-            source.close()
-            proc.wait()
-        else:
-            source.close()
-
-    # -----------------------------------------------------------------------
-    # Insert obs records
-    # -----------------------------------------------------------------------
-    arrow_schema = obs_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(obs_schema)
-
-    pointer_struct = pa.StructArray.from_arrays(
-        [
-            pa.array([zarr_group] * n_rows, type=pa.string()),
-            pa.array(starts.astype(np.int64), type=pa.int64()),
-            pa.array(ends.astype(np.int64), type=pa.int64()),
-            pa.array(np.arange(n_rows, dtype=np.int64), type=pa.int64()),
-        ],
-        names=["zarr_group", "start", "end", "zarr_row"],
-    )
-
-    columns = {
-        "uid": pa.array([make_uid() for _ in range(n_rows)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.dataset_uid] * n_rows, type=pa.string()),
-        pointer_field.field_name: pointer_struct,
-    }
-
-    # Null out the other pointer fields for this batch's rows.
-    for other_pf_name in pointer_fields:
-        if other_pf_name == pointer_field.field_name:
-            continue
-        columns[other_pf_name] = pa.nulls(n_rows, type=arrow_schema.field(other_pf_name).type)
-
-    for col in schema_fields:
-        if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
-
-    for col in schema_fields:
-        if col not in columns:
-            columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
-    atlas.add_obs_records(arrow_table, obs_table_name=name)
-    return n_rows
 
 
 def add_csc(
@@ -1260,11 +1497,8 @@ def _add_csc_scipy(
     csr_indices = csr_group[f"{csr_prefix}/indices"][:]
     csr_values = csr_group[f"{csr_layers_path}/{layer_name}"][:]
 
-    indptr = np.empty(n_rows + 1, dtype=np.int64)
-    indptr[0] = 0
-    indptr[1:] = ends
-    # starts/ends are absolute offsets; indptr needs to be relative from 0
-    # but since starts[0]==0 and ends are cumulative, we can just use them directly
+    # starts/ends are absolute offsets; since starts[0]==0 and ends are
+    # cumulative, the CSR indptr is just [starts[0], *ends].
     indptr_csr = np.concatenate([[starts[0]], ends])
 
     csr = sp.csr_matrix(
@@ -1297,12 +1531,17 @@ def _add_csc_scipy(
         shards=(shard_size,),
     )
 
-    # Write in shard-sized batches
+    # Write in shard-sized batches, casting to each array's own dtype (not a
+    # literal) so non-integer layers like log_normalized/tpm aren't truncated.
     written = 0
     while written < nnz:
         end = min(written + shard_size, nnz)
-        csc_indices_zarr[written:end] = csc.indices[written:end].astype(np.uint32)
-        csc_values_zarr[written:end] = csc.data[written:end].astype(np.uint32)
+        csc_indices_zarr[written:end] = csc.indices[written:end].astype(
+            csc_indices_zarr.dtype, copy=False
+        )
+        csc_values_zarr[written:end] = csc.data[written:end].astype(
+            csc_values_zarr.dtype, copy=False
+        )
         written = end
 
     csc_indptr_zarr = csc_spec.create_array(csr_group, "csc/indptr", csc.indptr.shape)

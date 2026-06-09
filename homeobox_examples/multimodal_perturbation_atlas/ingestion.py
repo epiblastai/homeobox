@@ -12,7 +12,6 @@ import numpy as np
 import pandas as pd
 import polars as pl
 import pyarrow as pa
-import scipy.sparse as sp
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.fragments.ingestion import (
@@ -25,9 +24,15 @@ from homeobox.fragments.ingestion import (
     write_genome_sorted_arrays,
 )
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import SparseZarrWriter
+from homeobox.ingestion import (
+    AnnDataReader,
+    _pointer_struct_from_columns,
+    _writer_create_kwargs,
+    write_feature_space,
+)
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
-from homeobox.schema import DatasetSchema, DenseZarrPointer, SparseZarrPointer, make_uid
+from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
+from homeobox.schema import DatasetSchema, make_uid
 
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
@@ -48,16 +53,6 @@ def _make_sparse_pointer(
             pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
         ],
         names=["zarr_group", "start", "end", "zarr_row"],
-    )
-
-
-def _make_dense_pointer(zarr_group: str, n_cells: int) -> pa.StructArray:
-    return pa.StructArray.from_arrays(
-        [
-            pa.array([zarr_group] * n_cells, type=pa.string()),
-            pa.array(np.arange(n_cells, dtype=np.int64), type=pa.int64()),
-        ],
-        names=["zarr_group", "position"],
     )
 
 
@@ -126,37 +121,6 @@ def _build_cell_arrow_table(
     return pa.table(columns, schema=arrow_schema)
 
 
-def _write_dense_modality(
-    group,
-    adata: ad.AnnData,
-    zarr_layer: str,
-    spec,
-) -> None:
-    """Pre-allocate and stream-write a dense 2D modality using the spec."""
-    n_cells, n_vars = adata.shape
-    chunk_rows = max(1, _CHUNK_ELEMS // n_vars) if n_vars > 0 else 1
-    shard_rows = max(1, _SHARD_ELEMS // n_vars) if n_vars > 0 else 1
-    shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
-    chunk_shape = (chunk_rows, n_vars)
-    shard_shape = (shard_rows, n_vars)
-    data_dtype = adata.X.dtype
-
-    zarr_arr = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (n_cells, n_vars),
-        dtype=data_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    written = 0
-    while written < n_cells:
-        end = min(written + shard_rows, n_cells)
-        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
-        written = end
-
-
 def add_multimodal_batch(
     atlas: RaggedAtlas,
     modalities: dict[str, ad.AnnData],
@@ -164,11 +128,11 @@ def add_multimodal_batch(
     obs_df: pd.DataFrame,
     zarr_layer: str,
     dataset_records: dict[str, DatasetSchema],
+    batch_size: int = 8_192,
 ) -> int:
     """Ingest aligned multimodal data, creating one cell record per cell.
 
-    Unlike ``add_anndata_batch`` (which fills a single pointer per call),
-    this writes zarr arrays for all modalities and creates cell records
+    This writes zarr arrays for all modalities and creates cell records
     with ALL pointer fields populated in a single insert.
 
     Parameters
@@ -187,6 +151,8 @@ def add_multimodal_batch(
     dataset_records
         ``{field_name: DatasetSchema}`` — one per modality, keyed the same
         way as ``modalities``. All records must share a single ``dataset_uid``.
+    batch_size
+        Rows read and written per batch when streaming each modality's matrix.
 
     Returns
     -------
@@ -228,6 +194,7 @@ def add_multimodal_batch(
                 f"expected {shared_dataset_uid!r}"
             )
 
+    arrow_schema = atlas.obs_schema.to_arrow_schema()
     pointer_data: dict[str, pa.StructArray] = {}
 
     for field_name, adata in modalities.items():
@@ -248,22 +215,21 @@ def add_multimodal_batch(
             atlas.register_dataset(ds)
         group = atlas.create_zarr_group(zarr_group)
 
-        if spec.pointer_type is SparseZarrPointer:
-            csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-            writer = SparseZarrWriter.create(
-                group,
-                zarr_layer,
-                data_dtype=csr.dtype,
-                feature_space=feature_space,
-            )
-            starts, ends = writer.append_csr(csr)
-            writer.trim()
-            pointer_data[field_name] = _make_sparse_pointer(zarr_group, starts, ends)
-        elif spec.pointer_type is DenseZarrPointer:
-            _write_dense_modality(group, adata, zarr_layer, spec)
-            pointer_data[field_name] = _make_dense_pointer(zarr_group, n_cells)
-        else:
-            raise TypeError(f"Unsupported pointer type for feature space '{feature_space}'")
+        # Stream the modality's matrix; the converter and writer are resolved
+        # from the spec, so sparse and dense feature spaces share one path.
+        pointer_columns = write_feature_space(
+            AnnDataReader(adata),
+            spec,
+            group,
+            batch_size=batch_size,
+            layer_mapping={"X": zarr_layer},
+            layer_names=[zarr_layer],
+            zarr_group_name=zarr_group,
+            **_writer_create_kwargs(spec, adata.n_vars, None, None),
+        )
+        pointer_data[field_name] = _pointer_struct_from_columns(
+            pointer_columns, arrow_schema.field(field_name).type
+        )
 
     arrow_table = _build_cell_arrow_table(
         atlas,
