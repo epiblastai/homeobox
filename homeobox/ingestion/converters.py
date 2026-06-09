@@ -14,7 +14,7 @@ CSR converter handles it. Add a new *pointer type* and you must register a
 converter for it — `converter_for` raises rather than silently mis-mapping.
 """
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 import numpy as np
 import scipy.sparse as sp
@@ -197,6 +197,72 @@ class CSRSparseConverter(ArrayConverter):
                     "zarr_row": np.arange(ref.shape[0], dtype=np.int64),
                 },
                 "n_rows": ref.shape[0],
+            }
+        )
+
+
+class FragmentBatch(NamedTuple):
+    """One cell-batch of interval fragments handed to :class:`FragmentConverter`.
+
+    Mirrors how a ``csr_matrix`` carries both structure and values for the CSR
+    path: ``chromosomes`` is the per-fragment structural index (the analog of
+    CSR ``indices``), ``offsets`` is the batch-local CSR-style indptr over cells,
+    and ``data`` is one layer's per-fragment values (``starts`` or ``lengths``).
+    Every layer in a batch shares the same ``chromosomes`` and ``offsets``.
+    """
+
+    chromosomes: np.ndarray
+    offsets: np.ndarray
+    data: np.ndarray
+
+
+@register_converter("chromatin_accessibility")
+class FragmentConverter(ArrayConverter):
+    """:class:`FragmentBatch` cell-batches -> the interval sparse layout.
+
+    Chromatin accessibility is a ``SparseZarrPointer`` feature space like gene
+    expression, but its structure can't ride on a ``csr_matrix``: the structural
+    index array is the per-fragment ``chromosomes`` (not gene indices), and there
+    are two value layers (``starts``, ``lengths``) sharing one structure, where a
+    ``csr_matrix`` carries only one ``.data``. So fragments get their own carrier
+    (:class:`FragmentBatch`) and this converter, while the generic
+    :class:`~homeobox.ingestion.writers.SparseZarrWriter` writes the result
+    unchanged.
+    """
+
+    input_type = FragmentBatch
+    pointer_type = SparseZarrPointer
+
+    def convert(self, layers: dict[str, FragmentBatch]) -> dict[str, Any]:
+        if len(self.structural_names) != 1:
+            raise ValueError(
+                f"{type(self).__name__} fills exactly one structural array, but the spec "
+                f"declares {self.structural_names}"
+            )
+        (chrom_name,) = self.structural_names
+
+        ref = next(iter(layers.values()))
+        for name, batch in layers.items():
+            if not (
+                np.array_equal(batch.chromosomes, ref.chromosomes)
+                and np.array_equal(batch.offsets, ref.offsets)
+            ):
+                raise ValueError(
+                    f"fragment layer '{name}' has a different structure (chromosomes/offsets) "
+                    f"than the reference layer."
+                )
+
+        n_cells = len(ref.offsets) - 1
+        return self._validated(
+            {
+                "required_arrays": {chrom_name: ref.chromosomes},
+                "layers": {name: batch.data for name, batch in layers.items()},
+                "pointer_fields": {
+                    "start": ref.offsets[:-1].astype(np.int64),
+                    "end": ref.offsets[1:].astype(np.int64),
+                    "zarr_row": np.arange(n_cells, dtype=np.int64),
+                },
+                "n_rows": n_cells,
             }
         )
 

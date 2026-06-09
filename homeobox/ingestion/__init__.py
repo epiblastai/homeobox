@@ -15,13 +15,16 @@ from homeobox.ingestion.converters import (
     ArrayConverter,
     CSRSparseConverter,
     DenseConverter,
+    FragmentBatch,
+    FragmentConverter,
     converter_for,
     register_converter,
 )
-from homeobox.ingestion.feature_oriented import add_csc
+from homeobox.ingestion.feature_oriented import add_csc, add_genome_sorted
 from homeobox.ingestion.functions import (
     add_from_anndata,
     ingest_dataset,
+    ingest_fragments,
     ingest_multimodal,
 )
 from homeobox.ingestion.ingestor import (
@@ -35,7 +38,7 @@ from homeobox.ingestion.ingestor import (
     _writer_create_kwargs,
     insert_obs_records,
 )
-from homeobox.ingestion.readers import AnnDataReader, COOReader, Reader
+from homeobox.ingestion.readers import AnnDataReader, COOReader, FragmentReader, Reader
 from homeobox.ingestion.writers import (
     _CHUNK_ELEMS,
     _CHUNKS_PER_SHARD,
@@ -53,6 +56,9 @@ __all__ = [
     "CSRSparseConverter",
     "DenseConverter",
     "DenseZarrWriter",
+    "FragmentBatch",
+    "FragmentConverter",
+    "FragmentReader",
     "Ingestor",
     "Reader",
     "SparseZarrWriter",
@@ -67,7 +73,9 @@ __all__ = [
     "_validate_var_columns_against_registry",
     "_writer_create_kwargs",
     "add_csc",
+    "ingest_fragments",
     "add_from_anndata",
+    "add_genome_sorted",
     "converter_for",
     "ingest_dataset",
     "ingest_multimodal",

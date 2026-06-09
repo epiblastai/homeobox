@@ -16,6 +16,8 @@ import numpy as np
 import polars as pl
 import scipy.sparse as sp
 
+from homeobox.ingestion.converters import FragmentBatch
+
 
 class Reader(Protocol):
     """A source adapter: streams a source as row-batches of layer arrays.
@@ -136,6 +138,102 @@ class AnnDataReader:
                 else:
                     batch_layers[tgt_name] = np.asarray(node[r0:r1])
             yield batch_layers
+
+
+class FragmentReader:
+    """Streams cell-sorted chromatin-accessibility fragments as cell-batches.
+
+    The fragment analog of :class:`COOReader`: it parses a BED file (or accepts
+    a pre-parsed polars frame), filters to known chromosomes and an optional
+    barcode whitelist, and sorts fragments into cell order. Each emitted batch
+    is a :class:`~homeobox.ingestion.converters.FragmentBatch` per layer
+    (``starts`` and ``lengths``), spanning a contiguous block of cells; the
+    existing sparse converter/writer then handle the interval layout, so no
+    fragment-aware writer is needed.
+
+    Parsing and the cell sort happen eagerly in ``__init__`` rather than lazily
+    during iteration: the cell order (:attr:`cell_ids`) and chromosome order
+    (:attr:`chrom_order`) must be known up front so the caller can align obs and
+    register the dataset's var before any matrix is streamed. The sorted flat
+    arrays are held in memory and merely sliced per batch.
+    """
+
+    def __init__(
+        self,
+        bed_path: str | Path | None = None,
+        *,
+        chrom_uids: dict[str, str],
+        fragments: pl.DataFrame | None = None,
+        barcodes: list[str] | None = None,
+        barcode_col: str = "barcode",
+    ) -> None:
+        # Imported here, not at module scope: homeobox.fragments.ingestion imports
+        # homeobox.ingestion.writers, which imports this module — a module-level
+        # import would close that cycle during package initialization.
+        from homeobox.fragments.ingestion import (
+            build_chrom_order,
+            parse_bed_fragments,
+            sort_fragments_by_cell,
+        )
+
+        if (bed_path is None) == (fragments is None):
+            raise ValueError("Exactly one of bed_path or fragments must be provided.")
+        if fragments is None:
+            fragments = parse_bed_fragments(bed_path, barcode_col=barcode_col)
+
+        # Keep only chromosomes we have registered features for, then (optionally)
+        # only barcodes the caller cares about.
+        fragments = fragments.filter(pl.col("chrom").is_in(set(chrom_uids)))
+        if barcodes is not None:
+            fragments = fragments.filter(pl.col(barcode_col).is_in(set(barcodes)))
+
+        chrom_order = build_chrom_order(fragments)
+        chromosomes, starts, lengths, offsets, cell_ids = sort_fragments_by_cell(
+            fragments, chrom_order, barcode_col=barcode_col
+        )
+
+        self.chrom_order = chrom_order
+        self.cell_ids = cell_ids
+        self._chromosomes = chromosomes
+        self._starts = starts
+        self._lengths = lengths
+        self._offsets = offsets
+        self._layer_arrays = {"starts": starts, "lengths": lengths}
+
+    def iter_layer_batches(
+        self,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, FragmentBatch]]:
+        """Yield one :class:`FragmentBatch` per source layer, per cell-batch.
+
+        ``layer_mapping`` maps a source layer (``"starts"`` or ``"lengths"``) to
+        its destination layer name. Each batch covers a contiguous block of
+        ``batch_size`` cells; ``offsets`` are rebased to be batch-local so the
+        converter and writer see every batch as starting from zero.
+        """
+        unknown = set(layer_mapping) - set(self._layer_arrays)
+        if unknown:
+            raise ValueError(
+                f"FragmentReader produces layers {sorted(self._layer_arrays)}, but "
+                f"layer_mapping requests unknown source layer(s) {sorted(unknown)}."
+            )
+
+        n_cells = len(self.cell_ids)
+        for c0 in range(0, n_cells, batch_size):
+            c1 = min(c0 + batch_size, n_cells)
+            o0 = int(self._offsets[c0])
+            o1 = int(self._offsets[c1])
+            local_offsets = self._offsets[c0 : c1 + 1] - o0
+            chroms = self._chromosomes[o0:o1]
+            yield {
+                tgt_name: FragmentBatch(
+                    chromosomes=chroms,
+                    offsets=local_offsets,
+                    data=self._layer_arrays[src_name][o0:o1],
+                )
+                for src_name, tgt_name in layer_mapping.items()
+            }
 
 
 class COOReader:

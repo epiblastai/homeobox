@@ -7,7 +7,8 @@ import pandas as pd
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.ingestion.ingestor import _DEFAULT_BATCH_ROWS, Ingestor
-from homeobox.ingestion.readers import AnnDataReader, Reader
+from homeobox.ingestion.readers import AnnDataReader, FragmentReader, Reader
+from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import DatasetSchema
 
 
@@ -178,6 +179,114 @@ def add_from_anndata(
         batch_size=batch_size,
         chunk_shape=chunk_shape,
         shard_shape=shard_shape,
+        obs_table_name=obs_table_name,
+    )
+
+
+def ingest_fragments(
+    atlas: RaggedAtlas,
+    bed_path: str | None = None,
+    *,
+    obs_df: pd.DataFrame,
+    chrom_uids: dict[str, str],
+    field_name: str,
+    dataset_record: DatasetSchema,
+    var_df: pd.DataFrame | None = None,
+    fragments=None,
+    barcode_col: str = "barcode",
+    batch_size: int = _DEFAULT_BATCH_ROWS,
+    obs_table_name: str | None = None,
+) -> int:
+    """Ingest chromatin-accessibility fragments into the atlas (row-oriented).
+
+    A source adapter over :func:`ingest_dataset` for the
+    ``chromatin_accessibility`` feature space. A :class:`FragmentReader` parses
+    and cell-sorts the fragments, the streaming path writes the cell-sorted
+    (row-oriented) zarr arrays, and one obs record per cell is stamped with a
+    ``SparseZarrPointer``. The genome-sorted feature-oriented copy used for range
+    queries is written separately, after ingestion, by
+    :func:`homeobox.ingestion.add_genome_sorted`.
+
+    Because fragments carry no inherent cell order, the cell order is derived
+    from the data (sorted unique barcodes). ``obs_df`` is realigned to that
+    order; a cell in ``obs_df`` with no fragments has no place in the cell-sorted
+    layout, so this raises rather than silently dropping it.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas to ingest into. Features must already be registered.
+    bed_path:
+        Path to a (possibly gzipped) BED fragment file. Mutually exclusive with
+        ``fragments``.
+    obs_df:
+        Validated obs DataFrame, indexed by cell barcode. Every barcode must
+        appear in the fragment data.
+    chrom_uids:
+        ``{chromosome_name: uid}`` for all chromosomes that may appear. Fragments
+        on chromosomes absent from this mapping are dropped.
+    field_name:
+        Obs-schema attribute name for the pointer column to populate (e.g.
+        ``"chromatin_accessibility"``).
+    dataset_record:
+        Dataset record to register; ``dataset_record.zarr_group`` is the zarr
+        group path.
+    var_df:
+        Optional pandas var table, one row per chromosome in discovered
+        ``chrom_order``. Defaults to a ``uid``-only frame built from
+        ``chrom_uids``; pass a richer frame when the registry schema needs more
+        than ``uid``.
+    fragments:
+        Pre-parsed polars fragment frame (same schema as
+        :func:`~homeobox.fragments.ingestion.parse_bed_fragments`). Mutually
+        exclusive with ``bed_path``.
+    barcode_col:
+        Name of the barcode column in the fragment data. Defaults to
+        ``"barcode"``.
+    batch_size:
+        Cells read and written per batch.
+    obs_table_name:
+        Which obs table to ingest into. May be ``None`` only when the atlas has
+        exactly one obs table.
+
+    Returns
+    -------
+    int
+        Number of cells ingested.
+    """
+    reader = FragmentReader(
+        bed_path,
+        chrom_uids=chrom_uids,
+        fragments=fragments,
+        barcodes=obs_df.index.tolist(),
+        barcode_col=barcode_col,
+    )
+
+    missing = set(obs_df.index) - set(reader.cell_ids)
+    if missing:
+        examples = sorted(missing)[:5]
+        raise ValueError(
+            f"{len(missing)} cell(s) in obs_df have no fragments and cannot be ingested "
+            f"into the cell-sorted layout (e.g. {examples}). Drop them from obs_df first."
+        )
+
+    # Cell order is data-derived; align obs to it before streaming.
+    obs_df = obs_df.loc[reader.cell_ids]
+
+    if var_df is None:
+        var_df = pd.DataFrame({"uid": [chrom_uids[c] for c in reader.chrom_order]})
+
+    return ingest_dataset(
+        atlas,
+        reader,
+        obs_df=obs_df,
+        field_name=field_name,
+        layer_mapping={"starts": "starts", "lengths": "lengths"},
+        dataset_record=dataset_record,
+        n_vars=len(reader.chrom_order),
+        var_df=var_df,
+        required_pointer_type=SparseZarrPointer,
+        batch_size=batch_size,
         obs_table_name=obs_table_name,
     )
 

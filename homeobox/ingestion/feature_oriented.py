@@ -125,6 +125,137 @@ def add_csc(
     )
 
 
+def add_genome_sorted(
+    atlas: RaggedAtlas,
+    zarr_group: str,
+    field_name: str,
+    *,
+    chunk_size: int = _CHUNK_ELEMS,
+    shard_size: int = _SHARD_ELEMS,
+    obs_table_name: str | None = None,
+) -> None:
+    """Read an existing cell-sorted fragment group and write its genome-sorted copy.
+
+    The chromatin-accessibility analog of :func:`add_csc`. Ingestion writes only
+    the row-oriented (cell-sorted) fragment arrays; the genome-sorted copy used
+    for genomic range queries is optional and built here, after the fact, by
+    reading the cell-sorted arrays and per-cell pointers back out of zarr.
+
+    After running, a ``{zarr_group}/genome_sorted/`` subgroup appears alongside
+    the existing ``{zarr_group}/cell_sorted/``, and range queries will use it.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas whose zarr store and obs table to use.
+    zarr_group:
+        Path of the cell-sorted fragment group to process.
+    field_name:
+        Obs-schema attribute name for the pointer column that references
+        *zarr_group*. The feature_space is derived from its ``PointerField``.
+    chunk_size, shard_size:
+        Chunk/shard sizes for the new genome-sorted zarr arrays.
+    obs_table_name:
+        Which obs table the pointer column lives on. May be ``None`` only when
+        the atlas has exactly one obs table.
+
+    Raises
+    ------
+    ValueError
+        If the feature space has no ``feature_oriented`` spec, no dataset record
+        or rows are found for this group, or ``zarr_row`` is not sequential.
+    """
+    # Imported here, not at module scope: homeobox.fragments.ingestion imports
+    # homeobox.ingestion.writers (which runs this package's __init__), so a
+    # module-level import would close that cycle during initialization.
+    from homeobox.fragments.ingestion import build_end_max, write_genome_sorted_arrays
+
+    name, table = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+    pointer_fields = atlas.pointer_fields_for(name)
+    pointer_field = pointer_fields[field_name]
+    feature_space = pointer_field.feature_space
+
+    spec = get_spec(feature_space)
+    if spec.feature_oriented is None:
+        raise ValueError(
+            f"Feature space '{feature_space}' has no feature_oriented spec; "
+            "cannot write a genome-sorted copy."
+        )
+
+    datasets_df = atlas.find_datasets(zarr_group, feature_space=feature_space).select(
+        ["layout_uid"]
+    )
+    if datasets_df.is_empty():
+        raise ValueError(
+            f"No dataset record found for zarr_group='{zarr_group}', "
+            f"feature_space='{feature_space}'"
+        )
+    layout_uid = datasets_df["layout_uid"][0]
+    n_chroms = len(atlas.read_feature_layout(layout_uid))
+
+    # Per-cell fragment ranges, ordered by zarr_row, from the pointer column.
+    obs_df = (
+        table.search()
+        .where(f"{field_name}.zarr_group = '{sql_escape(zarr_group)}'", prefilter=True)
+        .select([field_name])
+        .to_polars()
+    )
+    if obs_df.is_empty():
+        raise ValueError(f"No rows found for zarr_group='{zarr_group}', field_name='{field_name}'")
+
+    ptr = obs_df[field_name].struct.unnest()
+    ptr = pl.DataFrame(
+        {"_zarr_row": ptr["zarr_row"], "_start": ptr["start"], "_end": ptr["end"]}
+    ).sort("_zarr_row")
+    zarr_rows = ptr["_zarr_row"].to_numpy()
+    starts_ptr = ptr["_start"].to_numpy()
+    ends_ptr = ptr["_end"].to_numpy()
+    n_rows = len(zarr_rows)
+
+    if len(np.unique(zarr_rows)) != n_rows or not np.array_equal(zarr_rows, np.arange(n_rows)):
+        raise ValueError(
+            f"zarr_rows for group '{zarr_group}' are not sequential 0..{n_rows - 1}. "
+            f"Was zarr_row populated correctly during ingest?"
+        )
+
+    # Read the cell-sorted flat arrays. The structural array name and layers
+    # path come from the spec, never a literal.
+    group = atlas.open_zarr_group(zarr_group)
+    chrom_array_name = spec.zarr_group_spec.required_arrays[0].array_name
+    layers_path = spec.zarr_group_spec.find_layers_path()
+    chromosomes = group[chrom_array_name][:]
+    starts = group[f"{layers_path}/starts"][:]
+    lengths = group[f"{layers_path}/lengths"][:]
+
+    # Each cell (zarr_row i) owns the contiguous fragment range [start_i, end_i);
+    # repeat gives the cell index per fragment in cell-sorted order.
+    counts = (ends_ptr - starts_ptr).astype(np.int64)
+    cell_id_indices = np.repeat(np.arange(n_rows, dtype=np.uint32), counts)
+
+    # Genome order: sort by (chromosome, start).
+    order = np.lexsort((starts, chromosomes))
+    gs_chroms = chromosomes[order]
+    gs_starts = starts[order]
+    gs_lengths = lengths[order]
+    gs_cell_ids = cell_id_indices[order]
+
+    chrom_offsets = np.zeros(n_chroms + 1, dtype=np.int64)
+    np.cumsum(np.bincount(gs_chroms, minlength=n_chroms), out=chrom_offsets[1:])
+    end_max = build_end_max(gs_starts, gs_lengths)
+
+    write_genome_sorted_arrays(
+        group,
+        gs_cell_ids,
+        gs_starts,
+        gs_lengths,
+        chrom_offsets,
+        end_max,
+        chunk_shape=(chunk_size,),
+        shard_shape=(shard_size,),
+    )
+    atlas.invalidate_group_reader(zarr_group, feature_space)
+
+
 def _add_csc_scipy(
     atlas: RaggedAtlas,
     zarr_group: str,

@@ -26,7 +26,12 @@ import polars as pl
 import zarr
 
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import _CHUNK_ELEMS, _SHARD_ELEMS
+
+# Import the chunk/shard constants from the writers submodule rather than the
+# homeobox.ingestion package: the package __init__ imports feature_oriented,
+# which imports this module, so going through the package would create a
+# partially-initialized import cycle.
+from homeobox.ingestion.writers import _CHUNK_ELEMS, _SHARD_ELEMS
 
 FEATURE_SPACE = "chromatin_accessibility"
 
