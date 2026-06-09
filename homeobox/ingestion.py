@@ -1179,11 +1179,10 @@ def ingest_dataset(
     *,
     obs_df: pd.DataFrame,
     field_name: str,
-    zarr_layer: str,
+    layer_mapping: dict[str, str],
     dataset_record: DatasetSchema,
     n_vars: int,
     var_df: pd.DataFrame | None = None,
-    source_layer: str = "X",
     required_pointer_type: type | None = None,
     batch_size: int = _DEFAULT_BATCH_ROWS,
     chunk_shape: tuple[int, ...] | None = None,
@@ -1192,12 +1191,13 @@ def ingest_dataset(
 ) -> int:
     """Stream one feature space from a reader into the atlas and stamp obs rows.
 
-    The shared spine behind :func:`add_from_anndata` and :func:`add_coo_batch`:
-    given any :class:`Reader` plus the obs (and, where the spec needs it, var)
-    tables it was built from, this validates obs and var, registers the dataset,
-    writes the matrix feature-space-first via :func:`write_feature_space`, and
-    stamps the resulting pointer column onto the obs rows. The reader decides the
-    source format; the converter and writer are resolved from the spec.
+    The shared spine behind :func:`add_from_anndata`: given any :class:`Reader`
+    plus the obs (and, where the spec needs it, var) tables it was built from,
+    this validates obs and var, registers the dataset, writes the matrix
+    feature-space-first via :func:`write_feature_space`, and stamps the resulting
+    pointer column onto the obs rows. The reader decides the source format; the
+    converter and writer are resolved from the spec. One or many layers can be
+    written in a single pass — they share the feature space's structure.
 
     Parameters
     ----------
@@ -1210,8 +1210,12 @@ def ingest_dataset(
         Validated obs DataFrame with schema-aligned columns, one row per cell.
     field_name:
         Obs-schema attribute name for the pointer column to populate.
-    zarr_layer:
-        Destination layer name within the spec's ``layers/`` group.
+    layer_mapping:
+        Maps each source layer the reader should read to its destination layer
+        name in the spec's ``layers/`` group, e.g. ``{"X": "counts"}`` or
+        ``{"X": "counts", "spliced": "spliced"}`` for a multi-layer write. All
+        layers share one structure (sparsity / row count); destination names
+        must be unique.
     dataset_record:
         Dataset record to register; ``dataset_record.zarr_group`` is the zarr
         group path.
@@ -1251,6 +1255,12 @@ def ingest_dataset(
             "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
+    if not layer_mapping:
+        raise ValueError("layer_mapping must map at least one source layer to a destination.")
+    layer_names = list(layer_mapping.values())
+    if len(set(layer_names)) != len(layer_names):
+        raise ValueError(f"layer_mapping destination names must be unique, got {layer_names}.")
+
     pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
@@ -1280,15 +1290,15 @@ def ingest_dataset(
     zarr_group = dataset_record.zarr_group
     group = atlas.create_zarr_group(zarr_group)
 
-    # The matrix write: converter + writer resolved from the spec. zarr_layer
+    # The matrix write: converter + writer resolved from the spec. Layer
     # conformance (allowed/required layers) is enforced inside the converter.
     pointer_columns = write_feature_space(
         reader,
         spec,
         group,
         batch_size=batch_size,
-        layer_mapping={source_layer: zarr_layer},
-        layer_names=[zarr_layer],
+        layer_mapping=layer_mapping,
+        layer_names=layer_names,
         zarr_group_name=zarr_group,
         **_writer_create_kwargs(spec, n_vars, chunk_shape, shard_shape),
     )
@@ -1322,6 +1332,7 @@ def add_from_anndata(
     *,
     field_name: str,
     zarr_layer: str,
+    layer_mapping: dict[str, str] | None = None,
     dataset_record: DatasetSchema,
     batch_size: int = _DEFAULT_BATCH_ROWS,
     backed: str | None = None,
@@ -1333,9 +1344,10 @@ def add_from_anndata(
 
     A thin source adapter over :func:`ingest_dataset`: it opens the AnnData
     (honoring ``backed``), extracts obs and var, and streams ``adata.X`` into
-    ``zarr_layer`` via an :class:`AnnDataReader`. The feature space is derived
-    from ``field_name``'s registered ``PointerField``; the spec decides whether
-    a var_df is needed and which converter/writer apply.
+    ``zarr_layer`` (plus any extra ``layer_mapping`` entries) via an
+    :class:`AnnDataReader`. The feature space is derived from ``field_name``'s
+    registered ``PointerField``; the spec decides whether a var_df is needed and
+    which converter/writer apply.
 
     Parameters
     ----------
@@ -1346,7 +1358,13 @@ def add_from_anndata(
     field_name:
         Obs-schema attribute name for the pointer column to populate.
     zarr_layer:
-        Destination layer name within the spec's ``layers/`` group.
+        Destination layer name within the spec's ``layers/`` group for
+        ``adata.X``.
+    layer_mapping:
+        Extra source→destination layer pairs to write alongside ``X``, e.g.
+        ``{"spliced": "spliced"}`` to also write ``adata.layers["spliced"]``.
+        Empty by default (only ``adata.X`` → ``zarr_layer``); a key of ``"X"``
+        overrides the default X destination.
     dataset_record:
         Dataset record to register; ``dataset_record.zarr_group`` is the
         zarr group path.
@@ -1375,11 +1393,10 @@ def add_from_anndata(
         AnnDataReader(adata),
         obs_df=adata.obs,
         field_name=field_name,
-        zarr_layer=zarr_layer,
+        layer_mapping={"X": zarr_layer, **(layer_mapping or {})},
         dataset_record=dataset_record,
         n_vars=adata.n_vars,
         var_df=adata.var,
-        source_layer="X",
         batch_size=batch_size,
         chunk_shape=chunk_shape,
         shard_shape=shard_shape,
