@@ -47,7 +47,6 @@ __all__ = [
     "MultimodalBatch",
     "make_loader",
     "add_from_anndata",
-    "add_anndata_batch",
     "add_csc",
     "HoxBaseSchema",
     "FeatureBaseSchema",
