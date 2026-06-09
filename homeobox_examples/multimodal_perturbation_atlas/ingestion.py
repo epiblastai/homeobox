@@ -25,7 +25,7 @@ from homeobox.fragments.ingestion import (
     write_genome_sorted_arrays,
 )
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import SparseZarrWriter
+from homeobox.ingestion import StreamingSparseZarrWriter
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.schema import DatasetSchema, DenseZarrPointer, SparseZarrPointer, make_uid
 
@@ -250,7 +250,7 @@ def add_multimodal_batch(
 
         if spec.pointer_type is SparseZarrPointer:
             csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-            writer = SparseZarrWriter.create(
+            writer = StreamingSparseZarrWriter.create(
                 group,
                 zarr_layer,
                 data_dtype=csr.dtype,
