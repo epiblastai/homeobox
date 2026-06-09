@@ -8,7 +8,7 @@ that calls the lower-level ``var_df`` helpers directly.
 import subprocess
 from collections.abc import Generator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Protocol
 
 import anndata as ad
 import lancedb
@@ -442,6 +442,20 @@ class DenseConverter(ArrayConverter):
 # feature space.
 
 
+class Reader(Protocol):
+    """A source adapter: streams a source as row-batches of layer arrays.
+
+    Implementations yield ``{target_layer: array}`` dicts, one per row-batch,
+    where every layer in a batch shares one sparsity structure. The array type
+    (CSR or dense) selects the converter downstream, so a reader is free to
+    decode whatever source it wants as long as it emits in row order.
+    """
+
+    def iter_layer_batches(
+        self, batch_size: int, layer_mapping: dict[str, str]
+    ) -> Generator[dict[str, Any]]: ...
+
+
 class AnnDataReader:
     """Streams an AnnData as row-batches of layer arrays.
 
@@ -547,6 +561,189 @@ class AnnDataReader:
                 else:
                     batch_layers[tgt_name] = np.asarray(node[r0:r1])
             yield batch_layers
+
+
+class COOReader:
+    """Streams a cell-sorted COO triplet file as CSR row-batches.
+
+    The source is a gzipped or plain text file of
+    ``(feature_idx, cell_idx, value)`` triplets that **must be sorted by cell
+    index**. Each emitted batch is a ``csr_matrix`` of ``batch_size``
+    consecutive cells spanning the full ``[0, n_rows)`` row space: cells absent
+    from the file appear as empty rows, so the batch stream stays positionally
+    aligned with the obs table. The existing :class:`CSRSparseConverter` then
+    handles the sparse layout, exactly as for an AnnData source — no COO-aware
+    converter or writer is needed.
+
+    Because each batch is built directly from a contiguous file slice, the
+    cell-sorted invariant is load-bearing; the reader checks monotonicity and
+    index ranges and fails loudly rather than emitting a corrupt matrix. Only
+    ``batch_size`` cells' worth of triplets (plus one in-flight read chunk) are
+    materialized at a time, so peak memory is bounded regardless of file size.
+    """
+
+    def __init__(
+        self,
+        coo_path: str | Path,
+        *,
+        n_rows: int,
+        n_features: int,
+        separator: str = "\t",
+        gene_col: int = 0,
+        cell_col: int = 1,
+        value_col: int = 2,
+        one_indexed: bool = True,
+        read_batch_rows: int = 5_000_000,
+    ) -> None:
+        self.coo_path = coo_path
+        self.n_rows = n_rows
+        self.n_features = n_features
+        self.separator = separator
+        self.gene_col = gene_col
+        self.cell_col = cell_col
+        self.value_col = value_col
+        self.offset = 1 if one_indexed else 0
+        self.read_batch_rows = read_batch_rows
+
+    def _iter_triplet_chunks(
+        self,
+    ) -> Generator[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+        """Yield ``(cells, genes, values)`` per raw read chunk, 0-based indices.
+
+        Validates each chunk: indices stay in range, and the cell column is
+        non-decreasing both within and across chunks (the cell-sorted invariant
+        the CSR-by-batch construction depends on).
+        """
+        cell_col_name = f"column_{self.cell_col + 1}"
+        gene_col_name = f"column_{self.gene_col + 1}"
+        value_col_name = f"column_{self.value_col + 1}"
+
+        # gzip via subprocess is faster than the Python gzip module for the
+        # large files this reader targets; plain files are opened directly.
+        is_gzip = str(self.coo_path).endswith(".gz")
+        if is_gzip:
+            proc = subprocess.Popen(["gzip", "-dc", str(self.coo_path)], stdout=subprocess.PIPE)
+            source = proc.stdout
+        else:
+            proc = None
+            source = open(self.coo_path, "rb")
+
+        prev_last_cell = -1
+        try:
+            reader = pl.read_csv_batched(
+                source,
+                has_header=False,
+                separator=self.separator,
+                batch_size=self.read_batch_rows,
+                schema_overrides={
+                    gene_col_name: pl.Int32,
+                    cell_col_name: pl.Int32,
+                    value_col_name: pl.Int32,
+                },
+            )
+            while True:
+                batches = reader.next_batches(1)
+                if not batches:
+                    break
+                batch = batches[0]
+                cells = batch[cell_col_name].to_numpy().astype(np.int64) - self.offset
+                genes = batch[gene_col_name].to_numpy().astype(np.int64) - self.offset
+                vals = batch[value_col_name].to_numpy()
+                if cells.size == 0:
+                    continue
+
+                if not np.all(cells[1:] >= cells[:-1]) or cells[0] < prev_last_cell:
+                    raise ValueError(
+                        "COO file is not sorted by cell index; COOReader requires "
+                        "cell-sorted input. Sort the file by the cell column first."
+                    )
+                prev_last_cell = int(cells[-1])
+
+                cmin, cmax = int(cells[0]), int(cells[-1])
+                if cmin < 0 or cmax >= self.n_rows:
+                    raise ValueError(
+                        f"cell index out of range [0, {self.n_rows}): saw [{cmin}, {cmax}]. "
+                        f"Check one_indexed ({self.offset == 1}) and n_rows."
+                    )
+                gmin, gmax = int(genes.min()), int(genes.max())
+                if gmin < 0 or gmax >= self.n_features:
+                    raise ValueError(
+                        f"feature index out of range [0, {self.n_features}): saw [{gmin}, {gmax}]. "
+                        f"Check one_indexed ({self.offset == 1}) and n_features."
+                    )
+                yield cells, genes, vals
+        finally:
+            source.close()
+            if proc is not None:
+                proc.wait()
+
+    def _emit(
+        self,
+        r0: int,
+        r1: int,
+        cells: np.ndarray,
+        genes: np.ndarray,
+        vals: np.ndarray,
+    ) -> sp.csr_matrix:
+        """Build a CSR for cell rows ``[r0, r1)`` from the (sorted) buffer.
+
+        Cells absent from the slice become empty rows, so the matrix always has
+        exactly ``r1 - r0`` rows regardless of which cells carried entries.
+        """
+        n_batch = r1 - r0
+        lo = int(np.searchsorted(cells, r0, side="left"))
+        hi = int(np.searchsorted(cells, r1, side="left"))
+        local = cells[lo:hi] - r0
+        indptr = np.zeros(n_batch + 1, dtype=np.int64)
+        np.cumsum(np.bincount(local, minlength=n_batch), out=indptr[1:])
+        return sp.csr_matrix((vals[lo:hi], genes[lo:hi], indptr), shape=(n_batch, self.n_features))
+
+    def iter_layer_batches(
+        self,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, Any]]:
+        if len(layer_mapping) != 1:
+            raise ValueError(
+                f"COOReader writes a single value layer, but layer_mapping has "
+                f"{len(layer_mapping)} entries: {sorted(layer_mapping)}"
+            )
+        (tgt_name,) = layer_mapping.values()
+
+        buf_cells = np.empty(0, dtype=np.int64)
+        buf_genes = np.empty(0, dtype=np.int64)
+        buf_vals: np.ndarray | None = None
+        next_row = 0
+
+        for cells, genes, vals in self._iter_triplet_chunks():
+            if buf_vals is None:
+                buf_vals = np.empty(0, dtype=vals.dtype)
+            buf_cells = np.concatenate([buf_cells, cells])
+            buf_genes = np.concatenate([buf_genes, genes])
+            buf_vals = np.concatenate([buf_vals, vals])
+
+            # The highest cell in the buffer may continue in the next chunk, so
+            # only cells strictly below it are complete and safe to emit.
+            safe_upto = int(buf_cells[-1])
+            while next_row + batch_size <= safe_upto:
+                r1 = next_row + batch_size
+                yield {tgt_name: self._emit(next_row, r1, buf_cells, buf_genes, buf_vals)}
+                next_row = r1
+
+            # Drop fully-emitted triplets (cells < next_row) from the buffer.
+            keep = int(np.searchsorted(buf_cells, next_row, side="left"))
+            buf_cells = buf_cells[keep:]
+            buf_genes = buf_genes[keep:]
+            buf_vals = buf_vals[keep:]
+
+        # Flush the remainder, padding empty rows out to n_rows so the batch
+        # stream covers every obs row even past the last cell with entries.
+        if buf_vals is None:
+            buf_vals = np.empty(0, dtype=np.int64)
+        while next_row < self.n_rows:
+            r1 = min(next_row + batch_size, self.n_rows)
+            yield {tgt_name: self._emit(next_row, r1, buf_cells, buf_genes, buf_vals)}
+            next_row = r1
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +997,7 @@ def writer_for(spec: FeatureSpaceSpec, group: zarr.Group, **kwargs) -> _BaseZarr
 
 
 def write_feature_space(
-    reader: AnnDataReader,
+    reader: Reader,
     spec: FeatureSpaceSpec,
     group: zarr.Group,
     *,
@@ -1120,24 +1317,23 @@ def add_coo_batch(
     cell_col: int = 1,
     value_col: int = 2,
     one_indexed: bool = True,
-    value_dtype: np.dtype | None = None,
+    batch_size: int = _DEFAULT_BATCH_ROWS,
+    read_batch_rows: int = 5_000_000,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
     obs_table_name: str | None = None,
 ) -> int:
     """Ingest a cell-sorted COO triplet matrix into the atlas via streaming.
 
-    Streams a gzipped (or plain) text file of (feature_idx, cell_idx, value)
-    triplets directly into zarr + LanceDB without loading the full matrix.
-    The file **must be sorted by cell index**.
+    Built on the same reader/converter/writer engine as :func:`add_from_anndata`:
+    a :class:`COOReader` streams the triplet file into CSR row-batches, which the
+    spec-resolved converter and writer turn into the feature space's zarr arrays
+    via :func:`write_feature_space`. The returned pointer table is then stamped
+    onto the obs rows. Nothing about the matrix is held in memory beyond one
+    batch plus an in-flight read chunk.
 
-    Two-pass approach:
-
-    1. Count nonzeros per cell to determine array sizes and CSR indptr.
-    2. Stream triplets into pre-allocated zarr arrays in shard-sized batches.
-
-    Peak memory is bounded by two numpy buffers of ``shard_shape[0]`` elements
-    (~320 MB at default shard size) plus the per-cell indptr array.
+    The file **must be sorted by cell index**; the reader checks this and the
+    index ranges, failing loudly on violations.
 
     Parameters
     ----------
@@ -1173,9 +1369,10 @@ def add_coo_batch(
         0-based column index for the value.
     one_indexed:
         Whether the file uses 1-based indexing (True) or 0-based (False).
-    value_dtype:
-        Numpy dtype for values. If ``None`` (default), the first entry of
-        the layer's ``allowed_dtypes`` in the spec is used.
+    batch_size:
+        Number of cells per CSR batch streamed into the writer.
+    read_batch_rows:
+        Number of triplet lines read from the file per chunk.
     chunk_shape:
         Zarr chunk shape (1-element tuple). Defaults to ``(_CHUNK_ELEMS,)``.
     shard_shape:
@@ -1194,8 +1391,7 @@ def add_coo_batch(
             "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
         )
 
-    pointer_fields = atlas.pointer_fields_for(name)
-    pointer_field: PointerField = pointer_fields[field_name]
+    pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
     feature_space = pointer_field.feature_space
     spec = get_spec(feature_space)
     if spec.pointer_type is not SparseZarrPointer:
@@ -1204,172 +1400,61 @@ def add_coo_batch(
             f"but '{feature_space}' is {spec.pointer_type.pointer_type_name}"
         )
 
-    if (
-        spec.zarr_group_spec.layers.allowed
-        and zarr_layer not in spec.zarr_group_spec.layers.allowed_names
-    ):
-        raise ValueError(
-            f"zarr_layer '{zarr_layer}' not allowed for '{feature_space}'. "
-            f"Allowed: {spec.zarr_group_spec.layers.allowed_names}"
-        )
-
     obs_errors = validate_obs_columns(obs_df, obs_schema)
     if obs_errors:
         raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
+    if len(obs_df) != n_rows:
+        raise ValueError(f"obs_df has {len(obs_df)} rows but n_rows={n_rows}; they must match.")
 
     if "uid" not in var_df.columns:
         raise ValueError("var_df must have a 'uid' column")
-
     _check_var_no_duplicate_uids_pl(var_df)
 
-    chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
-    shard_shape = shard_shape or (_SHARD_ELEMS,)
-
-    if value_dtype is None:
-        value_dtype = spec.zarr_group_spec.layers.array_specs_by_name[zarr_layer].allowed_dtypes[0]
+    if spec.has_var_df:
+        atlas.register_dataset(dataset_record, var_df=var_df)
+    else:
+        atlas.register_dataset(dataset_record)
 
     zarr_group = dataset_record.zarr_group
-    offset = 1 if one_indexed else 0
-
-    # Column names for polars (headerless CSV uses column_1, column_2, ...)
-    cell_col_name = f"column_{cell_col + 1}"
-    gene_col_name = f"column_{gene_col + 1}"
-    value_col_name = f"column_{value_col + 1}"
-
-    # -----------------------------------------------------------------------
-    # Pass 1: Count nonzeros per cell using polars streaming aggregation
-    # -----------------------------------------------------------------------
-    counts_df = (
-        pl.scan_csv(coo_path, has_header=False, separator=separator)
-        .select(pl.col(cell_col_name))
-        .group_by(cell_col_name)
-        .agg(pl.len().alias("count"))
-        .collect(streaming=True)
-    )
-
-    row_nnz = np.zeros(n_rows, dtype=np.int64)
-    cell_indices = counts_df[cell_col_name].to_numpy() - offset
-    cell_counts = counts_df["count"].to_numpy()
-    row_nnz[cell_indices] = cell_counts
-    total_nnz = int(cell_counts.sum())
-    del counts_df, cell_indices, cell_counts
-
-    # Build CSR indptr
-    indptr = np.zeros(n_rows + 1, dtype=np.int64)
-    np.cumsum(row_nnz, out=indptr[1:])
-    del row_nnz
-
-    starts = indptr[:-1].copy()
-    ends = indptr[1:].copy()
-
-    # -----------------------------------------------------------------------
-    # Register dataset record (computes layout_uid from var_df up front)
-    # -----------------------------------------------------------------------
-    atlas.register_dataset(dataset_record, var_df=var_df if spec.has_var_df else None)
-
-    # -----------------------------------------------------------------------
-    # Pass 2: Stream triplet chunks into zarr
-    # -----------------------------------------------------------------------
     group = atlas.create_zarr_group(zarr_group)
-    indices_name = (
-        f"{spec.zarr_group_spec.layers.prefix}/indices"
-        if spec.zarr_group_spec.layers.prefix
-        else "indices"
+
+    # The matrix write: COOReader yields CSR row-batches; the converter and
+    # writer are resolved from the spec, exactly as for an AnnData source.
+    reader = COOReader(
+        coo_path,
+        n_rows=n_rows,
+        n_features=n_features,
+        separator=separator,
+        gene_col=gene_col,
+        cell_col=cell_col,
+        value_col=value_col,
+        one_indexed=one_indexed,
+        read_batch_rows=read_batch_rows,
     )
-    zarr_indices = spec.zarr_group_spec.create_array(
-        group, indices_name, (total_nnz,), chunks=chunk_shape, shards=shard_shape
-    )
-    zarr_values = spec.zarr_group_spec.create_array(
+    pointer_columns = write_feature_space(
+        reader,
+        spec,
         group,
-        zarr_layer,
-        (total_nnz,),
-        dtype=value_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
+        batch_size=batch_size,
+        layer_mapping={"values": zarr_layer},
+        layer_names=[zarr_layer],
+        zarr_group_name=zarr_group,
+        **_writer_create_kwargs(spec, n_features, chunk_shape, shard_shape),
     )
 
-    # Use subprocess for gzip decompression (faster than Python gzip module)
-    # and polars batched CSV reader for vectorized chunk processing.
-    is_gzip = str(coo_path).endswith(".gz")
-    batch_rows = 5_000_000
-    written = 0
-
-    if is_gzip:
-        proc = subprocess.Popen(
-            ["gzip", "-dc", str(coo_path)],
-            stdout=subprocess.PIPE,
-        )
-        source = proc.stdout
-    else:
-        source = open(coo_path, "rb")
-
-    try:
-        reader = pl.read_csv_batched(
-            source,
-            has_header=False,
-            separator=separator,
-            batch_size=batch_rows,
-            schema_overrides={
-                gene_col_name: pl.Int32,
-                cell_col_name: pl.Int32,
-                value_col_name: pl.Int32,
-            },
-        )
-        while True:
-            batches = reader.next_batches(1)
-            if not batches:
-                break
-            batch = batches[0]
-            genes = batch[gene_col_name].to_numpy() - offset
-            vals = batch[value_col_name].to_numpy()
-            n = len(genes)
-            zarr_indices[written : written + n] = genes.astype(np.uint32)
-            zarr_values[written : written + n] = vals.astype(value_dtype)
-            written += n
-    finally:
-        if is_gzip:
-            source.close()
-            proc.wait()
-        else:
-            source.close()
-
-    # -----------------------------------------------------------------------
-    # Insert obs records
-    # -----------------------------------------------------------------------
+    # Stamp the pointer table onto the obs rows. The reader emits every row in
+    # [0, n_rows), so pointers align positionally with obs_df.
     arrow_schema = obs_schema.to_arrow_schema()
-    schema_fields = _schema_obs_fields(obs_schema)
-
-    pointer_struct = pa.StructArray.from_arrays(
-        [
-            pa.array([zarr_group] * n_rows, type=pa.string()),
-            pa.array(starts.astype(np.int64), type=pa.int64()),
-            pa.array(ends.astype(np.int64), type=pa.int64()),
-            pa.array(np.arange(n_rows, dtype=np.int64), type=pa.int64()),
-        ],
-        names=["zarr_group", "start", "end", "zarr_row"],
+    pointer_struct = _pointer_struct_from_columns(
+        pointer_columns, arrow_schema.field(pointer_field.field_name).type
     )
-
-    columns = {
-        "uid": pa.array([make_uid() for _ in range(n_rows)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_record.dataset_uid] * n_rows, type=pa.string()),
-        pointer_field.field_name: pointer_struct,
-    }
-
-    # Null out the other pointer fields for this batch's rows.
-    for other_pf_name in pointer_fields:
-        if other_pf_name == pointer_field.field_name:
-            continue
-        columns[other_pf_name] = pa.nulls(n_rows, type=arrow_schema.field(other_pf_name).type)
-
-    for col in schema_fields:
-        if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
-
-    for col in schema_fields:
-        if col not in columns:
-            columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)
-
-    arrow_table = pa.table(columns, schema=arrow_schema)
+    arrow_table = _build_row_arrow_table(
+        atlas,
+        obs_df,
+        dataset_uid=dataset_record.dataset_uid,
+        pointer_data={pointer_field.field_name: pointer_struct},
+        obs_table_name=name,
+    )
     atlas.add_obs_records(arrow_table, obs_table_name=name)
     return n_rows
 
