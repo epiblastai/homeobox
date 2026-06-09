@@ -19,6 +19,7 @@ import zarr
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
+from homeobox.ingestion_reader import AnnDataReader, write_feature_space
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.pointer_types import (
     DenseZarrPointer,
@@ -34,6 +35,71 @@ from homeobox.util import sql_escape
 _CHUNK_ELEMS = 40_960
 _CHUNKS_PER_SHARD = 1024
 _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
+_DEFAULT_BATCH_ROWS = 8_192
+
+
+def _writer_create_kwargs(
+    spec: FeatureSpaceSpec,
+    n_vars: int,
+    chunk_shape: tuple[int, ...] | None,
+    shard_shape: tuple[int, ...] | None,
+) -> dict[str, int]:
+    """Translate chunk/shard shapes into the new writer's create kwargs.
+
+    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers
+    take ``chunk_rows``/``shard_rows`` (the feature dimension is the full
+    width). Defaults match the rest of this module's constants.
+    """
+    if spec.pointer_type is SparseZarrPointer:
+        chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
+        shard_shape = shard_shape or (_SHARD_ELEMS,)
+        if len(chunk_shape) != 1 or len(shard_shape) != 1:
+            raise ValueError(
+                f"Sparse feature space '{spec.feature_space}' requires 1-element chunk_shape "
+                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
+            )
+        return {"chunk_elems": chunk_shape[0], "shard_elems": shard_shape[0]}
+
+    if spec.pointer_type is DenseZarrPointer:
+        if chunk_shape is None:
+            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
+        elif len(chunk_shape) == 2:
+            chunk_rows = chunk_shape[0]
+        else:
+            raise ValueError(
+                f"Dense feature space '{spec.feature_space}' requires a 2-element chunk_shape, "
+                f"got {chunk_shape}"
+            )
+        if shard_shape is None:
+            shard_rows = max(1, _SHARD_ELEMS // n_vars)
+            shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
+        elif len(shard_shape) == 2:
+            shard_rows = shard_shape[0]
+        else:
+            raise ValueError(
+                f"Dense feature space '{spec.feature_space}' requires a 2-element shard_shape, "
+                f"got {shard_shape}"
+            )
+        return {"chunk_rows": chunk_rows, "shard_rows": shard_rows}
+
+    raise NotImplementedError(
+        f"add_from_anndata does not support {spec.pointer_type.pointer_type_name} "
+        f"feature space '{spec.feature_space}'"
+    )
+
+
+def _pointer_struct_from_columns(
+    columns: dict[str, np.ndarray], struct_type: pa.StructType
+) -> pa.StructArray:
+    """Assemble a pointer StructArray from ``write_feature_space``'s columns.
+
+    Generic over pointer type: fields are taken in the struct type's declared
+    order and cast to its declared arrow types, so any pointer type whose
+    columns the writer emits works without special-casing.
+    """
+    fields = [struct_type.field(i) for i in range(struct_type.num_fields)]
+    arrays = [pa.array(columns[field.name], type=field.type) for field in fields]
+    return pa.StructArray.from_arrays(arrays, names=[field.name for field in fields])
 
 
 def _check_var_no_duplicate_uids(var: pd.DataFrame) -> None:
@@ -827,31 +893,112 @@ def add_from_anndata(
     field_name: str,
     zarr_layer: str,
     dataset_record: DatasetSchema,
+    batch_size: int = _DEFAULT_BATCH_ROWS,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
     obs_table_name: str | None = None,
 ) -> int:
-    """Convenience wrapper around :func:`add_anndata_batch`.
+    """Ingest an AnnData (or .h5ad path) into the atlas.
 
-    Accepts an in-memory :class:`anndata.AnnData` or a path to an ``.h5ad``
-    file.  Paths are opened with ``backed="r"`` so the full matrix is never
-    materialised into memory.
+    Built on the streaming reader/converter/writer API in
+    :mod:`homeobox.ingestion_reader`: the matrix is written feature-space
+    first via ``write_feature_space`` (which resolves the converter and writer
+    from the spec), then the returned pointer table is stamped onto the obs
+    rows alongside the finalized identity columns.
 
-    All other parameters are forwarded to :func:`add_anndata_batch`; see that
-    function for full documentation.
+    Always ingests ``adata.X`` into the destination layer ``zarr_layer`` (e.g.
+    ``"counts"``). The feature space is derived from ``field_name``'s
+    registered ``PointerField``; the spec decides whether a var_df is needed
+    and which converter/writer apply.
+
+    .. note::
+       ``backed="r"`` streaming is not yet supported — paths are read fully
+       into memory. The reader needs a lazy batch path first.
+
+    Parameters
+    ----------
+    atlas:
+        The atlas to ingest into. Features must already be registered.
+    adata:
+        In-memory AnnData or a path to an ``.h5ad`` file.
+    field_name:
+        Obs-schema attribute name for the pointer column to populate.
+    zarr_layer:
+        Destination layer name within the spec's ``layers/`` group.
+    dataset_record:
+        Dataset record to register; ``dataset_record.zarr_group`` is the
+        zarr group path.
+    batch_size:
+        Rows read and written per batch.
+    chunk_shape, shard_shape:
+        Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
+        dense). Default to this module's constants.
+
+    Returns
+    -------
+    int
+        Number of cells ingested.
     """
     if not isinstance(adata, ad.AnnData):
-        adata = ad.read_h5ad(adata, backed="r")
-    return add_anndata_batch(
-        atlas,
-        adata,
-        field_name=field_name,
-        zarr_layer=zarr_layer,
-        dataset_record=dataset_record,
-        chunk_shape=chunk_shape,
-        shard_shape=shard_shape,
-        obs_table_name=obs_table_name,
+        # TODO: restore backed="r" streaming once the reader has a lazy path.
+        adata = ad.read_h5ad(adata)
+
+    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
+    obs_schema = atlas.obs_schemas[name]
+    if obs_schema is None:
+        raise ValueError(
+            f"Cannot ingest into obs table {name!r}: opened without an obs schema. "
+            "Provide obs_schemas= when calling RaggedAtlas.open() or RaggedAtlas.create()."
+        )
+
+    pointer_field: PointerField = atlas.pointer_fields_for(name)[field_name]
+    feature_space = pointer_field.feature_space
+    spec = get_spec(feature_space)
+
+    obs_errors = validate_obs_columns(adata.obs, obs_schema)
+    if obs_errors:
+        raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
+
+    if spec.has_var_df:
+        registry_table = atlas._registry_tables[feature_space]
+        _validate_var_columns_against_registry(adata.var, registry_table, feature_space)
+        _check_var_no_duplicate_uids(adata.var)
+        var_df = pl.from_pandas(adata.var.reset_index(drop=True))
+        atlas.register_dataset(dataset_record, var_df=var_df)
+    else:
+        atlas.register_dataset(dataset_record)
+
+    zarr_group = dataset_record.zarr_group
+    group = atlas.create_zarr_group(zarr_group)
+
+    # The matrix write: converter + writer resolved from the spec. zarr_layer
+    # conformance (allowed/required layers) is enforced inside the converter.
+    pointer_columns = write_feature_space(
+        AnnDataReader(adata),
+        spec,
+        group,
+        batch_size=batch_size,
+        layer_mapping={"X": zarr_layer},
+        layer_names=[zarr_layer],
+        zarr_group_name=zarr_group,
+        **_writer_create_kwargs(spec, adata.n_vars, chunk_shape, shard_shape),
     )
+
+    # Stamp the pointer table onto the obs rows. Pointers come back in row
+    # order, aligning positionally with adata.obs.
+    arrow_schema = obs_schema.to_arrow_schema()
+    pointer_struct = _pointer_struct_from_columns(
+        pointer_columns, arrow_schema.field(pointer_field.field_name).type
+    )
+    arrow_table = _build_row_arrow_table(
+        atlas,
+        adata.obs,
+        dataset_uid=dataset_record.dataset_uid,
+        pointer_data={pointer_field.field_name: pointer_struct},
+        obs_table_name=name,
+    )
+    atlas.add_obs_records(arrow_table, obs_table_name=name)
+    return adata.n_obs
 
 
 def add_coo_batch(

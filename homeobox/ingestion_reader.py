@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from pathlib import Path
 from typing import Any, ClassVar
 
 import anndata as ad
@@ -6,7 +7,6 @@ import numpy as np
 import zarr
 from scipy import sparse
 
-from homeobox.builtins import GENE_EXPRESSION_SPEC, IMAGE_FEATURES_SPEC
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 
@@ -222,23 +222,30 @@ class DenseConverter(ArrayConverter):
 
 
 # ---------------------------------------------------------------------------
-# Readers: a file format -> a stream of layer batches
+# Readers: a source -> a stream of layer batches
 # ---------------------------------------------------------------------------
+#
+# A reader maps source -> target layer names and streams row-batches. It is
+# fully spec-agnostic — layer-set conformance to the spec (required present,
+# whitelist respected) is the converter's job. One reader works for any
+# feature space.
 
 
-class H5adReader:
-    """Streams an .h5ad file as row-batches of layer arrays.
+class AnnDataReader:
+    """Streams an AnnData as row-batches of layer arrays.
 
-    The reader is fully spec-agnostic — it maps source -> target layer names
-    and streams. Layer-set conformance to the spec (required present, whitelist
-    respected) is the converter's job. One reader works for any feature space.
+    The source mirrors ``add_from_anndata``: an in-memory :class:`AnnData`, or
+    a path to an ``.h5ad`` file. ``open`` reads a path; an already-open AnnData
+    is returned as-is.
     """
 
-    def __init__(self, h5ad_path: str) -> None:
-        self.h5ad_path = h5ad_path
+    def __init__(self, source: ad.AnnData | str | Path) -> None:
+        self.source = source
 
     def open(self, backed: str | None = None, **kwargs) -> ad.AnnData:
-        return ad.read_h5ad(self.h5ad_path, backed=backed, **kwargs)
+        if isinstance(self.source, ad.AnnData):
+            return self.source
+        return ad.read_h5ad(self.source, backed=backed, **kwargs)
 
     def iter_layer_batches(
         self,
@@ -246,13 +253,20 @@ class H5adReader:
         layer_mapping: dict[str, str],
         **open_kwargs,
     ) -> Generator[dict[str, Any]]:
-        """Yield ``{target_layer: array}`` for each row-slice.
+        adata = self.open(**open_kwargs)
+        yield from self._iter_anndata_batches(adata, batch_size, layer_mapping)
+
+    def _iter_anndata_batches(
+        self,
+        adata: ad.AnnData,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, Any]]:
+        """Yield ``{target_layer: array}`` per row-slice of an open AnnData.
 
         ``layer_mapping`` maps a source layer name (``"X"`` or a key in
         ``adata.layers``) to a target layer name.
         """
-        adata = self.open(**open_kwargs)
-
         # TODO: This materializes each slice; backed mode needs a lazy read path.
         for start_idx in range(0, len(adata), batch_size):
             batch = adata[start_idx : start_idx + batch_size]
@@ -518,7 +532,7 @@ def writer_for(spec: FeatureSpaceSpec, group: zarr.Group, **kwargs) -> _BaseZarr
 
 
 def write_feature_space(
-    reader: H5adReader,
+    reader: AnnDataReader,
     spec: FeatureSpaceSpec,
     group: zarr.Group,
     *,
@@ -565,6 +579,8 @@ if __name__ == "__main__":
     import tempfile
     from types import SimpleNamespace
 
+    from homeobox.builtins import GENE_EXPRESSION_SPEC, IMAGE_FEATURES_SPEC
+
     tmp = tempfile.mkdtemp()
     root = zarr.open_group(os.path.join(tmp, "zarr_store"), mode="w")
 
@@ -576,7 +592,7 @@ if __name__ == "__main__":
     ad.AnnData(X=X).write_h5ad(ge_path)
 
     ge = write_feature_space(
-        H5adReader(ge_path),
+        AnnDataReader(ge_path),
         GENE_EXPRESSION_SPEC,
         root.require_group("ge_group"),
         batch_size=7,  # 8 batches -> exercises cross-batch rebasing
@@ -606,7 +622,7 @@ if __name__ == "__main__":
     ad.AnnData(X=Y).write_h5ad(img_path)
 
     img = write_feature_space(
-        H5adReader(img_path),
+        AnnDataReader(img_path),
         IMAGE_FEATURES_SPEC,
         root.require_group("img_group"),
         batch_size=16,
