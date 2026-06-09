@@ -70,6 +70,12 @@ class ArrayConverter:
         # Authoritative names, read from the spec / pointer type — never literal.
         self.structural_names = [a.array_name for a in spec.zarr_group_spec.required_arrays]
         self.pointer_fields = set(spec.pointer_type.offset_axes)
+        layers_spec = spec.zarr_group_spec.layers
+        self.required_layers = set(layers_spec.required_names)
+        # A non-empty whitelist means only those (plus required) may be written;
+        # an empty whitelist means any layer name is allowed (None == no limit).
+        allowed = set(layers_spec.allowed_names)
+        self.permitted_layers = (allowed | self.required_layers) if allowed else None
 
     def convert(self, layers: dict[str, Any]) -> dict[str, Any]:
         raise NotImplementedError
@@ -87,35 +93,66 @@ class ArrayConverter:
                 f"{type(self).__name__} produced pointer fields {produced_fields}, but "
                 f"{self.pointer_type.__name__} expects {self.pointer_fields}"
             )
+        produced_layers = set(converted["layers"])
+        missing = self.required_layers - produced_layers
+        if missing:
+            raise ValueError(
+                f"{type(self).__name__} is missing required layers {sorted(missing)} for "
+                f"feature space '{self.spec.feature_space}'"
+            )
+        if self.permitted_layers is not None and not produced_layers <= self.permitted_layers:
+            extra = produced_layers - self.permitted_layers
+            raise ValueError(
+                f"{type(self).__name__} produced layers {sorted(extra)} not allowed by the "
+                f"spec (allowed: {sorted(self.permitted_layers)})"
+            )
         return converted
 
 
-_CONVERTERS: dict[tuple[type, type], type[ArrayConverter]] = {}
+# Converters are selected by spec identity (feature space), NOT pointer type:
+# two feature spaces can share a pointer type yet need entirely different
+# layouts (gene_expression and chromatin_accessibility are both
+# SparseZarrPointer but one is a CSR value-layout and the other an interval
+# layout). A converter class can still be generic across feature spaces of the
+# same layout family — bind it to each one by name.
+_CONVERTERS: dict[str, type[ArrayConverter]] = {}
 
 
-def register_converter(cls: type[ArrayConverter]) -> type[ArrayConverter]:
-    """Register a converter, keyed by (input array type, pointer type)."""
-    _CONVERTERS[(cls.input_type, cls.pointer_type)] = cls
-    return cls
+def register_converter(*feature_spaces: str):
+    """Bind a converter class to one or more feature spaces (by name)."""
+
+    def decorate(cls: type[ArrayConverter]) -> type[ArrayConverter]:
+        for feature_space in feature_spaces:
+            _CONVERTERS[feature_space] = cls
+        return cls
+
+    return decorate
 
 
 def converter_for(spec: FeatureSpaceSpec, sample: Any) -> ArrayConverter:
-    """Resolve the converter for ``spec`` given a sample input array.
+    """Resolve the converter for ``spec`` and validate the input array type.
 
-    Selects by the spec's pointer type and the runtime type of the array the
-    reader produced. Raises loudly when no converter covers the combination —
-    so a new pointer type can never be silently mis-handled.
+    Selection is by ``spec.feature_space``; the resolved converter then checks
+    that ``sample`` matches its declared ``input_type``. Both an unregistered
+    feature space and a mismatched array type raise loudly — a new feature
+    space can never silently borrow a converter that shares its pointer type.
     """
-    for (input_type, pointer_type), cls in _CONVERTERS.items():
-        if pointer_type is spec.pointer_type and isinstance(sample, input_type):
-            return cls(spec)
-    raise KeyError(
-        f"No converter registered for array type {type(sample).__name__} + pointer type "
-        f"{spec.pointer_type.__name__}. Register one with @register_converter."
-    )
+    cls = _CONVERTERS.get(spec.feature_space)
+    if cls is None:
+        raise KeyError(
+            f"No converter registered for feature space '{spec.feature_space}'. "
+            f"Bind one with @register_converter('{spec.feature_space}')."
+        )
+    converter = cls(spec)
+    if not isinstance(sample, converter.input_type):
+        raise TypeError(
+            f"{cls.__name__} for '{spec.feature_space}' expects "
+            f"{converter.input_type.__name__}, got {type(sample).__name__}"
+        )
+    return converter
 
 
-@register_converter
+@register_converter("gene_expression")
 class CSRSparseConverter(ArrayConverter):
     """CSR matrices -> any sparse (one structural index array + flat layers)
     layout addressed by ``SparseZarrPointer``-style range pointers."""
@@ -159,7 +196,7 @@ class CSRSparseConverter(ArrayConverter):
         )
 
 
-@register_converter
+@register_converter("image_features", "protein_abundance")
 class DenseConverter(ArrayConverter):
     """Dense 2-D arrays -> any row-addressed dense layout (``DenseZarrPointer``)."""
 
@@ -192,8 +229,9 @@ class DenseConverter(ArrayConverter):
 class H5adReader:
     """Streams an .h5ad file as row-batches of layer arrays.
 
-    The reader is spec-agnostic: it only needs the spec to validate that the
-    requested target layers are allowed. One reader works for any feature space.
+    The reader is fully spec-agnostic — it maps source -> target layer names
+    and streams. Layer-set conformance to the spec (required present, whitelist
+    respected) is the converter's job. One reader works for any feature space.
     """
 
     def __init__(self, h5ad_path: str) -> None:
@@ -204,7 +242,6 @@ class H5adReader:
 
     def iter_layer_batches(
         self,
-        spec: FeatureSpaceSpec,
         batch_size: int,
         layer_mapping: dict[str, str],
         **open_kwargs,
@@ -212,13 +249,9 @@ class H5adReader:
         """Yield ``{target_layer: array}`` for each row-slice.
 
         ``layer_mapping`` maps a source layer name (``"X"`` or a key in
-        ``adata.layers``) to a target layer name declared by the spec.
+        ``adata.layers``) to a target layer name.
         """
         adata = self.open(**open_kwargs)
-        allowed = set(spec.zarr_group_spec.layers.allowed_names)
-        unknown = [tgt for tgt in layer_mapping.values() if tgt not in allowed]
-        if unknown:
-            raise ValueError(f"layers {unknown} are not allowed by the spec (allowed: {allowed})")
 
         # TODO: This materializes each slice; backed mode needs a lazy read path.
         for start_idx in range(0, len(adata), batch_size):
@@ -511,7 +544,7 @@ def write_feature_space(
     )
     converter: ArrayConverter | None = None
     columns: dict[str, list[np.ndarray]] | None = None
-    for batch_layers in reader.iter_layer_batches(spec, batch_size, layer_mapping):
+    for batch_layers in reader.iter_layer_batches(batch_size, layer_mapping):
         if converter is None:
             converter = converter_for(spec, next(iter(batch_layers.values())))
         rebased = writer.append(converter.convert(batch_layers))
@@ -599,10 +632,27 @@ if __name__ == "__main__":
         pointer_type=SparseZarrPointer,
         zarr_group_spec=SimpleNamespace(
             required_arrays=[SimpleNamespace(array_name="gene/indices")],
-            layers=SimpleNamespace(allowed_names=["counts"]),
+            layers=SimpleNamespace(required_names=["counts"], allowed_names=["counts"]),
         ),
     )
-    converted = converter_for(renamed_spec, X).convert({"counts": X})
+    converted = CSRSparseConverter(renamed_spec).convert({"counts": X})
     assert set(converted["required_arrays"]) == {"gene/indices"}
     assert set(converted["pointer_fields"]) == {"start", "end", "zarr_row"}
     print("extensibility: CSRSparseConverter mapped onto 'gene/indices' unchanged ✓")
+
+    # Selection is by feature-space identity: an unregistered feature space
+    # raises rather than borrowing a converter that shares its pointer type.
+    try:
+        converter_for(renamed_spec, X)
+    except KeyError:
+        print("selection: unregistered feature space raises (no silent fallback) ✓")
+    else:
+        raise AssertionError("expected KeyError for unregistered feature space")
+
+    # Required-layer validation: omitting a spec-required layer fails loudly.
+    try:
+        CSRSparseConverter(GENE_EXPRESSION_SPEC).convert({"log_normalized": X})
+    except ValueError:
+        print("validation: missing required layer 'counts' raises ✓")
+    else:
+        raise AssertionError("expected ValueError for missing required layer")
