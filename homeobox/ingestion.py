@@ -199,47 +199,6 @@ def deduplicate_var(
     return mat_dedup, var_dedup
 
 
-def _is_backed_csr(adata: ad.AnnData) -> bool:
-    """Return True if adata.X is a backed HDF5 CSR matrix (h5ad format)."""
-    import h5py
-
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and isinstance(adata.file._file["X"], h5py.Group)
-        and "data" in adata.file._file["X"]
-    )
-
-
-def _is_backed_dense(adata: ad.AnnData) -> bool:
-    """Return True if adata.X is a backed HDF5 dense matrix."""
-    import h5py
-
-    return (
-        adata.isbacked
-        and "X" in adata.file._file
-        and isinstance(adata.file._file["X"], h5py.Dataset)
-    )
-
-
-def _count_nnz_batched(h5_dataset, batch_rows: int) -> tuple[int, np.ndarray]:
-    """Count nonzeros in a backed dense HDF5 dataset without loading it all.
-
-    Returns ``(total_nnz, nnz_per_row)`` where ``nnz_per_row`` has one entry
-    per row in the dataset.
-    """
-    n_rows = h5_dataset.shape[0]
-    nnz_per_row = np.empty(n_rows, dtype=np.int64)
-    total_nnz = 0
-    for start in range(0, n_rows, batch_rows):
-        end = min(start + batch_rows, n_rows)
-        batch = h5_dataset[start:end]
-        row_nnz = np.count_nonzero(batch, axis=1)
-        nnz_per_row[start:end] = row_nnz
-        total_nnz += int(row_nnz.sum())
-    return total_nnz, nnz_per_row
-
-
 # ---------------------------------------------------------------------------
 # Reader / converter / writer ingestion engine
 # ---------------------------------------------------------------------------
@@ -473,6 +432,11 @@ class AnnDataReader:
     The source mirrors ``add_from_anndata``: an in-memory :class:`AnnData`, or
     a path to an ``.h5ad`` file. ``open`` reads a path; an already-open AnnData
     is returned as-is.
+
+    Backed sources (``backed="r"``) are streamed lazily: each row-batch is read
+    straight from the open HDF5 file, so only ``batch_size`` rows are
+    materialized at a time. Backed sparse layers must be CSR (row-major);
+    backed dense layers are read as row slices.
     """
 
     def __init__(self, source: ad.AnnData | str | Path) -> None:
@@ -490,20 +454,22 @@ class AnnDataReader:
         **open_kwargs,
     ) -> Generator[dict[str, Any]]:
         adata = self.open(**open_kwargs)
-        yield from self._iter_anndata_batches(adata, batch_size, layer_mapping)
+        if adata.isbacked:
+            yield from self._iter_backed_batches(adata, batch_size, layer_mapping)
+        else:
+            yield from self._iter_in_memory_batches(adata, batch_size, layer_mapping)
 
-    def _iter_anndata_batches(
+    def _iter_in_memory_batches(
         self,
         adata: ad.AnnData,
         batch_size: int,
         layer_mapping: dict[str, str],
     ) -> Generator[dict[str, Any]]:
-        """Yield ``{target_layer: array}`` per row-slice of an open AnnData.
+        """Yield ``{target_layer: array}`` per row-slice of an in-memory AnnData.
 
         ``layer_mapping`` maps a source layer name (``"X"`` or a key in
         ``adata.layers``) to a target layer name.
         """
-        # TODO: This materializes each slice; backed mode needs a lazy read path.
         for start_idx in range(0, len(adata), batch_size):
             batch = adata[start_idx : start_idx + batch_size]
             batch_layers: dict[str, Any] = {}
@@ -514,6 +480,56 @@ class AnnDataReader:
                 else:
                     source = np.asarray(source)
                 batch_layers[tgt_name] = source
+            yield batch_layers
+
+    def _iter_backed_batches(
+        self,
+        adata: ad.AnnData,
+        batch_size: int,
+        layer_mapping: dict[str, str],
+    ) -> Generator[dict[str, Any]]:
+        """Yield row-batches by reading the backing HDF5 file lazily.
+
+        Each source layer is resolved to its HDF5 node once (``X`` or a member
+        of the ``layers`` group), caching the CSR ``indptr`` so only the rows of
+        the current batch are read. The per-batch arrays match the in-memory
+        path: a ``csr_matrix`` for sparse layers, a dense ``ndarray`` otherwise.
+        """
+        import h5py
+
+        n_rows = adata.n_obs
+        n_vars = adata.n_vars
+        h5file = adata.file._file
+
+        nodes: dict[str, Any] = {}
+        indptrs: dict[str, np.ndarray] = {}
+        for src_name in layer_mapping:
+            node = h5file["X"] if src_name == "X" else h5file["layers"][src_name]
+            if isinstance(node, h5py.Group):
+                encoding = node.attrs.get("encoding-type", "")
+                if encoding and encoding != "csr_matrix":
+                    raise ValueError(
+                        f"Backed ingestion of source layer '{src_name}' requires CSR "
+                        f"(row-major) storage, but it is encoded as '{encoding}'. "
+                        f"Re-save the h5ad with a CSR X or load it in memory."
+                    )
+                indptrs[src_name] = node["indptr"][:]
+            nodes[src_name] = node
+
+        for r0 in range(0, n_rows, batch_size):
+            r1 = min(r0 + batch_size, n_rows)
+            batch_layers: dict[str, Any] = {}
+            for src_name, tgt_name in layer_mapping.items():
+                node = nodes[src_name]
+                if isinstance(node, h5py.Group):
+                    indptr = indptrs[src_name]
+                    o0, o1 = int(indptr[r0]), int(indptr[r1])
+                    batch_layers[tgt_name] = sp.csr_matrix(
+                        (node["data"][o0:o1], node["indices"][o0:o1], indptr[r0 : r1 + 1] - o0),
+                        shape=(r1 - r0, n_vars),
+                    )
+                else:
+                    batch_layers[tgt_name] = np.asarray(node[r0:r1])
             yield batch_layers
 
 
@@ -956,141 +972,6 @@ def insert_obs_records(
     return len(obs_df)
 
 
-def _write_sparse_batched(
-    group: zarr.Group,
-    adata: ad.AnnData,
-    zarr_layer: str,
-    chunk_shape: tuple[int, ...],
-    shard_shape: tuple[int, ...],
-    spec: FeatureSpaceSpec,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pre-allocate and stream-write CSR data in shard-sized batches.
-
-    Supports three input modes:
-
-    1. **Backed CSR** — reads directly from HDF5 CSR datasets (data/indices/indptr).
-    2. **Backed dense** — reads row batches from HDF5, converts each to CSR,
-       and streams without loading the full matrix.  Requires two passes: one
-       to count nonzeros, one to write.
-    3. **In-memory** — converts to scipy CSR then streams the flat arrays.
-
-    Returns
-    -------
-    tuple[np.ndarray, np.ndarray]
-        ``(starts, ends)`` — per-obs indptr start/end positions.
-    """
-    backed_dense = _is_backed_dense(adata)
-
-    if _is_backed_csr(adata):
-        h5x = adata.file._file["X"]
-        nnz = int(h5x["data"].shape[0])
-        indptr = h5x["indptr"][:]
-        src_indices = h5x["indices"]
-        src_data = h5x["data"]
-        data_dtype = src_data.dtype
-    elif backed_dense:
-        # Two-pass approach to avoid loading the full dense matrix.
-        h5x = adata.file._file["X"]
-        data_dtype = h5x.dtype
-        # Pass 1: count nonzeros per row in batches.
-        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
-        batch_rows = max(batch_rows, 256)  # floor to avoid tiny batches
-        nnz, nnz_per_row = _count_nnz_batched(h5x, batch_rows)
-        # Build indptr from nnz_per_row.
-        indptr = np.zeros(len(nnz_per_row) + 1, dtype=np.int64)
-        np.cumsum(nnz_per_row, out=indptr[1:])
-        src_indices = None  # sentinel: pass 2 will stream
-        src_data = None
-    else:
-        csr = adata.X if isinstance(adata.X, sp.csr_matrix) else sp.csr_matrix(adata.X)
-        nnz = csr.nnz
-        indptr = csr.indptr
-        src_indices = csr.indices
-        src_data = csr.data
-        data_dtype = csr.data.dtype
-
-    indices_name = (
-        f"{spec.zarr_group_spec.layers.prefix}/indices"
-        if spec.zarr_group_spec.layers.prefix
-        else "indices"
-    )
-    zarr_indices = spec.zarr_group_spec.create_array(
-        group, indices_name, (nnz,), chunks=chunk_shape, shards=shard_shape
-    )
-    zarr_values = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (nnz,),
-        dtype=data_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    if backed_dense:
-        # Pass 2: read row batches, convert to CSR, write flat arrays.
-        n_rows = adata.n_obs
-        batch_rows = max(1, shard_shape[0] // adata.n_vars) if adata.n_vars > 0 else 1024
-        batch_rows = max(batch_rows, 256)
-        written = 0
-        for row_start in range(0, n_rows, batch_rows):
-            row_end = min(row_start + batch_rows, n_rows)
-            batch_csr = sp.csr_matrix(h5x[row_start:row_end])
-            batch_nnz = batch_csr.nnz
-            if batch_nnz == 0:
-                continue
-            zarr_indices[written : written + batch_nnz] = batch_csr.indices.astype(
-                np.uint32, copy=False
-            )
-            zarr_values[written : written + batch_nnz] = batch_csr.data
-            written += batch_nnz
-    else:
-        # Stream flat CSR arrays (backed CSR or in-memory).
-        batch_size = shard_shape[0]
-        written = 0
-        while written < nnz:
-            end = min(written + batch_size, nnz)
-            zarr_indices[written:end] = src_indices[written:end].astype(np.uint32, copy=False)
-            zarr_values[written:end] = src_data[written:end]
-            written = end
-
-    starts = indptr[:-1].astype(np.int64)
-    ends = indptr[1:].astype(np.int64)
-    return starts, ends
-
-
-def _write_dense_batched(
-    group: zarr.Group,
-    adata: ad.AnnData,
-    zarr_layer: str,
-    chunk_shape: tuple[int, ...],
-    shard_shape: tuple[int, ...],
-    spec: FeatureSpaceSpec,
-) -> None:
-    """Pre-allocate and stream-write dense 2D data in shard-sized row batches.
-
-    Slices ``adata.X[start:end, :]`` per batch; anndata handles backed vs
-    in-memory transparently for dense arrays.
-    """
-    n_rows, n_vars = adata.shape
-    batch_size = shard_shape[0]
-    data_dtype = adata.X.dtype
-
-    zarr_arr = spec.zarr_group_spec.create_array(
-        group,
-        zarr_layer,
-        (n_rows, n_vars),
-        dtype=data_dtype,
-        chunks=chunk_shape,
-        shards=shard_shape,
-    )
-
-    written = 0
-    while written < n_rows:
-        end = min(written + batch_size, n_rows)
-        zarr_arr[written:end] = np.asarray(adata.X[written:end], dtype=data_dtype)
-        written = end
-
-
 def add_from_anndata(
     atlas: RaggedAtlas,
     adata: ad.AnnData | str | Path,
@@ -1099,6 +980,7 @@ def add_from_anndata(
     zarr_layer: str,
     dataset_record: DatasetSchema,
     batch_size: int = _DEFAULT_BATCH_ROWS,
+    backed: str | None = None,
     chunk_shape: tuple[int, ...] | None = None,
     shard_shape: tuple[int, ...] | None = None,
     obs_table_name: str | None = None,
@@ -1115,10 +997,6 @@ def add_from_anndata(
     registered ``PointerField``; the spec decides whether a var_df is needed
     and which converter/writer apply.
 
-    .. note::
-       ``backed="r"`` streaming is not yet supported — paths are read fully
-       into memory. The reader needs a lazy batch path first.
-
     Parameters
     ----------
     atlas:
@@ -1134,6 +1012,12 @@ def add_from_anndata(
         zarr group path.
     batch_size:
         Rows read and written per batch.
+    backed:
+        When ``adata`` is a path, the ``backed`` mode passed to
+        ``anndata.read_h5ad`` (e.g. ``"r"``). In backed mode the matrix is
+        streamed off disk one batch at a time instead of being read fully into
+        memory; a backed sparse ``X`` must be CSR (row-major). Ignored when
+        ``adata`` is already an in-memory AnnData.
     chunk_shape, shard_shape:
         Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
         dense). Default to this module's constants.
@@ -1144,8 +1028,7 @@ def add_from_anndata(
         Number of cells ingested.
     """
     if not isinstance(adata, ad.AnnData):
-        # TODO: restore backed="r" streaming once the reader has a lazy path.
-        adata = ad.read_h5ad(adata)
+        adata = ad.read_h5ad(adata, backed=backed)
 
     name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
     obs_schema = atlas.obs_schemas[name]
