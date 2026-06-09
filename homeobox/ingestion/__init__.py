@@ -20,15 +20,19 @@ from homeobox.ingestion.converters import (
 )
 from homeobox.ingestion.feature_oriented import add_csc
 from homeobox.ingestion.functions import (
+    add_from_anndata,
+    ingest_dataset,
+    ingest_multimodal,
+)
+from homeobox.ingestion.ingestor import (
     _DEFAULT_BATCH_ROWS,
+    Ingestor,
     _build_row_arrow_table,
     _check_var_no_duplicate_uids_pl,
     _make_sparse_pointer,
     _pointer_struct_from_columns,
     _validate_var_columns_against_registry,
     _writer_create_kwargs,
-    add_from_anndata,
-    ingest_dataset,
     insert_obs_records,
 )
 from homeobox.ingestion.readers import AnnDataReader, COOReader, Reader
@@ -49,6 +53,7 @@ __all__ = [
     "CSRSparseConverter",
     "DenseConverter",
     "DenseZarrWriter",
+    "Ingestor",
     "Reader",
     "SparseZarrWriter",
     "_CHUNK_ELEMS",
@@ -65,6 +70,7 @@ __all__ = [
     "add_from_anndata",
     "converter_for",
     "ingest_dataset",
+    "ingest_multimodal",
     "insert_obs_records",
     "register_converter",
     "write_feature_space",

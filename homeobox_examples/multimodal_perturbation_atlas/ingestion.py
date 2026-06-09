@@ -1,13 +1,14 @@
 """Ingestion utilities for the multimodal perturbation atlas.
 
-Includes multimodal batch ingestion (gene_expression + protein_abundance
-+ chromatin_accessibility in one pass). Fragment-specific ingestion
-functions are in :mod:`homeobox.fragments.ingestion`.
+Multimodal batch ingestion (several modalities populating one obs record per
+cell in a single pass) now lives in :mod:`homeobox.ingestion` as
+:func:`homeobox.ingestion.ingest_multimodal` / :class:`homeobox.ingestion.Ingestor`.
+This module retains fragment-based ingestion (chromatin accessibility);
+fragment-specific helpers are in :mod:`homeobox.fragments.ingestion`.
 """
 
 from pathlib import Path
 
-import anndata as ad
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -24,19 +25,9 @@ from homeobox.fragments.ingestion import (
     write_genome_sorted_arrays,
 )
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import (
-    AnnDataReader,
-    _pointer_struct_from_columns,
-    _writer_create_kwargs,
-    write_feature_space,
-)
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import DatasetSchema, make_uid
-
-_CHUNK_ELEMS = 40_960
-_CHUNKS_PER_SHARD = 1024
-_SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
 
 
 def _make_sparse_pointer(
@@ -119,126 +110,6 @@ def _build_cell_arrow_table(
             columns[col] = pa.nulls(n_cells, type=arrow_schema.field(col).type)
 
     return pa.table(columns, schema=arrow_schema)
-
-
-def add_multimodal_batch(
-    atlas: RaggedAtlas,
-    modalities: dict[str, ad.AnnData],
-    *,
-    obs_df: pd.DataFrame,
-    zarr_layer: str,
-    dataset_records: dict[str, DatasetSchema],
-    batch_size: int = 8_192,
-) -> int:
-    """Ingest aligned multimodal data, creating one cell record per cell.
-
-    This writes zarr arrays for all modalities and creates cell records
-    with ALL pointer fields populated in a single insert.
-
-    Parameters
-    ----------
-    atlas
-        Open RaggedAtlas.
-    modalities
-        ``{field_name: AnnData}`` — keyed by pointer field name in the
-        cell schema. Each AnnData must have the same number of cells in
-        the same barcode order. ``adata.var`` must have a
-        ``uid`` column for feature spaces with var_df.
-    obs_df
-        Shared obs DataFrame for all modalities (validated, schema-aligned).
-    zarr_layer
-        Zarr layer name (e.g. ``"counts"``).
-    dataset_records
-        ``{field_name: DatasetSchema}`` — one per modality, keyed the same
-        way as ``modalities``. All records must share a single ``dataset_uid``.
-    batch_size
-        Rows read and written per batch when streaming each modality's matrix.
-
-    Returns
-    -------
-    int
-        Number of cells ingested.
-    """
-    if atlas.obs_schema is None:
-        raise ValueError("Cannot ingest data into an atlas opened without a cell schema.")
-
-    if set(modalities.keys()) != set(dataset_records.keys()):
-        raise ValueError(
-            f"modalities and dataset_records must share keys; "
-            f"got modalities={sorted(modalities.keys())}, "
-            f"dataset_records={sorted(dataset_records.keys())}"
-        )
-
-    for field_name in modalities:
-        if field_name not in atlas.pointer_fields:
-            raise ValueError(
-                f"No pointer field named '{field_name}'. "
-                f"Available: {sorted(atlas.pointer_fields.keys())}"
-            )
-
-    n_cells = len(obs_df)
-    for field_name, adata in modalities.items():
-        if adata.n_obs != n_cells:
-            raise ValueError(f"Modality '{field_name}' has {adata.n_obs} cells, expected {n_cells}")
-
-    obs_errors = validate_obs_columns(obs_df, atlas.obs_schema)
-    if obs_errors:
-        raise ValueError(f"obs columns do not match cell schema: {obs_errors}")
-
-    shared_dataset_uid = next(iter(dataset_records.values())).dataset_uid
-    for field_name, ds in dataset_records.items():
-        if ds.dataset_uid != shared_dataset_uid:
-            raise ValueError(
-                f"All modalities in a multimodal batch must share dataset_uid; "
-                f"modality '{field_name}' has dataset_uid={ds.dataset_uid!r}, "
-                f"expected {shared_dataset_uid!r}"
-            )
-
-    arrow_schema = atlas.obs_schema.to_arrow_schema()
-    pointer_data: dict[str, pa.StructArray] = {}
-
-    for field_name, adata in modalities.items():
-        pointer_field = atlas.pointer_fields[field_name]
-        feature_space = pointer_field.feature_space
-        spec = get_spec(feature_space)
-        ds = dataset_records[field_name]
-        zarr_group = ds.zarr_group
-
-        if spec.has_var_df:
-            var_df = pl.from_pandas(adata.var.reset_index())
-            if "uid" not in var_df.columns:
-                raise ValueError(
-                    f"adata.var must have a 'uid' column for feature space '{feature_space}'."
-                )
-            atlas.register_dataset(ds, var_df=var_df)
-        else:
-            atlas.register_dataset(ds)
-        group = atlas.create_zarr_group(zarr_group)
-
-        # Stream the modality's matrix; the converter and writer are resolved
-        # from the spec, so sparse and dense feature spaces share one path.
-        pointer_columns = write_feature_space(
-            AnnDataReader(adata),
-            spec,
-            group,
-            batch_size=batch_size,
-            layer_mapping={"X": zarr_layer},
-            layer_names=[zarr_layer],
-            zarr_group_name=zarr_group,
-            **_writer_create_kwargs(spec, adata.n_vars, None, None),
-        )
-        pointer_data[field_name] = _pointer_struct_from_columns(
-            pointer_columns, arrow_schema.field(field_name).type
-        )
-
-    arrow_table = _build_cell_arrow_table(
-        atlas,
-        obs_df,
-        dataset_uid=shared_dataset_uid,
-        pointer_data=pointer_data,
-    )
-    atlas.cell_table.add(arrow_table)
-    return n_cells
 
 
 # ---------------------------------------------------------------------------
