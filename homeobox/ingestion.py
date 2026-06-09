@@ -39,154 +39,6 @@ _SHARD_ELEMS = _CHUNKS_PER_SHARD * _CHUNK_ELEMS
 _DEFAULT_BATCH_ROWS = 8_192
 
 
-def _writer_create_kwargs(
-    spec: FeatureSpaceSpec,
-    n_vars: int,
-    chunk_shape: tuple[int, ...] | None,
-    shard_shape: tuple[int, ...] | None,
-) -> dict[str, int]:
-    """Translate chunk/shard shapes into the new writer's create kwargs.
-
-    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers
-    take ``chunk_rows``/``shard_rows`` (the feature dimension is the full
-    width). Defaults match the rest of this module's constants.
-    """
-    if spec.pointer_type is SparseZarrPointer:
-        chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
-        shard_shape = shard_shape or (_SHARD_ELEMS,)
-        if len(chunk_shape) != 1 or len(shard_shape) != 1:
-            raise ValueError(
-                f"Sparse feature space '{spec.feature_space}' requires 1-element chunk_shape "
-                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
-            )
-        return {"chunk_elems": chunk_shape[0], "shard_elems": shard_shape[0]}
-
-    if spec.pointer_type is DenseZarrPointer:
-        if chunk_shape is None:
-            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
-        elif len(chunk_shape) == 2:
-            chunk_rows = chunk_shape[0]
-        else:
-            raise ValueError(
-                f"Dense feature space '{spec.feature_space}' requires a 2-element chunk_shape, "
-                f"got {chunk_shape}"
-            )
-        if shard_shape is None:
-            shard_rows = max(1, _SHARD_ELEMS // n_vars)
-            shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
-        elif len(shard_shape) == 2:
-            shard_rows = shard_shape[0]
-        else:
-            raise ValueError(
-                f"Dense feature space '{spec.feature_space}' requires a 2-element shard_shape, "
-                f"got {shard_shape}"
-            )
-        return {"chunk_rows": chunk_rows, "shard_rows": shard_rows}
-
-    raise NotImplementedError(
-        f"add_from_anndata does not support {spec.pointer_type.pointer_type_name} "
-        f"feature space '{spec.feature_space}'"
-    )
-
-
-def _pointer_struct_from_columns(
-    columns: dict[str, np.ndarray], struct_type: pa.StructType
-) -> pa.StructArray:
-    """Assemble a pointer StructArray from ``write_feature_space``'s columns.
-
-    Generic over pointer type: fields are taken in the struct type's declared
-    order and cast to its declared arrow types, so any pointer type whose
-    columns the writer emits works without special-casing.
-    """
-    fields = [struct_type.field(i) for i in range(struct_type.num_fields)]
-    arrays = [pa.array(columns[field.name], type=field.type) for field in fields]
-    return pa.StructArray.from_arrays(arrays, names=[field.name for field in fields])
-
-
-def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
-    """Raise if a polars var DataFrame has duplicate uid values."""
-    if "uid" not in var_df.columns:
-        return
-    n_total = var_df.height
-    n_unique = var_df["uid"].n_unique()
-    if n_unique != n_total:
-        n_dupes = n_total - n_unique
-        raise ValueError(
-            f"var_df has {n_dupes} duplicate uid value(s) "
-            f"({n_total} rows, {n_unique} unique). "
-            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
-        )
-
-
-def _validate_var_columns_against_registry(
-    var: pd.DataFrame | pl.DataFrame,
-    registry_table: lancedb.table.Table,
-    feature_space: str,
-) -> None:
-    """Validate that var columns exactly match the registry schema (minus ``global_index``).
-
-    Accepts a pandas or polars var table (only ``.columns`` is inspected). The
-    registry table's arrow schema is the source of truth. ``global_index`` is
-    assigned by :meth:`optimize` and must not appear on the var table.
-    """
-    expected = set(registry_table.schema.names) - {"global_index"}
-    actual = set(var.columns)
-    if actual != expected:
-        missing = sorted(expected - actual)
-        extra = sorted(actual - expected)
-        raise ValueError(
-            f"var columns do not match the '{feature_space}' registry schema. "
-            f"Expected exactly {sorted(expected)}; got {sorted(actual)}. "
-            f"Missing: {missing}. Unexpected: {extra}. "
-            f"Tip: if the registry schema uses StableUIDField, set the stable-uid "
-            f"source column on var and run "
-            f"<RegistrySchema>.compute_stable_uids(adata.var) to populate 'uid'."
-        )
-
-
-def deduplicate_var(
-    mat: sp.spmatrix,
-    var_df: pd.DataFrame,
-    uid_column: str = "uid",
-) -> tuple[sp.csr_matrix, pd.DataFrame]:
-    """Merge matrix columns that share the same feature UID by summing.
-
-    When multiple original features (e.g. Ensembl IDs) map to the same
-    canonical feature UID, this function collapses them by summing the
-    corresponding matrix columns. The returned var keeps the first row
-    for each unique UID.
-
-    Uses a sparse aggregation matrix (n_orig × n_deduped) so the cost is
-    a single sparse matmul — no Python loops over columns.
-
-    Returns the input unchanged if there are no duplicates.
-    """
-    if uid_column not in var_df.columns:
-        return sp.csr_matrix(mat), var_df
-
-    uids = var_df[uid_column].values
-    unique_uids, inverse = np.unique(uids, return_inverse=True)
-
-    if len(unique_uids) == len(uids):
-        return sp.csr_matrix(mat), var_df
-
-    n_orig = len(uids)
-    n_dedup = len(unique_uids)
-
-    # Build aggregation matrix: A[i, j] = 1 iff original col i maps to deduped col j
-    agg = sp.csc_matrix(
-        (np.ones(n_orig, dtype=mat.dtype), (np.arange(n_orig), inverse)),
-        shape=(n_orig, n_dedup),
-    )
-    mat_dedup = sp.csr_matrix(mat @ agg)
-
-    # Keep the first row in var for each unique UID
-    first_indices = np.unique(inverse, return_index=True)[1]
-    var_dedup = var_df.iloc[first_indices].copy()
-
-    return mat_dedup, var_dedup
-
-
 # ---------------------------------------------------------------------------
 # Reader / converter / writer ingestion engine
 # ---------------------------------------------------------------------------
@@ -1112,6 +964,111 @@ def _make_sparse_pointer(
         ],
         names=["zarr_group", "start", "end", "zarr_row"],
     )
+
+
+def _writer_create_kwargs(
+    spec: FeatureSpaceSpec,
+    n_vars: int,
+    chunk_shape: tuple[int, ...] | None,
+    shard_shape: tuple[int, ...] | None,
+) -> dict[str, int]:
+    """Translate chunk/shard shapes into the new writer's create kwargs.
+
+    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers
+    take ``chunk_rows``/``shard_rows`` (the feature dimension is the full
+    width). Defaults match the rest of this module's constants.
+    """
+    if spec.pointer_type is SparseZarrPointer:
+        chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
+        shard_shape = shard_shape or (_SHARD_ELEMS,)
+        if len(chunk_shape) != 1 or len(shard_shape) != 1:
+            raise ValueError(
+                f"Sparse feature space '{spec.feature_space}' requires 1-element chunk_shape "
+                f"and shard_shape, got chunk_shape={chunk_shape}, shard_shape={shard_shape}"
+            )
+        return {"chunk_elems": chunk_shape[0], "shard_elems": shard_shape[0]}
+
+    if spec.pointer_type is DenseZarrPointer:
+        if chunk_shape is None:
+            chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
+        elif len(chunk_shape) == 2:
+            chunk_rows = chunk_shape[0]
+        else:
+            raise ValueError(
+                f"Dense feature space '{spec.feature_space}' requires a 2-element chunk_shape, "
+                f"got {chunk_shape}"
+            )
+        if shard_shape is None:
+            shard_rows = max(1, _SHARD_ELEMS // n_vars)
+            shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
+        elif len(shard_shape) == 2:
+            shard_rows = shard_shape[0]
+        else:
+            raise ValueError(
+                f"Dense feature space '{spec.feature_space}' requires a 2-element shard_shape, "
+                f"got {shard_shape}"
+            )
+        return {"chunk_rows": chunk_rows, "shard_rows": shard_rows}
+
+    raise NotImplementedError(
+        f"add_from_anndata does not support {spec.pointer_type.pointer_type_name} "
+        f"feature space '{spec.feature_space}'"
+    )
+
+
+def _pointer_struct_from_columns(
+    columns: dict[str, np.ndarray], struct_type: pa.StructType
+) -> pa.StructArray:
+    """Assemble a pointer StructArray from ``write_feature_space``'s columns.
+
+    Generic over pointer type: fields are taken in the struct type's declared
+    order and cast to its declared arrow types, so any pointer type whose
+    columns the writer emits works without special-casing.
+    """
+    fields = [struct_type.field(i) for i in range(struct_type.num_fields)]
+    arrays = [pa.array(columns[field.name], type=field.type) for field in fields]
+    return pa.StructArray.from_arrays(arrays, names=[field.name for field in fields])
+
+
+def _check_var_no_duplicate_uids_pl(var_df: pl.DataFrame) -> None:
+    """Raise if a polars var DataFrame has duplicate uid values."""
+    if "uid" not in var_df.columns:
+        return
+    n_total = var_df.height
+    n_unique = var_df["uid"].n_unique()
+    if n_unique != n_total:
+        n_dupes = n_total - n_unique
+        raise ValueError(
+            f"var_df has {n_dupes} duplicate uid value(s) "
+            f"({n_total} rows, {n_unique} unique). "
+            f"Deduplicate var (and the corresponding matrix columns) before ingestion."
+        )
+
+
+def _validate_var_columns_against_registry(
+    var: pd.DataFrame | pl.DataFrame,
+    registry_table: lancedb.table.Table,
+    feature_space: str,
+) -> None:
+    """Validate that var columns exactly match the registry schema (minus ``global_index``).
+
+    Accepts a pandas or polars var table (only ``.columns`` is inspected). The
+    registry table's arrow schema is the source of truth. ``global_index`` is
+    assigned by :meth:`optimize` and must not appear on the var table.
+    """
+    expected = set(registry_table.schema.names) - {"global_index"}
+    actual = set(var.columns)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        extra = sorted(actual - expected)
+        raise ValueError(
+            f"var columns do not match the '{feature_space}' registry schema. "
+            f"Expected exactly {sorted(expected)}; got {sorted(actual)}. "
+            f"Missing: {missing}. Unexpected: {extra}. "
+            f"Tip: if the registry schema uses StableUIDField, set the stable-uid "
+            f"source column on var and run "
+            f"<RegistrySchema>.compute_stable_uids(adata.var) to populate 'uid'."
+        )
 
 
 def insert_obs_records(
