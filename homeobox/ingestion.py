@@ -1497,11 +1497,8 @@ def _add_csc_scipy(
     csr_indices = csr_group[f"{csr_prefix}/indices"][:]
     csr_values = csr_group[f"{csr_layers_path}/{layer_name}"][:]
 
-    indptr = np.empty(n_rows + 1, dtype=np.int64)
-    indptr[0] = 0
-    indptr[1:] = ends
-    # starts/ends are absolute offsets; indptr needs to be relative from 0
-    # but since starts[0]==0 and ends are cumulative, we can just use them directly
+    # starts/ends are absolute offsets; since starts[0]==0 and ends are
+    # cumulative, the CSR indptr is just [starts[0], *ends].
     indptr_csr = np.concatenate([[starts[0]], ends])
 
     csr = sp.csr_matrix(
@@ -1534,12 +1531,17 @@ def _add_csc_scipy(
         shards=(shard_size,),
     )
 
-    # Write in shard-sized batches
+    # Write in shard-sized batches, casting to each array's own dtype (not a
+    # literal) so non-integer layers like log_normalized/tpm aren't truncated.
     written = 0
     while written < nnz:
         end = min(written + shard_size, nnz)
-        csc_indices_zarr[written:end] = csc.indices[written:end].astype(np.uint32)
-        csc_values_zarr[written:end] = csc.data[written:end].astype(np.uint32)
+        csc_indices_zarr[written:end] = csc.indices[written:end].astype(
+            csc_indices_zarr.dtype, copy=False
+        )
+        csc_values_zarr[written:end] = csc.data[written:end].astype(
+            csc_values_zarr.dtype, copy=False
+        )
         written = end
 
     csc_indptr_zarr = csc_spec.create_array(csr_group, "csc/indptr", csc.indptr.shape)
