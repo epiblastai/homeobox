@@ -23,6 +23,10 @@ def _require_prepared_columns(
 class SparseZarrPointer(LanceModel):
     pointer_type_name: ClassVar[str] = "sparse"
     alias_columns: ClassVar[tuple[str, ...]] = ("_zg", "_start", "_end", "_zarr_row")
+    # Maps each batch-relative pointer field to the writer counter that rebases
+    # it to absolute coordinates: start/end index the flat values+indices arrays
+    # (advance by nnz, "elems"); zarr_row counts logical rows ("rows").
+    offset_axes: ClassVar[dict[str, str]] = {"start": "elems", "end": "elems", "zarr_row": "rows"}
 
     zarr_group: str | None = None
     start: int | None = None
@@ -60,6 +64,8 @@ class SparseZarrPointer(LanceModel):
 class DenseZarrPointer(LanceModel):
     pointer_type_name: ClassVar[str] = "dense"
     alias_columns: ClassVar[tuple[str, ...]] = ("_zg", "_pos")
+    # position is the absolute row index, rebased by the cumulative row count.
+    offset_axes: ClassVar[dict[str, str]] = {"position": "rows"}
 
     zarr_group: str | None = None
     position: int | None = None
