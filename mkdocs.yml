@@ -49,6 +49,7 @@ nav:
     - Pointer Types: pointer_types.md
     - BatchArray: batch_array.md
     - Querying: querying.md
+    - Ingestion: ingestion.md
     - Reconstructors: reconstructors.md
     - PyTorch Data Loading: dataloader.md
   - Benchmarks:

@@ -7,25 +7,19 @@ import obstore
 import pandas as pd
 import polars as pl
 import pytest
-import zarr
 
 from homeobox.atlas import RaggedAtlas
 from homeobox.batch_types import SparseBatch
 from homeobox.dataloader import make_loader
 from homeobox.feature_layouts import reindex_registry
 from homeobox.fragments.genome_query import GenomeSortedReader
-from homeobox.fragments.ingestion import (
-    build_chrom_order,
-    build_end_max,
-    sort_fragments_by_cell,
-    sort_fragments_by_genome,
-    write_fragment_arrays,
-    write_genome_sorted_arrays,
-)
+from homeobox.fragments.ingestion import build_chrom_order, sort_fragments_by_cell
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import insert_obs_records
+from homeobox.ingestion import add_genome_sorted, ingest_fragments
 from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import DatasetSchema, FeatureBaseSchema, HoxBaseSchema, PointerField
+
+_GROUP_UID = "ds0/chromatin_accessibility"
 
 
 class ChromosomeFeatureSchema(FeatureBaseSchema):
@@ -55,19 +49,17 @@ def _make_fragments(n: int, seed: int = 0) -> pl.DataFrame:
     )
 
 
-def _ingest(group: zarr.Group, fragments: pl.DataFrame) -> list[str]:
-    chrom_order = build_chrom_order(fragments)
-    cs_chroms, cs_starts, cs_lengths, _, cell_ids = sort_fragments_by_cell(fragments, chrom_order)
-    gs_cells, gs_starts, gs_lengths, chrom_offsets = sort_fragments_by_genome(
-        fragments, chrom_order, cell_ids
-    )
-    end_max = build_end_max(gs_starts, gs_lengths)
-    write_fragment_arrays(group, cs_chroms, cs_starts, cs_lengths)
-    write_genome_sorted_arrays(group, gs_cells, gs_starts, gs_lengths, chrom_offsets, end_max)
-    return chrom_order
+def _ingest_fragments_atlas(tmp_path, fragments: pl.DataFrame):
+    """Ingest fragments through the blessed path and build the genome-sorted copy.
 
+    Uses :func:`ingest_fragments` (cell-sorted, row-oriented) followed by
+    :func:`add_genome_sorted` (feature-oriented copy, post-ingestion) — the same
+    two steps a caller runs — so these tests exercise the production ingestion
+    code rather than re-implementing it.
 
-def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
+    Returns ``(atlas, atlas_dir, store, group_uid, chrom_order, expected)`` where
+    ``expected`` maps each barcode to its cell-sorted fragment arrays.
+    """
     atlas_dir = str(tmp_path / "atlas")
     os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
     store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
@@ -81,48 +73,26 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
     )
 
     chrom_order = build_chrom_order(fragments)
-    chromosomes, starts, lengths, offsets, cell_ids = sort_fragments_by_cell(fragments, chrom_order)
-    genome_cells, genome_starts, genome_lengths, chrom_offsets = sort_fragments_by_genome(
-        fragments, chrom_order, cell_ids
-    )
-
-    group_uid = "ds0/chromatin_accessibility"
-    group = atlas.create_zarr_group(group_uid)
-    write_fragment_arrays(group, chromosomes, starts, lengths)
-    write_genome_sorted_arrays(
-        group,
-        genome_cells,
-        genome_starts,
-        genome_lengths,
-        chrom_offsets,
-        build_end_max(genome_starts, genome_lengths),
-    )
-
     atlas.register_features(
         "chromatin_accessibility",
         [ChromosomeFeatureSchema(uid=chrom, sequence_name=chrom) for chrom in chrom_order],
     )
     reindex_registry(atlas.registry_tables["chromatin_accessibility"])
 
-    dataset = DatasetSchema(
-        zarr_group=group_uid,
-        feature_space="chromatin_accessibility",
-    )
-    atlas.register_dataset(
-        dataset,
-        var_df=pl.DataFrame({"uid": chrom_order, "sequence_name": chrom_order}),
-    )
+    # Ground-truth cell-sorted arrays for the per-cell expectations.
+    chromosomes, starts, lengths, offsets, cell_ids = sort_fragments_by_cell(fragments, chrom_order)
 
-    insert_obs_records(
+    dataset = DatasetSchema(zarr_group=_GROUP_UID, feature_space="chromatin_accessibility")
+    ingest_fragments(
         atlas,
-        pd.DataFrame({"barcode": cell_ids}),
+        obs_df=pd.DataFrame({"barcode": cell_ids}, index=cell_ids),
+        chrom_uids={chrom: chrom for chrom in chrom_order},
         field_name="chromatin_accessibility",
-        zarr_group=group_uid,
-        dataset_uid=dataset.dataset_uid,
-        starts=offsets[:-1],
-        ends=offsets[1:],
+        dataset_record=dataset,
+        var_df=pd.DataFrame({"uid": chrom_order, "sequence_name": chrom_order}),
+        fragments=fragments,
     )
-    atlas.snapshot()
+    add_genome_sorted(atlas, _GROUP_UID, "chromatin_accessibility")
 
     expected = {
         barcode: {
@@ -132,17 +102,14 @@ def _make_fragment_loader_atlas(tmp_path, fragments: pl.DataFrame):
         }
         for i, barcode in enumerate(cell_ids)
     }
-    return RaggedAtlas.checkout_latest(
-        atlas_dir, obs_schemas={"cells": FragmentCellSchema}, store=store
-    ), expected
+    return atlas, atlas_dir, store, _GROUP_UID, chrom_order, expected
 
 
-def test_genome_sorted_validates_against_feature_oriented_spec():
+def test_genome_sorted_validates_against_feature_oriented_spec(tmp_path):
     """Ingestion writes a layout that satisfies CHROMATIN_ACCESSIBILITY_SPEC.feature_oriented."""
     fragments = _make_fragments(500)
-    root = zarr.open_group(zarr.storage.ObjectStore(obstore.store.MemoryStore()), mode="w")
-    group = root.create_group("frag_group")
-    _ingest(group, fragments)
+    atlas, _, _, group_uid, _, _ = _ingest_fragments_atlas(tmp_path, fragments)
+    group = atlas.open_zarr_group(group_uid)
 
     spec = get_spec("chromatin_accessibility")
     assert spec.zarr_group_spec.validate_group(group) == []
@@ -162,7 +129,11 @@ def test_chromatin_accessibility_interval_reconstructor_works_with_loader(tmp_pa
             "barcode": ["bc0", "bc0", "bc1", "bc2", "bc2"],
         }
     )
-    atlas, expected = _make_fragment_loader_atlas(tmp_path, fragments)
+    atlas, atlas_dir, store, _, _, expected = _ingest_fragments_atlas(tmp_path, fragments)
+    atlas.snapshot()
+    atlas = RaggedAtlas.checkout_latest(
+        atlas_dir, obs_schemas={"cells": FragmentCellSchema}, store=store
+    )
     ds = atlas.query().to_unimodal_dataset(
         "chromatin_accessibility",
         metadata_columns=["barcode"],
@@ -213,13 +184,8 @@ def test_chromatin_accessibility_interval_reconstructor_works_with_loader(tmp_pa
 def test_query_region_matches_polars_filter(tmp_path, chrom: str, start: int, end: int):
     """GenomeSortedReader returns the same fragments as a brute-force polars filter."""
     fragments = _make_fragments(1_000)
-    store_dir = str(tmp_path / "zarr_store")
-    os.makedirs(store_dir, exist_ok=True)
-    root = zarr.open_group(
-        zarr.storage.ObjectStore(obstore.store.LocalStore(prefix=store_dir)), mode="w"
-    )
-    group = root.create_group("frag_group")
-    chrom_order = _ingest(group, fragments)
+    atlas, _, _, group_uid, chrom_order, _ = _ingest_fragments_atlas(tmp_path, fragments)
+    group = atlas.open_zarr_group(group_uid)
 
     reader = GenomeSortedReader(group, chrom_order)
     result = reader.query_region(chrom, start, end)
@@ -233,12 +199,11 @@ def test_query_region_matches_polars_filter(tmp_path, chrom: str, start: int, en
     assert set(int(s) for s in result.starts) == set(int(s) for s in expected["start"])
 
 
-def test_query_region_compressors_come_from_spec():
+def test_query_region_compressors_come_from_spec(tmp_path):
     """The genome_sorted arrays use the codecs declared on the spec, not hardcoded ones."""
     fragments = _make_fragments(200)
-    root = zarr.open_group(zarr.storage.ObjectStore(obstore.store.MemoryStore()), mode="w")
-    group = root.create_group("frag_group")
-    _ingest(group, fragments)
+    atlas, _, _, group_uid, _, _ = _ingest_fragments_atlas(tmp_path, fragments)
+    group = atlas.open_zarr_group(group_uid)
 
     # All three large arrays should be created — sanity-check shapes line up with
     # the chrom_offsets total (the spec's contract).
