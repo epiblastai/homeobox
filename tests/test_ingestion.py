@@ -144,6 +144,14 @@ def _obs(n_obs):
     return pd.DataFrame({"tissue": [f"t{i % 2}" for i in range(n_obs)]})
 
 
+def _obs_with_identity(n_obs, dataset_uid=None):
+    dataset_uid = dataset_uid or make_uid()
+    obs_df = _obs(n_obs)
+    obs_df["uid"] = [make_uid() for _ in range(n_obs)]
+    obs_df["dataset_uid"] = dataset_uid
+    return obs_df
+
+
 def _dataset_uid_column(atlas):
     _, table = atlas._resolve_obs_table(obs_table_name="cells")
     return table.search().select(["dataset_uid"]).to_polars()["dataset_uid"]
@@ -264,6 +272,36 @@ def test_ingest_multimodal_cell_count_mismatch_raises(tmp_path):
         )
 
 
+def test_ingest_multimodal_dataset_uid_mismatch_raises(tmp_path):
+    atlas, _, _ = _create_atlas(
+        tmp_path, DualImageCellSchema, {"image_features": ImageFeatureSchema}
+    )
+    feat_uids = _register_image_features(atlas, 3)
+    rng = np.random.default_rng(11)
+    adata_a = _dense_adata(4, feat_uids, rng)
+    adata_b = _dense_adata(4, feat_uids, rng)
+
+    with pytest.raises(ValueError, match="must share one dataset_uid"):
+        ingest_multimodal(
+            atlas,
+            {"img_a": adata_a, "img_b": adata_b},
+            obs_df=_obs(4),
+            zarr_layer="ctrl_standardized",
+            dataset_records={
+                "img_a": DatasetSchema(
+                    dataset_uid="dataset_a",
+                    zarr_group="ds0/img_a",
+                    feature_space="image_features",
+                ),
+                "img_b": DatasetSchema(
+                    dataset_uid="dataset_b",
+                    zarr_group="ds0/img_b",
+                    feature_space="image_features",
+                ),
+            },
+        )
+
+
 # ---------------------------------------------------------------------------
 # Ingestor (used directly)
 # ---------------------------------------------------------------------------
@@ -287,8 +325,8 @@ def test_ingestor_heterogeneous_sparse_and_dense(tmp_path):
     n = 6
     gene_adata = _sparse_adata(n, gene_uids, rng)
     image_adata = _dense_adata(n, feat_uids, rng)
-    obs_df = _obs(n)
     shared_uid = make_uid()
+    obs_df = _obs_with_identity(n, shared_uid)
 
     ingestor = Ingestor(atlas, obs_df=obs_df)
     ingestor.write_array(
@@ -334,12 +372,17 @@ def test_ingestor_null_fills_unwritten_pointer_field(tmp_path):
     n = 5
     image_adata = _dense_adata(n, feat_uids, rng)
 
-    ingestor = Ingestor(atlas, obs_df=_obs(n))
+    dataset_uid = make_uid()
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(n, dataset_uid))
     ingestor.write_array(
         AnnDataReader(image_adata),
         field_name="image_features",
         layer_mapping={"X": "ctrl_standardized"},
-        dataset_record=DatasetSchema(zarr_group="ds0/if", feature_space="image_features"),
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/if",
+            feature_space="image_features",
+        ),
         n_vars=image_adata.n_vars,
         var_df=image_adata.var,
     )
@@ -361,7 +404,7 @@ def test_ingestor_null_fills_unwritten_pointer_field(tmp_path):
 def test_ingestor_unknown_field_raises(tmp_path):
     atlas, _, _, gene_uids, _ = _gene_image_atlas(tmp_path)
     adata = _sparse_adata(4, gene_uids, np.random.default_rng(5))
-    ingestor = Ingestor(atlas, obs_df=_obs(4))
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(4))
     with pytest.raises(ValueError, match="No pointer field named 'not_a_field'"):
         ingestor.write_array(
             AnnDataReader(adata),
@@ -378,7 +421,7 @@ def test_ingestor_duplicate_field_raises(tmp_path):
     rng = np.random.default_rng(6)
     adata = _sparse_adata(4, gene_uids, rng)
     shared_uid = make_uid()
-    ingestor = Ingestor(atlas, obs_df=_obs(4))
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(4, shared_uid))
     ingestor.write_array(
         AnnDataReader(adata),
         field_name="gene_expression",
@@ -407,12 +450,17 @@ def test_ingestor_mismatched_dataset_uid_raises(tmp_path):
     rng = np.random.default_rng(7)
     gene_adata = _sparse_adata(4, gene_uids, rng)
     image_adata = _dense_adata(4, feat_uids, rng)
-    ingestor = Ingestor(atlas, obs_df=_obs(4))
+    dataset_uid = make_uid()
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(4, dataset_uid))
     ingestor.write_array(
         AnnDataReader(gene_adata),
         field_name="gene_expression",
         layer_mapping={"X": "counts"},
-        dataset_record=DatasetSchema(zarr_group="ds0/ge", feature_space="gene_expression"),
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/ge",
+            feature_space="gene_expression",
+        ),
         n_vars=gene_adata.n_vars,
         var_df=gene_adata.var,
     )
@@ -433,12 +481,17 @@ def test_ingestor_spent_after_obs_write(tmp_path):
     atlas, _, _, gene_uids, _ = _gene_image_atlas(tmp_path)
     rng = np.random.default_rng(8)
     adata = _sparse_adata(4, gene_uids, rng)
-    ingestor = Ingestor(atlas, obs_df=_obs(4))
+    dataset_uid = make_uid()
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(4, dataset_uid))
     ingestor.write_array(
         AnnDataReader(adata),
         field_name="gene_expression",
         layer_mapping={"X": "counts"},
-        dataset_record=DatasetSchema(zarr_group="ds0/ge", feature_space="gene_expression"),
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/ge",
+            feature_space="gene_expression",
+        ),
         n_vars=adata.n_vars,
         var_df=adata.var,
     )
@@ -458,12 +511,17 @@ def test_ingestor_write_obs_records_twice_raises(tmp_path):
     atlas, _, _, gene_uids, _ = _gene_image_atlas(tmp_path)
     rng = np.random.default_rng(9)
     adata = _sparse_adata(4, gene_uids, rng)
-    ingestor = Ingestor(atlas, obs_df=_obs(4))
+    dataset_uid = make_uid()
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(4, dataset_uid))
     ingestor.write_array(
         AnnDataReader(adata),
         field_name="gene_expression",
         layer_mapping={"X": "counts"},
-        dataset_record=DatasetSchema(zarr_group="ds0/ge", feature_space="gene_expression"),
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/ge",
+            feature_space="gene_expression",
+        ),
         n_vars=adata.n_vars,
         var_df=adata.var,
     )
@@ -474,7 +532,7 @@ def test_ingestor_write_obs_records_twice_raises(tmp_path):
 
 def test_ingestor_write_obs_records_without_arrays_raises(tmp_path):
     atlas, _, _, _, _ = _gene_image_atlas(tmp_path)
-    ingestor = Ingestor(atlas, obs_df=_obs(4))
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(4))
     with pytest.raises(RuntimeError, match="No arrays were written"):
         ingestor.write_obs_records()
 
@@ -487,6 +545,125 @@ def test_ingestor_bad_obs_columns_raise_at_construction(tmp_path):
     _register_image_features(atlas, 3)
     with pytest.raises(ValueError, match="obs columns do not match obs schema"):
         Ingestor(atlas, obs_df=_obs(4))  # has 'tissue', lacks required 'donor'
+
+
+def test_ingestor_uses_supplied_obs_identity(tmp_path):
+    """Direct Ingestor callers own obs identity."""
+    atlas, _, _, _, feat_uids = _gene_image_atlas(tmp_path)
+    rng = np.random.default_rng(12)
+    n = 4
+    adata = _dense_adata(n, feat_uids, rng)
+    dataset_uid = make_uid()
+    obs_df = _obs_with_identity(n, dataset_uid)
+    obs_df["uid"] = [f"cell_{i}" for i in range(n)]
+
+    ingestor = Ingestor(atlas, obs_df=obs_df)
+    ingestor.write_array(
+        AnnDataReader(adata),
+        field_name="image_features",
+        layer_mapping={"X": "ctrl_standardized"},
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/if",
+            feature_space="image_features",
+        ),
+        n_vars=adata.n_vars,
+        var_df=adata.var,
+    )
+    ingestor.write_obs_records()
+
+    _, table = atlas._resolve_obs_table(obs_table_name="cells")
+    result = table.search().select(["uid", "dataset_uid"]).to_polars()
+    assert result["uid"].to_list() == obs_df["uid"].to_list()
+    assert result["dataset_uid"].to_list() == [dataset_uid] * n
+
+
+def test_ingestor_obs_indices_reorders_pointer_rows(tmp_path):
+    """obs_indices scatters emitted pointer rows into obs order."""
+    atlas, _, _, _, feat_uids = _gene_image_atlas(tmp_path)
+    rng = np.random.default_rng(13)
+    n = 4
+    base = _dense_adata(n, feat_uids, rng)
+    emit_order = np.array([2, 0, 3, 1])
+    adata = ad.AnnData(X=base.X[emit_order], obs=_obs(n), var=base.var)
+    dataset_uid = make_uid()
+    obs_df = _obs_with_identity(n, dataset_uid)
+
+    ingestor = Ingestor(atlas, obs_df=obs_df)
+    ingestor.write_array(
+        AnnDataReader(adata),
+        field_name="image_features",
+        layer_mapping={"X": "ctrl_standardized"},
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/if",
+            feature_space="image_features",
+        ),
+        n_vars=adata.n_vars,
+        var_df=adata.var,
+        obs_indices=emit_order,
+    )
+    ingestor.write_obs_records()
+
+    _, table = atlas._resolve_obs_table(obs_table_name="cells")
+    struct = table.search().select(["image_features"]).to_polars()["image_features"].struct.unnest()
+    assert struct["position"].to_list() == [1, 3, 0, 2]
+
+
+def test_ingestor_obs_indices_allows_partial_coverage(tmp_path):
+    """obs rows not listed in obs_indices get null pointers for that field."""
+    atlas, _, _, _, feat_uids = _gene_image_atlas(tmp_path)
+    rng = np.random.default_rng(14)
+    n = 4
+    base = _dense_adata(n, feat_uids, rng)
+    obs_indices = np.array([3, 1])
+    adata = ad.AnnData(X=base.X[obs_indices], obs=_obs(len(obs_indices)), var=base.var)
+    dataset_uid = make_uid()
+    obs_df = _obs_with_identity(n, dataset_uid)
+
+    ingestor = Ingestor(atlas, obs_df=obs_df)
+    ingestor.write_array(
+        AnnDataReader(adata),
+        field_name="image_features",
+        layer_mapping={"X": "ctrl_standardized"},
+        dataset_record=DatasetSchema(
+            dataset_uid=dataset_uid,
+            zarr_group="ds0/if",
+            feature_space="image_features",
+        ),
+        n_vars=adata.n_vars,
+        var_df=adata.var,
+        obs_indices=obs_indices,
+    )
+    assert ingestor.write_obs_records() == n
+
+    _, table = atlas._resolve_obs_table(obs_table_name="cells")
+    struct = table.search().select(["image_features"]).to_polars()["image_features"].struct.unnest()
+    assert struct["zarr_group"].is_null().to_list() == [True, False, True, False]
+    assert struct["position"].to_list() == [None, 1, None, 0]
+
+
+def test_ingestor_obs_indices_duplicate_raises(tmp_path):
+    atlas, _, _, _, feat_uids = _gene_image_atlas(tmp_path)
+    rng = np.random.default_rng(15)
+    adata = _dense_adata(2, feat_uids, rng)
+    dataset_uid = make_uid()
+    ingestor = Ingestor(atlas, obs_df=_obs_with_identity(3, dataset_uid))
+
+    with pytest.raises(ValueError, match="duplicate position"):
+        ingestor.write_array(
+            AnnDataReader(adata),
+            field_name="image_features",
+            layer_mapping={"X": "ctrl_standardized"},
+            dataset_record=DatasetSchema(
+                dataset_uid=dataset_uid,
+                zarr_group="ds0/if",
+                feature_space="image_features",
+            ),
+            n_vars=adata.n_vars,
+            var_df=adata.var,
+            obs_indices=np.array([1, 1]),
+        )
 
 
 # ---------------------------------------------------------------------------
