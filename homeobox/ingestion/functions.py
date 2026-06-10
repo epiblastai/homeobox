@@ -9,7 +9,25 @@ from homeobox.atlas import RaggedAtlas
 from homeobox.ingestion.ingestor import _DEFAULT_BATCH_ROWS, Ingestor
 from homeobox.ingestion.readers import AnnDataReader, FragmentReader, Reader
 from homeobox.pointer_types import SparseZarrPointer
-from homeobox.schema import DatasetSchema
+from homeobox.schema import DatasetSchema, make_uid
+
+
+def _ensure_obs_identity(obs_df: pd.DataFrame, dataset_uid: str) -> pd.DataFrame:
+    """Return obs_df with ``uid`` and ``dataset_uid`` columns present.
+
+    Caller-provided identity columns are preserved. Missing columns are added by
+    the functional API before handing rows to :class:`Ingestor`, which treats
+    obs identity as an input invariant.
+    """
+    if "uid" in obs_df.columns and "dataset_uid" in obs_df.columns:
+        return obs_df
+
+    obs_df = obs_df.copy()
+    if "uid" not in obs_df.columns:
+        obs_df["uid"] = [make_uid() for _ in range(len(obs_df))]
+    if "dataset_uid" not in obs_df.columns:
+        obs_df["dataset_uid"] = dataset_uid
+    return obs_df
 
 
 def ingest_dataset(
@@ -89,6 +107,7 @@ def ingest_dataset(
     int
         Number of cells ingested.
     """
+    obs_df = _ensure_obs_identity(obs_df, dataset_record.dataset_uid)
     ingestor = Ingestor(atlas, obs_df=obs_df, obs_table_name=obs_table_name)
     ingestor.write_array(
         reader,
@@ -339,6 +358,12 @@ def ingest_multimodal(
             f"modalities and dataset_records must share keys; got "
             f"modalities={sorted(modalities)}, dataset_records={sorted(dataset_records)}"
         )
+    dataset_uids = {record.dataset_uid for record in dataset_records.values()}
+    if len(dataset_uids) != 1:
+        raise ValueError(
+            "All dataset_records passed to ingest_multimodal must share one dataset_uid; "
+            f"got {sorted(dataset_uids)}."
+        )
 
     # Check cell counts up front so a mismatch fails before any zarr is written
     # (write_array enforces the same per modality, but only once that modality's
@@ -351,6 +376,8 @@ def ingest_multimodal(
                 f"(len(obs_df))."
             )
 
+    dataset_uid = next(iter(dataset_uids))
+    obs_df = _ensure_obs_identity(obs_df, dataset_uid)
     ingestor = Ingestor(atlas, obs_df=obs_df, obs_table_name=obs_table_name)
     for field_name, adata in modalities.items():
         ingestor.write_array(

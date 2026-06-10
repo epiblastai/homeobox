@@ -32,11 +32,9 @@ from homeobox.ingestion.ingestor import (
     Ingestor,
     _build_row_arrow_table,
     _check_var_no_duplicate_uids_pl,
-    _make_sparse_pointer,
     _pointer_struct_from_columns,
     _validate_var_columns_against_registry,
     _writer_create_kwargs,
-    insert_obs_records,
 )
 from homeobox.ingestion.readers import AnnDataReader, COOReader, FragmentReader, Reader
 from homeobox.ingestion.writers import (
@@ -68,7 +66,6 @@ __all__ = [
     "_SHARD_ELEMS",
     "_build_row_arrow_table",
     "_check_var_no_duplicate_uids_pl",
-    "_make_sparse_pointer",
     "_pointer_struct_from_columns",
     "_validate_var_columns_against_registry",
     "_writer_create_kwargs",
@@ -79,7 +76,6 @@ __all__ = [
     "converter_for",
     "ingest_dataset",
     "ingest_multimodal",
-    "insert_obs_records",
     "register_converter",
     "write_feature_space",
     "writer_for",

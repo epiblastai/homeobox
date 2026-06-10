@@ -17,7 +17,7 @@ from homeobox.ingestion.readers import Reader
 from homeobox.ingestion.writers import _CHUNK_ELEMS, _SHARD_ELEMS, write_feature_space
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
-from homeobox.schema import DatasetSchema, PointerField, make_uid
+from homeobox.schema import DatasetSchema, PointerField
 
 _DEFAULT_BATCH_ROWS = 8_192
 
@@ -44,8 +44,11 @@ class Ingestor:
     atlas:
         The atlas to ingest into. Features must already be registered.
     obs_df:
-        Validated obs DataFrame, one row per cell. Every :meth:`write_array`
-        reader must emit exactly ``len(obs_df)`` rows, in this order.
+        Validated obs DataFrame, one row per cell, with ``uid`` and
+        ``dataset_uid`` already populated. By default, every
+        :meth:`write_array` reader must emit exactly ``len(obs_df)`` rows in
+        this order. Pass ``obs_indices`` to :meth:`write_array` when emitted
+        rows should be scattered into specific obs positions.
     obs_table_name:
         Which obs table to ingest into. May be ``None`` only when the atlas
         has exactly one obs table.
@@ -70,13 +73,15 @@ class Ingestor:
         if obs_errors:
             raise ValueError(f"obs columns do not match obs schema: {obs_errors}")
 
+        _validate_obs_identity(obs_df)
+
         self.atlas = atlas
         self.obs_df = obs_df
         self.obs_table_name = name
         self._obs_schema = obs_schema
         self._pointer_fields = atlas.pointer_fields_for(name)
         self._pointer_data: dict[str, pa.StructArray] = {}
-        self._dataset_uid: str | None = None
+        self._dataset_uid = str(obs_df["dataset_uid"].iloc[0])
         self._written = False
 
     def write_array(
@@ -92,6 +97,7 @@ class Ingestor:
         batch_size: int = _DEFAULT_BATCH_ROWS,
         chunk_shape: tuple[int, ...] | None = None,
         shard_shape: tuple[int, ...] | None = None,
+        obs_indices: np.ndarray | None = None,
     ) -> int:
         """Register a dataset, stream its matrix, and stash its pointer column.
 
@@ -104,8 +110,9 @@ class Ingestor:
         ----------
         reader:
             A :class:`~homeobox.ingestion.readers.Reader` that streams the matrix
-            as row-batches. It must emit exactly ``len(obs_df)`` rows, in obs
-            order.
+            as row-batches. By default it must emit exactly ``len(obs_df)`` rows
+            in obs order. If ``obs_indices`` is provided, emitted rows may be in
+            a different order or cover only part of ``obs_df``.
         field_name:
             Obs-schema attribute name for the pointer column to populate.
         layer_mapping:
@@ -130,6 +137,15 @@ class Ingestor:
         chunk_shape, shard_shape:
             Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
             dense). Default to this module's constants.
+        obs_indices:
+            Optional integer positions into ``obs_df``. If omitted, emitted
+            pointer row ``i`` is assigned to ``obs_df`` row ``i`` and the reader
+            must emit exactly one row per obs row. If provided, emitted pointer
+            row ``i`` is assigned to ``obs_df.iloc[obs_indices[i]]``. Obs rows
+            not listed in ``obs_indices`` get a null pointer for this field.
+            Indices must be unique and in bounds. `obs_indices` is intended to be
+            used only on multimodal datasets which may not have every modality
+            measured on every row.
 
         Returns
         -------
@@ -199,19 +215,15 @@ class Ingestor:
             **_writer_create_kwargs(spec, n_vars, chunk_shape, shard_shape),
         )
 
-        # The reader must cover every obs row exactly once, in order, so the
-        # pointer table aligns positionally with obs_df.
-        n_emitted = len(next(iter(pointer_columns.values()))) if pointer_columns else 0
-        if n_emitted != len(self.obs_df):
-            raise ValueError(
-                f"reader for '{field_name}' emitted {n_emitted} rows but obs_df has "
-                f"{len(self.obs_df)}; they must match."
-            )
-
         arrow_schema = self._obs_schema.to_arrow_schema()
-        self._pointer_data[pointer_field.field_name] = _pointer_struct_from_columns(
-            pointer_columns, arrow_schema.field(pointer_field.field_name).type
+        pointer_struct, n_emitted = _pointer_struct_for_obs(
+            pointer_columns,
+            arrow_schema.field(pointer_field.field_name).type,
+            obs_df=self.obs_df,
+            field_name=field_name,
+            obs_indices=obs_indices,
         )
+        self._pointer_data[pointer_field.field_name] = pointer_struct
         return n_emitted
 
     def write_obs_records(self) -> int:
@@ -233,7 +245,6 @@ class Ingestor:
         arrow_table = _build_row_arrow_table(
             self.atlas,
             self.obs_df,
-            dataset_uid=self._dataset_uid,
             pointer_data=self._pointer_data,
             obs_table_name=self.obs_table_name,
         )
@@ -251,7 +262,6 @@ def _build_row_arrow_table(
     atlas: RaggedAtlas,
     obs_df: pd.DataFrame,
     *,
-    dataset_uid: str,
     pointer_data: dict[str, pa.StructArray],
     obs_table_name: str,
 ) -> pa.Table:
@@ -262,9 +272,8 @@ def _build_row_arrow_table(
     atlas
         Open RaggedAtlas (provides schema and pointer field info).
     obs_df
-        Validated obs DataFrame with schema-aligned columns.
-    dataset_uid
-        Dataset UID for every row in this batch.
+        Validated obs DataFrame with schema-aligned columns, including ``uid``
+        and ``dataset_uid``.
     pointer_data
         ``{pointer_field_name: pa.StructArray}`` for pointer fields that
         have real data. All other pointer fields are zero-filled.
@@ -289,9 +298,14 @@ def _build_row_arrow_table(
     schema_fields = _schema_obs_fields(obs_schema)
     pointer_fields = atlas.pointer_fields_for(obs_table_name)
 
+    _validate_obs_identity(obs_df)
+    # _schema_obs_fields excludes auto fields, so copy identity columns explicitly.
     columns: dict[str, pa.Array] = {
-        "uid": pa.array([make_uid() for _ in range(n_rows)], type=pa.string()),
-        "dataset_uid": pa.array([dataset_uid] * n_rows, type=pa.string()),
+        "uid": pa.array(obs_df["uid"].values, type=arrow_schema.field("uid").type),
+        "dataset_uid": pa.array(
+            obs_df["dataset_uid"].values,
+            type=arrow_schema.field("dataset_uid").type,
+        ),
     }
 
     # Fill pointer fields — real data where provided, null-fill otherwise
@@ -312,26 +326,92 @@ def _build_row_arrow_table(
     return pa.table(columns, schema=arrow_schema)
 
 
-def _make_sparse_pointer(
-    zarr_group: str,
-    starts: np.ndarray,
-    ends: np.ndarray,
-    zarr_row_offset: int = 0,
-) -> pa.StructArray:
-    """Build a ``SparseZarrPointer`` struct array."""
-    n_rows = len(starts)
-    return pa.StructArray.from_arrays(
-        [
-            pa.array([zarr_group] * n_rows, type=pa.string()),
-            pa.array(starts.astype(np.int64), type=pa.int64()),
-            pa.array(ends.astype(np.int64), type=pa.int64()),
-            pa.array(
-                np.arange(zarr_row_offset, zarr_row_offset + n_rows, dtype=np.int64),
-                type=pa.int64(),
-            ),
-        ],
-        names=["zarr_group", "start", "end", "zarr_row"],
-    )
+def _validate_obs_identity(obs_df: pd.DataFrame) -> None:
+    """Validate obs identity fields supplied by the caller."""
+    required = {"uid", "dataset_uid"}
+    missing = sorted(required - set(obs_df.columns))
+    if missing:
+        raise ValueError(
+            f"Ingestor requires obs_df columns {sorted(required)}; missing {missing}. "
+            "Use the ingestion functions if you want missing identity columns populated."
+        )
+    _raise_on_null_keys(obs_df["uid"].tolist(), "obs_df['uid']")
+    _raise_on_duplicate_keys(obs_df["uid"].tolist(), "obs_df['uid']")
+    _raise_on_null_keys(obs_df["dataset_uid"].tolist(), "obs_df['dataset_uid']")
+    if obs_df["dataset_uid"].nunique() != 1:
+        examples = obs_df["dataset_uid"].drop_duplicates().head(5).tolist()
+        raise ValueError(f"Ingestor requires one dataset_uid across obs_df; found {examples}.")
+
+
+def _pointer_struct_for_obs(
+    pointer_columns: dict[str, np.ndarray],
+    struct_type: pa.StructType,
+    *,
+    obs_df: pd.DataFrame,
+    field_name: str,
+    obs_indices: np.ndarray | None = None,
+) -> tuple[pa.StructArray, int]:
+    """Build one pointer struct array aligned to ``obs_df``.
+
+    Without keys, pointer row ``i`` is assigned to obs row ``i`` and the reader
+    must emit exactly one pointer row per obs row. With ``obs_indices``, pointer
+    row ``i`` is assigned to obs row ``obs_indices[i]``; obs rows not mentioned
+    by ``obs_indices`` get null pointers.
+    """
+    pointer_struct = _pointer_struct_from_columns(pointer_columns, struct_type)
+    n_emitted = len(pointer_struct)
+
+    if obs_indices is None:
+        if n_emitted != len(obs_df):
+            raise ValueError(
+                f"reader for '{field_name}' emitted {n_emitted} rows but obs_df has "
+                f"{len(obs_df)}; they must match unless obs_indices is provided."
+            )
+        return pointer_struct, n_emitted
+
+    obs_indices = np.asarray(obs_indices)
+    if obs_indices.ndim != 1:
+        raise ValueError(f"obs_indices for '{field_name}' must be one-dimensional.")
+    if len(obs_indices) != n_emitted:
+        raise ValueError(
+            f"obs_indices for '{field_name}' has {len(obs_indices)} entries, but reader "
+            f"emitted {n_emitted} pointer rows."
+        )
+    if not np.issubdtype(obs_indices.dtype, np.integer):
+        raise ValueError(
+            f"obs_indices for '{field_name}' must be an integer array, got {obs_indices.dtype}."
+        )
+    if len(np.unique(obs_indices)) != len(obs_indices):
+        raise ValueError(f"obs_indices for '{field_name}' contains duplicate position(s).")
+    if len(obs_indices) and (obs_indices.min() < 0 or obs_indices.max() >= len(obs_df)):
+        raise ValueError(
+            f"obs_indices for '{field_name}' must be in [0, {len(obs_df)}); got "
+            f"[{int(obs_indices.min())}, {int(obs_indices.max())}]."
+        )
+
+    null_pointer = {struct_type.field(i).name: None for i in range(struct_type.num_fields)}
+    values = [null_pointer.copy() for _ in range(len(obs_df))]
+    for obs_idx, pointer in zip(obs_indices, pointer_struct.to_pylist(), strict=True):
+        values[int(obs_idx)] = pointer
+    return pa.array(values, type=struct_type), n_emitted
+
+
+def _raise_on_null_keys(values: list, label: str) -> None:
+    nulls = [value for value in values if pd.isna(value)]
+    if nulls:
+        raise ValueError(f"{label} contains null key value(s).")
+
+
+def _raise_on_duplicate_keys(values: list, label: str) -> None:
+    seen = set()
+    duplicates = []
+    for value in values:
+        if value in seen:
+            duplicates.append(value)
+        else:
+            seen.add(value)
+    if duplicates:
+        raise ValueError(f"{label} contains duplicate key value(s), e.g. {duplicates[:5]}.")
 
 
 def _writer_create_kwargs(
@@ -437,62 +517,3 @@ def _validate_var_columns_against_registry(
             f"source column on var and run "
             f"<RegistrySchema>.compute_stable_uids(adata.var) to populate 'uid'."
         )
-
-
-def insert_obs_records(
-    atlas: RaggedAtlas,
-    obs_df: pd.DataFrame,
-    *,
-    field_name: str,
-    zarr_group: str,
-    dataset_uid: str,
-    starts: np.ndarray,
-    ends: np.ndarray,
-    zarr_row_offset: int = 0,
-    obs_table_name: str | None = None,
-) -> int:
-    """Insert obs records into the atlas obs table.
-
-    Builds ``SparseZarrPointer`` structs from the provided start/end
-    arrays and adds the obs columns. Other pointer fields are zero-filled.
-
-    Parameters
-    ----------
-    atlas
-        Open RaggedAtlas.
-    obs_df
-        Validated obs DataFrame with schema-aligned columns.
-    field_name
-        Obs-schema attribute name for the pointer column being populated.
-        The feature_space is derived from its registered ``PointerField``.
-    zarr_group
-        Zarr group path for the pointer structs.
-    dataset_uid
-        Dataset UID for the ``dataset_uid`` column.
-    starts, ends
-        Per-obs start/end offsets into the flat zarr arrays.
-    zarr_row_offset
-        Offset for ``zarr_row`` values (cumulative obs count).
-    obs_table_name
-        Which obs table to insert into. May be ``None`` only when the atlas
-        has exactly one obs table.
-
-    Returns
-    -------
-    int
-        Number of rows inserted.
-    """
-    name, _ = atlas._resolve_obs_table(obs_table_name=obs_table_name)
-    pointer_fields = atlas.pointer_fields_for(name)
-    pointer_field = pointer_fields[field_name]
-
-    pointer_struct = _make_sparse_pointer(zarr_group, starts, ends, zarr_row_offset)
-    arrow_table = _build_row_arrow_table(
-        atlas,
-        obs_df,
-        dataset_uid=dataset_uid,
-        pointer_data={pointer_field.field_name: pointer_struct},
-        obs_table_name=name,
-    )
-    atlas.add_obs_records(arrow_table, obs_table_name=name)
-    return len(obs_df)
