@@ -9,10 +9,7 @@ import polars as pl
 
 from homeobox.atlas import RaggedAtlas
 from homeobox_examples.multimodal_perturbation_atlas.assemblies import get_assembly_report
-from homeobox_examples.multimodal_perturbation_atlas.schema import (
-    FK_TABLE_SCHEMAS,
-    DatasetPerturbationIndex,
-)
+from homeobox_examples.multimodal_perturbation_atlas.schema import FK_TABLE_SCHEMAS
 
 if TYPE_CHECKING:
     import lancedb
@@ -137,10 +134,7 @@ class PerturbationAtlas(RaggedAtlas):
         key(s), validates the result against the schema, then overwrites.
         Also handles ``dataset_perturbation_index``.
         """
-        all_schemas: dict[str, type[LanceModel]] = {
-            **FK_TABLE_SCHEMAS,
-            "dataset_perturbation_index": DatasetPerturbationIndex,
-        }
+        all_schemas: dict[str, type[LanceModel]] = {**FK_TABLE_SCHEMAS}
         existing = set(self.db.list_tables().tables)
 
         for table_name, schema_cls in all_schemas.items():
