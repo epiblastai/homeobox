@@ -1,0 +1,1990 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal biomedical databases built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/homeobox/dataloader_benchmark/">
+      
+      
+        <link rel="prev" href="../dataloader/">
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Dataloader Benchmark - homeobox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#ml-dataloader-benchmarks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="homeobox" class="md-header__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            homeobox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Dataloader Benchmark
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="homeobox" class="md-nav__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    homeobox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Registries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pointer_types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pointer Types
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../batch_array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    BatchArray
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ingestion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataloader Benchmark
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataloader Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataset
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dataset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#throughput-dataset-local-remote" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Throughput dataset (local + remote)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#perturbation-dataset-group-aware-random-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Perturbation dataset (group-aware random reads)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#systems-compared" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Systems compared
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Systems compared">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#homeobox-map-vs-homeobox-iter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Homeobox-Map vs Homeobox-Iter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systems-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Systems table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#capability-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capability matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#num_workers-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_workers support
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hardware-and-software" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware and software
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#page-cache-priming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Page-cache priming
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#local-throughput-on-nvme" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local — throughput on NVMe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#remote-same-atlas-served-from-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote — same atlas served from S3
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#perturbation-group-aware-random-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Perturbation — group-aware random reads
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dataset" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Dataset
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Dataset">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#throughput-dataset-local-remote" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Throughput dataset (local + remote)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#perturbation-dataset-group-aware-random-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Perturbation dataset (group-aware random reads)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#systems-compared" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Systems compared
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Systems compared">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#homeobox-map-vs-homeobox-iter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Homeobox-Map vs Homeobox-Iter
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#systems-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Systems table
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#capability-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capability matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#num_workers-support" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_workers support
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hardware-and-software" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hardware and software
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#page-cache-priming" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Page-cache priming
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#results" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Results
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Results">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#local-throughput-on-nvme" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local — throughput on NVMe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#remote-same-atlas-served-from-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remote — same atlas served from S3
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#perturbation-group-aware-random-reads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Perturbation — group-aware random reads
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="ml-dataloader-benchmarks">ML Dataloader Benchmarks</h1>
+<p>Homeobox is designed to serve PyTorch training loops directly out of its zarr-backed atlas. To make throughput claims meaningful, we compare it against commonly used dataloaders in both local and remote settings. The current benchmarks focus on single-cell gene expression data; other modalities (e.g. images) will follow.</p>
+<p>Scripts and methodology were adapted from <a href="https://github.com/slaf-project/slaf/tree/d002bd72ff77f00b7d8fa3af8c4230543694d316/benchmarks">SLAF</a>.</p>
+<p><strong>DISCLAIMER:</strong> Fair comparisons between dataloaders are hard — shuffling semantics, worker models (multiprocessing vs prefetching threads), remote support, in-memory caching, and per-system tuning all vary. We publish the scripts so anyone can re-run on their own systems and datasets.</p>
+<hr />
+<h2 id="metrics">Metrics</h2>
+<p>We measure <strong>sustained cells per second</strong> delivered to the training loop after a per-system warmup. Memory is recorded as <strong>peak RSS</strong> across the benchmarked process and its spawn children, sampled at 10 Hz.</p>
+<p>Throughput is what training loops care about: a model step cannot start until the next batch is materialised, so the dataloader's steady-state rate caps epochs per wall-hour.</p>
+<p>We deliberately do <strong>not</strong> measure:</p>
+<ul>
+<li><strong>First-batch latency</strong> — irrelevant for long training runs and dominated by import / open / mmap costs nobody optimises hard.</li>
+<li><strong>GPU-side preprocessing</strong> — systems disagree on what counts as a batch (CSR vs dense vs tokenized), so we stop at "raw data delivered to Python."</li>
+<li><strong>Cold-disk read rates</strong> — see <a href="#page-cache-priming">page-cache priming</a>.</li>
+</ul>
+<hr />
+<h2 id="dataset">Dataset</h2>
+<p>The suite uses two synthetic datasets, generated with deterministic seeds so a sweep can be reproduced bit-for-bit. The <strong>throughput dataset</strong> is sparse counts at atlas scale, run under both local and remote storage. The <strong>perturbation dataset</strong> is smaller and targets the random-read pattern of single-cell perturbation training.</p>
+<h3 id="throughput-dataset-local-remote">Throughput dataset (local + remote)</h3>
+<p>All local and remote throughput runs read the same synthetic dataset, generated once by <code>benchmarks/make_synth_dataset.py</code> and converted into each system's native on-disk format:</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cells</td>
+<td>1,000,000</td>
+</tr>
+<tr>
+<td>Genes</td>
+<td>20,000</td>
+</tr>
+<tr>
+<td>Density</td>
+<td>7%</td>
+</tr>
+<tr>
+<td>Non-zero entries</td>
+<td>~1.4 billion</td>
+</tr>
+<tr>
+<td>Values</td>
+<td><code>uint32</code> counts, drawn from <code>1 + Geometric(p=0.3)</code></td>
+</tr>
+<tr>
+<td>Total on disk</td>
+<td>~32 GB across all formats</td>
+</tr>
+</tbody>
+</table>
+<p>Each system reads its own copy, generated from the same underlying CSR shards. On-disk sizes vary by an order of magnitude — the same logical 1M × 20k × 7% matrix is 2.5 GB in homeobox's bitpacked sharded zarr vs 11.3 GB in zstd-compressed h5ad. This shows up <em>implicitly</em> in page-cache pressure and remote byte-rate ceilings.</p>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Reader</th>
+<th style="text-align: right;">Size on disk</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>atlas/</code></td>
+<td>Homeobox <code>RaggedAtlas</code></td>
+<td style="text-align: right;">2.5 GB</td>
+</tr>
+<tr>
+<td><code>slaf/</code></td>
+<td>SLAF (Lance)</td>
+<td style="text-align: right;">3.6 GB</td>
+</tr>
+<tr>
+<td><code>h5ad/synth.h5ad</code></td>
+<td>scDataset, scvi-tools <code>AnnDataLoader</code>, <code>anndata.experimental.AnnLoader</code></td>
+<td style="text-align: right;">11.3 GB</td>
+</tr>
+<tr>
+<td><code>scdl/</code></td>
+<td>BioNeMo <code>SingleCellMemMapDataset</code></td>
+<td style="text-align: right;">8.4 GB</td>
+</tr>
+<tr>
+<td><code>annbatch/dataset_*.zarr</code></td>
+<td>annbatch</td>
+<td style="text-align: right;">3.0 GB</td>
+</tr>
+<tr>
+<td><code>tiledbsoma/</code></td>
+<td>TileDB-SOMA <code>Experiment</code></td>
+<td style="text-align: right;">2.9 GB</td>
+</tr>
+</tbody>
+</table>
+<p>Copies of the formats that support remote stores (Homeobox, SLAF, annbatch, TileDB-SOMA) were uploaded to S3 for the remote sweep.</p>
+<p>The synthetic distribution matches the <em>shape</em> of single-cell count data (sparsity, integer counts, geometric tail) but imposes no biological structure.</p>
+<h3 id="perturbation-dataset-group-aware-random-reads">Perturbation dataset (group-aware random reads)</h3>
+<p>A separate dataset, built by <code>benchmarks/make_perturbation_synth.py</code>, targets the random-access workload in single-cell perturbation training: each batch contains cells from one <code>(cell_type, gene)</code> group, so the dataloader materialises scattered rows rather than a contiguous slice.</p>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cells</td>
+<td>1,000,000</td>
+</tr>
+<tr>
+<td>Features (HVG embedding)</td>
+<td>2,000</td>
+</tr>
+<tr>
+<td>Cell types</td>
+<td>10 (one shard each)</td>
+</tr>
+<tr>
+<td>Perturbations</td>
+<td>50 (49 + 1 <code>non-targeting</code> control)</td>
+</tr>
+<tr>
+<td>Groups</td>
+<td>500 × ~2,000 cells per <code>(cell_type, gene)</code></td>
+</tr>
+<tr>
+<td>Values</td>
+<td><code>float32</code>, drawn from <code>Normal(0, 1)</code> (embedding-like, dense)</td>
+</tr>
+<tr>
+<td>Total on disk</td>
+<td>~22 GB across both views</td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Reader</th>
+<th style="text-align: right;">Size on disk</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>atlas/</code></td>
+<td>Homeobox <code>RaggedAtlas</code> with a group sampler</td>
+<td style="text-align: right;">7.0 GB</td>
+</tr>
+<tr>
+<td><code>cell_load/synth/CT*.h5</code></td>
+<td><code>cell-load</code> (one AnnData per cell type)</td>
+<td style="text-align: right;">15 GB</td>
+</tr>
+</tbody>
+</table>
+<p>Cells are <strong>deliberately shuffled within each shard</strong> before being written. Real perturbation experiments don't store cells contiguously by <code>(cell_type, gene)</code>; without the shuffle, both backends would degenerate to sequential reads within a batch and storage-layout differences (zarr chunks, HDF5 dataspace ordering) would be hidden.</p>
+<p>Only two systems target this workload: <strong>Homeobox-Map</strong> (random row reads via <code>BatchArray</code> + a group-aware batch sampler) and <strong>cell-load</strong> (the Arc Institute perturbation loader, designed for this pattern). The other throughput-suite systems don't support group-aware batching out of the box. The perturbation sweep is local-only because cell-load can't read from remote storage.</p>
+<hr />
+<h2 id="systems-compared">Systems compared</h2>
+<h3 id="homeobox-map-vs-homeobox-iter">Homeobox-Map vs Homeobox-Iter</h3>
+<p>Homeobox exposes the same on-disk atlas through two PyTorch dataset surfaces, and we benchmark them as separate systems because the trade-off between them is the central design point of homeobox as a dataloader. <strong>Both shuffle the full atlas uniformly at random each epoch</strong> — the difference is the unit of I/O, not the access pattern:</p>
+<ul>
+<li><strong>Homeobox-Map</strong> is a <code>torch.utils.data.Dataset</code> with <code>__getitem__(indices)</code>. Each training batch is one <code>RustShardReader</code> call for <code>batch_size</code> shuffled rows. Any sampler works — including non-permutation ones (group-aware, fine-grained subsetting, custom).</li>
+<li><strong>Homeobox-Iter</strong> is a <code>torch.utils.data.IterableDataset</code> that requests <code>io_batch_size=65,536</code> shuffled rows per reader call and slices training batches out of an in-memory queue filled by a background prefetcher. Reads are still scattered, but each Python/Rust round-trip pulls 65k rows instead of <code>batch_size</code>, so per-call fixed cost amortizes and the reader has more indices to coalesce. The cost: the sampler is fixed to "permutation, sliced into blocks" — group-aware samplers don't apply.</li>
+</ul>
+<p>In short: <strong>Map trades speed for sampler flexibility, Iter trades sampler flexibility for speed</strong>. As <code>batch_size</code> grows, Map's per-batch fixed cost amortizes and the gap narrows — see <a href="#results">Results</a>.</p>
+<h3 id="systems-table">Systems table</h3>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th>Library</th>
+<th>What it reads</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Homeobox-Map</strong></td>
+<td><code>homeobox</code> (SUT)</td>
+<td>Sharded zarr via <code>RustShardReader</code>, CSR <code>SparseBatch</code>, map-style with scattered per-cell reads per batch</td>
+</tr>
+<tr>
+<td><strong>Homeobox-Iter</strong></td>
+<td><code>homeobox</code> (SUT)</td>
+<td>Sharded zarr via <code>RustShardReader</code>, CSR <code>SparseBatch</code>, iterable with a 65k-row prefetched I/O block (scattered indices under shuffle, not on-disk contiguous)</td>
+</tr>
+<tr>
+<td>SLAF</td>
+<td><code>slaf</code></td>
+<td>Lance dataset, raw CSR</td>
+</tr>
+<tr>
+<td>scDataset</td>
+<td><code>scdataset</code> + <code>anndata</code></td>
+<td>Backed <code>.h5ad</code> via <code>AnnCollection</code></td>
+</tr>
+<tr>
+<td>AnnDataLoader</td>
+<td><code>scvi-tools</code></td>
+<td>Backed <code>.h5ad</code></td>
+</tr>
+<tr>
+<td>AnnLoader</td>
+<td><code>anndata.experimental</code></td>
+<td>Backed <code>.h5ad</code></td>
+</tr>
+<tr>
+<td>BioNeMo SCDL</td>
+<td><code>bionemo.scdl</code></td>
+<td><code>SingleCellMemMapDataset</code> (memmap)</td>
+</tr>
+<tr>
+<td>annbatch</td>
+<td><code>annbatch</code></td>
+<td>Zarr shards, optional <code>zarrs</code> codec</td>
+</tr>
+<tr>
+<td>TileDB-SOMA</td>
+<td><code>tiledbsoma_ml</code></td>
+<td>TileDB-SOMA <code>Experiment</code> (sparse)</td>
+</tr>
+<tr>
+<td>cell-load</td>
+<td><code>cell_load</code></td>
+<td><code>PerturbationDataModule</code> (dense)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capability-matrix">Capability matrix</h3>
+<p>Beyond raw throughput, these systems differ in what they can do at all. The table frames the throughput numbers in context — a system that can't read from S3 isn't directly comparable to one that can, even if local-disk numbers look similar.</p>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th style="text-align: center;">Map-style[^map]</th>
+<th style="text-align: center;">Remote storage</th>
+<th style="text-align: center;">Training-only format[^tof]</th>
+<th style="text-align: center;">Versioned snapshots</th>
+<th style="text-align: center;">Ragged features[^rag]</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Homeobox-Map</strong></td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td><strong>Homeobox-Iter</strong></td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+</tr>
+<tr>
+<td>SLAF</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>scDataset</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>AnnDataLoader</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>AnnLoader</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>BioNeMo SCDL</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>annbatch</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>TileDB-SOMA</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+</tr>
+<tr>
+<td>cell-load</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">✓</td>
+<td style="text-align: center;">–</td>
+<td style="text-align: center;">–</td>
+</tr>
+</tbody>
+</table>
+<p>Torch-worker support varies across systems but the rules are too noisy for a column — see the per-system breakdown below.</p>
+<h3 id="num_workers-support"><code>num_workers</code> support</h3>
+<p>Not every system accepts torch-style multi-process workers. The sweeps auto-skip those rather than running <code>num_workers &gt; 0</code> as a duplicate <code>num_workers = 0</code> measurement under a different label:</p>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th><code>num_workers &gt; 0</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Homeobox-Map</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>Homeobox-Iter</td>
+<td>— internal multithreaded prefetcher; running on top of <code>DataLoader</code> workers would double up</td>
+</tr>
+<tr>
+<td>scDataset</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>BioNeMo SCDL</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>cell-load</td>
+<td>✓</td>
+</tr>
+<tr>
+<td>SLAF</td>
+<td>— manages its own scanner threads (<code>n_scanners</code>)</td>
+</tr>
+<tr>
+<td>annbatch</td>
+<td>— own threaded preloader, no <code>num_workers</code> argument</td>
+</tr>
+<tr>
+<td>AnnDataLoader, AnnLoader</td>
+<td>— backed-h5ad pickling is unreliable across workers</td>
+</tr>
+<tr>
+<td>TileDB-SOMA</td>
+<td>— <code>ExperimentDataset</code> rejects <code>num_workers &gt; 0</code> with <code>return_sparse_X=True</code> (<a href="https://github.com/pytorch/pytorch/issues/20248">pytorch/pytorch#20248</a>)</td>
+</tr>
+</tbody>
+</table>
+<p>Systems in the second group contribute only the <code>num_workers = 0</code> rows; plots showing scaling with <code>num_workers</code> only carry curves for the first group.</p>
+<p>[^map]: <strong>Map-style</strong> means the dataset exposes <code>__getitem__(idx)</code> so PyTorch's <code>DataLoader</code> can dispatch any index to any worker independently. Iterable systems run a single producer that fans batches out — their multi-worker scaling depends on partitioning, not on worker-side parallelism.</p>
+<p>[^tof]: <strong>Training-only format</strong> means the data must be re-materialised into an on-disk layout that exists exclusively to feed a training loop. A ✓ here is a cost, not a feature: you maintain two copies of the data, and the training copy can't be queried or inspected with the same tools as your analytical store.</p>
+<p>[^rag]: <strong>Ragged features</strong> means datasets with different feature sets (different gene panels, additional modalities) can coexist in the store without padding to a union or intersecting to common features. Most systems require feature alignment upfront.</p>
+<hr />
+<h2 id="hardware-and-software">Hardware and software</h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CPU</td>
+<td>Intel Xeon 6975P-C, 8 physical cores</td>
+</tr>
+<tr>
+<td>RAM</td>
+<td>~130 GB</td>
+</tr>
+<tr>
+<td>Storage</td>
+<td>Local NVMe SSD (ext4)</td>
+</tr>
+<tr>
+<td>OS</td>
+<td>Ubuntu 24.04</td>
+</tr>
+<tr>
+<td>Python</td>
+<td>3.13</td>
+</tr>
+<tr>
+<td>PyTorch</td>
+<td>from the homeobox <code>[ml]</code> extra</td>
+</tr>
+</tbody>
+</table>
+<p>The dataset fits entirely in page cache (~30 GB vs. ~130 GB RAM), see below.</p>
+<hr />
+<h2 id="page-cache-priming">Page-cache priming</h2>
+<p>The first time a benchmark process reads a system's files, it pays cold-disk latency that has nothing to do with loader design. The second time, the data is in the Linux page cache and reads run from RAM. The full dataset (~30 GB) fits comfortably in cache (~130 GB), so the realistic sustained-training scenario is the warm one — every epoch after the first hits cache.</p>
+<p>We do not drop the page cache between reps — it would require root, and a cold-disk benchmark is a different experiment (a disk benchmark, not a dataloader benchmark). Reported numbers are post-priming.</p>
+<hr />
+<h2 id="results">Results</h2>
+<p>All numbers below come from the reference hardware (<a href="#hardware-and-software">Hardware and software</a>) with the page cache primed. Throughput is sustained cells/sec at steady state. Figures average over whatever reps are in the CSV; current snapshots are single-rep, so markers and tables match raw measurements one-for-one.</p>
+<p>The recurring theme across all three sections is <strong>the Homeobox-Map ↔ Homeobox-Iter trade-off</strong>. Both shuffle the atlas uniformly at random; Map asks for <code>batch_size</code> rows per Rust-reader call, Iter asks for 65k. <strong>The gap between them is a direct measure of the per-call fixed cost Map pays for sampler flexibility.</strong> It shrinks as <code>batch_size</code> grows: larger batches amortize per-batch overhead and give the reader more indices per call to coalesce — both of which Iter gets for free.</p>
+<h3 id="local-throughput-on-nvme">Local — throughput on NVMe</h3>
+<p>All systems, <code>num_workers ∈ {0}</code>, all three batch sizes.</p>
+<p><img alt="Local throughput vs batch size (workers = 0)" src="../assets/local_throughput_vs_batchsize.png" /></p>
+<p>Throughput (cells/sec, <code>workers=0</code>, single rep):</p>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th style="text-align: right;">b=64</th>
+<th style="text-align: right;">b=512</th>
+<th style="text-align: right;">b=4096</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Homeobox-Iter</strong></td>
+<td style="text-align: right;">69,658</td>
+<td style="text-align: right;">73,171</td>
+<td style="text-align: right;">72,548</td>
+</tr>
+<tr>
+<td>annbatch</td>
+<td style="text-align: right;">56,154</td>
+<td style="text-align: right;">67,459</td>
+<td style="text-align: right;">76,314</td>
+</tr>
+<tr>
+<td>BioNeMo SCDL</td>
+<td style="text-align: right;">5,455</td>
+<td style="text-align: right;">72,570</td>
+<td style="text-align: right;">66,124</td>
+</tr>
+<tr>
+<td>scDataset</td>
+<td style="text-align: right;">28,151</td>
+<td style="text-align: right;">41,525</td>
+<td style="text-align: right;">52,923</td>
+</tr>
+<tr>
+<td>SLAF</td>
+<td style="text-align: right;">30,118</td>
+<td style="text-align: right;">33,374</td>
+<td style="text-align: right;">37,940</td>
+</tr>
+<tr>
+<td>AnnDataLoader</td>
+<td style="text-align: right;">21,446</td>
+<td style="text-align: right;">25,926</td>
+<td style="text-align: right;">26,403</td>
+</tr>
+<tr>
+<td><strong>Homeobox-Map</strong></td>
+<td style="text-align: right;">9,553</td>
+<td style="text-align: right;">22,749</td>
+<td style="text-align: right;">25,049</td>
+</tr>
+<tr>
+<td>TileDB-SOMA</td>
+<td style="text-align: right;">11,268</td>
+<td style="text-align: right;">11,972</td>
+<td style="text-align: right;">12,153</td>
+</tr>
+<tr>
+<td>AnnLoader</td>
+<td style="text-align: right;">10,509</td>
+<td style="text-align: right;">12,699</td>
+<td style="text-align: right;">10,656</td>
+</tr>
+</tbody>
+</table>
+<p>Three things to notice:</p>
+<ol>
+<li><strong>Homeobox-Iter saturates the reference NVMe at ~70k cells/sec</strong> and is flat across batch sizes — once the prefetcher is in steady state, training-loop batch size doesn't matter: the I/O unit is the 65k-row block and training batches are sliced from a warm queue. The only systems that get close are annbatch (chunk-prefetching zarr) and BioNeMo SCDL at large batches (memmap with bulk slicing).</li>
+<li><strong>Homeobox-Map's gap to Iter narrows sharply with batch size.</strong> At <code>b=64</code> Iter is 7.3× faster (69,658 vs 9,553); at <code>b=512</code>, 3.2× (73,171 vs 22,749); at <code>b=4096</code>, 2.9× (72,548 vs 25,049). Exactly the predicted amortization: at large <code>B</code>, Map's per-batch fixed overhead is divided over more rows, and the reader coalesces more zarr ranges per call — which is what Iter does all the time.</li>
+</ol>
+<p><img alt="Local peak memory vs throughput" src="../assets/local_mem_vs_throughput.png" /></p>
+<p>On memory: Homeobox-Map sits in the low-RSS cluster (~1–3 GB at <code>b=4096, workers=0</code>), comparable to annbatch and AnnDataLoader. Homeobox-Iter pays ~18 GB peak for its in-memory prefetch queue — the trade-off is explicit. BioNeMo SCDL and TileDB-SOMA dominate the memory axis (~9 and ~10 GB) without buying corresponding throughput.</p>
+<h3 id="remote-same-atlas-served-from-s3">Remote — same atlas served from S3</h3>
+<p>Only systems whose readers speak object-store URIs appear here: Homeobox-Map, Homeobox-Iter, SLAF, annbatch, TileDB-SOMA.</p>
+<p><img alt="Remote throughput vs batch size (workers = 0)" src="../assets/remote_throughput_vs_batchsize.png" /></p>
+<p>Throughput (cells/sec, <code>workers=0</code>):</p>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th style="text-align: right;">b=64</th>
+<th style="text-align: right;">b=512</th>
+<th style="text-align: right;">b=4096</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Homeobox-Iter</strong></td>
+<td style="text-align: right;">40,378</td>
+<td style="text-align: right;">42,344</td>
+<td style="text-align: right;">41,453</td>
+</tr>
+<tr>
+<td>SLAF</td>
+<td style="text-align: right;">3,611</td>
+<td style="text-align: right;">4,233</td>
+<td style="text-align: right;">10,320</td>
+</tr>
+<tr>
+<td>TileDB-SOMA</td>
+<td style="text-align: right;">5,873</td>
+<td style="text-align: right;">5,845</td>
+<td style="text-align: right;">5,945</td>
+</tr>
+<tr>
+<td><strong>Homeobox-Map</strong></td>
+<td style="text-align: right;">576</td>
+<td style="text-align: right;">1,884</td>
+<td style="text-align: right;">3,300</td>
+</tr>
+<tr>
+<td>annbatch</td>
+<td style="text-align: right;">1,050</td>
+<td style="text-align: right;">1,314</td>
+<td style="text-align: right;">1,594</td>
+</tr>
+</tbody>
+</table>
+<p>S3 latency turns the Map ↔ Iter trade-off from a 3–7× gap into a 12–70× gap. Each Map batch issues <code>B</code> obstore GETs against S3, and per-request RTT (~10–20 ms) dominates the byte transfer. Iter still does scattered reads, but at 65,536 indices per call it coalesces co-located indices into fewer GETs, overlaps many in-flight requests against the same RTT budget, and decodes ahead of the consumer in the prefetcher. The amortized fixed cost is the same as locally; remote storage just makes it an order of magnitude larger, so the gap widens correspondingly.</p>
+<p><img alt="Remote peak memory vs throughput" src="../assets/remote_mem_vs_throughput.png" /></p>
+<p>Memory looks similar to local: Iter trades ~15 GB peak RSS (prefetch queue) for an order-of-magnitude throughput advantage; Map sits near the bottom of the memory axis.</p>
+<h3 id="perturbation-group-aware-random-reads">Perturbation — group-aware random reads</h3>
+<p>Each batch is <code>B</code> cells drawn from a single <code>(cell_type, gene)</code> group on the <a href="#perturbation-dataset-group-aware-random-reads">perturbation dataset</a>. Only <strong>Homeobox-Map</strong> and <strong>cell-load</strong> appear — no throughput-suite system implements a group-aware sampler, and Iter can't serve this workload because the access pattern requires <code>__getitem__</code>.</p>
+<p><img alt="Perturbation throughput vs batch size (workers = 0)" src="../assets/perturbation_throughput_vs_batchsize.png" /></p>
+<p>Throughput (cells/sec, <code>workers=0</code>):</p>
+<table>
+<thead>
+<tr>
+<th>System</th>
+<th style="text-align: right;">b=64</th>
+<th style="text-align: right;">b=512</th>
+<th style="text-align: right;">b=1024</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Homeobox-Map</strong></td>
+<td style="text-align: right;">9,842</td>
+<td style="text-align: right;">13,677</td>
+<td style="text-align: right;">12,265</td>
+</tr>
+<tr>
+<td>cell-load</td>
+<td style="text-align: right;">4,936</td>
+<td style="text-align: right;">26,678</td>
+<td style="text-align: right;">27,096</td>
+</tr>
+</tbody>
+</table>
+<p>The crossover at <code>b≥512</code> is the locality story: a single-group batch in cell-load maps to a contiguous-ish region in one cell-type-specific <code>.h5</code> (one large HDF5 read), whereas Homeobox-Map issues <code>B</code> independent zarr range reads regardless of batch construction. At <code>b=64</code>, per-batch fixed cost dominates cell-load's HDF5 open/seek path and Map wins by ~2×; at <code>b≥512</code>, cell-load's bulk-read advantage takes over and it pulls ahead by roughly the same factor.</p>
+<p><img alt="Perturbation throughput vs num_workers" src="../assets/perturbation_throughput_vs_workers.png" /></p>
+<p>At <code>num_workers=4</code> both systems roughly double, preserving the ordering: cell-load at 34–59k cells/sec, Map at 18–25k cells/sec.</p>
+<p><img alt="Perturbation peak memory vs throughput" src="../assets/perturbation_mem_vs_throughput.png" /></p>
+<p>Memory is comparable at the largest batch (cell-load ~1.1 GB, Map ~1.6 GB at <code>b=1024, workers=0</code>). This benchmark isn't here to show Homeobox-Map "wins" — at large batches on this workload it doesn't — but to quantify the cost of one specific flexibility: arbitrary <code>__getitem__</code> over the atlas, with no second on-disk copy and no per-cell-type sharding requirement. For sustained large-batch group reads on a single dense embedding modality, cell-load's specialized format is faster; if you also need random access, multi-modal queries, ragged features, or remote-store reads, Homeobox-Map serves all of those from one atlas.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

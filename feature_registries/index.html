@@ -1,0 +1,1393 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal biomedical databases built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/homeobox/feature_registries/">
+      
+      
+        <link rel="prev" href="../atlas/">
+      
+      
+        <link rel="next" href="../feature_layouts/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Feature Registries - homeobox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#feature-registries" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="homeobox" class="md-header__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            homeobox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Feature Registries
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="homeobox" class="md-nav__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    homeobox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Registries
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Registries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#whats-in-a-registry-row" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's in a registry row
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-stable-uids-matter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why stable UIDs matter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Why stable UIDs matter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#falling-back-to-random-uids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Falling back to random UIDs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parallel-writes-and-the-dedup-pass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel writes and the dedup pass
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registering-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registering features
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Registering features">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#record-by-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record-by-record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bulk-via-polars" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bulk via Polars
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#after-ingestion-global_index-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        After ingestion: global_index assignment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-global_index-at-query-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using global_index at query time
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Using global_index at query time">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#joining-features-across-datasets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joining features across datasets
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pointer_types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pointer Types
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../batch_array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    BatchArray
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ingestion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataloader Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#whats-in-a-registry-row" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's in a registry row
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-stable-uids-matter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why stable UIDs matter
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Why stable UIDs matter">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#falling-back-to-random-uids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Falling back to random UIDs
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parallel-writes-and-the-dedup-pass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parallel writes and the dedup pass
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#registering-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Registering features
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Registering features">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#record-by-record" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Record-by-record
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bulk-via-polars" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bulk via Polars
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#after-ingestion-global_index-assignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        After ingestion: global_index assignment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#using-global_index-at-query-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Using global_index at query time
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Using global_index at query time">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#joining-features-across-datasets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joining features across datasets
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="feature-registries">Feature registries</h1>
+<p>A feature registry is a small LanceDB table that lists every feature in a feature space exactly once. For example, every gene in <code>gene_expression</code>, every metric in <code>image_features</code>, or every protein in <code>protein_abundance</code>. Each row carries a <code>uid</code>, an integer <code>global_index</code>, and any additional metadata (gene symbol, Ensembl ID, antibody clone, channel name, …).</p>
+<p>The registry is what turns ragged, per-dataset feature axes into a single shared coordinate system. Two datasets that name the same gene (i.e., <code>uid</code>) with different local positions still resolve to the same <code>global_index</code>, and that index is what the reconstruction layer scatters into at query time. The registry is the source of truth for "what features exist in this atlas, and in what order do they line up across datasets."</p>
+<p>This page covers how to design a registry schema so that <code>uid</code>s stay stable across separate ingestion runs, why that matters under parallel writes, and how to register features in bulk.</p>
+<h2 id="whats-in-a-registry-row">What's in a registry row</h2>
+<p>Every registry schema inherits from <code>FeatureBaseSchema</code>, which contributes two fields:</p>
+<ul>
+<li><code>uid: str</code> — a 16-character hex identifier. Stable across ingestion runs when you opt in (see below); otherwise random per row.</li>
+<li><code>global_index: int | None</code> — assigned by <code>atlas.optimize()</code>. Starts as <code>None</code> and is filled in incrementally so that new features get <code>max(existing) + 1</code>. Once assigned it is never reassigned, so it is safe to use as a column index into a 2D dense matrix or as a scatter key in compute paths. Use <code>uid</code> (not <code>global_index</code>) for any durable reference that needs to survive a registry rebuild.</li>
+</ul>
+<p>Subclasses add whatever modality-specific columns you need:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">homeobox</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">hox</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">GeneFeature</span><span class="p">(</span><span class="n">hox</span><span class="o">.</span><span class="n">FeatureBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">gene_symbol</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ensembl_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">hox</span><span class="o">.</span><span class="n">StableUIDField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</code></pre></div>
+<p><code>StableUIDField.declare(...)</code> marks <code>ensembl_id</code> as the field that derives <code>uid</code>. A schema MAY declare <strong>at most one</strong> <code>StableUIDField</code> — defining two is a class-definition-time error. (If you need to join multiple fields to create a stable uid, we recommend creating an additional derived field on your schema, you can auto-populate if necessary as well. We do not allow multiple <code>StableUIDField</code> declarations on the same schema because it introduces order ambiguity).</p>
+<h2 id="why-stable-uids-matter">Why stable UIDs matter</h2>
+<p>Without a <code>StableUIDField</code>, every new <code>GeneFeature(...)</code> gets a fresh random <code>uid</code> from <code>make_uid()</code>. Two ingestion runs that both register the same gene will produce two registry rows with two different <code>uid</code>s, and therefore two different <code>global_index</code> values. The atlas will treat them as distinct features at query time.</p>
+<p>With a <code>StableUIDField</code>, <code>uid</code> is computed as <code>make_stable_uid(str(ensembl_id))</code> — a deterministic 16-character hash of the field value. The same Ensembl ID always produces the same <code>uid</code>, so any two ingestion runs that see <code>ENSG00000139618</code> register a single row and share a single <code>global_index</code>. This is the property that makes <code>global_index</code> meaningful as a cross-dataset coordinate.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox</span><span class="w"> </span><span class="kn">import</span> <span class="n">make_stable_uid</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">make_stable_uid</span><span class="p">(</span><span class="s2">&quot;ENSG00000139618&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="n">make_stable_uid</span><span class="p">(</span><span class="s2">&quot;ENSG00000139618&quot;</span><span class="p">)</span>  <span class="c1"># True</span>
+</code></pre></div>
+<h3 id="falling-back-to-random-uids">Falling back to random UIDs</h3>
+<p>You might be tempted to skip <code>StableUIDField</code> and just assign <code>uid=ensembl_id</code> directly. In practice this is fragile: many real-world feature tables have rows where the canonical identifier is missing or unknown (a gene model that hasn't been annotated yet, a custom probe, a control feature). <code>uid</code> is required to be a non-null string, so a missing canonical ID would break ingestion.</p>
+<p><code>StableUIDField</code> handles this cleanly. If the declared field is <code>None</code>, the row gets a random <code>uid</code> from <code>make_uid()</code>. The cost is that those particular features will not dedupe across runs — but the features that <em>do</em> have a canonical ID still will. Mixing the two is the common case and is supported by design.</p>
+<h2 id="parallel-writes-and-the-dedup-pass">Parallel writes and the dedup pass</h2>
+<p>Ingestion is designed to run as many parallel processes against the same atlas. <code>register_features</code> uses LanceDB's <code>merge_insert(on="uid").when_not_matched_insert_all()</code>, which means that within a single call, rows whose <code>uid</code> already exists in the registry are silently skipped. Two workers that each register the same gene end up with one row, not two, provided their <code>uid</code>s match.</p>
+<p><code>merge_insert</code> is not strictly atomic across separate transactions, however. If two workers both observe the registry without a given <code>uid</code> and both attempt to insert it before either commits, both inserts can land and create a duplicate. <code>atlas.optimize()</code> cleans this up by deduplicating newly-added rows on <code>uid</code> before assigning <code>global_index</code>. As long as your <code>uid</code>s are stable, dedup is either a no-op when there is no race or a precise fix when there is one.</p>
+<p>The takeaway: <strong>stable UIDs are not just a nicety, they are what makes parallel ingestion correct.</strong> Random per-row UIDs disable dedup entirely and let identical features pile up in the registry, each with its own <code>global_index</code>.</p>
+<h2 id="registering-features">Registering features</h2>
+<p><code>atlas.register_features(feature_space, features)</code> accepts either a list of schema records or a Polars DataFrame.</p>
+<h3 id="record-by-record">Record-by-record</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">features</span> <span class="o">=</span> <span class="p">[</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">GeneFeature</span><span class="p">(</span><span class="n">ensembl_id</span><span class="o">=</span><span class="s2">&quot;ENSG00000139618&quot;</span><span class="p">,</span> <span class="n">gene_symbol</span><span class="o">=</span><span class="s2">&quot;BRCA2&quot;</span><span class="p">),</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">GeneFeature</span><span class="p">(</span><span class="n">ensembl_id</span><span class="o">=</span><span class="s2">&quot;ENSG00000141510&quot;</span><span class="p">,</span> <span class="n">gene_symbol</span><span class="o">=</span><span class="s2">&quot;TP53&quot;</span><span class="p">),</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">GeneFeature</span><span class="p">(</span><span class="n">gene_symbol</span><span class="o">=</span><span class="s2">&quot;custom_probe_1&quot;</span><span class="p">),</span>  <span class="c1"># no ensembl_id → random uid, fine</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="p">]</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">n_new</span> <span class="o">=</span> <span class="n">atlas</span><span class="o">.</span><span class="n">register_features</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">features</span><span class="p">)</span>
+</code></pre></div>
+<p><code>uid</code> is computed on the schema instance — you do not pass it explicitly. The pydantic model validator enforces that, when <code>ensembl_id</code> is set, <code>uid</code> matches <code>make_stable_uid(str(ensembl_id))</code>, so you cannot accidentally write inconsistent rows.</p>
+<h3 id="bulk-via-polars">Bulk via Polars</h3>
+<p>For large feature tables (tens of thousands of genes, hundreds of thousands of probes), building one pydantic object per row is wasteful. The DataFrame path skips the instance construction:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">genes_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">({</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s2">&quot;ensembl_id&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;ENSG00000139618&quot;</span><span class="p">,</span> <span class="s2">&quot;ENSG00000141510&quot;</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s2">&quot;gene_symbol&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;BRCA2&quot;</span><span class="p">,</span> <span class="s2">&quot;TP53&quot;</span><span class="p">,</span> <span class="s2">&quot;custom_probe_1&quot;</span><span class="p">],</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">})</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># Compute uid from ensembl_id (pandas helper; convert as needed)</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">genes_pdf</span> <span class="o">=</span> <span class="n">GeneFeature</span><span class="o">.</span><span class="n">compute_stable_uids</span><span class="p">(</span><span class="n">genes_df</span><span class="o">.</span><span class="n">to_pandas</span><span class="p">())</span>
+<a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="n">genes_df</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">from_pandas</span><span class="p">(</span><span class="n">genes_pdf</span><span class="p">)</span>
+<a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>
+<a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">atlas</span><span class="o">.</span><span class="n">register_features</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span> <span class="n">genes_df</span><span class="p">)</span>
+</code></pre></div>
+<p><code>FeatureBaseSchema.compute_stable_uids(df)</code> populates <code>uid</code> in place: rows where the stable field is non-null get <code>make_stable_uid(...)</code>; rows where it is null get a random <code>uid</code>. The DataFrame must already contain a column named after the <code>StableUIDField</code> (here, <code>ensembl_id</code>) and is allowed to contain a partially-filled <code>uid</code> column — only the rows where the stable field is set are overwritten.</p>
+<h2 id="after-ingestion-global_index-assignment">After ingestion: <code>global_index</code> assignment</h2>
+<p>Registering features inserts rows with <code>global_index = None</code>. The integers are assigned later by <code>atlas.optimize()</code>, which runs <code>reindex_registry()</code> over each registry:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">atlas</span><span class="o">.</span><span class="n">optimize</span><span class="p">()</span>    <span class="c1"># dedupes newly-added rows, assigns global_index</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">atlas</span><span class="o">.</span><span class="n">snapshot</span><span class="p">()</span>    <span class="c1"># validates and freezes the registry into a version</span>
+</code></pre></div>
+<p>The reason for splitting registration from indexing is the same race condition argument as above: assigning a <code>global_index</code> requires reading <code>max(existing_index)</code> and incrementing it, which is not safe to do from many writers concurrently. By leaving <code>global_index = None</code> during ingestion and concentrating the assignment in a single <code>optimize()</code> call, the atlas avoids any need for cross-worker coordination. See <a href="../versioning/">Versioning</a> for the full snapshot lifecycle.</p>
+<h2 id="using-global_index-at-query-time">Using <code>global_index</code> at query time</h2>
+<p>A zarr group stores every feature that was written into it, but a query only ever reads the features its <code>_feature_layouts</code> row claims. Anything in the zarr group that the layout doesn't reference is invisible.</p>
+<p>The mechanism is a small <strong>remap array</strong> built per dataset at query time. The remap has one entry per local zarr column and tells the reconstruction layer where (if anywhere) that column belongs in the output:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># Local zarr columns:  [0, 1, 2, 3, 4]</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="c1"># Layout maps them to global_index: [10, 11, --, 13, 14]   (column 2 absent from layout)</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="c1"># Query wants global_index:        [10, 11, 13, 14]</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># remap[local_col] = output_col, or -1 if the column is not wanted</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="n">remap</span> <span class="o">=</span> <span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span>
+</code></pre></div>
+<p>Any column whose remap entry is <code>-1</code> is masked out and dropped before the output matrix is assembled. Two practical cases produce <code>-1</code> entries:</p>
+<ul>
+<li><strong>A feature was dropped from a layout</strong> — e.g., a low-quality gene removed during curation. The zarr group still contains the column; the layout no longer references it; the query skips it.</li>
+<li><strong>An intersection query across heterogeneous datasets</strong> — features present in one dataset but absent from another are excluded from the intersection, so they get <code>-1</code> in the datasets that do have them.</li>
+</ul>
+<p>In both cases the result is the same: the reconstructed AnnData/MuData contains exactly the features the query asked for, in the global order the registry assigned, with no padding and no spurious zeros.</p>
+<h3 id="joining-features-across-datasets">Joining features across datasets</h3>
+<p>When a query spans multiple datasets, the registry's <code>global_index</code> is what makes them line up. The reconstructor picks a target set of global indices (the output's <code>var</code> axis) and then builds one remap per dataset against that set.</p>
+<p>The target is chosen by <code>feature_join</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>Dataset A layout: global_index = [10, 11, 12]
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>Dataset B layout: global_index = [11, 12, 13]
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>feature_join=&quot;union&quot;        → output vars = [10, 11, 12, 13]
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>                              A contributes columns at output [0, 1, 2]; output 3 is missing → 0
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>                              B contributes columns at output [1, 2, 3]; output 0 is missing → 0
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>feature_join=&quot;intersection&quot; → output vars = [11, 12]
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>                              A&#39;s column for 10 is dropped (remap -1); B&#39;s column for 13 is dropped
+</code></pre></div>
+<p>Both modes use the same <code>-1</code> masking primitive from the previous section; the only thing that changes is which global indices land in the output. Sparse layers stay sparse — missing features under <code>union</code> produce explicit zeros without densifying the matrix.</p>
+<p>For the full reconstruction path (sparse vs. dense, multi-layer reads, the <code>wanted_globals</code> override that pins the output <code>var</code> axis explicitly), see <a href="../reconstructors/">Reconstructors</a>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
