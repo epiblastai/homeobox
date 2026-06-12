@@ -82,7 +82,7 @@ uv run maturin develop --release
 
 | Notebook | Description |
 |----------|-------------|
-| [`explore_perturbation_atlas_colab.py`](homeobox_examples/multimodal_perturbation_atlas/notebooks/explore_perturbation_atlas_colab.py) ([Colab](https://colab.research.google.com/drive/1-5lQXRLpKrpeYAQ14UIVK7CMq_75tp6Y#scrollTo=87b338c7)) | Explore an atlas with 120M+ cells, over 130,000 genetic, chemical, and biologic perturbations, and 5 modalities. |
+| [`explore_perturbation_atlas_colab.py`](homeobox_examples/multimodal_perturbation_atlas/notebooks/explore_perturbation_atlas_colab.py) ([Colab](https://colab.research.google.com/drive/1-cG-6N5FQiQjD6-mlK5VCtrEPzCiOnuq?usp=sharing)) | Explore an atlas with 120M+ cells, over 130,000 genetic, chemical, and biologic perturbations, and 5 modalities. |
 
 
 ---

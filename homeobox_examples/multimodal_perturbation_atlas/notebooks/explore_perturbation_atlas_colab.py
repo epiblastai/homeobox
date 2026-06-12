@@ -49,10 +49,6 @@
 # is sufficient — all S3 and bio dependencies are included.
 
 # %%
-# %load_ext autoreload
-# %autoreload 2
-
-# %%
 # # !pip install -q "homeobox[ml]==0.2.8"
 # # !git clone https://github.com/epiblastai/homeobox.git /content/homeobox
 # # !pip install -q /content/homeobox/homeobox_examples
