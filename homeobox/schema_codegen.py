@@ -99,18 +99,23 @@ def _declare_kwargs(name: str, payload: object, defined: set[str]) -> list[str]:
     raise ValueError(f"unknown marker {name!r}")  # pragma: no cover
 
 
+def _ordered_markers(markers: dict) -> list[tuple[str, object]]:
+    """Markers in a canonical order so emission is stable regardless of authoring."""
+    return [(name, markers[name]) for name in MARKER_FACTORIES if name in markers]
+
+
 def _render_field_value(field: FieldDef, defined: set[str]) -> str:
     """Render the right-hand side of a marked field (``= ...`` part)."""
     default_literal = _py_literal(field.default)
-    markers = field.markers
-    if len(markers) == 1:
-        ((name, payload),) = markers.items()
+    ordered = _ordered_markers(field.markers)
+    if len(ordered) == 1:
+        name, payload = ordered[0]
         kwargs = _declare_kwargs(name, payload, defined)
         kwargs.append(f"default={default_literal}")
         return f"{MARKER_FACTORIES[name]}.declare({', '.join(kwargs)})"
 
     inner = []
-    for name, payload in markers.items():
+    for name, payload in ordered:
         kwargs = _declare_kwargs(name, payload, defined)
         inner.append(f"{MARKER_FACTORIES[name]}.declare({', '.join(kwargs)})")
     inner.append(f"default={default_literal}")
