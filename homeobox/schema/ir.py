@@ -4,8 +4,8 @@ This module defines :class:`SchemaModel` -- a small tree of frozen dataclasses
 that describes a homeobox schema declaratively -- plus a strict YAML loader and
 dumper. The IR is the single source of truth shared by:
 
-- :mod:`homeobox.schema_codegen` (IR -> ``schema.py`` source), and
-- :mod:`homeobox.schema_ingest` (``schema.py`` -> IR).
+- :mod:`homeobox.schema.codegen` (IR -> ``schema.py`` source), and
+- :mod:`homeobox.schema.ingest` (``schema.py`` -> IR).
 
 The YAML surface is intentionally small (see ``specs/schema_yaml_ir.md``). The
 loader hard-errors on anything it does not recognise: unknown keys, unknown

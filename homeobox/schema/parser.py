@@ -1,10 +1,10 @@
-"""Project a :class:`~homeobox.schema_ir.SchemaModel` into the review-UI result.
+"""Project a :class:`~homeobox.schema.ir.SchemaModel` into the review-UI result.
 
 The review UI needs the tables, fields, and relationships a schema declares --
 not the raw Python. That structured view is now derived from a single source of
-truth: the YAML-backed intermediate representation (:mod:`homeobox.schema_ir`).
+truth: the YAML-backed intermediate representation (:mod:`homeobox.schema.ir`).
 There is exactly one path here, ``IR -> parsed_result``; the schema source is
-parsed elsewhere (``schema.py -> IR`` lives in :mod:`homeobox.schema_ingest`).
+parsed elsewhere (``schema.py -> IR`` lives in :mod:`homeobox.schema.ingest`).
 
 ``parsed_result`` is a plain dict::
 
@@ -26,7 +26,7 @@ import types
 from functools import lru_cache
 from typing import Any, Union, get_args, get_origin
 
-from homeobox.schema_ir import FieldDef, SchemaModel, TableDef
+from homeobox.schema.ir import FieldDef, SchemaModel, TableDef
 
 # IR base kind -> the "kind" string the review UI renders. The IR's "registry"
 # bucket (RegistryBaseSchema / StableUIDBaseSchema subclasses) is surfaced as
@@ -110,7 +110,7 @@ def _homeobox_base_fields_by_class() -> dict[str, tuple[tuple[tuple[str, object]
     """
     result: dict[str, list[dict]] = {}
     try:
-        from homeobox import schema as homeobox_schema
+        from homeobox.schema import definitions as homeobox_schema
     except Exception:
         result = {
             base_name: [{**_field_copy(field), "inherited": True} for field in fields]

@@ -14,7 +14,7 @@ table summarising the obs table that is defined below it).
 
 import ast
 
-from homeobox.schema_ir import (
+from homeobox.schema.ir import (
     MARKER_FACTORIES,
     POINTER_TYPE_NAMES,
     REQUIRED,

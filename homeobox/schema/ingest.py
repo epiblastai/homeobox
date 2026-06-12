@@ -1,6 +1,6 @@
 """Parse a homeobox ``schema.py`` back into a :class:`SchemaModel` (round-trip).
 
-This is the inverse of :mod:`homeobox.schema_codegen`. It **imports** the schema
+This is the inverse of :mod:`homeobox.schema.codegen`. It **imports** the schema
 module and introspects the live pydantic classes: table kind comes from real
 ``issubclass`` checks, field types / defaults from each ``FieldInfo``, marker
 metadata straight off ``model_fields[...].json_schema_extra`` (already fully
@@ -37,7 +37,7 @@ import uuid
 from enum import StrEnum
 from typing import Any, Union, get_args, get_origin
 
-from homeobox.schema_ir import (
+from homeobox.schema.ir import (
     REQUIRED,
     ComputedDef,
     ConstraintDef,
@@ -64,7 +64,7 @@ def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
     """
     from lancedb.pydantic import LanceModel
 
-    from homeobox.schema import (
+    from homeobox.schema.definitions import (
         DatasetSchema,
         FeatureBaseSchema,
         HoxBaseSchema,

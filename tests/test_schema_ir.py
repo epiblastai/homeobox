@@ -17,15 +17,17 @@ from lancedb.pydantic import LanceModel
 from pydantic import ValidationError
 
 import homeobox_examples.multimodal_perturbation_atlas.schema as example_schema
-from homeobox import schema_codegen, schema_ingest, schema_ir
 from homeobox.pointer_types import SparseZarrPointer
 from homeobox.schema import (
     DatasetSchema,
     FeatureBaseSchema,
     HoxBaseSchema,
     RegistryBaseSchema,
+    codegen,
+    ingest,
+    ir,
 )
-from homeobox.schema_ir import REQUIRED
+from homeobox.schema.ir import REQUIRED
 
 TINY_YAML = """
 schema:
@@ -131,14 +133,14 @@ other_tables:
 
 
 @pytest.fixture(scope="module")
-def model() -> schema_ir.SchemaModel:
-    return schema_ir.load_yaml(TINY_YAML)
+def model() -> ir.SchemaModel:
+    return ir.load_yaml(TINY_YAML)
 
 
 @pytest.fixture(scope="module")
 def generated(model, tmp_path_factory):
     """Generate, write, and import the fixture schema as a live module."""
-    source = schema_codegen.emit(model)
+    source = codegen.emit(model)
     path = tmp_path_factory.mktemp("ir") / "tiny_generated.py"
     path.write_text(source)
     spec = importlib.util.spec_from_file_location("tiny_generated", path)
@@ -211,7 +213,7 @@ def test_loader_combine_markers_and_constraints(model):
 )
 def test_loader_hard_errors_on_bad_input(bad_yaml):
     with pytest.raises(ValueError):
-        schema_ir.load_yaml(bad_yaml)
+        ir.load_yaml(bad_yaml)
 
 
 # ---------------------------------------------------------------------------
@@ -289,23 +291,23 @@ def _field_signature(table):
 
 
 def test_roundtrip_codegen_ingest_is_idempotent(model):
-    source = schema_codegen.emit(model)
-    ingested = schema_ingest.model_from_source(source, name=model.name)
+    source = codegen.emit(model)
+    ingested = ingest.model_from_source(source, name=model.name)
     # Re-emitting the ingested model is byte-identical (comments are absent in
     # both the ingested model and its re-emission).
-    assert schema_codegen.emit(ingested) == source
+    assert codegen.emit(ingested) == source
 
 
 def test_roundtrip_dump_yaml_reload(model):
-    source = schema_codegen.emit(model)
-    ingested = schema_ingest.model_from_source(source, name=model.name)
-    reloaded = schema_ir.load_yaml(schema_ir.dump_yaml(ingested))
-    assert schema_codegen.emit(reloaded) == source
+    source = codegen.emit(model)
+    ingested = ingest.model_from_source(source, name=model.name)
+    reloaded = ir.load_yaml(ir.dump_yaml(ingested))
+    assert codegen.emit(reloaded) == source
 
 
 def test_roundtrip_preserves_fields_constraints_presence(model):
-    source = schema_codegen.emit(model)
-    ingested = schema_ingest.model_from_source(source, name=model.name)
+    source = codegen.emit(model)
+    ingested = ingest.model_from_source(source, name=model.name)
     by_name = {t.name: t for t in ingested.emit_order()}
     for table in model.emit_order():
         other = by_name[table.name]
@@ -320,4 +322,4 @@ def test_ingest_handwritten_validator_hard_errors():
     # The committed example schema.py has a bespoke search-string validator that
     # is not a recognised IR shape, so ingest must hard-error and name it.
     with pytest.raises(ValueError, match="generate_search_string"):
-        schema_ingest.model_from_file(example_schema.__file__)
+        ingest.model_from_file(example_schema.__file__)

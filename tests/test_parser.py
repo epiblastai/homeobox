@@ -1,7 +1,7 @@
 """Tests for the parser: ``SchemaModel`` (IR) -> ``parsed_result``.
 
-There is a single path now -- :func:`homeobox.parser.parsed_result_from_model`
-projects an in-memory :class:`~homeobox.schema_ir.SchemaModel` into the review-UI
+There is a single path now -- :func:`homeobox.schema.parser.parsed_result_from_model`
+projects an in-memory :class:`~homeobox.schema.ir.SchemaModel` into the review-UI
 result dict. The IR itself comes from YAML here, so these tests never import or
 execute a schema module; the ``schema.py -> IR`` step is covered separately in
 ``test_schema_ir.py``.
@@ -9,8 +9,8 @@ execute a schema module; the ``schema.py -> IR`` step is covered separately in
 
 import pytest
 
-from homeobox import schema_ir
-from homeobox.parser import parsed_result_from_model
+from homeobox.schema import ir
+from homeobox.schema.parser import parsed_result_from_model
 
 # A self-contained schema exercising every marker and both pointer kinds. It
 # references feature spaces and schema names freely -- nothing is imported, so
@@ -109,7 +109,7 @@ other_tables:
 
 @pytest.fixture(scope="module")
 def result() -> dict:
-    model = schema_ir.load_yaml(SCHEMA_YAML)
+    model = ir.load_yaml(SCHEMA_YAML)
     return parsed_result_from_model(model)
 
 
@@ -149,7 +149,7 @@ def test_remaining_tables_keep_their_kinds(result):
 
 
 def test_warns_on_missing_obs_and_dataset():
-    model = schema_ir.load_yaml(
+    model = ir.load_yaml(
         "schema: {name: x}\n"
         "fk_registry_tables:\n"
         "  - name: Thing\n"
