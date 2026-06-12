@@ -1,13 +1,17 @@
 """Parse a homeobox ``schema.py`` back into a :class:`SchemaModel` (round-trip).
 
-This is the inverse of :mod:`homeobox.schema_codegen`. It reads schema source
-with :mod:`ast` -- it never imports or executes the user file -- classifying each
-declared class by its homeobox base and extracting fields, marker metadata, enum
-definitions, defaults, docstrings, declarative constraints, computed fields, and
-presence flags.
+This is the inverse of :mod:`homeobox.schema_codegen`. It **imports** the schema
+module and introspects the live pydantic classes: table kind comes from real
+``issubclass`` checks, field types / defaults from each ``FieldInfo``, marker
+metadata straight off ``model_fields[...].json_schema_extra`` (already fully
+resolved -- polymorphic variants as schema names, ``combine_markers`` merged into
+one dict), and enums from the live ``StrEnum`` members. The trade-off is that
+importing executes the module, so only ingest schemas you trust.
 
-Recognition is deliberately strict. Every ``@model_validator`` in a schema
-subclass must reduce to one of:
+Constraints, computed fields, and presence flags have no declarative runtime
+form -- they are emitted as ``@model_validator`` methods -- so those bodies are
+recovered with :func:`inspect.getsource` and classified. Every model validator a
+schema declares must reduce to one of:
 
 - a **dead enum re-check** (``value not in SomeEnum.__members__.values()``) -- the
   field is already typed as the enum, so this is dropped;
@@ -17,11 +21,21 @@ subclass must reduce to one of:
 
 Anything else is a hard error. The IR is a schema description, not a place to
 smuggle hand-written validation logic, so a bespoke validator must be simplified
-or removed before its schema can be represented. Inline ``# comments`` on fields
-are not recovered (they are not part of the AST).
+or removed before its schema can be represented.
 """
 
 import ast
+import dataclasses
+import importlib.util
+import inspect
+import os
+import sys
+import tempfile
+import textwrap
+import types
+import uuid
+from enum import StrEnum
+from typing import Any, Union, get_args, get_origin
 
 from homeobox.schema_ir import (
     REQUIRED,
@@ -34,144 +48,82 @@ from homeobox.schema_ir import (
     dump_yaml,
 )
 
-# homeobox base classes mapped to the table "kind" used during classification, in
-# priority order (most specific first) so a class is bucketed by its tightest
-# recognised base -- FeatureBaseSchema is a RegistryBaseSchema is a
-# StableUIDBaseSchema, etc. RegistryBaseSchema and StableUIDBaseSchema share the
-# "entity" kind.
-_BASE_KINDS: list[tuple[str, str]] = [
-    ("HoxBaseSchema", "obs"),
-    ("DatasetSchema", "dataset"),
-    ("FeatureBaseSchema", "feature_registry"),
-    ("RegistryBaseSchema", "entity"),
-    ("StableUIDBaseSchema", "entity"),
-    ("LanceModel", "table"),
-]
-_KIND_PRIORITY = {kind: index for index, (_, kind) in enumerate(_BASE_KINDS)}
-
-# Parser table "kind" -> IR base kind (classification collapses RegistryBaseSchema
-# and StableUIDBaseSchema to "entity"; the IR calls that bucket "registry").
-KIND_TO_IR: dict[str, str] = {
-    "obs": "obs",
-    "dataset": "dataset",
-    "feature_registry": "feature_registry",
-    "entity": "registry",
-    "table": "table",
-}
-
 # Auto / base-class fields that a generated schema never declares; if a source
 # file redeclares one (e.g. ``uid: str = Field(default_factory=make_uid)``) it is
 # dropped on ingest because the base class already provides it.
 _SKIP_FIELDS: frozenset[str] = frozenset({"uid", "dataset_uid", "global_index"})
 
-# Marker name -> factory default when ``declare()`` is called without ``default``.
-_MARKER_FACTORY_DEFAULT: dict[str, object] = {
-    "pointer": None,
-    "stable_uid": None,
-    "registry_key": REQUIRED,
-    "polymorphic_registry_key": REQUIRED,
-    "ontology_aligned": REQUIRED,
-    "cross_reference": REQUIRED,
-    "summary": REQUIRED,
-}
-
-# Non-validator methods the IR regenerates; allowed in a source class body.
+# Non-validator methods the IR regenerates; allowed in a schema class body.
 _REGENERATED_METHODS: frozenset[str] = frozenset({"compute_auto_fields", "has_pointer_field_map"})
 
 
+def _runtime_base_kinds() -> tuple[tuple[type, str], ...]:
+    """Homeobox base classes paired with their IR base kind, most specific first.
+
+    Lazily imported to avoid any import-time coupling with ``homeobox.schema``.
+    """
+    from lancedb.pydantic import LanceModel
+
+    from homeobox.schema import (
+        DatasetSchema,
+        FeatureBaseSchema,
+        HoxBaseSchema,
+        RegistryBaseSchema,
+        StableUIDBaseSchema,
+    )
+
+    return (
+        (HoxBaseSchema, "obs"),
+        (DatasetSchema, "dataset"),
+        (FeatureBaseSchema, "feature_registry"),
+        (RegistryBaseSchema, "registry"),
+        (StableUIDBaseSchema, "registry"),
+        (LanceModel, "table"),
+    )
+
+
 # ---------------------------------------------------------------------------
-# AST extraction helpers
+# Annotation rendering
 # ---------------------------------------------------------------------------
 
 
-def _attribute_parts(node: ast.AST, aliases: dict[str, str]) -> list[str] | None:
-    """Return dotted-name parts for a name/attribute expression."""
-    if isinstance(node, ast.Name):
-        return [aliases.get(node.id, node.id)]
-    if isinstance(node, ast.Attribute):
-        parent = _attribute_parts(node.value, aliases)
-        if parent is None:
-            return None
-        return [*parent, node.attr]
-    return None
+def _annotation_to_string(annotation: Any) -> str:
+    """Render a runtime annotation the way the IR writes field types.
+
+    Unions come out as ``A | B`` and custom classes as their bare name, so a
+    live ``SparseZarrPointer | None`` / ``list[str] | None`` field reads exactly
+    like its IR-declared ``type``.
+    """
+    if annotation is None or annotation is type(None):
+        return "None"
+    if annotation is Any:
+        return "Any"
+
+    origin = get_origin(annotation)
+    if origin is Union or isinstance(annotation, types.UnionType):
+        return " | ".join(_annotation_to_string(arg) for arg in get_args(annotation))
+    if origin is not None:
+        args = get_args(annotation)
+        name = getattr(origin, "__name__", None) or str(origin).replace("typing.", "")
+        if not args:
+            return name
+        return f"{name}[{', '.join(_annotation_to_string(arg) for arg in args)}]"
+    if isinstance(annotation, type):
+        return annotation.__name__
+
+    return str(annotation).replace("typing.", "").replace("<class '", "").replace("'>", "")
 
 
-def _call_parts(node: ast.Call, aliases: dict[str, str]) -> list[str] | None:
-    return _attribute_parts(node.func, aliases)
-
-
-def _declare_marker(node: ast.Call, aliases: dict[str, str]) -> str | None:
-    """Return the marker class for ``Foo.declare(...)`` calls."""
-    parts = _call_parts(node, aliases)
-    if not parts or parts[-1] != "declare" or len(parts) < 2:
-        return None
-    return parts[-2]
-
-
-def _keyword(node: ast.Call, name: str) -> ast.AST | None:
-    for keyword in node.keywords:
-        if keyword.arg == name:
-            return keyword.value
-    return None
-
-
-def _string_value(node: ast.AST | None) -> str | None:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return node.value
-    return None
-
-
-def _schema_name(node: ast.AST | None) -> str | None:
-    """Return the schema name represented by a class object or string literal."""
-    if node is None:
-        return None
-    if isinstance(node, ast.Constant):
-        return node.value if isinstance(node.value, str) else None
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _string_schema_dict(node: ast.AST | None) -> dict[str, str]:
-    if not isinstance(node, ast.Dict):
-        return {}
-    result: dict[str, str] = {}
-    for key_node, value_node in zip(node.keys, node.values, strict=False):
-        key = _string_value(key_node) if key_node is not None else None
-        value = _schema_name(value_node)
-        if key and value:
-            result[key] = value
-    return result
-
-
-def _literal_jsonish(node: ast.AST | None) -> object:
-    """Evaluate only simple literal JSON-like syntax used in Field metadata."""
-    if isinstance(node, ast.Constant):
-        return node.value
-    if isinstance(node, ast.Dict):
-        result: dict[object, object] = {}
-        for key_node, value_node in zip(node.keys, node.values, strict=False):
-            key = _literal_jsonish(key_node) if key_node is not None else None
-            if isinstance(key, str):
-                result[key] = _literal_jsonish(value_node)
-        return result
-    if isinstance(node, ast.List | ast.Tuple):
-        return [_literal_jsonish(element) for element in node.elts]
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
+# ---------------------------------------------------------------------------
+# Marker metadata
+# ---------------------------------------------------------------------------
 
 
 def _marker_metadata_from_extra(extra: dict) -> dict:
-    """Translate a field's ``json_schema_extra`` into parser field metadata.
+    """Translate a field's ``json_schema_extra`` into intermediate marker metadata.
 
-    Used when ``extra`` is reconstructed from a literal ``Field(json_schema_extra=...)``
-    call. The two markers that combine onto one field via ``combine_markers`` land
-    in the same dict, so every key is read independently and none are mutually
+    The two markers that combine onto one field via ``combine_markers`` land in
+    the same dict, so every key is read independently and none are mutually
     exclusive.
     """
     metadata: dict = {}
@@ -229,175 +181,8 @@ def _marker_metadata_from_extra(extra: dict) -> dict:
     return metadata
 
 
-def _field_call_metadata(value: ast.AST | None, aliases: dict[str, str]) -> dict:
-    """Extract homeobox Field.declare metadata without importing the schema."""
-    if not isinstance(value, ast.Call):
-        return {}
-
-    metadata: dict = {}
-    marker = _declare_marker(value, aliases)
-
-    # ``combine_markers(MarkerA.declare(...), MarkerB.declare(...), default=...)``
-    # attaches several markers to one field. Each positional argument is itself a
-    # ``<Marker>.declare(...)`` call writing a distinct metadata key, so recurse
-    # into each and merge -- the union mirrors the field's runtime json_schema_extra.
-    if _call_parts(value, aliases) == ["combine_markers"]:
-        for argument in value.args:
-            metadata.update(_field_call_metadata(argument, aliases))
-        return metadata
-
-    if marker == "PointerField":
-        feature_space = _string_value(_keyword(value, "feature_space"))
-        feature_registry_schema = _schema_name(_keyword(value, "feature_registry_schema"))
-        pointer = {}
-        if feature_space:
-            pointer["feature_space"] = feature_space
-        if feature_registry_schema:
-            pointer["feature_registry_schema"] = feature_registry_schema
-        if pointer:
-            metadata["pointer"] = pointer
-
-    elif marker == "RegistryKeyField":
-        target_schema = _schema_name(_keyword(value, "target_schema"))
-        target_field = _string_value(_keyword(value, "target_field")) or "uid"
-        if target_schema:
-            metadata["registry_key"] = {
-                "target_schema": target_schema,
-                "target_field": target_field,
-            }
-
-    elif marker == "PolymorphicRegistryKeyField":
-        type_field = _string_value(_keyword(value, "type_field"))
-        variants = _string_schema_dict(_keyword(value, "variants"))
-        target_field = _string_value(_keyword(value, "target_field")) or "uid"
-        if type_field and variants:
-            metadata["polymorphic_registry_key"] = {
-                "type_field": type_field,
-                "target_field": target_field,
-                "variants": variants,
-            }
-
-    elif marker == "OntologyAlignedField":
-        ontology_name = _string_value(_keyword(value, "ontology_name"))
-        if ontology_name:
-            metadata["ontology_aligned"] = {"ontology_name": ontology_name}
-
-    elif marker == "CrossReferenceField":
-        database_name = _string_value(_keyword(value, "database_name"))
-        if database_name:
-            metadata["cross_reference"] = {"database_name": database_name}
-
-    elif marker == "StableUIDField":
-        metadata["stable_uid"] = True
-
-    elif marker == "SummaryField":
-        target_schema = _schema_name(_keyword(value, "target_schema"))
-        target_field = _string_value(_keyword(value, "target_field"))
-        op = _string_value(_keyword(value, "op"))
-        if target_schema and target_field and op:
-            metadata["summary"] = {
-                "target_schema": target_schema,
-                "target_field": target_field,
-                "op": op,
-            }
-
-    parts = _call_parts(value, aliases)
-    if parts and parts[-1] == "Field":
-        extra = _literal_jsonish(_keyword(value, "json_schema_extra"))
-        if isinstance(extra, dict):
-            metadata.update(_marker_metadata_from_extra(extra))
-
-    return metadata
-
-
-def _import_aliases(tree: ast.Module) -> dict[str, str]:
-    """Map locally-bound names back to their original imported names.
-
-    Handles ``from homeobox.schema import DatasetSchema as HoxDatasetSchema``
-    so a base written as ``HoxDatasetSchema`` resolves to ``DatasetSchema``.
-    """
-    aliases: dict[str, str] = {}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            for name in node.names:
-                if name.asname:
-                    aliases[name.asname] = name.name
-        elif isinstance(node, ast.Import):
-            for name in node.names:
-                if name.asname:
-                    aliases[name.asname] = name.name.split(".")[-1]
-    return aliases
-
-
-def _base_names(node: ast.ClassDef, aliases: dict[str, str]) -> list[str]:
-    names: list[str] = []
-    for base in node.bases:
-        if isinstance(base, ast.Name):
-            raw = base.id
-        elif isinstance(base, ast.Attribute):
-            raw = base.attr
-        else:
-            continue
-        names.append(aliases.get(raw, raw))
-    return names
-
-
-def _resolve_kind(
-    class_name: str,
-    bases_by_class: dict[str, list[str]],
-    _seen: frozenset[str] = frozenset(),
-) -> str | None:
-    """Resolve a class to its table kind, following local subclass chains.
-
-    A class may subclass a homeobox base directly or via another class defined
-    in the same file; the most specific recognised base wins.
-    """
-    if class_name in _seen:
-        return None
-    candidates: list[str] = []
-    for base in bases_by_class.get(class_name, []):
-        for known_base, kind in _BASE_KINDS:
-            if base == known_base:
-                candidates.append(kind)
-        if base in bases_by_class:
-            inherited = _resolve_kind(base, bases_by_class, _seen | {class_name})
-            if inherited is not None:
-                candidates.append(inherited)
-    if not candidates:
-        return None
-    return min(candidates, key=lambda kind: _KIND_PRIORITY[kind])
-
-
-# ---------------------------------------------------------------------------
-# Default / validator helpers
-# ---------------------------------------------------------------------------
-
-
-def _literal_default(node: ast.AST | None) -> object:
-    if node is None:
-        return REQUIRED
-    if isinstance(node, ast.Constant) and node.value is Ellipsis:
-        return REQUIRED
-    try:
-        return ast.literal_eval(node)
-    except (ValueError, SyntaxError):
-        raise ValueError(
-            f"non-literal default {ast.unparse(node)!r}; IR field defaults must be literals"
-        ) from None
-
-
-def _self_attr(node: ast.AST) -> str | None:
-    if (
-        isinstance(node, ast.Attribute)
-        and isinstance(node.value, ast.Name)
-        and node.value.id == "self"
-    ):
-        return node.attr
-    return None
-
-
 def _ir_markers(metadata: dict) -> dict:
-    """Convert parser marker metadata into IR marker payloads."""
+    """Convert marker metadata into IR marker payloads."""
     markers: dict[str, object] = {}
     for key in ("pointer", "ontology_aligned", "cross_reference", "summary"):
         if key in metadata:
@@ -417,35 +202,19 @@ def _ir_markers(metadata: dict) -> dict:
     return markers
 
 
-def _extract_default(value: ast.AST | None, markers: dict) -> object:
-    """Effective default for a field, given its assignment expression and markers."""
-    if not isinstance(value, ast.Call):
-        return _literal_default(value)
-
-    keyword = _keyword(value, "default")
-    parts = _call_parts(value, {}) or []
-
-    if parts == ["combine_markers"]:
-        return _literal_default(keyword) if keyword is not None else REQUIRED
-
-    if keyword is not None:
-        return _literal_default(keyword)
-
-    # A single ``Marker.declare(...)`` with no explicit default: use its factory
-    # default (None for pointer/stable_uid, required otherwise).
-    if len(markers) == 1:
-        (name,) = markers
-        return _MARKER_FACTORY_DEFAULT.get(name, REQUIRED)
-    return REQUIRED
-
-
 # ---------------------------------------------------------------------------
 # Validator classification
 # ---------------------------------------------------------------------------
 
 
-def _is_model_validator(func: ast.FunctionDef) -> bool:
-    return any("model_validator" in ast.unparse(dec) for dec in func.decorator_list)
+def _self_attr(node: ast.AST) -> str | None:
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    ):
+        return node.attr
+    return None
 
 
 def _classify_validator(func: ast.FunctionDef, class_name: str) -> tuple[str, object]:
@@ -517,43 +286,87 @@ def _classify_validator(func: ast.FunctionDef, class_name: str) -> tuple[str, ob
     )
 
 
+def _own_model_validators(cls: type) -> dict[str, ast.FunctionDef]:
+    """Return ``{name: FunctionDef}`` for model validators declared on *cls* itself.
+
+    Inherited base-class validators (e.g. ``_require_at_least_one_pointer``) are
+    skipped via a qualname check. Each validator's body is recovered from the
+    live function with :func:`inspect.getsource` and parsed.
+    """
+    own: dict[str, ast.FunctionDef] = {}
+    for name, decorator in cls.__pydantic_decorators__.model_validators.items():
+        func = decorator.func
+        if func.__qualname__.rsplit(".", 1)[0] != cls.__qualname__:
+            continue
+        own[name] = ast.parse(textwrap.dedent(inspect.getsource(func))).body[0]
+    return own
+
+
+def _check_no_unexpected_methods(cls: type, validator_names: set[str]) -> None:
+    """Hard-error on any method the IR cannot regenerate."""
+    for name, member in cls.__dict__.items():
+        if name.startswith("__"):
+            continue
+        if not (isinstance(member, classmethod | staticmethod) or inspect.isfunction(member)):
+            continue
+        if name in validator_names or name in _REGENERATED_METHODS:
+            continue
+        raise ValueError(
+            f"{cls.__name__}.{name}: unexpected method; the IR only models fields, "
+            "markers, constraints, computed fields and presence flags."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Docstrings / defaults
+# ---------------------------------------------------------------------------
+
+
+def _own_doc(obj: type) -> str | None:
+    """Return *obj*'s own (non-inherited) docstring, cleaned like the source."""
+    doc = obj.__dict__.get("__doc__")
+    return inspect.cleandoc(doc) if doc else None
+
+
+def _field_default(cls: type, field_name: str, field_info: Any) -> object:
+    if field_info.is_required():
+        return REQUIRED
+    if field_info.default_factory is not None:
+        raise ValueError(
+            f"{cls.__name__}.{field_name}: default_factory is not a literal; "
+            "IR field defaults must be literals"
+        )
+    return field_info.default
+
+
 # ---------------------------------------------------------------------------
 # Class extraction
 # ---------------------------------------------------------------------------
 
 
-def _extract_enum(node: ast.ClassDef) -> EnumDef:
-    values: dict[str, str] = {}
-    for stmt in node.body:
-        if (
-            isinstance(stmt, ast.Assign)
-            and len(stmt.targets) == 1
-            and isinstance(stmt.targets[0], ast.Name)
-            and isinstance(stmt.value, ast.Constant)
-            and isinstance(stmt.value.value, str)
-        ):
-            values[stmt.targets[0].id] = stmt.value.value
+def _extract_enum(cls: type) -> EnumDef:
+    values = {member.name: member.value for member in cls}
     if not values:
-        raise ValueError(f"enum {node.name} has no string members")
-    return EnumDef(name=node.name, values=values, doc=ast.get_docstring(node))
+        raise ValueError(f"enum {cls.__name__} has no members")
+    return EnumDef(name=cls.__name__, values=values, doc=_own_doc(cls))
 
 
-def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
-    ir_kind = KIND_TO_IR[kind]
+def _extract_table(cls: type, ir_base: str) -> TableDef:
+    own_field_names = [
+        name
+        for name in inspect.get_annotations(cls)
+        if name in cls.model_fields and name not in _SKIP_FIELDS
+    ]
 
     raw_fields: dict[str, FieldDef] = {}
-    for stmt in node.body:
-        if not isinstance(stmt, ast.AnnAssign) or not isinstance(stmt.target, ast.Name):
-            continue
-        name = stmt.target.id
-        if name in _SKIP_FIELDS:
-            continue
-        markers = _ir_markers(_field_call_metadata(stmt.value, aliases))
-        default = _extract_default(stmt.value, markers)
+    for name in own_field_names:
+        field_info = cls.model_fields[name]
+        extra = field_info.json_schema_extra
+        markers = _ir_markers(_marker_metadata_from_extra(extra if isinstance(extra, dict) else {}))
         raw_fields[name] = FieldDef(
             name=name,
-            type=ast.unparse(stmt.annotation),
-            default=default,
+            type=_annotation_to_string(field_info.annotation),
+            default=_field_default(cls, name, field_info),
             markers=markers,
         )
 
@@ -561,17 +374,9 @@ def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
     presence = False
     computed_specs: dict[str, ComputedDef] = {}
 
-    for stmt in node.body:
-        if not isinstance(stmt, ast.FunctionDef):
-            continue
-        if not _is_model_validator(stmt):
-            if stmt.name not in _REGENERATED_METHODS:
-                raise ValueError(
-                    f"{node.name}.{stmt.name}: unexpected method; the IR only models fields, "
-                    "markers, constraints, computed fields and presence flags."
-                )
-            continue
-        verdict, payload = _classify_validator(stmt, node.name)
+    validators = _own_model_validators(cls)
+    for node in validators.values():
+        verdict, payload = _classify_validator(node, cls.__name__)
         if verdict == "enum_recheck":
             continue
         if verdict == "presence":
@@ -585,6 +390,8 @@ def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
                 "join_list", {"source": payload["source"], "separator": payload["separator"]}
             )
 
+    _check_no_unexpected_methods(cls, set(validators))
+
     # Drop generated presence-flag fields and attach computed specs.
     pointer_names = {n for n, f in raw_fields.items() if "pointer" in f.markers}
     drop = {f"has_{n}" for n in pointer_names} if presence else set()
@@ -594,24 +401,24 @@ def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
         if name in drop:
             continue
         if name in computed_specs:
-            field = FieldDef(
-                name=field.name,
-                type=field.type,
-                default=field.default,
-                doc=field.doc,
-                markers=field.markers,
-                computed=computed_specs[name],
-            )
+            field = dataclasses.replace(field, computed=computed_specs[name])
         fields.append(field)
 
     return TableDef(
-        name=node.name,
-        base=ir_kind,
+        name=cls.__name__,
+        base=ir_base,
         fields=tuple(fields),
-        doc=ast.get_docstring(node),
+        doc=_own_doc(cls),
         constraints=tuple(constraints),
         presence_flags=presence,
     )
+
+
+def _table_ir_base(cls: type) -> str | None:
+    for base, ir_base in _runtime_base_kinds():
+        if issubclass(cls, base):
+            return ir_base
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -619,14 +426,8 @@ def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
 # ---------------------------------------------------------------------------
 
 
-def model_from_source(source: str, name: str | None = None) -> SchemaModel:
-    """Parse schema *source* into a :class:`SchemaModel`."""
-    tree = ast.parse(source)
-    aliases = _import_aliases(tree)
-
-    class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
-    bases_by_class = {n.name: _base_names(n, aliases) for n in class_defs}
-
+def model_from_module(module: types.ModuleType, name: str | None = None) -> SchemaModel:
+    """Introspect every schema class defined in an imported *module*."""
     enums: list[EnumDef] = []
     sections: dict[str, list[TableDef]] = {
         "obs": [],
@@ -636,20 +437,22 @@ def model_from_source(source: str, name: str | None = None) -> SchemaModel:
     }
     dataset_table: TableDef | None = None
 
-    for node in class_defs:
-        if "StrEnum" in bases_by_class.get(node.name, []):
-            enums.append(_extract_enum(node))
+    for obj in vars(module).values():
+        if not isinstance(obj, type) or getattr(obj, "__module__", None) != module.__name__:
             continue
-        kind = _resolve_kind(node.name, bases_by_class)
-        if kind is None:
+        if issubclass(obj, StrEnum) and obj is not StrEnum:
+            enums.append(_extract_enum(obj))
             continue
-        table = _extract_table(node, kind, aliases)
-        if table.base == "dataset":
+        ir_base = _table_ir_base(obj)
+        if ir_base is None:
+            continue
+        table = _extract_table(obj, ir_base)
+        if ir_base == "dataset":
             dataset_table = table
         else:
-            sections[table.base].append(table)
+            sections[ir_base].append(table)
 
-    module_doc = ast.get_docstring(tree)
+    module_doc = inspect.cleandoc(module.__doc__) if module.__doc__ else None
     return SchemaModel(
         name=name or "schema",
         doc=module_doc,
@@ -662,9 +465,31 @@ def model_from_source(source: str, name: str | None = None) -> SchemaModel:
     )
 
 
+def _ingest_path(path: str, name: str | None) -> SchemaModel:
+    """Import the module at *path* under a throwaway name and introspect it."""
+    module_name = "_hox_ingest_" + uuid.uuid4().hex
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+        return model_from_module(module, name=name)
+    finally:
+        sys.modules.pop(module_name, None)
+
+
 def model_from_file(path: str, name: str | None = None) -> SchemaModel:
-    with open(path, encoding="utf-8") as handle:
-        return model_from_source(handle.read(), name=name)
+    """Import the schema file at *path* and introspect it into a :class:`SchemaModel`."""
+    return _ingest_path(path, name)
+
+
+def model_from_source(source: str, name: str | None = None) -> SchemaModel:
+    """Import schema *source* (written to a temp module) and introspect it."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = os.path.join(directory, "schema_module.py")
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(source)
+        return _ingest_path(path, name)
 
 
 def yaml_from_source(source: str, name: str | None = None) -> str:
