@@ -53,11 +53,12 @@
 # %autoreload 2
 
 # %%
-# # !pip install -q "homeobox"
+# # !pip install -q "homeobox[ml]==0.2.8"
+# # !git clone https://github.com/epiblastai/homeobox.git /content/homeobox
+# # !pip install -q /content/homeobox/homeobox_examples
 
 # %%
 import gc
-import os
 
 import matplotlib.pyplot as plt
 import numpy as np
