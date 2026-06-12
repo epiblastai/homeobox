@@ -1,10 +1,10 @@
 """Parse a homeobox ``schema.py`` back into a :class:`SchemaModel` (round-trip).
 
-This is the inverse of :mod:`homeobox.schema_codegen`. It reuses the static AST
-machinery in :mod:`homeobox.parser` for table classification and marker
-extraction, and adds what the parser does not capture: enum definitions, field
-defaults, docstrings, declarative constraints, computed fields, and presence
-flags.
+This is the inverse of :mod:`homeobox.schema_codegen`. It reads schema source
+with :mod:`ast` -- it never imports or executes the user file -- classifying each
+declared class by its homeobox base and extracting fields, marker metadata, enum
+definitions, defaults, docstrings, declarative constraints, computed fields, and
+presence flags.
 
 Recognition is deliberately strict. Every ``@model_validator`` in a schema
 subclass must reduce to one of:
@@ -23,7 +23,6 @@ are not recovered (they are not part of the AST).
 
 import ast
 
-from homeobox import parser
 from homeobox.schema_ir import (
     REQUIRED,
     ComputedDef,
@@ -35,7 +34,22 @@ from homeobox.schema_ir import (
     dump_yaml,
 )
 
-# Parser table "kind" -> IR base kind (the parser collapses RegistryBaseSchema
+# homeobox base classes mapped to the table "kind" used during classification, in
+# priority order (most specific first) so a class is bucketed by its tightest
+# recognised base -- FeatureBaseSchema is a RegistryBaseSchema is a
+# StableUIDBaseSchema, etc. RegistryBaseSchema and StableUIDBaseSchema share the
+# "entity" kind.
+_BASE_KINDS: list[tuple[str, str]] = [
+    ("HoxBaseSchema", "obs"),
+    ("DatasetSchema", "dataset"),
+    ("FeatureBaseSchema", "feature_registry"),
+    ("RegistryBaseSchema", "entity"),
+    ("StableUIDBaseSchema", "entity"),
+    ("LanceModel", "table"),
+]
+_KIND_PRIORITY = {kind: index for index, (_, kind) in enumerate(_BASE_KINDS)}
+
+# Parser table "kind" -> IR base kind (classification collapses RegistryBaseSchema
 # and StableUIDBaseSchema to "entity"; the IR calls that bucket "registry").
 KIND_TO_IR: dict[str, str] = {
     "obs": "obs",
@@ -66,7 +80,296 @@ _REGENERATED_METHODS: frozenset[str] = frozenset({"compute_auto_fields", "has_po
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# AST extraction helpers
+# ---------------------------------------------------------------------------
+
+
+def _attribute_parts(node: ast.AST, aliases: dict[str, str]) -> list[str] | None:
+    """Return dotted-name parts for a name/attribute expression."""
+    if isinstance(node, ast.Name):
+        return [aliases.get(node.id, node.id)]
+    if isinstance(node, ast.Attribute):
+        parent = _attribute_parts(node.value, aliases)
+        if parent is None:
+            return None
+        return [*parent, node.attr]
+    return None
+
+
+def _call_parts(node: ast.Call, aliases: dict[str, str]) -> list[str] | None:
+    return _attribute_parts(node.func, aliases)
+
+
+def _declare_marker(node: ast.Call, aliases: dict[str, str]) -> str | None:
+    """Return the marker class for ``Foo.declare(...)`` calls."""
+    parts = _call_parts(node, aliases)
+    if not parts or parts[-1] != "declare" or len(parts) < 2:
+        return None
+    return parts[-2]
+
+
+def _keyword(node: ast.Call, name: str) -> ast.AST | None:
+    for keyword in node.keywords:
+        if keyword.arg == name:
+            return keyword.value
+    return None
+
+
+def _string_value(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _schema_name(node: ast.AST | None) -> str | None:
+    """Return the schema name represented by a class object or string literal."""
+    if node is None:
+        return None
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _string_schema_dict(node: ast.AST | None) -> dict[str, str]:
+    if not isinstance(node, ast.Dict):
+        return {}
+    result: dict[str, str] = {}
+    for key_node, value_node in zip(node.keys, node.values, strict=False):
+        key = _string_value(key_node) if key_node is not None else None
+        value = _schema_name(value_node)
+        if key and value:
+            result[key] = value
+    return result
+
+
+def _literal_jsonish(node: ast.AST | None) -> object:
+    """Evaluate only simple literal JSON-like syntax used in Field metadata."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.Dict):
+        result: dict[object, object] = {}
+        for key_node, value_node in zip(node.keys, node.values, strict=False):
+            key = _literal_jsonish(key_node) if key_node is not None else None
+            if isinstance(key, str):
+                result[key] = _literal_jsonish(value_node)
+        return result
+    if isinstance(node, ast.List | ast.Tuple):
+        return [_literal_jsonish(element) for element in node.elts]
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _marker_metadata_from_extra(extra: dict) -> dict:
+    """Translate a field's ``json_schema_extra`` into parser field metadata.
+
+    Used when ``extra`` is reconstructed from a literal ``Field(json_schema_extra=...)``
+    call. The two markers that combine onto one field via ``combine_markers`` land
+    in the same dict, so every key is read independently and none are mutually
+    exclusive.
+    """
+    metadata: dict = {}
+    if extra.get("is_pointer") and isinstance(extra.get("feature_space"), str):
+        pointer = {"feature_space": extra["feature_space"]}
+        if isinstance(extra.get("feature_registry_schema"), str):
+            pointer["feature_registry_schema"] = extra["feature_registry_schema"]
+        metadata["pointer"] = pointer
+
+    registry_key = extra.get("registry_key")
+    if isinstance(registry_key, dict) and isinstance(registry_key.get("target_schema"), str):
+        metadata["registry_key"] = {
+            "target_schema": registry_key["target_schema"],
+            "target_field": registry_key.get("target_field", "uid"),
+        }
+
+    polymorphic = extra.get("polymorphic_registry_key")
+    if isinstance(polymorphic, dict) and isinstance(polymorphic.get("type_field"), str):
+        variants = polymorphic.get("variants")
+        if isinstance(variants, dict):
+            metadata["polymorphic_registry_key"] = {
+                "type_field": polymorphic["type_field"],
+                "target_field": polymorphic.get("target_field", "uid"),
+                "variants": {
+                    key: value
+                    for key, value in variants.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                },
+            }
+
+    ontology = extra.get("ontology_aligned")
+    if isinstance(ontology, dict) and isinstance(ontology.get("ontology_name"), str):
+        metadata["ontology_aligned"] = {"ontology_name": ontology["ontology_name"]}
+
+    cross_reference = extra.get("cross_reference")
+    if isinstance(cross_reference, dict) and isinstance(cross_reference.get("database_name"), str):
+        metadata["cross_reference"] = {"database_name": cross_reference["database_name"]}
+
+    if extra.get("stable_uid"):
+        metadata["stable_uid"] = True
+
+    summary = extra.get("summary")
+    if (
+        isinstance(summary, dict)
+        and isinstance(summary.get("target_schema"), str)
+        and isinstance(summary.get("target_field"), str)
+        and isinstance(summary.get("op"), str)
+    ):
+        metadata["summary"] = {
+            "target_schema": summary["target_schema"],
+            "target_field": summary["target_field"],
+            "op": summary["op"],
+        }
+
+    return metadata
+
+
+def _field_call_metadata(value: ast.AST | None, aliases: dict[str, str]) -> dict:
+    """Extract homeobox Field.declare metadata without importing the schema."""
+    if not isinstance(value, ast.Call):
+        return {}
+
+    metadata: dict = {}
+    marker = _declare_marker(value, aliases)
+
+    # ``combine_markers(MarkerA.declare(...), MarkerB.declare(...), default=...)``
+    # attaches several markers to one field. Each positional argument is itself a
+    # ``<Marker>.declare(...)`` call writing a distinct metadata key, so recurse
+    # into each and merge -- the union mirrors the field's runtime json_schema_extra.
+    if _call_parts(value, aliases) == ["combine_markers"]:
+        for argument in value.args:
+            metadata.update(_field_call_metadata(argument, aliases))
+        return metadata
+
+    if marker == "PointerField":
+        feature_space = _string_value(_keyword(value, "feature_space"))
+        feature_registry_schema = _schema_name(_keyword(value, "feature_registry_schema"))
+        pointer = {}
+        if feature_space:
+            pointer["feature_space"] = feature_space
+        if feature_registry_schema:
+            pointer["feature_registry_schema"] = feature_registry_schema
+        if pointer:
+            metadata["pointer"] = pointer
+
+    elif marker == "RegistryKeyField":
+        target_schema = _schema_name(_keyword(value, "target_schema"))
+        target_field = _string_value(_keyword(value, "target_field")) or "uid"
+        if target_schema:
+            metadata["registry_key"] = {
+                "target_schema": target_schema,
+                "target_field": target_field,
+            }
+
+    elif marker == "PolymorphicRegistryKeyField":
+        type_field = _string_value(_keyword(value, "type_field"))
+        variants = _string_schema_dict(_keyword(value, "variants"))
+        target_field = _string_value(_keyword(value, "target_field")) or "uid"
+        if type_field and variants:
+            metadata["polymorphic_registry_key"] = {
+                "type_field": type_field,
+                "target_field": target_field,
+                "variants": variants,
+            }
+
+    elif marker == "OntologyAlignedField":
+        ontology_name = _string_value(_keyword(value, "ontology_name"))
+        if ontology_name:
+            metadata["ontology_aligned"] = {"ontology_name": ontology_name}
+
+    elif marker == "CrossReferenceField":
+        database_name = _string_value(_keyword(value, "database_name"))
+        if database_name:
+            metadata["cross_reference"] = {"database_name": database_name}
+
+    elif marker == "StableUIDField":
+        metadata["stable_uid"] = True
+
+    elif marker == "SummaryField":
+        target_schema = _schema_name(_keyword(value, "target_schema"))
+        target_field = _string_value(_keyword(value, "target_field"))
+        op = _string_value(_keyword(value, "op"))
+        if target_schema and target_field and op:
+            metadata["summary"] = {
+                "target_schema": target_schema,
+                "target_field": target_field,
+                "op": op,
+            }
+
+    parts = _call_parts(value, aliases)
+    if parts and parts[-1] == "Field":
+        extra = _literal_jsonish(_keyword(value, "json_schema_extra"))
+        if isinstance(extra, dict):
+            metadata.update(_marker_metadata_from_extra(extra))
+
+    return metadata
+
+
+def _import_aliases(tree: ast.Module) -> dict[str, str]:
+    """Map locally-bound names back to their original imported names.
+
+    Handles ``from homeobox.schema import DatasetSchema as HoxDatasetSchema``
+    so a base written as ``HoxDatasetSchema`` resolves to ``DatasetSchema``.
+    """
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for name in node.names:
+                if name.asname:
+                    aliases[name.asname] = name.name
+        elif isinstance(node, ast.Import):
+            for name in node.names:
+                if name.asname:
+                    aliases[name.asname] = name.name.split(".")[-1]
+    return aliases
+
+
+def _base_names(node: ast.ClassDef, aliases: dict[str, str]) -> list[str]:
+    names: list[str] = []
+    for base in node.bases:
+        if isinstance(base, ast.Name):
+            raw = base.id
+        elif isinstance(base, ast.Attribute):
+            raw = base.attr
+        else:
+            continue
+        names.append(aliases.get(raw, raw))
+    return names
+
+
+def _resolve_kind(
+    class_name: str,
+    bases_by_class: dict[str, list[str]],
+    _seen: frozenset[str] = frozenset(),
+) -> str | None:
+    """Resolve a class to its table kind, following local subclass chains.
+
+    A class may subclass a homeobox base directly or via another class defined
+    in the same file; the most specific recognised base wins.
+    """
+    if class_name in _seen:
+        return None
+    candidates: list[str] = []
+    for base in bases_by_class.get(class_name, []):
+        for known_base, kind in _BASE_KINDS:
+            if base == known_base:
+                candidates.append(kind)
+        if base in bases_by_class:
+            inherited = _resolve_kind(base, bases_by_class, _seen | {class_name})
+            if inherited is not None:
+                candidates.append(inherited)
+    if not candidates:
+        return None
+    return min(candidates, key=lambda kind: _KIND_PRIORITY[kind])
+
+
+# ---------------------------------------------------------------------------
+# Default / validator helpers
 # ---------------------------------------------------------------------------
 
 
@@ -119,8 +422,8 @@ def _extract_default(value: ast.AST | None, markers: dict) -> object:
     if not isinstance(value, ast.Call):
         return _literal_default(value)
 
-    keyword = parser._keyword(value, "default")
-    parts = parser._call_parts(value, {}) or []
+    keyword = _keyword(value, "default")
+    parts = _call_parts(value, {}) or []
 
     if parts == ["combine_markers"]:
         return _literal_default(keyword) if keyword is not None else REQUIRED
@@ -245,7 +548,7 @@ def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
         name = stmt.target.id
         if name in _SKIP_FIELDS:
             continue
-        markers = _ir_markers(parser._field_call_metadata(stmt.value, aliases))
+        markers = _ir_markers(_field_call_metadata(stmt.value, aliases))
         default = _extract_default(stmt.value, markers)
         raw_fields[name] = FieldDef(
             name=name,
@@ -319,10 +622,10 @@ def _extract_table(node: ast.ClassDef, kind: str, aliases: dict) -> TableDef:
 def model_from_source(source: str, name: str | None = None) -> SchemaModel:
     """Parse schema *source* into a :class:`SchemaModel`."""
     tree = ast.parse(source)
-    aliases = parser._import_aliases(tree)
+    aliases = _import_aliases(tree)
 
     class_defs = [n for n in tree.body if isinstance(n, ast.ClassDef)]
-    bases_by_class = {n.name: parser._base_names(n, aliases) for n in class_defs}
+    bases_by_class = {n.name: _base_names(n, aliases) for n in class_defs}
 
     enums: list[EnumDef] = []
     sections: dict[str, list[TableDef]] = {
@@ -337,7 +640,7 @@ def model_from_source(source: str, name: str | None = None) -> SchemaModel:
         if "StrEnum" in bases_by_class.get(node.name, []):
             enums.append(_extract_enum(node))
             continue
-        kind = parser._resolve_kind(node.name, bases_by_class)
+        kind = _resolve_kind(node.name, bases_by_class)
         if kind is None:
             continue
         table = _extract_table(node, kind, aliases)

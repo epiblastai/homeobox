@@ -1,25 +1,116 @@
-"""Tests for the schema parser.
+"""Tests for the parser: ``SchemaModel`` (IR) -> ``parsed_result``.
 
-Two entry points are covered:
-
-- the runtime parser (``parse_schema_classes`` / ``parse_schema_module``), which
-  introspects live pydantic classes, and
-- the static AST parser (``parse_schema_source`` / ``parse_schema_file``), which
-  reads schema source without importing it -- the path used for untrusted or
-  not-yet-importable schemas.
+There is a single path now -- :func:`homeobox.parser.parsed_result_from_model`
+projects an in-memory :class:`~homeobox.schema_ir.SchemaModel` into the review-UI
+result dict. The IR itself comes from YAML here, so these tests never import or
+execute a schema module; the ``schema.py -> IR`` step is covered separately in
+``test_schema_ir.py``.
 """
 
-from pathlib import Path
+import pytest
 
-import homeobox_examples.multimodal_perturbation_atlas.schema as ex
-from homeobox.parser import (
-    parse_schema_classes,
-    parse_schema_file,
-    parse_schema_module,
-    parse_schema_source,
-)
+from homeobox import schema_ir
+from homeobox.parser import parsed_result_from_model
 
-EXAMPLE_SCHEMA = Path(ex.__file__)
+# A self-contained schema exercising every marker and both pointer kinds. It
+# references feature spaces and schema names freely -- nothing is imported, so
+# the values need not resolve to live homeobox registrations.
+SCHEMA_YAML = """
+schema:
+  name: parser_fixture
+enums:
+  PerturbationType:
+    values:
+      SMALL_MOLECULE: small_molecule
+      GENETIC: genetic
+obs_tables:
+  - name: Cells
+    presence_flags: true
+    constraints:
+      - equal_length: [perturbation_uids, perturbation_types]
+    fields:
+      - name: organism
+        type: str
+        ontology_aligned: NCBITAXON
+      - name: cell_line
+        type: str | None
+        cross_reference: CELLOSAURUS
+      - name: donor_uid
+        type: str | None
+        registry_key: { target_schema: Donor }
+      - name: perturbation_uids
+        type: list[str] | None
+        polymorphic_registry_key:
+          type_field: perturbation_types
+          variants:
+            small_molecule: SmallMolecule
+            genetic: GeneticPerturbation
+      - name: perturbation_types
+        type: list[PerturbationType] | None
+      - name: gene_expression
+        type: SparseZarrPointer | None
+        default: null
+        pointer:
+          feature_space: gene_expression
+          feature_registry_schema: Gene
+      - name: image_tiles
+        type: DenseZarrPointer | None
+        default: null
+        pointer:
+          feature_space: image_tiles
+      - name: perturbation_search_string
+        type: str
+        default: ""
+        computed:
+          op: join_list
+          source: perturbation_uids
+          separator: " "
+dataset_table:
+  name: AtlasDataset
+  fields:
+    - name: organism
+      type: list[str] | None
+      default: null
+      summary: { target_schema: Cells, target_field: organism, op: unique }
+    - name: n_rows
+      type: int
+      default: 0
+      summary: { target_schema: Cells, target_field: uid, op: count }
+feature_registry_tables:
+  - name: Gene
+    fields:
+      - name: ensembl_gene_id
+        type: str | None
+        cross_reference: ENSEMBL
+fk_registry_tables:
+  - name: SmallMolecule
+    fields:
+      - name: pubchem_cid
+        type: int | None
+        default: null
+        markers:
+          stable_uid: true
+          cross_reference: PUBCHEM
+  - name: GeneticPerturbation
+    fields:
+      - name: target_gene
+        type: str | None
+  - name: Donor
+    fields:
+      - name: sex
+        type: str | None
+other_tables:
+  - name: PublicationSection
+    fields:
+      - name: text
+        type: str
+"""
+
+
+@pytest.fixture(scope="module")
+def result() -> dict:
+    model = schema_ir.load_yaml(SCHEMA_YAML)
+    return parsed_result_from_model(model)
 
 
 def _field(table: dict, name: str) -> dict:
@@ -34,372 +125,161 @@ def _table(result: dict, class_name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Runtime parser
+# Table classification
 # ---------------------------------------------------------------------------
 
 
-def test_parse_module_classifies_tables_by_subclass():
-    result = parse_schema_module(ex)
-
+def test_obs_and_dataset_are_selected_by_kind(result):
     assert result["warnings"] == []
-    assert result["obs"]["class_name"] == "CellIndex"
+    assert result["obs"]["class_name"] == "Cells"
     assert result["obs"]["kind"] == "obs"
-    assert result["dataset"]["class_name"] == "AtlasDatasetSchema"
+    assert result["dataset"]["class_name"] == "AtlasDataset"
     assert result["dataset"]["kind"] == "dataset"
 
+
+def test_remaining_tables_keep_their_kinds(result):
     kinds = {t["class_name"]: t["kind"] for t in result["tables"]}
-    assert kinds["GenomicFeatureSchema"] == "feature_registry"
-    assert kinds["ProteinSchema"] == "feature_registry"
-    assert kinds["SmallMoleculeSchema"] == "entity"  # RegistryBaseSchema, not a feature
-    assert kinds["DonorSchema"] == "entity"  # RegistryBaseSchema, not a feature
-    assert kinds["PublicationSectionSchema"] == "table"  # plain LanceModel
-
-
-def test_parse_module_reads_combined_markers_from_live_fields():
-    result = parse_schema_module(ex)
-    cases = [
-        ("SmallMoleculeSchema", "pubchem_cid", "pubchem"),
-        ("ProteinSchema", "uniprot_id", "uniprot"),
-        ("ReferenceSequenceSchema", "genbank_accession", "genbank"),
-        ("PublicationSchema", "pmid", "pubmed"),
-    ]
-    for class_name, field_name, database_name in cases:
-        field = _field(_table(result, class_name), field_name)
-        assert field["stable_uid"] is True
-        assert field["cross_reference"] == {"database_name": database_name}
-
-
-def test_parse_module_resolves_variable_polymorphic_variants():
-    # The static parser cannot resolve ``variants=_PERTURBATION_FK_VARIANTS``
-    # (a module-level constant). The runtime parser reads the resolved metadata
-    # straight off the field, so the variants are present.
-    runtime = parse_schema_module(ex)
-    static = parse_schema_file(EXAMPLE_SCHEMA)
-
-    runtime_field = _field(runtime["obs"], "perturbation_uids")
-    static_field = _field(static["obs"], "perturbation_uids")
-
-    assert static_field.get("polymorphic_registry_key") is None
-    assert runtime_field["polymorphic_registry_key"] == {
-        "type_field": "perturbation_types",
-        "target_field": "uid",
-        "variants": {
-            "small_molecule": "SmallMoleculeSchema",
-            "genetic_perturbation": "GeneticPerturbationSchema",
-            "biologic_perturbation": "BiologicPerturbationSchema",
-        },
+    assert kinds == {
+        "Gene": "feature_registry",
+        "SmallMolecule": "entity",  # fk_registry -> entity
+        "GeneticPerturbation": "entity",
+        "Donor": "entity",
+        "PublicationSection": "table",  # plain LanceModel
     }
 
-    # Those resolved variants become real relationships the static parser misses.
-    poly = [r for r in runtime["relationships"] if r["kind"] == "polymorphic_registry_key"]
-    assert len(poly) == 6  # two polymorphic fields x three variants
-    assert len(runtime["relationships"]) > len(static["relationships"])
+
+def test_warns_on_missing_obs_and_dataset():
+    model = schema_ir.load_yaml(
+        "schema: {name: x}\n"
+        "fk_registry_tables:\n"
+        "  - name: Thing\n"
+        "    fields: [{name: f, type: str}]\n"
+    )
+    result = parsed_result_from_model(model)
+    assert result["obs"] is None
+    assert result["dataset"] is None
+    assert "No obs table (HoxBaseSchema subclass) found." in result["warnings"]
+    assert "No datasets table (DatasetSchema subclass) found." in result["warnings"]
+    assert {t["class_name"] for t in result["tables"]} == {"Thing"}
 
 
-def test_parse_module_marks_inherited_fields():
-    result = parse_schema_module(ex)
+# ---------------------------------------------------------------------------
+# Fields
+# ---------------------------------------------------------------------------
+
+
+def test_inherited_base_fields_are_marked(result):
     obs = result["obs"]
-
-    # uid / dataset_uid come from HoxBaseSchema.
+    # uid / dataset_uid come from HoxBaseSchema, not the IR.
     assert _field(obs, "uid")["inherited"] is True
     assert _field(obs, "dataset_uid")["inherited"] is True
-    # Fields declared on CellIndex itself are not inherited.
-    assert "inherited" not in _field(obs, "cell_type")
+    # Declared fields are not inherited.
+    assert "inherited" not in _field(obs, "organism")
     assert "inherited" not in _field(obs, "gene_expression")
 
 
-def test_parse_module_renders_field_types():
-    result = parse_schema_module(ex)
+def test_field_types_are_reported_as_written(result):
     obs = result["obs"]
-
     assert _field(obs, "uid")["type"] == "str"
-    assert _field(obs, "cell_type")["type"] == "str | None"
+    assert _field(obs, "cell_line")["type"] == "str | None"
     assert _field(obs, "perturbation_uids")["type"] == "list[str] | None"
     assert _field(obs, "gene_expression")["type"] == "SparseZarrPointer | None"
 
 
-def test_parse_module_extracts_summary_field_metadata_and_relationships():
-    result = parse_schema_module(ex)
-    dataset = result["dataset"]
+def test_combined_markers_land_on_one_field(result):
+    pubchem = _field(_table(result, "SmallMolecule"), "pubchem_cid")
+    assert pubchem["stable_uid"] is True
+    assert pubchem["cross_reference"] == {"database_name": "PUBCHEM"}
 
-    n_rows = _field(dataset, "n_rows")
-    assert n_rows["summary"] == {
-        "target_schema": "CellIndex",
+
+def test_marker_metadata_is_carried_through(result):
+    obs = result["obs"]
+    assert _field(obs, "organism")["ontology_aligned"] == {"ontology_name": "NCBITAXON"}
+    assert _field(obs, "cell_line")["cross_reference"] == {"database_name": "CELLOSAURUS"}
+    assert _field(obs, "donor_uid")["registry_key"] == {
+        "target_schema": "Donor",
         "target_field": "uid",
-        "op": "count",
-    }
-
-    organism = _field(dataset, "organism")
-    assert organism["summary"] == {
-        "target_schema": "CellIndex",
-        "target_field": "organism",
-        "op": "unique",
-    }
-
-    summary_rels = [r for r in result["relationships"] if r["kind"] == "summary"]
-    assert {
-        (r["source_table"], r["source_field"], r["target_schema"], r["target_field"], r["op"])
-        for r in summary_rels
-    } == {
-        ("AtlasDatasetSchema", "n_rows", "CellIndex", "uid", "count"),
-        ("AtlasDatasetSchema", "organism", "CellIndex", "organism", "unique"),
-        ("AtlasDatasetSchema", "tissue", "CellIndex", "tissue", "unique"),
-        ("AtlasDatasetSchema", "cell_line", "CellIndex", "cell_line", "unique"),
-        ("AtlasDatasetSchema", "disease", "CellIndex", "disease", "unique"),
     }
 
 
-def test_parse_module_extracts_pointer_relationships():
-    result = parse_schema_module(ex)
+def test_polymorphic_variants_are_resolved(result):
+    field = _field(result["obs"], "perturbation_uids")
+    assert field["polymorphic_registry_key"] == {
+        "type_field": "perturbation_types",
+        "target_field": "uid",
+        "variants": {
+            "small_molecule": "SmallMolecule",
+            "genetic": "GeneticPerturbation",
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
+# Relationships
+# ---------------------------------------------------------------------------
+
+
+def test_pointer_relationships(result):
     pointer_rels = {
         r["source_field"]: r["target_schema"]
         for r in result["relationships"]
         if r["kind"] == "pointer_feature_registry"
     }
-    assert pointer_rels["gene_expression"] == "GenomicFeatureSchema"
-    assert pointer_rels["protein_abundance"] == "ProteinSchema"
+    assert pointer_rels == {"gene_expression": "Gene"}
     # image_tiles has no feature_registry_schema -> no pointer relationship.
     assert "image_tiles" not in pointer_rels
 
 
-def test_parse_classes_warns_on_missing_obs_and_dataset():
-    result = parse_schema_classes([ex.SmallMoleculeSchema, ex.ProteinSchema])
-
-    assert result["obs"] is None
-    assert result["dataset"] is None
-    assert "No obs table (HoxBaseSchema subclass) found." in result["warnings"]
-    assert "No datasets table (DatasetSchema subclass) found." in result["warnings"]
-    assert {t["class_name"] for t in result["tables"]} == {
-        "SmallMoleculeSchema",
-        "ProteinSchema",
+def test_polymorphic_relationships(result):
+    poly = [r for r in result["relationships"] if r["kind"] == "polymorphic_registry_key"]
+    assert {(r["source_field"], r["target_schema"], r["variant"]) for r in poly} == {
+        ("perturbation_uids", "SmallMolecule", "small_molecule"),
+        ("perturbation_uids", "GeneticPerturbation", "genetic"),
     }
 
 
-def test_parse_classes_skips_non_schema_classes():
-    # Enums and other non-LanceModel classes have no recognised base kind.
-    result = parse_schema_classes([ex.FeatureType, ex.PerturbationType, ex.DonorSchema])
-
-    assert [t["class_name"] for t in result["tables"]] == ["DonorSchema"]
-
-
-def test_runtime_and_static_agree_on_combined_markers():
-    runtime = parse_schema_module(ex)
-    static = parse_schema_file(EXAMPLE_SCHEMA)
-
-    # Compare the combined-marker fields the static parser *can* handle.
-    pairs = [
-        ("SmallMoleculeSchema", "pubchem_cid"),
-        ("ProteinSchema", "uniprot_id"),
-        ("PublicationSchema", "pmid"),
-    ]
-    for class_name, field_name in pairs:
-        rt = _field(_table(runtime, class_name), field_name)
-        st = _field(_table(static, class_name), field_name)
-        assert rt["stable_uid"] == st["stable_uid"]
-        assert rt["cross_reference"] == st["cross_reference"]
-
-
-# ---------------------------------------------------------------------------
-# Static AST parser
-# ---------------------------------------------------------------------------
-
-# A self-contained schema string. It is never imported -- the static parser
-# reads it as text -- so it can reference a feature space that is not registered
-# and use ``X | None`` pointer annotations that would raise on real import.
-AST_SCHEMA_SOURCE = """
-from homeobox.schema import (
-    HoxBaseSchema, DatasetSchema, StableUIDBaseSchema, FeatureBaseSchema,
-    PointerField, StableUIDField, CrossReferenceField, RegistryKeyField,
-    OntologyAlignedField, PolymorphicRegistryKeyField, SummaryField, combine_markers,
-)
-from homeobox.schema import DatasetSchema as HoxDatasetSchema
-from homeobox.pointer_types import SparseZarrPointer
-
-
-class GeneFeature(FeatureBaseSchema):
-    ensembl_id: str | None = OntologyAlignedField.declare(ontology_name="ensembl")
-
-
-class Molecule(StableUIDBaseSchema):
-    # standalone cross-reference
-    chembl_id: str | None = CrossReferenceField.declare(database_name="chembl")
-    # combined stable_uid + cross_reference
-    pubchem_cid: int | None = combine_markers(
-        StableUIDField.declare(),
-        CrossReferenceField.declare(database_name="pubchem"),
-        default=None,
-    )
-    # combined registry_key + cross_reference
-    linked: str | None = combine_markers(
-        RegistryKeyField.declare(target_schema=GeneFeature),
-        CrossReferenceField.declare(database_name="uniprot"),
-        default=None,
-    )
-
-
-class Cells(HoxBaseSchema):
-    gene_expression: SparseZarrPointer | None = PointerField.declare(
-        feature_space="gene_expression",
-        feature_registry_schema=GeneFeature,
-    )
-    molecule_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
-        type_field="molecule_types",
-        variants={"small": Molecule},
-    )
-    molecule_types: list[str] | None
-
-
-class Datasets(HoxDatasetSchema):
-    source: str | None
-    n_rows: int = SummaryField.declare(
-        target_schema=Cells,
-        target_field="uid",
-        op="count",
-        default=0,
-    )
-"""
-
-
-def test_ast_parser_does_not_import_unimportable_source():
-    # The source references an unregistered feature space and uses pointer
-    # annotations that would raise at class-definition time on real import.
-    # The static parser handles it because it never executes the module.
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-
-    assert result["warnings"] == []
-    assert result["obs"]["class_name"] == "Cells"
-    assert result["dataset"]["class_name"] == "Datasets"
-    kinds = {t["class_name"]: t["kind"] for t in result["tables"]}
-    assert kinds["GeneFeature"] == "feature_registry"
-    assert kinds["Molecule"] == "entity"
-
-
-def test_ast_parser_resolves_import_alias_for_base_class():
-    # ``Datasets`` subclasses ``HoxDatasetSchema`` (an alias of DatasetSchema).
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-    assert result["dataset"]["kind"] == "dataset"
-
-
-def test_ast_parser_reads_combined_and_standalone_markers():
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-    molecule = _table(result, "Molecule")
-
-    assert _field(molecule, "chembl_id")["cross_reference"] == {"database_name": "chembl"}
-
-    pubchem = _field(molecule, "pubchem_cid")
-    assert pubchem["stable_uid"] is True
-    assert pubchem["cross_reference"] == {"database_name": "pubchem"}
-
-    linked = _field(molecule, "linked")
-    assert linked["registry_key"] == {"target_schema": "GeneFeature", "target_field": "uid"}
-    assert linked["cross_reference"] == {"database_name": "uniprot"}
-
-
-def test_ast_parser_extracts_summary_relationships():
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-    dataset = result["dataset"]
-
-    assert _field(dataset, "n_rows")["summary"] == {
-        "target_schema": "Cells",
-        "target_field": "uid",
-        "op": "count",
+def test_summary_relationships(result):
+    summary_rels = {
+        (r["source_table"], r["source_field"], r["target_schema"], r["target_field"], r["op"])
+        for r in result["relationships"]
+        if r["kind"] == "summary"
+    }
+    assert summary_rels == {
+        ("AtlasDataset", "organism", "Cells", "organism", "unique"),
+        ("AtlasDataset", "n_rows", "Cells", "uid", "count"),
     }
 
-    summary_rels = [r for r in result["relationships"] if r["kind"] == "summary"]
-    assert summary_rels == [
-        {
-            "kind": "summary",
-            "source_table": "Datasets",
-            "source_field": "n_rows",
-            "target_schema": "Cells",
-            "target_field": "uid",
-            "op": "count",
-        }
-    ]
 
-
-def test_ast_parser_extracts_relationships_including_from_combine_markers():
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-
-    # registry_key nested inside combine_markers still produces a relationship.
+def test_default_dataset_uid_relationship(result):
+    # The obs dataset_uid foreign key to the dataset table is implicit.
     fk = [
         r
         for r in result["relationships"]
-        if r["kind"] == "registry_key" and r["source_field"] == "linked"
+        if r["kind"] == "registry_key" and r["source_field"] == "dataset_uid"
     ]
     assert fk == [
         {
             "kind": "registry_key",
-            "source_table": "Molecule",
-            "source_field": "linked",
-            "target_schema": "GeneFeature",
-            "target_field": "uid",
+            "source_table": "Cells",
+            "source_field": "dataset_uid",
+            "target_schema": "AtlasDataset",
+            "target_field": "dataset_uid",
         }
     ]
 
-    # pointer + inline-dict polymorphic variants are resolvable statically.
-    pointer = [r for r in result["relationships"] if r["kind"] == "pointer_feature_registry"]
-    assert pointer[0]["target_schema"] == "GeneFeature"
-    poly = [r for r in result["relationships"] if r["kind"] == "polymorphic_registry_key"]
-    assert {r["target_schema"] for r in poly} == {"Molecule"}
 
-
-def test_ast_parser_marks_inherited_base_fields():
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-    cells = result["obs"]
-
-    assert _field(cells, "uid")["inherited"] is True
-    assert _field(cells, "dataset_uid")["inherited"] is True
-    assert "inherited" not in _field(cells, "gene_expression")
-
-
-def test_ast_parser_reports_field_types_as_written():
-    result = parse_schema_source(AST_SCHEMA_SOURCE)
-    cells = result["obs"]
-
-    assert _field(cells, "gene_expression")["type"] == "SparseZarrPointer | None"
-    assert _field(cells, "molecule_uids")["type"] == "list[str] | None"
-
-
-def test_ast_parser_cannot_resolve_variable_variants():
-    # The known static limitation that motivates the runtime parser: variants
-    # supplied as a module-level constant cannot be resolved from the AST.
-    result = parse_schema_file(EXAMPLE_SCHEMA)
-    field = _field(result["obs"], "perturbation_uids")
-    assert field.get("polymorphic_registry_key") is None
-
-
-def test_ast_parser_warns_on_missing_obs_and_dataset():
-    source = (
-        "from homeobox.schema import StableUIDBaseSchema, StableUIDField\n"
-        "class Thing(StableUIDBaseSchema):\n"
-        "    external_id: int | None = StableUIDField.declare(default=None)\n"
-    )
-    result = parse_schema_source(source)
-
-    assert result["obs"] is None
-    assert result["dataset"] is None
-    assert "No obs table (HoxBaseSchema subclass) found." in result["warnings"]
-    assert "No datasets table (DatasetSchema subclass) found." in result["warnings"]
-    assert _field(_table(result, "Thing"), "external_id")["stable_uid"] is True
-
-
-def test_runtime_and_static_agree_on_summary_fields():
-    runtime = parse_schema_module(ex)
-    static = parse_schema_file(EXAMPLE_SCHEMA)
-
-    for field_name in ("n_rows", "organism", "tissue", "cell_line", "disease"):
-        rt = _field(runtime["dataset"], field_name)
-        st = _field(static["dataset"], field_name)
-        assert rt["summary"] == st["summary"]
-
-
-def test_ast_and_runtime_agree_on_example_table_classification():
-    runtime = parse_schema_module(ex)
-    static = parse_schema_file(EXAMPLE_SCHEMA)
-
-    def kinds(result: dict) -> dict:
-        all_tables = [result["obs"], result["dataset"], *result["tables"]]
-        return {t["class_name"]: t["kind"] for t in all_tables if t}
-
-    assert kinds(runtime) == kinds(static)
+def test_registry_key_relationship_from_declared_field(result):
+    fk = [
+        r
+        for r in result["relationships"]
+        if r["kind"] == "registry_key" and r["source_field"] == "donor_uid"
+    ]
+    assert fk == [
+        {
+            "kind": "registry_key",
+            "source_table": "Cells",
+            "source_field": "donor_uid",
+            "target_schema": "Donor",
+            "target_field": "uid",
+        }
+    ]
