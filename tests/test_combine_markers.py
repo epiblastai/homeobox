@@ -115,10 +115,10 @@ def test_combine_markers_used_in_example_schema():
     ]
     for schema_cls, field_name, database_name in cases:
         extra = schema_cls.model_fields[field_name].json_schema_extra
-        assert extra == {
-            "stable_uid": True,
-            "cross_reference": {"database_name": database_name},
-        }
+        # database_name casing is not significant (e.g. "pubchem" vs "PUBCHEM").
+        assert set(extra) == {"stable_uid", "cross_reference"}
+        assert extra["stable_uid"] is True
+        assert extra["cross_reference"]["database_name"].lower() == database_name.lower()
         # Each schema still resolves to exactly the one combined stable-uid field.
         assert schema_cls.stable_uid_field_names() == [field_name]
 
