@@ -1,3 +1,8 @@
+import sys
+from types import SimpleNamespace
+
+import pandas as pd
+
 from polycomb import guide_rna
 from polycomb.metadata_table import configure_reference_db, initialize_reference_db
 from polycomb.registry import RESOLVER_TOOLS
@@ -29,8 +34,32 @@ def _mock_guide_fallback(monkeypatch) -> None:
     monkeypatch.setattr(guide_rna.BlatEnsemblFallback, "try_resolve", fake_try_resolve)
 
 
+def _mock_empty_gget(monkeypatch) -> None:
+    empty_search = pd.DataFrame(
+        columns=[
+            "ensembl_id",
+            "gene_name",
+            "ensembl_description",
+            "ext_ref_description",
+            "biotype",
+            "synonym",
+            "url",
+        ]
+    )
+    empty_info = pd.DataFrame()
+    monkeypatch.setitem(
+        sys.modules,
+        "gget",
+        SimpleNamespace(
+            search=lambda *args, **kwargs: empty_search,
+            info=lambda *args, **kwargs: empty_info,
+        ),
+    )
+
+
 def test_registered_resolvers_return_reports_without_reference_db(tmp_path, monkeypatch) -> None:
     _mock_guide_fallback(monkeypatch)
+    _mock_empty_gget(monkeypatch)
     configure_reference_db(str(tmp_path / "missing_reference_db"))
 
     for name, tool in RESOLVER_TOOLS.items():
@@ -41,6 +70,7 @@ def test_registered_resolvers_return_reports_without_reference_db(tmp_path, monk
 
 def test_registered_resolvers_return_reports_with_empty_reference_db(tmp_path, monkeypatch) -> None:
     _mock_guide_fallback(monkeypatch)
+    _mock_empty_gget(monkeypatch)
     db_path = str(tmp_path / "reference_db")
     initialize_reference_db(db_path)
     configure_reference_db(db_path)
