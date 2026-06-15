@@ -1,16 +1,25 @@
 ---
 name: atlas-designer
-description: Use when designing or writing a homeobox atlas schema.py file. Covers choosing HoxBaseSchema, FeatureBaseSchema, DatasetSchema, StableUIDBaseSchema, and LanceModel tables; declaring PointerField with feature_registry_schema; and all informational field markers (StableUIDField, RegistryKeyField, PolymorphicRegistryKeyField, OntologyAlignedField, CrossReferenceField, SummaryField, combine_markers). Produces schema code for a new atlas without writing ingestion scripts.
+description: Use when designing or writing a homeobox atlas schema. Produces a declarative schema YAML (the homeobox schema IR) that codegens into a schema.py — covering the obs/dataset/feature-registry/fk-registry/other table sections, enums, PointerField markers with feature_registry_schema, all informational field markers (stable_uid, registry_key, polymorphic_registry_key, ontology_aligned, cross_reference, summary), declarative constraints (require_any, equal_length), computed fields, and presence flags. Validates the YAML with scripts/validate_schema_ir.py.
 ---
 
 # Atlas Designer
 
-Design a `schema.py` for a new homeobox atlas. The output should be a Python schema file defining the atlas' table contracts, not ingestion logic.
+Design the schema for a new homeobox atlas. The output is a **schema YAML** — the
+homeobox schema intermediate representation (IR), a compact, declarative
+description of the atlas' table contracts. The YAML is the authored artifact; it
+codegens into a deterministic `schema.py`. Authoring in YAML is safer (no
+arbitrary Python, every key is validated at load) and more transportable than
+hand-writing the Python file.
+
+Do not write ingestion logic here — only the schema.
 
 References:
 
+- **How to write the YAML** (document structure, fields, markers, pointers, enums, constraints, computed fields): `references/schema_yaml_ir.md`. Read this before authoring.
 - Core mechanics (feature spaces, pointer types, stable UIDs, datasets table, FKs): `references/homeobox_concepts.md`. Always read this file.
-- Complex bundled example: `references/multimodal_perturbation_atlas_schema.py`. Read this only when a richer example is useful, and do not copy its biological model unless the requested atlas matches it.
+- Complete bundled example IR: `references/multimodal_perturbation_atlas_schema.yaml`. The ceiling case — every section, enum, marker, constraint, and computed field. Use it as the template to adapt; do not copy its biological model unless the requested atlas matches it.
+- The hand-written Python equivalent: `references/multimodal_perturbation_atlas_schema.py`. The same atlas as a `schema.py`, useful for seeing how a marker maps to a `*.declare(...)` call. It predates the IR — it uses `polycomb.registry` enums and value-checking validators that the IR drops — so it is illustrative, not byte-for-byte what codegen emits. Do not author schema.py by hand; author the YAML.
 
 Official docs pages for homeobox:
 - Homeobox schemas: https://epiblast.ai/homeobox/schemas/
@@ -22,288 +31,63 @@ Official docs pages for homeobox:
 1. Clarify the atlas shape:
    - What is an obs row: cell, nucleus, spatial spot, image tile, perturbation condition, donor, sample, or something else?
    - Which feature spaces are to be supported: gene expression, chromatin accessibility, protein abundance, image features, image tiles, etc.?
-   - Which feature spaces have a feature axis and therefore need registry schemas?
+   - Which feature spaces have a feature axis and therefore need feature registries?
    - Which global entities need their own tables: publications, donors, perturbations, compounds, protocols, biosamples, cohorts? Think carefully about the benefits of maintaining separate tables versus a single denormalized table.
-   - Which identifiers should be durable registry keys?
-2. Write schema classes in this order:
-   - imports and enums/constants
-   - stable global entity tables (`StableUIDBaseSchema` or `LanceModel`)
-   - dataset schema subclass
-   - feature registry schemas
-   - optional schema maps such as `REGISTRY_SCHEMAS` and `FK_TABLE_SCHEMAS`
-   - obs schema(s) subclassing `HoxBaseSchema`
-   - optional materialized index/summary tables
-3. Include inline comments for every non-obvious biological meaning. Annotate relationships with informational field markers (see below and `references/homeobox_concepts.md`).
-4. Add pydantic validators only for real invariants: enum membership, equal-length parallel lists, generated search strings, derived stable-UID fields, or deterministic materialized IDs.
-5. Validate the schema module by importing it and creating a temporary atlas with `create_or_open_atlas`.
+   - Which identifiers should be durable stable UIDs?
+2. Write the YAML, working from the example IR and `references/schema_yaml_ir.md`. Author in document/dependency order: `schema` block, `enums`, `fk_registry_tables` and `feature_registry_tables` (pointer/FK targets), `other_tables`, `dataset_table`, then `obs_tables`.
+3. Add an inline `doc:` for every non-obvious biological meaning, and annotate relationships with markers.
+4. Add declarative `constraints` only for real invariants (`require_any`, `equal_length`) and `computed` fields only for derived columns. Do **not** hand-write validators — the IR has no escape hatch for arbitrary Python.
+5. Validate with `scripts/validate_schema_ir.py` (see Validation).
 
-Ask the user when a table boundary or stable identity is ambiguous. Do not guess the canonical stable identifier for an atlas-specific entity. Remember that atlas design should be a collaborative process.
+Ask the user when a table boundary or stable identity is ambiguous. Do not guess the canonical stable identifier for an atlas-specific entity. Atlas design is a collaborative process.
 
-## Class Selection
+## Top-level sections
 
-Use `HoxBaseSchema` for obs tables. An obs table indexes measured rows and must contain at least one zarr pointer field. Do not redeclare `uid` or `dataset_uid`; they are managed by the base class and ingestion layer.
+A schema YAML is a single top-level mapping with fixed keys; unknown keys are a
+hard error at load. A valid atlas needs at least an obs table and a dataset
+table. See `references/schema_yaml_ir.md` for the full vocabulary.
 
-Use `FeatureBaseSchema` for feature registries. A registry row represents one feature in a feature space with an axis that needs cross-dataset alignment, such as genes, peaks, proteins, image-feature channels, probes, or embedding dimensions. It inherits `uid`, `global_index`, and stable UID support.
-
-Use `DatasetSchema` for the datasets inventory table. Subclass it to add provenance fields such as accession IDs, publication UIDs, organism, tissue, assay, disease, processing version, or source URL. Do not redeclare auto-managed fields such as `dataset_uid`, `zarr_group`, `feature_space`, `n_rows`, `layout_uid`, or `created_at`.
-
-Use `StableUIDBaseSchema` for global entity tables that are not feature registries but should dedupe across ingestion runs, such as publications, compounds, perturbation reagents, reference sequences, or protocols.
-
-Use plain `LanceModel` for relationship tables, sections, materialized indexes, or entities whose UID is manually generated by a validator. If the table has a primary key, declare `uid: str = Field(default_factory=make_uid)` or generate a deterministic key in a validator.
-
-## Pointer Fields
-
-Declare pointer fields only on `HoxBaseSchema` subclasses.
-
-Use `PointerField.declare(feature_space=...)` on every pointer-typed field. When the feature space has a feature registry, include `feature_registry_schema=...`:
-
-```python
-gene_expression: SparseZarrPointer | None = PointerField.declare(
-    feature_space="gene_expression",
-    feature_registry_schema=GeneFeatureSchema,
-)
-protein_abundance: DenseZarrPointer | None = PointerField.declare(
-    feature_space="protein_abundance",
-    feature_registry_schema=ProteinFeatureSchema,
-)
-image_tiles: DenseZarrPointer | None = PointerField.declare(
-    feature_space="image_tiles"
-)
-```
-
-Rules:
-
-- The annotation must match the registered feature-space spec's pointer type.
-- Use `| None`; multimodal rows may omit modalities they do not have.
-- The Python field name may differ from `feature_space`; use this for multiple columns backed by the same feature space, such as `cycle1_image_tiles` and `cycle2_image_tiles`.
-- `feature_registry_schema` is Python-only metadata for schema parsing/visualization. It is not stored in Arrow metadata.
-- If a feature space has no feature registry, it may still have a pointer, but it should not appear in `registry_schemas`.
-- Never set a pointer field to bare `None`; pointer-typed fields must use `PointerField.declare(...)`.
-
-## Stable UIDs
-
-Use `StableUIDField.declare(...)` on exactly one field when records with the same canonical identifier should share a stable `uid` across runs and workers:
-
-```python
-class GeneFeature(FeatureBaseSchema):
-    gene_symbol: str | None = None
-    ensembl_gene_id: str | None = StableUIDField.declare(default=None)
-```
-
-Rules:
-
-- At most one `StableUIDField` is allowed per schema.
-- If the stable field is non-null, `uid = make_stable_uid(str(value))`.
-- If the stable field is null, homeobox falls back to a random `uid`; this is acceptable for unresolved/custom entities but will not dedupe.
-- For composite identities, add a derived field to the schema and mark that field, rather than declaring multiple stable fields.
-
-Composite example:
-
-```python
-class PerturbationTarget(StableUIDBaseSchema):
-    perturbation_type: str
-    intended_ensembl_gene_id: str | None
-    stable_identity: str | None = StableUIDField.declare(default=None)
-
-    @model_validator(mode="after")
-    def populate_stable_identity(self) -> Self:
-        if self.intended_ensembl_gene_id is not None:
-            self.stable_identity = f"{self.intended_ensembl_gene_id}|{self.perturbation_type}"
-        return self
-```
-
-For bulk DataFrame workflows, ensure the derived stable field is populated before calling `<Schema>.compute_stable_uids(df)`.
-
-## Informational field markers
-
-These annotate ordinary schema columns to describe relationships to other tables, ontologies, external databases, or aggregations. They are Python-only metadata for schema parsing and visualization — not stored in Arrow metadata and not enforced as constraints today. See `references/homeobox_concepts.md` for full examples.
-
-| Marker | Use when |
-|---|---|
-| `RegistryKeyField` | A scalar column references another schema's field |
-| `PolymorphicRegistryKeyField` | A value column can reference different schemas, selected by a parallel discriminator column |
-| `OntologyAlignedField` | A column's values align to an ontology (CL, MONDO, NCBITaxon, …) |
-| `CrossReferenceField` | A column references an external database record (DOI, PubMed, PubChem, UniProt, …) |
-| `SummaryField` | A column is derived by aggregating another schema (`op`: `count`, `nunique`, or `unique`) |
-| `combine_markers` | One column needs multiple markers (e.g. stable UID + cross-reference) |
-
-Common patterns:
-
-```python
-from polycomb.registry import CrossReferenceDbRegistry, OntologyRegistry
-
-publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
-donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
-
-perturbation_uids: list[str] | None = PolymorphicRegistryKeyField.declare(
-    type_field="perturbation_types",
-    variants={
-        "small_molecule": SmallMoleculeSchema,
-        "genetic_perturbation": GeneticPerturbationSchema,
-    },
-)
-perturbation_types: list[str] | None
-
-cell_type: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.CL)
-doi: str | None = CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.DOI)
-
-n_rows: int = SummaryField.declare(
-    target_schema="CellIndex",  # string forward ref when obs schema is declared later
-    target_field="uid",
-    op="count",
-    default=0,
-)
-
-pubchem_cid: int | None = combine_markers(
-    StableUIDField.declare(),
-    CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.PUBCHEM),
-    default=None,
-)
-```
-
-Rules:
-
-- Use `*_uid` / `*_uids` names for registry-key references.
-- Prefer `OntologyAlignedField` for ontology terms and `CrossReferenceField` for external database IDs. Pass values from `polycomb.registry.OntologyRegistry` and `CrossReferenceDbRegistry` — not free-form strings — so resolution tooling can look up the correct resolver.
-- Prefer `PolymorphicRegistryKeyField` over undecorated parallel list columns for polymorphic references.
-- Declare `SummaryField` on `DatasetSchema` subclasses to document high-level aggregates over obs tables (row counts, distinct organisms/tissues, …). Use a string forward ref for `target_schema` when the obs schema is declared later in the module.
-- Use `combine_markers` when a single column is both a stable-UID source and a cross-reference (or carries any other combination of markers).
+- `schema` — `name` (+ optional `doc`).
+- `enums` — `StrEnum` definitions (optional).
+- `obs_tables` — list → `HoxBaseSchema` (measured rows; each declares ≥1 pointer).
+- `dataset_table` — single → `DatasetSchema` (the datasets inventory).
+- `feature_registry_tables` — list → `FeatureBaseSchema` (feature axes).
+- `fk_registry_tables` — list → `RegistryBaseSchema` (deduped global entities).
+- `other_tables` — list → `LanceModel` (relationship/section/index tables).
 
 ## Validation
 
-After writing or editing a schema, try to instantiate a `RaggedAtlas` from the declared schemas in a temporary directory. This catches class-definition errors, missing or mismatched pointer declarations, invalid Arrow/Lance schema types, bad `StableUIDField` declarations, and mismatches between obs pointers and registry mappings.
+After writing or editing the YAML, validate it with the bundled script. It parses
+the YAML into the IR, codegens `schema.py` (guaranteeing valid Python), executes
+the generated classes (so pointer fields validate against registered feature-space
+specs and enum references resolve), and builds a throwaway atlas (exercising
+Arrow/Lance schema generation):
 
-Prefer schema modules to expose explicit mappings, or build the equivalent mappings during validation:
-
-```python
-import tempfile
-
-import homeobox as hox
-from path.to.schema import AtlasDatasetSchema, CellIndex, GeneFeatureSchema
-
-with tempfile.TemporaryDirectory() as tmpdir:
-    atlas = hox.create_or_open_atlas(
-        atlas_path=tmpdir,
-        obs_schemas={"cells": CellIndex},
-        dataset_table_name="datasets",
-        dataset_schema=AtlasDatasetSchema,
-        registry_schemas={"gene_expression": GeneFeatureSchema},
-    )
+```bash
+python scripts/validate_schema_ir.py path/to/schema.yaml
 ```
 
-Validation rules:
+Useful flags:
 
-- Run this only after any feature-space specs used by pointer fields have been registered; `HoxBaseSchema` validates pointer fields at class definition time.
-- Include every obs table in `obs_schemas`.
-- Include one `registry_schemas` entry for each pointer feature space that has a feature axis and `has_var_df=True`.
-- Omit pointer feature spaces without feature registries, such as raw image tiles.
-- If the schema exposes `REGISTRY_SCHEMAS`, `OBS_SCHEMAS`, or `FK_TABLE_SCHEMAS`, prefer those mappings rather than rebuilding them by hand.
-- Creating the temporary atlas is enough for schema validation; do not ingest data unless the user asks for ingestion validation.
+- `--emit-to path/to/schema.py` — also write the generated Python for inspection.
+- `--skip-atlas` — stop after exec; skip the temporary-atlas step.
 
-## Schema Skeleton
+A clean run means the IR is well-formed and parses into a working atlas. Any
+problem is a hard failure with an informative error pointing at the offending
+key. Do not ingest data — schema validation is enough unless the user asks for
+ingestion validation.
 
-Use this as a starting shape, adapting names and fields to the atlas:
+## Quality checklist
 
-```python
-from enum import Enum
-from typing import Self
-
-from lancedb.pydantic import LanceModel
-from pydantic import Field, model_validator
-
-from homeobox.pointer_types import SparseZarrPointer
-from homeobox.schema import (
-    CrossReferenceField,
-    DatasetSchema as HoxDatasetSchema,
-    FeatureBaseSchema,
-    OntologyAlignedField,
-    RegistryKeyField,
-    HoxBaseSchema,
-    PointerField,
-    StableUIDBaseSchema,
-    StableUIDField,
-    SummaryField,
-    combine_markers,
-    make_uid,
-)
-
-from polycomb.registry import CrossReferenceDbRegistry, OntologyRegistry
-
-
-class Assay(str, Enum):
-    RNA_SEQ = "RNA-seq"
-    ATAC_SEQ = "ATAC-seq"
-    OTHER = "other"
-
-
-class PublicationSchema(StableUIDBaseSchema):
-    doi: str | None = CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.DOI)
-    pmid: int | None = combine_markers(
-        StableUIDField.declare(),
-        CrossReferenceField.declare(database_name=CrossReferenceDbRegistry.PUBMED),
-        default=None,
-    )
-    title: str | None
-
-
-class AtlasDatasetSchema(HoxDatasetSchema):
-    publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
-    accession_database: str | None
-    accession_id: str | None
-    organism: list[str] | None = SummaryField.declare(
-        target_schema="CellIndex",
-        target_field="organism",
-        op="unique",
-        default=None,
-    )
-    assay: str | None
-
-
-class GeneFeatureSchema(FeatureBaseSchema):
-    gene_symbol: str | None
-    ensembl_gene_id: str | None = StableUIDField.declare(default=None)
-    organism: str | None
-
-
-class DonorSchema(LanceModel):
-    uid: str = Field(default_factory=make_uid)
-    age_years: float | None = None
-    sex: str | None = None
-
-
-class CellIndex(HoxBaseSchema):
-    organism: str = OntologyAlignedField.declare(ontology_name=OntologyRegistry.NCBITAXON)
-    assay: str
-    cell_type: str | None = OntologyAlignedField.declare(ontology_name=OntologyRegistry.CL)
-    donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
-
-    gene_expression: SparseZarrPointer | None = PointerField.declare(
-        feature_space="gene_expression",
-        feature_registry_schema=GeneFeatureSchema,
-    )
-
-    @model_validator(mode="after")
-    def validate_assay(self) -> Self:
-        if self.assay not in Assay.__members__.values():
-            raise ValueError(f"Invalid assay: {self.assay}")
-        return self
-```
-
-## Quality Checklist
-
-- Every obs schema subclasses `HoxBaseSchema` and has at least one declared pointer field.
-- Every pointer field uses `PointerField.declare(feature_space=...)`, has a `| None` type, and matches the registered pointer type.
-- Pointer fields for feature spaces with registries include `feature_registry_schema=...`.
-- Feature registries subclass `FeatureBaseSchema`, not plain `LanceModel`.
-- Durable non-feature entity tables subclass `StableUIDBaseSchema` when deduplication matters.
-- Every schema has at most one `StableUIDField`.
-- Scalar registry references use `RegistryKeyField`; polymorphic references use `PolymorphicRegistryKeyField` with a companion discriminator column.
-- Ontology terms use `OntologyAlignedField`; external database IDs use `CrossReferenceField`.
-- Dataset-level aggregates over obs tables use `SummaryField` with a valid `op` (`count`, `nunique`, or `unique`).
-- Columns with multiple roles use `combine_markers(...)` rather than picking one marker.
-- Composite stable identities are explicit derived fields.
-- Registry key-like fields are named `*_uid` or `*_uids`.
-- Dataset provenance fields live on a `DatasetSchema` subclass.
-- Validators encode real invariants and generated fields only.
-- The schema avoids dataset-specific one-offs unless the atlas itself requires them.
-- A temporary `create_or_open_atlas(...)` call succeeds with the final obs, dataset, and registry schemas.
+- Every section is the right base for its tables (obs → `obs_tables`, feature registries → `feature_registry_tables`, deduped entities → `fk_registry_tables`, etc.).
+- There is at least one obs table and a `dataset_table`.
+- Every obs table declares ≥1 `pointer` field; pointer `type` matches the feature-space's pointer kind; multimodal pointers are `| None` with `default: null`.
+- Pointers for spaces with a feature axis carry `feature_registry_schema`; raw spaces (image tiles) omit it.
+- Every table has at most one `stable_uid` field; composite identities are a single derived field marked stable.
+- Scalar references use `registry_key`; polymorphic references use `polymorphic_registry_key` with a companion discriminator column; both are named `*_uid`/`*_uids`.
+- Ontology terms use `ontology_aligned`; external database IDs use `cross_reference`; values are registry member names.
+- Dataset-level aggregates use `summary` with a valid `op` (`count`, `nunique`, `unique`).
+- Columns with multiple roles use a `markers:` block (→ `combine_markers`).
+- Enum-typed fields replace value-checking validators; only `require_any`/`equal_length` constraints and `computed` fields are used — no hand-written validators.
+- `default` is present (incl. `null`) only where a default is wanted; its absence means required.
+- `scripts/validate_schema_ir.py` succeeds on the final YAML.

@@ -1,0 +1,514 @@
+schema:
+  name: multimodal_perturbation_atlas
+  doc: |
+    Multimodal perturbation atlas schema.
+
+# ---------------------------------------------------------------------------
+# Enums  (replace every validate_<enum> @model_validator in schema.py)
+# ---------------------------------------------------------------------------
+enums:
+  FeatureType:
+    doc: "The level of resolution a genomic feature represents."
+    values:
+      GENE: gene
+      TRANSCRIPT: transcript
+      EXON: exon
+      PROBE: probe
+      OTHER: other
+
+  GeneticPerturbationType:
+    doc: "The class of genetic perturbation reagent."
+    values:
+      CRISPR_KO: CRISPRko
+      CRISPR_I: CRISPRi
+      CRISPR_A: CRISPRa
+      SI_RNA: siRNA
+      SH_RNA: shRNA
+      ASO: ASO
+      OVEREXPRESSION: overexpression
+      OTHER: other
+
+  SequenceRole:
+    doc: "The role of a sequence in a reference genome assembly."
+    values:
+      CHROMOSOME: chromosome
+      MITOCHONDRIAL: mitochondrial
+      SCAFFOLD: scaffold
+      UNLOCALIZED: unlocalized
+      ALT_LOCUS: alt_locus
+      PATCH: patch
+      DECOY: decoy
+      VIRAL: viral
+      OTHER: other
+
+  TargetContext:
+    doc: "Where a genetic perturbation reagent lands relative to gene structure."
+    values:
+      EXON: exon
+      INTRON: intron
+      PROMOTER: promoter
+      ENHANCER: enhancer
+      UTR_5: 5_UTR
+      UTR_3: 3_UTR
+      INTERGENIC: intergenic
+      OTHER: other
+
+  BiologicPerturbationType:
+    doc: "The class of biologic perturbation agent."
+    values:
+      CYTOKINE: cytokine
+      GROWTH_FACTOR: growth_factor
+      ANTIBODY: antibody
+      LIGAND: ligand
+      RECEPTOR_AGONIST: receptor_agonist
+      RECEPTOR_ANTAGONIST: receptor_antagonist
+      OTHER: other
+
+  PerturbationType:
+    values:
+      SMALL_MOLECULE: small_molecule
+      GENETIC_PERTURBATION: genetic_perturbation
+      BIOLOGIC_PERTURBATION: biologic_perturbation
+
+# ---------------------------------------------------------------------------
+# Obs tables  ->  HoxBaseSchema
+# ---------------------------------------------------------------------------
+obs_tables:
+  - name: CellIndex
+    presence_flags: true
+    constraints:
+      - equal_length:
+          - perturbation_uids
+          - perturbation_types
+          - perturbation_concentrations_um
+          - perturbation_durations_hr
+          - perturbation_additional_metadata
+    fields:
+      - name: assay
+        type: str
+        ontology_aligned: EFO
+        doc: "Assay used as EFO"
+      - name: organism
+        type: str
+        ontology_aligned: NCBITAXON
+      - name: cell_line
+        type: str | None
+        cross_reference: CELLOSAURUS
+      - name: cell_type
+        type: str | None
+        ontology_aligned: CL
+        doc: "Annotated cell type; primary cells or well-annotated lines only."
+      - name: development_stage
+        type: str | None
+        ontology_aligned: HSAPDV
+      - name: disease
+        type: str | None
+        ontology_aligned: MONDO
+      - name: tissue
+        type: str | None
+        ontology_aligned: UBERON
+      - name: donor_uid
+        type: str | None
+        registry_key: { target_schema: DonorSchema }
+      - name: days_in_vitro
+        type: float | None
+        doc: "Days cultured in vitro before profiling, if applicable."
+      - name: additional_metadata
+        type: str | None
+        doc: "Json dump for metadata that doesn't fit the schema; store the original barcode here."
+      - name: replicate
+        type: int | None
+      - name: batch_id
+        type: str | None
+      - name: well_position
+        type: str | None
+      - name: is_negative_control
+        type: bool | None
+        doc: "Whether this cell is a negative control"
+      - name: negative_control_type
+        type: str | None
+        doc: 'If a control, what kind? e.g. "nontargeting", "DMSO", "vehicle"'
+      - name: perturbation_uids
+        type: list[str] | None
+        doc: "Cumulative list of all perturbations effected on a cell."
+        polymorphic_registry_key:
+          type_field: perturbation_types
+          variants:
+            small_molecule: SmallMoleculeSchema
+            genetic_perturbation: GeneticPerturbationSchema
+            biologic_perturbation: BiologicPerturbationSchema
+      - name: perturbation_types
+        type: list[PerturbationType] | None
+      - name: perturbation_concentrations_um
+        type: list[float] | None
+        doc: "Concentrations in micromolar, if applicable, else -1 to keep lists equal."
+      - name: perturbation_durations_hr
+        type: list[float] | None
+        doc: "Durations in hours, if applicable, else -1."
+      - name: perturbation_additional_metadata
+        type: list[str] | None
+        doc: "List of json dump with additional metadata for each perturbation"
+      - name: gene_expression
+        type: SparseZarrPointer | None
+        default: null
+        pointer:
+          feature_space: gene_expression
+          feature_registry_schema: GenomicFeatureSchema
+      - name: chromatin_accessibility
+        type: SparseZarrPointer | None
+        default: null
+        pointer:
+          feature_space: chromatin_accessibility
+          feature_registry_schema: ReferenceSequenceSchema
+      - name: protein_abundance
+        type: DenseZarrPointer | None
+        default: null
+        pointer:
+          feature_space: protein_abundance
+          feature_registry_schema: ProteinSchema
+      - name: image_features
+        type: DenseZarrPointer | None
+        default: null
+        pointer:
+          feature_space: image_features
+          feature_registry_schema: ImageFeatureSchema
+      - name: image_tiles
+        type: DenseZarrPointer | None
+        default: null
+        doc: "Image tiles don't have a feature registry because they aren't features!"
+        pointer:
+          feature_space: image_tiles
+      - name: perturbation_search_string
+        type: str
+        default: ""
+        computed:
+          op: join_list
+          source: perturbation_uids
+          separator: " "
+
+# ---------------------------------------------------------------------------
+# Dataset table  ->  DatasetSchema
+# ---------------------------------------------------------------------------
+dataset_table:
+  name: AtlasDatasetSchema
+  fields:
+    - name: publication_uid
+      type: str | None
+      registry_key: { target_schema: PublicationSchema }
+    - name: accession_database
+      type: str | None
+      doc: "Database from which the dataset was downloaded, if applicable"
+    - name: accession_id
+      type: str | None
+    - name: dataset_description
+      type: str | None
+      doc: "Sample prep / experimental protocol text from the GEO record."
+    - name: organism
+      type: list[str] | None
+      default: null
+      summary: { target_schema: CellIndex, target_field: organism, op: unique }
+    - name: tissue
+      type: list[str] | None
+      default: null
+      summary: { target_schema: CellIndex, target_field: tissue, op: unique }
+    - name: cell_line
+      type: list[str] | None
+      default: null
+      summary: { target_schema: CellIndex, target_field: cell_line, op: unique }
+    - name: disease
+      type: list[str] | None
+      default: null
+      summary: { target_schema: CellIndex, target_field: disease, op: unique }
+    - name: n_rows
+      type: int
+      default: 0
+      summary: { target_schema: CellIndex, target_field: uid, op: count }
+
+# ---------------------------------------------------------------------------
+# Feature registry tables  ->  FeatureBaseSchema
+# ---------------------------------------------------------------------------
+feature_registry_tables:
+  - name: GenomicFeatureSchema
+    doc: |
+      A single measurable genomic feature in a dataset's var space.
+
+      Designed to serve as a feature registry across datasets that may operate
+      at different levels of resolution (gene, transcript, isoform, etc.).
+    fields:
+      - name: gene_name
+        type: str | None
+        doc: "The canonical gene this feature maps to, if applicable"
+      - name: ensembl_gene_id
+        type: str | None
+        cross_reference: ENSEMBL
+      - name: feature_id
+        type: str
+        doc: "The specific feature identity. For gene-level == ensembl_gene_id."
+      - name: feature_type
+        type: FeatureType
+        doc: "What level of resolution this feature represents."
+      - name: transcript_id
+        type: str | None
+        default: null
+      - name: feature_annotation
+        type: str | None
+        default: null
+        doc: 'Controlled vocab for edge cases, e.g. "STMN2 cryptic exon"'
+      - name: ensembl_version
+        type: str | None
+        default: null
+        doc: "The version of Ensembl used for annotations, if known."
+      - name: organism
+        type: str
+        ontology_aligned: NCBITAXON
+        doc: 'The organism this feature belongs to, e.g. "human", "mouse"'
+
+  - name: ReferenceSequenceSchema
+    doc: |
+      A single contig or sequence in a reference genome assembly.
+      Intended as the feature table for chromatin accessibility peaks.
+    fields:
+      - name: sequence_name
+        type: str
+        doc: 'The sequence name as used in alignment, e.g. "chr1", "chrEBV"'
+      - name: sequence_role
+        type: SequenceRole
+        doc: "The role this sequence plays in the assembly."
+      - name: organism
+        type: str
+        ontology_aligned: NCBITAXON
+      - name: assembly
+        type: str
+        doc: 'The genome assembly name, e.g. "GRCh38", "GRCm39"'
+      - name: genbank_accession
+        type: str | None
+        default: null
+        doc: 'Unambiguous accession, e.g. "CM000663.2" for chr1 in GRCh38'
+        markers:
+          stable_uid: true
+          cross_reference: GENBANK
+      - name: refseq_accession
+        type: str | None
+        default: null
+        cross_reference: REFSEQ
+      - name: is_primary_assembly
+        type: bool
+        default: true
+        doc: "Whether this sequence is part of the primary assembly."
+
+  - name: ProteinSchema
+    fields:
+      - name: uniprot_id
+        type: str | None
+        doc: 'The UniProt accession ID, e.g., "P04637"'
+        markers:
+          stable_uid: true
+          cross_reference: UNIPROT
+      - name: protein_name
+        type: str | None
+        doc: "The recommended protein name from UniProt"
+      - name: gene_name
+        type: str | None
+        doc: 'The primary gene name encoding this protein, e.g., "TP53"'
+      - name: organism
+        type: str | None
+        ontology_aligned: NCBITAXON
+      - name: sequence
+        type: str | None
+        doc: "The amino acid sequence"
+      - name: sequence_length
+        type: int | None
+      - name: is_clr_control
+        type: bool
+        default: false
+        doc: "Whether this protein is a control used for CLR normalization"
+
+  - name: ImageFeatureSchema
+    fields:
+      - name: feature_name
+        type: str
+        stable_uid: true
+        doc: 'The name of the image feature, e.g., "mean_intensity_DAPI"'
+      - name: description
+        type: str | None
+        doc: "A description of the image feature and how it was calculated"
+
+# ---------------------------------------------------------------------------
+# FK registry tables  ->  RegistryBaseSchema
+# ---------------------------------------------------------------------------
+fk_registry_tables:
+  - name: PublicationSchema
+    fields:
+      - name: doi
+        type: str
+        doc: "The doi for the paper, there is almost always one"
+        cross_reference: DOI
+      - name: pmid
+        type: int | None
+        doc: "PubMed id for the paper, there is almost always one"
+        markers:
+          stable_uid: true
+          cross_reference: PUBMED
+      - name: title
+        type: str
+        doc: "The title of the paper"
+      - name: journal
+        type: str | None
+        doc: "The journal that the paper was published in, if applicable"
+      - name: publication_date
+        type: datetime | None
+        doc: "The year that the paper was published, if applicable"
+
+  - name: DonorSchema
+    fields:
+      - name: age_years
+        type: float | None
+        default: null
+      - name: sex
+        type: str | None
+        default: null
+      - name: ethnicity
+        type: str | None
+        ontology_aligned: HANCESTRO
+      - name: cause_of_death
+        type: str | None
+        default: null
+        doc: "for postmortem tissue"
+      - name: pmi_hours
+        type: float | None
+        default: null
+        doc: "postmortem interval in hours"
+      - name: clinical_diagnosis
+        type: str | None
+        ontology_aligned: MONDO
+      - name: pathological_diagnosis
+        type: str | None
+        ontology_aligned: MONDO
+      - name: description
+        type: str | None
+        default: null
+        doc: "Free-text notes about the donor"
+
+  - name: SmallMoleculeSchema
+    doc: "Small molecule data, either perturbations or features in themselves."
+    constraints:
+      - require_any: [smiles, pubchem_cid, iupac_name, name]
+    fields:
+      - name: smiles
+        type: str | None
+        doc: "The smiles string for the molecule"
+      - name: pubchem_cid
+        type: int | None
+        default: null
+        doc: "PubChem CID for the molecule"
+        markers:
+          stable_uid: true
+          cross_reference: PUBCHEM
+      - name: iupac_name
+        type: str | None
+        doc: "Standard name for the molecule"
+      - name: inchi_key
+        type: str | None
+        cross_reference: INCHI
+      - name: chembl_id
+        type: str | None
+        cross_reference: CHEMBL
+      - name: name
+        type: str | None
+        doc: "Common name for the molecule"
+      - name: vendor
+        type: str | None
+        default: null
+      - name: catalog_number
+        type: str | None
+        default: null
+
+  - name: GeneticPerturbationSchema
+    doc: |
+      A single genetic perturbation reagent and its genomic target.
+
+      Perturbations are anchored to genomic coordinates rather than gene names,
+      because the reagent-to-gene relationship is an annotation, not ground truth.
+    fields:
+      - name: perturbation_type
+        type: GeneticPerturbationType
+        doc: "Reagent type."
+      - name: guide_sequence
+        type: str | None
+        default: null
+        stable_uid: true
+        doc: "The actual reagent sequence, e.g. the 20bp guide or siRNA duplex"
+      - name: target_chromosome
+        type: str | None
+        cross_reference: GENBANK
+        doc: "genbank_accession for the chromosome where the guide targets"
+      - name: target_start
+        type: int | None
+        default: null
+      - name: target_end
+        type: int | None
+        default: null
+      - name: target_strand
+        type: str | None
+        default: null
+        doc: '"+" or "-"'
+      - name: intended_gene_name
+        type: str | None
+        default: null
+      - name: intended_ensembl_gene_id
+        type: str | None
+        cross_reference: ENSEMBL
+      - name: target_context
+        type: TargetContext | None
+        default: null
+        doc: "Where the guide lands relative to gene structure."
+      - name: library_name
+        type: str | None
+        default: null
+        doc: 'e.g. "Brunello", "CROPseq"'
+      - name: reagent_id
+        type: str | None
+        default: null
+        doc: 'e.g. "BRD_KO_1", "CROPseq_A1"'
+
+  - name: BiologicPerturbationSchema
+    doc: "A biologic agent (protein, cytokine, antibody, etc.) applied to cells."
+    fields:
+      - name: biologic_name
+        type: str
+      - name: biologic_type
+        type: BiologicPerturbationType
+      - name: uniprot_id
+        type: str | None
+        cross_reference: UNIPROT
+        doc: "Protein identity, if applicable"
+      - name: vendor
+        type: str | None
+        default: null
+      - name: catalog_number
+        type: str | None
+        default: null
+      - name: lot_number
+        type: str | None
+        default: null
+
+# ---------------------------------------------------------------------------
+# Other tables  ->  LanceModel
+# ---------------------------------------------------------------------------
+other_tables:
+  - name: PublicationSectionSchema
+    fields:
+      - name: publication_uid
+        type: str
+        registry_key: { target_schema: PublicationSchema }
+      - name: section_text
+        type: str
+        doc: "The text content of this section"
+      - name: section_title
+        type: str | None
+        doc: 'The heading / title of the section, e.g. "Abstract", "Methods", ...'
+
+# REGISTRY_SCHEMAS (feature_space -> feature registry) is derived from the obs
+# pointer fields that declare a feature_registry_schema, so it is not declared
+# here. No other module-level constants: the FK pre-create wiring
+# (FK_TABLE_SCHEMAS) is an atlas concern, not part of the schema IR.
