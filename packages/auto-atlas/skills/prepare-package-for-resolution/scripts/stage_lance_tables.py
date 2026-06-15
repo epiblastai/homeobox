@@ -23,11 +23,11 @@ import importlib.util
 import json
 import os
 import sys
-from pathlib import Path
 
 import lancedb
 import pandas as pd
-from homeobox.parser import parse_schema_file, parse_schema_module
+from homeobox.schema import model_from_file, model_from_module
+from homeobox.schema.parser import parsed_result_from_model
 
 from auto_atlas.collection import Collection, FileTypeTag
 
@@ -52,7 +52,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--parse-mode",
         choices=("ast", "runtime"),
         default="ast",
-        help="Use parse_schema_file (ast) or parse_schema_module (runtime)",
+        help="Use model_from_file (ast) or model_from_module (runtime)",
     )
     parser.add_argument(
         "--obs-class",
@@ -66,7 +66,7 @@ def load_parsed_schema(schema_path: str, parse_mode: str) -> dict:
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
 
     if parse_mode == "ast":
-        return parse_schema_file(Path(schema_path))
+        return parsed_result_from_model(model_from_file(schema_path))
 
     module_name = f"_prepare_schema_{abs(hash(schema_path))}"
     spec = importlib.util.spec_from_file_location(module_name, schema_path)
@@ -74,7 +74,7 @@ def load_parsed_schema(schema_path: str, parse_mode: str) -> dict:
         raise ImportError(f"Could not load schema module from {schema_path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return parse_schema_module(module)
+    return parsed_result_from_model(model_from_module(module))
 
 
 def resolve_obs_table(parsed: dict, obs_class: str | None) -> dict:

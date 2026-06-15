@@ -12,8 +12,13 @@ from typing import Any
 
 import lancedb
 import pyarrow as pa
-from homeobox.parser import parse_schema_module
-from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField, SummaryField
+from homeobox.schema import (
+    PolymorphicRegistryKeyField,
+    RegistryKeyField,
+    SummaryField,
+    model_from_module,
+)
+from homeobox.schema.parser import parsed_result_from_model
 
 from auto_atlas.types import SchemaInfo, TableRef
 
@@ -85,7 +90,7 @@ def load_schema_info(schema_path: str) -> SchemaInfo:
     parser hangs a ``summary`` key on derived fields) and grouped by class.
     """
     module = load_schema_module(schema_path)
-    parsed = parse_schema_module(module)
+    parsed = parsed_result_from_model(model_from_module(module))
 
     kinds: dict[str, str] = {}
     summary_fields: dict[str, list[SummaryField]] = {}

@@ -24,6 +24,7 @@ from homeobox.schema import (
     StableUIDBaseSchema,
     StableUIDField,
     SummaryField,
+    _iter_pointer_annotations,
 )
 from pydantic import model_validator
 
@@ -62,7 +63,13 @@ class CellRow(HoxBaseSchema):
     )
     has_features: bool = False
 
+    @classmethod
+    def has_pointer_field_map(cls) -> dict[str, str]:
+        """Map each ``has_{field}`` presence flag to its source pointer field."""
+        return {f"has_{name}": name for name, _ in _iter_pointer_annotations(cls)}
+
     @model_validator(mode="after")
-    def _generate_has_features(self) -> Self:
-        self.has_features = self.features is not None
+    def generate_has_pointer_flags(self) -> Self:
+        for flag, source in type(self).has_pointer_field_map().items():
+            setattr(self, flag, getattr(self, source) is not None)
         return self

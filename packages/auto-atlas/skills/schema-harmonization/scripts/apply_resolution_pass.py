@@ -26,7 +26,7 @@ field to its column with repeated ``--map FIELD:COLUMN``:
         --map target_strand:target_strand --map intended_gene_name:intended_gene_name \\
         --reason "resolve guide targets via BLAT" --organism human
 
-**From schema** (``--from-schema``) — parse a homeobox schema with ``homeobox.parser``,
+**From schema** (``--from-schema``) — parse a homeobox schema with ``homeobox.schema``,
 look up ``OntologyAlignedField`` / ``CrossReferenceField`` markers on ``--table``,
 and run one single-column pass per resolvable field (see ``auto_atlas.registry``):
 
@@ -48,7 +48,8 @@ from typing import Any, NamedTuple
 
 import lancedb
 import pandas as pd
-from homeobox.parser import parse_schema_module
+from homeobox.schema import model_from_module
+from homeobox.schema.parser import parsed_result_from_model
 
 from auto_atlas import AddColumn, CurationApplicator, CurationTransaction, default_audit_db_path
 from auto_atlas.curation.sql import infer_arrow_type
@@ -201,7 +202,7 @@ def apply_from_schema(
     dry_run: bool,
 ) -> list[ApplyResult | None]:
     module = _load_schema_module(schema_path)
-    parsed = parse_schema_module(module)
+    parsed = parsed_result_from_model(model_from_module(module))
     schema_table = _schema_table(parsed, table_name)
     passes, skipped = plan_schema_resolution_passes(schema_table)
 

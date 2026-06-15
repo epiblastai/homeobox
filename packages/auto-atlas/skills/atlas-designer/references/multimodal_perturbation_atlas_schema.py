@@ -569,9 +569,11 @@ class CellIndex(HoxBaseSchema):
     # populated (not None) and False otherwise. These are cheap to scan and
     # BITMAP-indexable, so queries can filter cells by available modality
     # without touching the (large) pointer struct columns. They are kept in
-    # sync automatically by :meth:`generate_has_pointer_flags` (instance
-    # writes) and :meth:`compute_auto_fields` (bulk obs DataFrames), mirroring
-    # how ``perturbation_search_string`` is derived.
+    # sync automatically by :meth:`generate_has_pointer_flags` on instance
+    # writes. The ``perturbation_search_string`` column is likewise auto-filled,
+    # but at ingestion time by :meth:`compute_auto_fields` for bulk obs
+    # DataFrames (a model validator cannot derive it because the homeobox schema
+    # IR only supports a fixed set of validator shapes).
     # Only create these flag fields when working with more than 1 PointerField
     has_gene_expression: bool = False
     has_chromatin_accessibility: bool = False
@@ -599,13 +601,6 @@ class CellIndex(HoxBaseSchema):
         non_none = [lst for lst in lists if lst is not None]
         if non_none and len(set(len(lst) for lst in non_none)) > 1:
             raise ValueError("All perturbation lists must have the same length")
-        return self
-
-    @model_validator(mode="after")
-    def generate_search_string(self) -> Self:
-        self.perturbation_search_string = _build_perturbation_search_string(
-            self.perturbation_uids, self.perturbation_types
-        )
         return self
 
     @classmethod
