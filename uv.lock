@@ -12,7 +12,7 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "auto-atlas",
+    "polycomb",
     "homeobox",
     "homeobox-examples",
 ]
@@ -240,9 +240,9 @@ wheels = [
 ]
 
 [[package]]
-name = "auto-atlas"
+name = "polycomb"
 version = "0.0.1"
-source = { editable = "packages/auto-atlas" }
+source = { editable = "packages/polycomb" }
 dependencies = [
     { name = "anndata" },
     { name = "boto3" },
@@ -277,7 +277,7 @@ docs = [
 [package.metadata]
 requires-dist = [
     { name = "anndata" },
-    { name = "auto-atlas", marker = "extra == 'all'" },
+    { name = "polycomb", marker = "extra == 'all'" },
     { name = "boto3" },
     { name = "duckdb", marker = "extra == 'all'" },
     { name = "gget" },
