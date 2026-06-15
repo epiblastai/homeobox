@@ -4,7 +4,7 @@ Resolve genetic perturbation targets and their associated fields — the reagent
 
 ## Task description
 
-The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file.
+The expected input is a LanceDB URL and table name along with a target homeobox schema YAML IR. The name of the table must correspond to one of the schema classes in the provided file.
 
 A single table may mix several kinds of perturbation evidence that resolve through different tools:
 

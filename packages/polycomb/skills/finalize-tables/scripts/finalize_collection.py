@@ -16,7 +16,7 @@ Per table, in order:
 5. null-init any missing non-deferred schema columns (ensure_schema_columns)
 6. validate against the schema class    (validate_tables), as a final sweep
 
-    python finalize_collection.py <collection_root> --schema <schema.py> [--dry-run]
+    python finalize_collection.py <collection_root> --schema <schema.yaml> [--dry-run]
 
 Individual steps can also be run table-by-table via their own scripts for
 debugging; this entrypoint just sequences them correctly.

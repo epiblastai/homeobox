@@ -2,7 +2,7 @@
 
 See :mod:`polycomb.finalize_columns` for details.
 
-    python ensure_schema_columns.py <collection_root> --schema <schema.py> \\
+    python ensure_schema_columns.py <collection_root> --schema <schema.yaml> \\
         [--table GenomicFeatureSchema] [--dry-run]
 """
 

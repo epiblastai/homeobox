@@ -4,7 +4,7 @@ Resolve gene identifiers in feature dataframes — typically the var index of a 
 
 ## Task description
 
-The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature space suffixes.
+The expected input is a LanceDB URL and table name along with a target homeobox schema YAML IR. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature space suffixes.
 
 This reference is designed to guide you through the specific resolution considerations for gene symbols and Ensembl IDs.
 

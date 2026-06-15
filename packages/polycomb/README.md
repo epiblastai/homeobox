@@ -31,7 +31,7 @@ flowchart LR
 
 | Step | Skill | What it does |
 |------|-------|--------------|
-| 1 | `atlas-designer` | Design the target homeobox `schema.py` (obs tables, feature registries, dataset metadata, registry-key targets). |
+| 1 | `atlas-designer` | Design the target homeobox schema YAML IR (obs tables, feature registries, dataset metadata, registry-key targets); it codegens into a `schema.py`. |
 | 2 | `create-data-package` | Download files, tag them with the Collection API, and write a coalesced data package (`collection.json` + per-dataset directories). |
 | 3 | `prepare-package-for-resolution` | Stage raw OBS, VAR, LIBRARY, dataset scaffold, and publication tables into LanceDB — columns kept as-is from source files. |
 | 4 | `multimodal-alignment` | *(Multimodal datasets only.)* Reconcile per-modality barcodes and write `multimodal_barcode` so cells can be joined across feature spaces. |

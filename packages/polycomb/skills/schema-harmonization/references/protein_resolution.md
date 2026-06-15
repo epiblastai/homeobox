@@ -6,7 +6,7 @@ Proteins appear in more than one kind of table, so do not assume a `var`/feature
 
 ## Task description
 
-The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature-space suffixes.
+The expected input is a LanceDB URL and table name along with a target homeobox schema YAML IR. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature-space suffixes.
 
 Inspect the target schema first to see **which** protein-identity columns it actually declares — one table may carry the full set (UniProt accession, protein name, gene name, sequence, sequence length), another may want only the accession beside its own non-protein columns. Resolve and fan out only into the columns that exist.
 

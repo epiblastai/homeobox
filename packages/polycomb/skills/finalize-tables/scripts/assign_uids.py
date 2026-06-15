@@ -12,7 +12,7 @@ Assignment is idempotent: existing non-empty keys are preserved, so re-running
 never reshuffles random ones. The new column is written straight to Lance — these
 are deterministic/auto columns, not audited curation decisions.
 
-    python assign_uids.py <collection_root> --schema <schema.py> [--table CellIndex] [--dry-run]
+    python assign_uids.py <collection_root> --schema <schema.yaml> [--table CellIndex] [--dry-run]
 """
 
 from __future__ import annotations
