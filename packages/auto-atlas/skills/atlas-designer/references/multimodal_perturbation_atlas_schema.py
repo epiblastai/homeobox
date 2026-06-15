@@ -100,22 +100,6 @@ class PerturbationType(StrEnum):
     BIOLOGIC_PERTURBATION = "biologic_perturbation"
 
 
-_PERTURBATION_TYPE_PREFIX: dict[str, str] = {
-    PerturbationType.SMALL_MOLECULE: "SM",
-    PerturbationType.GENETIC_PERTURBATION: "GP",
-    PerturbationType.BIOLOGIC_PERTURBATION: "BIO",
-}
-
-
-def _build_perturbation_search_string(uids: list[str] | None, types: list[str] | None) -> str:
-    """Build a search string from perturbation UIDs and types."""
-    tokens: list[str] = []
-    for uid, ptype in zip(uids or [], types or [], strict=False):
-        prefix = _PERTURBATION_TYPE_PREFIX.get(ptype, ptype)
-        tokens.append(f"{prefix}:{uid}")
-    return " ".join(tokens)
-
-
 # ---------------------------------------------------------------------------
 # Publications
 # ---------------------------------------------------------------------------
@@ -569,11 +553,10 @@ class CellIndex(HoxBaseSchema):
     # populated (not None) and False otherwise. These are cheap to scan and
     # BITMAP-indexable, so queries can filter cells by available modality
     # without touching the (large) pointer struct columns. They are kept in
-    # sync automatically by :meth:`generate_has_pointer_flags` on instance
-    # writes. The ``perturbation_search_string`` column is likewise auto-filled,
-    # but at ingestion time by :meth:`compute_auto_fields` for bulk obs
-    # DataFrames (a model validator cannot derive it because the homeobox schema
-    # IR only supports a fixed set of validator shapes).
+    # sync automatically by :meth:`generate_has_pointer_flags` (instance
+    # writes) and :meth:`compute_auto_fields` (bulk obs DataFrames), mirroring
+    # how ``perturbation_search_string`` is derived by :meth:`generate_search_string`
+    # per instance and :meth:`compute_auto_fields` in bulk.
     # Only create these flag fields when working with more than 1 PointerField
     has_gene_expression: bool = False
     has_chromatin_accessibility: bool = False
@@ -603,6 +586,15 @@ class CellIndex(HoxBaseSchema):
             raise ValueError("All perturbation lists must have the same length")
         return self
 
+    @model_validator(mode="after")
+    def generate_search_string(self) -> Self:
+        # ``join_list`` is one of the validator shapes the homeobox schema IR
+        # recognises (``op: join_list`` with ``source``/``separator``), so this
+        # round-trips to the IR and the generated model autofills the column on
+        # every instance write.
+        self.perturbation_search_string = " ".join(self.perturbation_uids or [])
+        return self
+
     @classmethod
     def has_pointer_field_map(cls) -> dict[str, str]:
         """Map each ``has_{field}`` flag to its source pointer field name.
@@ -626,16 +618,16 @@ class CellIndex(HoxBaseSchema):
 
         import pandas as pd
 
+        # Mirror the per-instance ``generate_search_string`` join_list derivation
+        # (`` ".join(perturbation_uids)``) for bulk obs DataFrames.
         def _row_search_string(row):
             uids_val = row.get("perturbation_uids")
-            types_val = row.get("perturbation_types")
             if uids_val is None or (isinstance(uids_val, float) and pd.isna(uids_val)):
                 return ""
             uids = json.loads(uids_val) if isinstance(uids_val, str) else list(uids_val)
-            types = json.loads(types_val) if isinstance(types_val, str) else list(types_val)
-            return _build_perturbation_search_string(uids, types)
+            return " ".join(uids)
 
-        if "perturbation_uids" in obs_df.columns and "perturbation_types" in obs_df.columns:
+        if "perturbation_uids" in obs_df.columns:
             obs_df["perturbation_search_string"] = obs_df.apply(_row_search_string, axis=1)
         else:
             obs_df["perturbation_search_string"] = ""
