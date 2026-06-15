@@ -25,7 +25,7 @@ Each `(dataset, feature_space)` pair has **at most one** primary `OBS` and **at 
 
 Given the URL or path provided by the user, identify the files to download. If ambiguous because the user did not specify a file name or there are many, then stop and ask the user for clarification. A particularly important case to watch out for and flag is if there are files with suffixed like `_validated`, `_processed`, `_filtered`, etc.
 
-Currently, we support the following file formats (which may be in `.tar` files):
+Homeobox has built-in support for the following file formats (which may be in `.tar` files):
 
 | Format | Action |
 |--------|--------|
@@ -38,6 +38,13 @@ Currently, we support the following file formats (which may be in `.tar` files):
 | `.mtx` / `.mtx.gz` (Market Matrix) | Set `matrix_file` field; companions go to `cell_metadata`/`var_metadata` |
 | `.tsv` / `.tsv.gz` | Sometimes used for protein abundance which is not sparse |
 | `_fragments.tsv.gz` / `.bed.gz` / `.bed` | Fragment files — per-cell chromatin accessibility regions. Columns: `(chrom, start, end, barcode)` (4-col) or `(chrom, start, end, barcode, count)` (5-col, 10x format) |
+
+The list above is not a hard limit on acceptable `DATA` files. Other matrix or array
+formats can be included in a data package if they are paired with a custom ingestion
+reader that knows how to load them. Writing that reader is out of scope for this
+skill; include the file in the package and note that custom ingestion will be needed.
+`OBS` and `VAR` files still need to be some kind of table format so the downstream
+harmonization steps can read row- and feature-level metadata.
 
 ### 2. Download files
 
