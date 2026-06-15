@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${AUTO_ATLAS_REPO:-epiblastai/polycomb}"
-ref="${AUTO_ATLAS_REF:-main}"
+repo="${POLYCOMB_REPO:-epiblastai/homeobox}"
+ref="${POLYCOMB_REF:-main}"
 agent_skills_dir="${AGENT_SKILLS_DIR:-"$HOME/.agents/skills"}"
 claude_skills_dir="${CLAUDE_SKILLS_DIR:-"$HOME/.claude/skills"}"
 
@@ -20,7 +20,7 @@ curl -fsSL "https://codeload.github.com/$repo/tar.gz/$ref" -o "$tmp_dir/repo.tar
 tar -xzf "$tmp_dir/repo.tar.gz" -C "$tmp_dir" --strip-components=1
 
 skill_count=0
-for skill_dir in "$tmp_dir"/skills/*; do
+for skill_dir in "$tmp_dir"/packages/polycomb/skills/*; do
   if [ ! -d "$skill_dir" ] || [ ! -f "$skill_dir/SKILL.md" ]; then
     continue
   fi
