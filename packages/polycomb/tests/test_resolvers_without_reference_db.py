@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
-from polycomb import guide_rna
+from polycomb import guide_rna, ontologies
 from polycomb.metadata_table import configure_reference_db, initialize_reference_db
 from polycomb.registry import RESOLVER_TOOLS
 from polycomb.types import GuideRnaResolution, ResolutionReport
@@ -57,9 +57,15 @@ def _mock_empty_gget(monkeypatch) -> None:
     )
 
 
+def _mock_empty_ols(monkeypatch) -> None:
+    monkeypatch.setattr(ontologies, "search_ols", lambda *args, **kwargs: [])
+    monkeypatch.setattr(ontologies, "get_ols_term", lambda *args, **kwargs: None)
+
+
 def test_registered_resolvers_return_reports_without_reference_db(tmp_path, monkeypatch) -> None:
     _mock_guide_fallback(monkeypatch)
     _mock_empty_gget(monkeypatch)
+    _mock_empty_ols(monkeypatch)
     configure_reference_db(str(tmp_path / "missing_reference_db"))
 
     for name, tool in RESOLVER_TOOLS.items():
@@ -71,6 +77,7 @@ def test_registered_resolvers_return_reports_without_reference_db(tmp_path, monk
 def test_registered_resolvers_return_reports_with_empty_reference_db(tmp_path, monkeypatch) -> None:
     _mock_guide_fallback(monkeypatch)
     _mock_empty_gget(monkeypatch)
+    _mock_empty_ols(monkeypatch)
     db_path = str(tmp_path / "reference_db")
     initialize_reference_db(db_path)
     configure_reference_db(db_path)
