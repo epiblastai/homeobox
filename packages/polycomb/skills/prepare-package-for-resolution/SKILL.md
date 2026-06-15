@@ -1,6 +1,6 @@
 ---
 name: prepare-package-for-resolution
-description: Use after create-data-package when a coalesced data package and homeobox schema file are ready. Stages per-dataset OBS and VAR, the per-dataset DatasetSchema scaffold, and collection-level LIBRARY tables into Lance.
+description: Use after create-data-package when a coalesced data package and homeobox schema YAML IR are ready. Stages per-dataset OBS and VAR, the per-dataset DatasetSchema scaffold, and collection-level LIBRARY tables into Lance.
 ---
 
 # Prepare package for resolution
@@ -24,18 +24,15 @@ Stage the **`DatasetSchema` scaffold** here (see step 3): the identity rows and 
 ## Expected input
 
 - A coalesced collection with `collection.json` at the root
-- A schema file path from the user (ask if missing). Never assume the schema file, this is important to avoid wasted work. The schema file path must be explicitly provided by the user somewhere in your conversation before proceeding.
+- A schema YAML IR path from the user (ask if missing). Never assume the schema file, this is important to avoid wasted work. The schema YAML path must be explicitly provided by the user somewhere in your conversation before proceeding. This is the YAML the `atlas-designer` skill produces; the scripts parse it directly (no schema Python is executed).
 
 ## Workflow
 
 ### 1. Stage OBS and VAR
 
-Unless the user already said whether they trust the schema file, ask. Use `--parse-mode runtime` only if they do; otherwise omit the flag (defaults to safe AST parsing).
-
 ```
 python scripts/stage_lance_tables.py <collection_root> \
-  --schema <path/to/schema.py> \
-  [--parse-mode runtime] \
+  --schema <path/to/schema.yaml> \
   [--obs-class CellIndex]
 ```
 
@@ -76,7 +73,7 @@ Create the per-dataset `DatasetSchema` table — one row per feature space — i
 
 ```
 python scripts/stage_dataset_table.py <collection_root> \
-  --schema <path/to/schema.py> \
+  --schema <path/to/schema.yaml> \
   [--dataset NAME]
 ```
 
@@ -109,7 +106,7 @@ There are three modes:
 
 ```
 python scripts/stage_publication_tables.py <collection_root> \
-  --schema <path/to/schema.py> \
+  --schema <path/to/schema.yaml> \
   --pub-schema PublicationSchema \
   [--pub-section-schema PublicationSectionSchema]
 ```
@@ -122,7 +119,7 @@ Note that we do not currently support storing figures and captions in tables, as
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
-| `scripts/stage_lance_tables.py` | `python scripts/stage_lance_tables.py <collection_root> --schema <schema.py> [--parse-mode runtime] [--obs-class NAME]` | Stage OBS/VAR into per-dataset `lance_db/` |
+| `scripts/stage_lance_tables.py` | `python scripts/stage_lance_tables.py <collection_root> --schema <schema.yaml> [--obs-class NAME]` | Stage OBS/VAR into per-dataset `lance_db/` |
 | `scripts/stage_library_table.py` | `python scripts/stage_library_table.py <collection_root> --library <file> --table <SchemaClassName> [--sheet-name SHEET]` | Stage one LIBRARY file into collection `lance_db/` |
-| `scripts/stage_dataset_table.py` | `python scripts/stage_dataset_table.py <collection_root> --schema <schema.py> [--dataset NAME]` | Stage the per-dataset `DatasetSchema` scaffold (one row per feature space) into `<dataset>/lance_db/` |
-| `scripts/stage_publication_tables.py` | `python scripts/stage_publication_tables.py <collection_root> [--pub-schema NAME] [--pub-section-schema NAME] [--schema schema.py] [--pub-fk-field FIELD] [--publication-json PATH]` | Stage `publication.json` into collection `lance_db/` with join scaffolding (requires at least one schema argument) |
+| `scripts/stage_dataset_table.py` | `python scripts/stage_dataset_table.py <collection_root> --schema <schema.yaml> [--dataset NAME]` | Stage the per-dataset `DatasetSchema` scaffold (one row per feature space) into `<dataset>/lance_db/` |
+| `scripts/stage_publication_tables.py` | `python scripts/stage_publication_tables.py <collection_root> [--pub-schema NAME] [--pub-section-schema NAME] [--schema schema.yaml] [--pub-fk-field FIELD] [--publication-json PATH]` | Stage `publication.json` into collection `lance_db/` with join scaffolding (requires at least one schema argument) |

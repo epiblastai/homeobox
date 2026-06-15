@@ -21,12 +21,12 @@ The identity columns are written with the schema class's own Arrow field types s
 they keep their declared types.
 
 Usage:
-    python scripts/stage_dataset_table.py <collection_root> --schema <schema.py> \\
+    python scripts/stage_dataset_table.py <collection_root> --schema <schema.yaml> \\
         [--dataset NAME]
 
 Arguments:
     collection_root   Root directory of a coalesced collection (with collection.json)
-    --schema          Path to the homeobox schema Python file
+    --schema          Path to the homeobox schema YAML IR
     --dataset         Restrict to one dataset directory (default: all datasets)
 """
 
@@ -108,7 +108,7 @@ def stage_dataset_table(
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Stage per-dataset DatasetSchema scaffold tables.")
     parser.add_argument("collection_root", help="Root directory of a coalesced collection")
-    parser.add_argument("--schema", required=True, help="Path to the homeobox schema Python file")
+    parser.add_argument("--schema", required=True, help="Path to the homeobox schema YAML IR")
     parser.add_argument("--dataset", default=None, help="Restrict to one dataset directory")
     args = parser.parse_args(argv)
 
