@@ -27,6 +27,7 @@ theme:
 
 plugins:
   - search
+  - monorepo
   - mkdocstrings:
       handlers:
         python:
@@ -54,6 +55,7 @@ nav:
     - PyTorch Data Loading: dataloader.md
   - Benchmarks:
     - Dataloader Benchmark: dataloader_benchmark.md
+  - Polycomb: '!include ./packages/polycomb/mkdocs.yml'
 
 markdown_extensions:
   - admonition

@@ -12,9 +12,9 @@ resolution-markers = [
 
 [manifest]
 members = [
-    "polycomb",
     "homeobox",
     "homeobox-examples",
+    "polycomb",
 ]
 
 [[package]]
@@ -238,67 +238,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/6b/5c/685e6633917e101e5
 wheels = [
     { url = "https://files.pythonhosted.org/packages/3a/2a/7cc015f5b9f5db42b7d48157e23356022889fc354a2813c15934b7cb5c0e/attrs-25.4.0-py3-none-any.whl", hash = "sha256:adcf7e2a1fb3b36ac48d97835bb6d8ade15b8dcce26aba8bf1d14847b57a3373", size = 67615, upload-time = "2025-10-06T13:54:43.17Z" },
 ]
-
-[[package]]
-name = "polycomb"
-version = "0.0.1"
-source = { editable = "packages/polycomb" }
-dependencies = [
-    { name = "anndata" },
-    { name = "boto3" },
-    { name = "gget" },
-    { name = "homeobox" },
-    { name = "lancedb" },
-    { name = "mygene" },
-    { name = "numpy" },
-    { name = "openpyxl" },
-    { name = "polars" },
-    { name = "pubchempy" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pylance" },
-    { name = "requests" },
-]
-
-[package.optional-dependencies]
-all = [
-    { name = "duckdb" },
-]
-dev = [
-    { name = "pre-commit" },
-    { name = "pytest" },
-    { name = "ruff" },
-]
-docs = [
-    { name = "mkdocs-material" },
-    { name = "mkdocstrings", extra = ["python"] },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "anndata" },
-    { name = "polycomb", marker = "extra == 'all'" },
-    { name = "boto3" },
-    { name = "duckdb", marker = "extra == 'all'" },
-    { name = "gget" },
-    { name = "homeobox", editable = "." },
-    { name = "lancedb" },
-    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
-    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
-    { name = "mygene" },
-    { name = "numpy" },
-    { name = "openpyxl" },
-    { name = "polars" },
-    { name = "pre-commit", marker = "extra == 'dev'" },
-    { name = "pubchempy" },
-    { name = "pyarrow" },
-    { name = "pydantic" },
-    { name = "pylance", specifier = ">=2.0.0" },
-    { name = "pytest", marker = "extra == 'dev'" },
-    { name = "requests" },
-    { name = "ruff", marker = "extra == 'dev'" },
-]
-provides-extras = ["all", "dev", "docs"]
 
 [[package]]
 name = "babel"
@@ -1346,6 +1285,7 @@ dev = [
 ]
 docs = [
     { name = "mkdocs-material" },
+    { name = "mkdocs-monorepo-plugin" },
     { name = "mkdocstrings", extra = ["python"] },
 ]
 examples = [
@@ -1379,6 +1319,7 @@ requires-dist = [
     { name = "marimo", marker = "extra == 'viz'" },
     { name = "matplotlib", marker = "extra == 'viz'" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
+    { name = "mkdocs-monorepo-plugin", marker = "extra == 'docs'", specifier = ">=1.1" },
     { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
     { name = "mudata" },
     { name = "numba" },
@@ -2226,6 +2167,19 @@ wheels = [
 ]
 
 [[package]]
+name = "mkdocs-monorepo-plugin"
+version = "1.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "mkdocs" },
+    { name = "python-slugify" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d4/6a/a75245020e44beb9d7c806158f8a2cda37597711409d40c5a37c70078a7e/mkdocs-monorepo-plugin-1.1.2.tar.gz", hash = "sha256:09200bcf837ad35070e6da973aa0cb682e69ed6e16f254a30584550c6d2d8ebb", size = 13723, upload-time = "2025-06-05T19:09:45.042Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/57/26/4f4c19457d1d4e6d571a3b092921b7a0ce9477d18d997755ac615d72b96b/mkdocs_monorepo_plugin-1.1.2-py3-none-any.whl", hash = "sha256:4b917bc224b89e34e1736bb31ad5ae9deb0a907da879e03bb9454b41fb8b1cac", size = 14539, upload-time = "2025-06-05T19:09:43.74Z" },
+]
+
+[[package]]
 name = "mkdocstrings"
 version = "1.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3026,6 +2980,67 @@ wheels = [
 ]
 
 [[package]]
+name = "polycomb"
+version = "0.0.1"
+source = { editable = "packages/polycomb" }
+dependencies = [
+    { name = "anndata" },
+    { name = "boto3" },
+    { name = "gget" },
+    { name = "homeobox" },
+    { name = "lancedb" },
+    { name = "mygene" },
+    { name = "numpy" },
+    { name = "openpyxl" },
+    { name = "polars" },
+    { name = "pubchempy" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pylance" },
+    { name = "requests" },
+]
+
+[package.optional-dependencies]
+all = [
+    { name = "duckdb" },
+]
+dev = [
+    { name = "pre-commit" },
+    { name = "pytest" },
+    { name = "ruff" },
+]
+docs = [
+    { name = "mkdocs-material" },
+    { name = "mkdocstrings", extra = ["python"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "anndata" },
+    { name = "boto3" },
+    { name = "duckdb", marker = "extra == 'all'" },
+    { name = "gget" },
+    { name = "homeobox", editable = "." },
+    { name = "lancedb" },
+    { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.5" },
+    { name = "mkdocstrings", extras = ["python"], marker = "extra == 'docs'", specifier = ">=0.27" },
+    { name = "mygene" },
+    { name = "numpy" },
+    { name = "openpyxl" },
+    { name = "polars" },
+    { name = "polycomb", marker = "extra == 'all'" },
+    { name = "pre-commit", marker = "extra == 'dev'" },
+    { name = "pubchempy" },
+    { name = "pyarrow" },
+    { name = "pydantic" },
+    { name = "pylance", specifier = ">=2.0.0" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "requests" },
+    { name = "ruff", marker = "extra == 'dev'" },
+]
+provides-extras = ["all", "dev", "docs"]
+
+[[package]]
 name = "pre-commit"
 version = "4.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3502,6 +3517,18 @@ wheels = [
 ]
 
 [[package]]
+name = "python-slugify"
+version = "8.0.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "text-unidecode" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/87/c7/5e1547c44e31da50a460df93af11a535ace568ef89d7a811069ead340c4a/python-slugify-8.0.4.tar.gz", hash = "sha256:59202371d1d05b54a9e7720c5e038f928f45daaffe41dd10822f3907b937c856", size = 10921, upload-time = "2024-02-08T18:32:45.488Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a4/62/02da182e544a51a5c3ccf4b03ab79df279f9c60c5e82d5e8bec7ca26ac11/python_slugify-8.0.4-py2.py3-none-any.whl", hash = "sha256:276540b79961052b66b7d116620b36518847f52d5fd9e3a70164fc8c50faa6b8", size = 10051, upload-time = "2024-02-08T18:32:43.911Z" },
+]
+
+[[package]]
 name = "pytz"
 version = "2026.1.post1"
 source = { registry = "https://pypi.org/simple" }
@@ -3802,6 +3829,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/83/d3/803453b36afefb7c2bb238361cd4ae6125a569b4db67cd9e79846ba2d68c/sympy-1.14.0.tar.gz", hash = "sha256:d3d3fe8df1e5a0b42f0e7bdf50541697dbe7d23746e894990c030e2b05e72517", size = 7793921, upload-time = "2025-04-27T18:05:01.611Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a2/09/77d55d46fd61b4a135c444fc97158ef34a095e5681d0a6c10b75bf356191/sympy-1.14.0-py3-none-any.whl", hash = "sha256:e091cc3e99d2141a0ba2847328f5479b05d94a6635cb96148ccb3f34671bd8f5", size = 6299353, upload-time = "2025-04-27T18:04:59.103Z" },
+]
+
+[[package]]
+name = "text-unidecode"
+version = "1.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ab/e2/e9a00f0ccb71718418230718b3d900e71a5d16e701a3dae079a21e9cd8f8/text-unidecode-1.3.tar.gz", hash = "sha256:bad6603bb14d279193107714b288be206cac565dfa49aa5b105294dd5c4aab93", size = 76885, upload-time = "2019-08-30T21:36:45.405Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a6/a5/c0b6468d3824fe3fde30dbb5e1f687b291608f9473681bbf7dabbf5a87d7/text_unidecode-1.3-py2.py3-none-any.whl", hash = "sha256:1311f10e8b895935241623731c2ba64f4c455287888b18189350b67134a822e8", size = 78154, upload-time = "2019-08-30T21:37:03.543Z" },
 ]
 
 [[package]]

@@ -10,7 +10,7 @@ The atlas ships three pointer types:
 | `DenseZarrPointer` | `zarr_group`, `position` | `read_ranges` or `read_boxes` | Dense per-cell vectors (protein abundance, embeddings) |
 | `DiscreteSpatialPointer` | `zarr_group`, `min_corner`, `max_corner` | `read_boxes` | N-D crops out of a larger zarr volume (image tiles, masks) |
 
-A `FeatureSpaceSpec` pairs one pointer type with one [reconstructor](reconstructors.md) and one [zarr group spec](group_specs.py). The pointer type is the bridge between the per-row addressing stored in the obs table and the batched read primitive offered by `BatchArray`.
+A `FeatureSpaceSpec` pairs one pointer type with one [reconstructor](reconstructors.md) and one [zarr group spec](array_storage.md#the-spec-hierarchy). The pointer type is the bridge between the per-row addressing stored in the obs table and the batched read primitive offered by `BatchArray`.
 
 ---
 

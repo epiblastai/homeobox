@@ -1,0 +1,57 @@
+name: Release polycomb to PyPI
+
+on:
+  push:
+    tags:
+      - "polycomb-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      # polycomb is pure Python; build a single universal wheel + sdist. uv
+      # strips the workspace source so the published metadata pins the PyPI
+      # release of homeobox (homeobox>=0.2.8).
+      - run: uv build --package polycomb --out-dir dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: polycomb-dist
+          path: dist/*
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: polycomb-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [publish-testpypi]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: polycomb-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
