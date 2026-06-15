@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import sys
+import types
 from typing import Any
 
 import lancedb
@@ -16,8 +17,10 @@ from homeobox.schema import (
     PolymorphicRegistryKeyField,
     RegistryKeyField,
     SummaryField,
+    emit,
     model_from_module,
 )
+from homeobox.schema.ir import load_yaml_file
 from homeobox.schema.parser import parsed_result_from_model
 
 from polycomb.types import SchemaInfo, TableRef
@@ -80,8 +83,38 @@ def load_schema_module(schema_path: str) -> Any:
     return module
 
 
+def load_schema_module_from_yaml(yaml_path: str) -> tuple[types.ModuleType, Any]:
+    """Codegen a homeobox schema YAML IR into a live module.
+
+    The YAML IR (:mod:`homeobox.schema.ir`) is the authored artifact; it is
+    emitted to ``schema.py`` source and executed, giving the same live pydantic
+    classes a hand-written ``schema.py`` would — but without ever running
+    user-authored Python, since YAML carries no code. Returns ``(module, model)``;
+    the parsed ``SchemaModel`` is the source of truth for the relationship graph,
+    so callers derive it directly instead of reverse-engineering the classes.
+    """
+    yaml_path = os.fspath(yaml_path)
+    model = load_yaml_file(yaml_path)
+    source = emit(model)
+    base = os.path.splitext(os.path.basename(yaml_path))[0]
+    mod_name = f"_yaml_schema_{base}"
+    module = types.ModuleType(mod_name)
+    module.__file__ = yaml_path
+    sys.modules[mod_name] = module
+    # dont_inherit=True so this module's ``from __future__ import annotations`` does
+    # not stringize the generated source's annotations — pointer detection relies on
+    # the annotations being live pointer-type objects, not strings.
+    exec(compile(source, yaml_path, "exec", dont_inherit=True), module.__dict__)
+    return module, model
+
+
 def load_schema_info(schema_path: str) -> SchemaInfo:
-    """Load the schema module and derive the kinds map and registry-key markers.
+    """Load a homeobox schema and derive the kinds map and registry-key markers.
+
+    Dispatches on file extension: a ``.yaml`` / ``.yml`` schema IR is codegened
+    into live classes (see :func:`load_schema_module_from_yaml`), while a ``.py``
+    schema is imported directly. The YAML IR is the preferred artifact — it is
+    parsed and validated rather than executed as arbitrary Python.
 
     Registry keys are returned as homeobox's own ``RegistryKeyField`` /
     ``PolymorphicRegistryKeyField`` markers. The parser flattens a polymorphic FK
@@ -89,9 +122,24 @@ def load_schema_info(schema_path: str) -> SchemaInfo:
     marker per field. ``SummaryField`` markers are read off each field dict (the
     parser hangs a ``summary`` key on derived fields) and grouped by class.
     """
-    module = load_schema_module(schema_path)
-    parsed = parsed_result_from_model(model_from_module(module))
+    schema_path = os.fspath(schema_path)
+    ext = os.path.splitext(schema_path)[1].lower()
+    if ext in (".yaml", ".yml"):
+        module, model = load_schema_module_from_yaml(schema_path)
+        parsed = parsed_result_from_model(model)
+    elif ext == ".py":
+        module = load_schema_module(schema_path)
+        parsed = parsed_result_from_model(model_from_module(module))
+    else:
+        raise ValueError(
+            f"Unsupported schema file {schema_path!r}: expected a .yaml schema IR "
+            "(preferred) or a .py schema."
+        )
+    return _schema_info_from_parsed(module, parsed)
 
+
+def _schema_info_from_parsed(module: Any, parsed: dict) -> SchemaInfo:
+    """Build a :class:`SchemaInfo` from a live module and its parsed relationship graph."""
     kinds: dict[str, str] = {}
     summary_fields: dict[str, list[SummaryField]] = {}
     for table in [parsed.get("obs"), parsed.get("dataset"), *parsed.get("tables", [])]:

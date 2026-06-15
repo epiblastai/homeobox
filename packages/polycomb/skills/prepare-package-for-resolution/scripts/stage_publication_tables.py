@@ -30,7 +30,7 @@ Usage:
     python scripts/stage_publication_tables.py <collection_root> \\
         [--pub-schema PublicationSchema] \\
         [--pub-section-schema PublicationSectionSchema] \\
-        [--schema <path/to/schema.py>] \\
+        [--schema <path/to/schema.yaml>] \\
         [--pub-fk-field FIELD] \\
         [--publication-json PATH]
 
@@ -38,7 +38,7 @@ Arguments:
     collection_root       Root directory of a coalesced collection
     --pub-schema          CamelCase Lance table for the publication registry
     --pub-section-schema  CamelCase Lance table for publication text sections
-    --schema              Homeobox schema file (discover section-table RegistryKeyFields)
+    --schema              Homeobox schema YAML IR (discover section-table RegistryKeyFields)
     --pub-fk-field        Registry-key field on the section table (repeatable; overrides --schema)
     --publication-json    Path to publication.json (default: discover from manifest)
 """
@@ -83,7 +83,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--schema",
-        help="Path to the homeobox schema Python file (for RegistryKeyField discovery)",
+        help="Path to the homeobox schema YAML IR (for RegistryKeyField discovery)",
     )
     parser.add_argument(
         "--pub-fk-field",

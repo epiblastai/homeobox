@@ -12,7 +12,7 @@ This step must run **last** — after the uid / dataset_uid / registry-key / der
 fills and the ``*_join`` cleanup — so that every column the schema expects is
 present and only genuine leftovers remain to drop.
 
-    python drop_leftover_columns.py <collection_root> --schema <schema.py> \\
+    python drop_leftover_columns.py <collection_root> --schema <schema.yaml> \\
         [--table CellIndex] [--dry-run]
 """
 

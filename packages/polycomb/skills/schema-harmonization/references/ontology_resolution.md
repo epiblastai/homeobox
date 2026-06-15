@@ -4,7 +4,7 @@ Resolve free-text biological metadata to canonical ontology term **labels** with
 
 ## Task description
 
-The expected input is a LanceDB URL and table name along with a target homeobox schema file. The table name must correspond to one of the schema classes, modulo any feature-space suffixes.
+The expected input is a LanceDB URL and table name along with a target homeobox schema YAML IR. The table name must correspond to one of the schema classes, modulo any feature-space suffixes.
 
 A schema marks an ontology field with `OntologyAlignedField.declare(ontology_name="CL")` (or `CrossReferenceField.declare(database_name="Cellosaurus")` for cell lines). **That marker is informational only** — the column itself holds just the canonical label string. There is no separate CURIE column to fill, so resolution is an **in-place canonicalization** of the label column: raw value → canonical ontology name in the same column. The CURIE is used internally for matching and recorded as op provenance; it is not written to the table.
 

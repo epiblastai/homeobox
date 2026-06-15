@@ -29,7 +29,7 @@ Publication targets are detected automatically (target-side join column present
 and all values are the placeholder ``0``), or named explicitly with
 ``--publication-schema``.
 
-    python populate_registry_keys.py <collection_root> --schema <schema.py> \\
+    python populate_registry_keys.py <collection_root> --schema <schema.yaml> \\
         [--table CellIndex] [--dry-run]
 """
 

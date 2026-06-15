@@ -6,7 +6,7 @@ Molecules appear in more than one kind of table, so do not assume one. The same 
 
 ## Task description
 
-The expected input is a LanceDB URL and table name along with a target homeobox schema file. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature-space suffixes.
+The expected input is a LanceDB URL and table name along with a target homeobox schema YAML IR. The name of the table must correspond to one of the schema classes in the provided file, modulo any feature-space suffixes.
 
 Inspect the target schema first to see **which** structural-identity columns it actually declares — one table may carry the full set (PubChem CID, SMILES, InChIKey, IUPAC name, ChEMBL ID), another may want only a CID or SMILES beside its own provenance columns. Resolve and fan out only into the columns that exist.
 

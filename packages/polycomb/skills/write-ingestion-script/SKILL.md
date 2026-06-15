@@ -55,7 +55,7 @@ def load_gene_expression(ctx: LoaderContext) -> LoaderResult:
 
 report = ingest_collection(
     collection_root="/data/my_collection",
-    schema_path="/path/to/schema.py",
+    schema_path="/path/to/schema.yaml",
     atlas_path="/data/atlases/my_atlas",
     loaders={"gene_expression": load_gene_expression},
 )
@@ -69,7 +69,7 @@ That is the complete shape. Everything dataset-specific lives inside the loader 
 | Parameter | Role |
 |---|---|
 | `collection_root` | Directory with `collection.json` and the finalized lance tables (local path or s3 url). |
-| `schema_path` | The target homeobox schema module — exactly one obs class and one dataset class. |
+| `schema_path` | The target homeobox schema YAML IR — exactly one obs class and one dataset class. |
 | `atlas_path` | Atlas location (local or s3); created if absent. |
 | `loaders` | `{feature_space: Loader}` — the per-feature-space hook. |
 | `dataset_loaders` | Optional `{dataset_name: {feature_space: Loader}}` override; wins over `loaders` for that one dataset. |

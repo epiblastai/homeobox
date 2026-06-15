@@ -1,32 +1,34 @@
-"""Stage per-dataset OBS and VAR into Lance tables from a homeobox schema.
+"""Stage per-dataset OBS and VAR into Lance tables from a homeobox schema YAML IR.
 
-Parses a user-provided schema file (AST or runtime) to discover CamelCase table
-names, then loads tagged OBS/VAR files from each dataset in a coalesced data
-package into ``<dataset>/lance_db/``. Delimited text files skip lines starting
-with ``#``. Use ``stage_library_table.py`` for collection-level LIBRARY files.
+Parses a user-provided schema YAML (the homeobox schema intermediate
+representation) to discover CamelCase table names, then loads tagged OBS/VAR
+files from each dataset in a coalesced data package into ``<dataset>/lance_db/``.
+Delimited text files skip lines starting with ``#``. Use ``stage_library_table.py``
+for collection-level LIBRARY files.
+
+The YAML IR is parsed and validated rather than executed, so there is no trust
+question — no schema Python ever runs.
 
 Usage:
-    python scripts/stage_lance_tables.py <collection_root> --schema <schema.py> \\
-        [--parse-mode ast|runtime] [--obs-class CellIndex]
+    python scripts/stage_lance_tables.py <collection_root> --schema <schema.yaml> \\
+        [--obs-class CellIndex]
 
 Arguments:
     collection_root   Root directory of a coalesced collection (with collection.json)
-    --schema            Path to the homeobox schema Python file
-    --parse-mode        ``ast`` (default, safe) or ``runtime`` (imports schema module)
+    --schema            Path to the homeobox schema YAML IR
     --obs-class         Obs schema class name when the schema defines more than one
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import sys
 
 import lancedb
 import pandas as pd
-from homeobox.schema import model_from_file, model_from_module
+from homeobox.schema.ir import load_yaml_file
 from homeobox.schema.parser import parsed_result_from_model
 
 from polycomb.collection import Collection, FileTypeTag
@@ -46,13 +48,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--schema",
         required=True,
-        help="Path to the homeobox schema Python file",
-    )
-    parser.add_argument(
-        "--parse-mode",
-        choices=("ast", "runtime"),
-        default="ast",
-        help="Use model_from_file (ast) or model_from_module (runtime)",
+        help="Path to the homeobox schema YAML IR",
     )
     parser.add_argument(
         "--obs-class",
@@ -61,20 +57,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def load_parsed_schema(schema_path: str, parse_mode: str) -> dict:
+def load_parsed_schema(schema_path: str) -> dict:
     if not os.path.isfile(schema_path):
         raise FileNotFoundError(f"Schema file not found: {schema_path}")
-
-    if parse_mode == "ast":
-        return parsed_result_from_model(model_from_file(schema_path))
-
-    module_name = f"_prepare_schema_{abs(hash(schema_path))}"
-    spec = importlib.util.spec_from_file_location(module_name, schema_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load schema module from {schema_path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return parsed_result_from_model(model_from_module(module))
+    return parsed_result_from_model(load_yaml_file(schema_path))
 
 
 def resolve_obs_table(parsed: dict, obs_class: str | None) -> dict:
@@ -258,7 +244,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     collection_root = os.path.abspath(args.collection_root)
 
-    parsed = load_parsed_schema(args.schema, args.parse_mode)
+    parsed = load_parsed_schema(args.schema)
     report_warnings(parsed.get("warnings", []))
 
     obs_table = resolve_obs_table(parsed, args.obs_class)

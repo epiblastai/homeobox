@@ -12,7 +12,7 @@ Finalization is the step that turns a set of independently-harmonized tables int
 ## Inputs
 
 - A **collection root** containing harmonized tables: collection-level registries/registry-key targets in `<collection_root>/lance_db/`, and per-dataset obs/var in `<dataset_dir>/lance_db/`. Every table should have been harmonized to its schema aside from the fields handled by this skill.
-- The **target homeobox schema file**. Each table name corresponds to one of its schema classes.
+- The **target homeobox schema YAML IR**. Each table name corresponds to one of its schema classes.
 - The `collection.json` manifest (feature spaces, dataset uids).
 - **Standardized join columns** written by harmonization (see below) that record how each registry key is linked.
 
@@ -43,7 +43,7 @@ Registry keys impose a dependency order: a target table must have its `uid` assi
 A single entrypoint drives the whole pass:
 
 ```bash
-python scripts/finalize_collection.py <collection_root> --schema <schema.py> --dry-run
+python scripts/finalize_collection.py <collection_root> --schema <schema.yaml> --dry-run
 ```
 
 It joins multimodal obs tables (when present), resolves the DAG, runs the per-table steps in order, and reports what each step changed. The individual scripts below can also be run table-by-table for debugging.
@@ -92,7 +92,7 @@ Finalization discovers `*_join` columns by naming convention; it does not guess 
 
 ```bash
 python skills/finalize-tables/scripts/populate_registry_keys.py <collection_root> \
-  --schema <schema.py> --table CellIndex --dry-run
+  --schema <schema.yaml> --table CellIndex --dry-run
 ```
 
 For each registry key on the table the script:

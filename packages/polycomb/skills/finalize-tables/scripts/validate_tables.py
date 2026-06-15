@@ -11,7 +11,7 @@ Two checks per table:
 
 Exits non-zero if any table fails, so it can gate a pipeline.
 
-    python validate_tables.py <collection_root> --schema <schema.py> \\
+    python validate_tables.py <collection_root> --schema <schema.yaml> \\
         [--table CellIndex] [--limit N]
 """
 

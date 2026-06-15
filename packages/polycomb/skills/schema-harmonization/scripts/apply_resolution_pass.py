@@ -30,7 +30,7 @@ field to its column with repeated ``--map FIELD:COLUMN``:
 look up ``OntologyAlignedField`` / ``CrossReferenceField`` markers on ``--table``,
 and run one single-column pass per resolvable field (see ``polycomb.registry``):
 
-    python ... <lance_db> --table CellIndex --schema schema.py --from-schema --dry-run
+    python ... <lance_db> --table CellIndex --schema schema.yaml --from-schema --dry-run
 
     python ... --dry-run   # validate and report only; no Lance or audit writes
 
@@ -41,14 +41,13 @@ Built-in tools are listed in ``polycomb.registry``.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import os
 import sys
 from typing import Any, NamedTuple
 
 import lancedb
 import pandas as pd
-from homeobox.schema import model_from_module
+from homeobox.schema.ir import load_yaml_file
 from homeobox.schema.parser import parsed_result_from_model
 
 from polycomb import AddColumn, CurationApplicator, CurationTransaction, default_audit_db_path
@@ -91,18 +90,6 @@ def _parse_field_map(items: list[str]) -> dict[str, str]:
             raise ValueError(f"--map expects FIELD:COLUMN, got {item!r}")
         mapping[field] = column
     return mapping
-
-
-def _load_schema_module(schema_path: str) -> Any:
-    schema_path = os.fspath(schema_path)
-    base = os.path.splitext(os.path.basename(schema_path))[0]
-    mod_name = f"_resolution_schema_{base}"
-    spec = importlib.util.spec_from_file_location(mod_name, schema_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load schema module from {schema_path!r}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _schema_table(parsed: dict, table_name: str) -> dict:
@@ -201,8 +188,7 @@ def apply_from_schema(
     input_type: str | None,
     dry_run: bool,
 ) -> list[ApplyResult | None]:
-    module = _load_schema_module(schema_path)
-    parsed = parsed_result_from_model(model_from_module(module))
+    parsed = parsed_result_from_model(load_yaml_file(schema_path))
     schema_table = _schema_table(parsed, table_name)
     passes, skipped = plan_schema_resolution_passes(schema_table)
 
@@ -424,7 +410,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("lance_db_path")
     parser.add_argument("--table", required=True)
-    parser.add_argument("--schema", help="Homeobox schema.py (required with --from-schema)")
+    parser.add_argument("--schema", help="Homeobox schema YAML IR (required with --from-schema)")
     parser.add_argument(
         "--from-schema",
         action="store_true",

@@ -10,7 +10,7 @@ Harmonize the raw Lance tables in a data package so they conform to a target hom
 ## Input
 
 - A **LanceDB** location and table name. Collection-level registry keys live in `<collection_root>/lance_db/`; per-dataset obs/var live in `<dataset_dir>/lance_db/`. Table names match schema class names (e.g. `GeneticFeatureSchema`, `CellIndex`), modulo feature-space suffixes.
-- A **target homeobox schema file**. The table name must correspond to one of its schema classes.
+- A **target homeobox schema YAML IR**. The table name must correspond to one of its schema classes.
 
 ## The audit model (read before mutating anything)
 
@@ -72,7 +72,7 @@ Pass `--input-type` (resolver-specific, e.g. `symbol`/`ensembl_id` for `resolve_
 python skills/schema-harmonization/scripts/apply_resolution_pass.py \
   <path/to/lance_db> \
   --table CellIndex \
-  --schema <path/to/schema.py> \
+  --schema <path/to/schema.yaml> \
   --from-schema \
   --dry-run
 ```
