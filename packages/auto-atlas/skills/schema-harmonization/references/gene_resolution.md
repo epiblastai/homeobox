@@ -1,6 +1,6 @@
 # Gene resolution
 
-Resolve gene identifiers in feature dataframes — typically the var index of a gene expression or chromatin accessibility matrix. Maps gene symbols and Ensembl IDs to canonical identifiers using the `auto_atlas` suite.
+Resolve gene identifiers in feature dataframes — typically the var index of a gene expression or chromatin accessibility matrix. Maps gene symbols and Ensembl IDs to canonical identifiers using the `polycomb` suite.
 
 ## Task description
 

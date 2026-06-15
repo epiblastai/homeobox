@@ -8,7 +8,7 @@ The expected input is a LanceDB URL and table name along with a target homeobox 
 
 A schema marks an ontology field with `OntologyAlignedField.declare(ontology_name="CL")` (or `CrossReferenceField.declare(database_name="Cellosaurus")` for cell lines). **That marker is informational only** — the column itself holds just the canonical label string. There is no separate CURIE column to fill, so resolution is an **in-place canonicalization** of the label column: raw value → canonical ontology name in the same column. The CURIE is used internally for matching and recorded as op provenance; it is not written to the table.
 
-Nine entity types resolve across eight ontologies plus Cellosaurus. The ontologies loaded into the unified `ontology_terms` reference table are enumerated by `OntologyRegistry` in `auto_atlas/registry.py`; cell lines resolve against Cellosaurus, a `CrossReferenceDbRegistry` authority.
+Nine entity types resolve across eight ontologies plus Cellosaurus. The ontologies loaded into the unified `ontology_terms` reference table are enumerated by `OntologyRegistry` in `polycomb/registry.py`; cell lines resolve against Cellosaurus, a `CrossReferenceDbRegistry` authority.
 
 | Schema field | Ontology / authority | Resolver tool | Path |
 |---|---|---|---|
@@ -64,7 +64,7 @@ Repeat per field, swapping `--tool`/`--column` to the matching pair from the tab
 
 ```python
 import lancedb
-from auto_atlas import (
+from polycomb import (
     OntologyEntity,
     resolve_ontology_terms,
     CurationApplicator,
@@ -102,10 +102,10 @@ finally:
 
 `ethnicity` is identical with `OntologyEntity.ETHNICITY` and no `organism`.
 
-For an ontology with no built-in resolution tool at all — a field aligned to an ontology outside `OntologyRegistry` — `search_ols` in `auto_atlas.ols` queries OLS4 for matching terms and is often the quickest way to look one up. `sex`, for instance, aligns to PATO, which has no local reference table: search PATO for the raw label, then feed the chosen canonical label into explicit `ReplaceValue`/`SetColumn` ops.
+For an ontology with no built-in resolution tool at all — a field aligned to an ontology outside `OntologyRegistry` — `search_ols` in `polycomb.ols` queries OLS4 for matching terms and is often the quickest way to look one up. `sex`, for instance, aligns to PATO, which has no local reference table: search PATO for the raw label, then feed the chosen canonical label into explicit `ReplaceValue`/`SetColumn` ops.
 
 ```python
-from auto_atlas.ols import search_ols
+from polycomb.ols import search_ols
 
 hits = search_ols("male", ontology="PATO")  # ontology=None searches all ontologies
 for term in hits:  # ranked by OLS4 relevance

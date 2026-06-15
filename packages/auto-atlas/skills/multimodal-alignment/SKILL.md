@@ -37,7 +37,7 @@ Re-runs are safe: the script skips `AddColumn` when the column exists and re-app
 
 **Dry run** — pass `--dry-run` (or `applicator.apply(txn, dry_run=True)`) to record the transaction in the audit DB without mutating Lance. Use this while iterating on overlap.
 
-**Apply** — restrict writes with `allowed_columns` set to `multimodal_barcode`; check `result.status` (`applied`, `failed`, `partial`, or `pending` on dry run) and `result.error` before continuing. For the full curation API (`AddColumn`, `MergeColumns`, `ReplaceValue`, …), read `auto_atlas.curation` for more detail.
+**Apply** — restrict writes with `allowed_columns` set to `multimodal_barcode`; check `result.status` (`applied`, `failed`, `partial`, or `pending` on dry run) and `result.error` before continuing. For the full curation API (`AddColumn`, `MergeColumns`, `ReplaceValue`, …), read `polycomb.curation` for more detail.
 
 ## Workflow
 

@@ -19,8 +19,7 @@ from homeobox.schema import (
     model_from_module,
 )
 from homeobox.schema.parser import parsed_result_from_model
-
-from auto_atlas.types import SchemaInfo, TableRef
+from polycomb.types import SchemaInfo, TableRef
 
 
 def extract_h5ad_obs_var(h5ad_path: str) -> tuple[str, str]:

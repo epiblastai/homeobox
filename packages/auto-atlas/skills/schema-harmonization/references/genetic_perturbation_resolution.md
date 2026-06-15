@@ -40,7 +40,7 @@ This reference is designed to guide you through the specific resolution consider
 Two tiers of tooling are available. **Batch resolvers** make external lookups, return a `ResolutionReport`, and can be driven by `scripts/apply_resolution_pass.py` to emit auditable curation ops. **Local helpers** are deterministic pure-Python functions you call inline when building custom transactions.
 
 ```python
-from auto_atlas import (
+from polycomb import (
     resolve_genes,
     resolve_guide_sequences,
     annotate_genomic_coordinates,
@@ -51,8 +51,8 @@ from auto_atlas import (
     parse_combinatorial_perturbations,
     classify_perturbation_method,
 )
-from auto_atlas.assemblies import get_assembly_report
-from auto_atlas.types import GeneResolution, GuideRnaResolution, ResolutionReport
+from polycomb.assemblies import get_assembly_report
+from polycomb.types import GeneResolution, GuideRnaResolution, ResolutionReport
 ```
 
 ### Batch resolvers
@@ -117,7 +117,7 @@ seq.sequence_name      # "1"
 
 ## Splitting combinatorial perturbations into rows
 
-Two auditable **reshape ops** split one row into many so each output row holds exactly one reagent. They are *mechanical* reshapes, not value resolutions — a whole-table rewrite with no per-cell resolution decision — so they carry only reproducibility provenance (Lance versioning already gives undo). Run a reshape as **its own transaction, before** any resolution pass, since it changes the table's row count and the downstream ops then act per reagent. Import both from `auto_atlas`.
+Two auditable **reshape ops** split one row into many so each output row holds exactly one reagent. They are *mechanical* reshapes, not value resolutions — a whole-table rewrite with no per-cell resolution decision — so they carry only reproducibility provenance (Lance versioning already gives undo). Run a reshape as **its own transaction, before** any resolution pass, since it changes the table's row count and the downstream ops then act per reagent. Import both from `polycomb`.
 
 | Op | Splits | Key fields |
 |----|--------|------------|

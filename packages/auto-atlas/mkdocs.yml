@@ -1,8 +1,8 @@
-site_name: auto-atlas
-site_url: https://epiblastai.github.io/auto-atlas/
+site_name: polycomb
+site_url: https://epiblastai.github.io/polycomb/
 site_description: Automatic atlas design and curation utilities
-repo_url: https://github.com/epiblastai/auto-atlas
-repo_name: epiblastai/auto-atlas
+repo_url: https://github.com/epiblastai/polycomb
+repo_name: epiblastai/polycomb
 
 theme:
   name: material

@@ -7,7 +7,7 @@ etc.) for populating ``ReferenceSequenceSchema``.
 Supports lookup by any naming convention: UCSC (``chr1``), bare (``1``),
 GenBank (``CM000663.2``), or RefSeq (``NC_000001.11``).
 
-Assembly reports are cached locally at ``~/.cache/auto_atlas/assembly_reports/``.
+Assembly reports are cached locally at ``~/.cache/polycomb/assembly_reports/``.
 """
 
 import logging
@@ -18,7 +18,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_CACHE_DIR = Path.home() / ".cache" / "auto_atlas" / "assembly_reports"
+_CACHE_DIR = Path.home() / ".cache" / "polycomb" / "assembly_reports"
 
 # ---------------------------------------------------------------------------
 # Known assemblies — maps (organism, assembly_name) to RefSeq FTP path

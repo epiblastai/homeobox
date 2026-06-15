@@ -18,7 +18,7 @@ Resolvers never mutate your tables. They return a `ResolutionReport`; the [curat
 8. **Cache write** — persist freshly resolved values back into LanceDB so the next run is a local hit.
 9. **Re-expand & report** — map unique results back to the caller's input order and aggregate statistics into a `ResolutionReport`.
 
-The stages are defined as small protocols — `Preprocessor`, `LocalLookup`, `Disambiguator`, `ResultBuilder`, `Enricher`, `Fallback`, `CacheSink` — so a new entity type is assembled from these parts rather than written from scratch. The shared parts live in `auto_atlas.resolvers` (e.g. `AliasLookup`, `CanonicalAliasDisambiguator`).
+The stages are defined as small protocols — `Preprocessor`, `LocalLookup`, `Disambiguator`, `ResultBuilder`, `Enricher`, `Fallback`, `CacheSink` — so a new entity type is assembled from these parts rather than written from scratch. The shared parts live in `polycomb.resolvers` (e.g. `AliasLookup`, `CanonicalAliasDisambiguator`).
 
 A resolution carries the chosen identifier, a `confidence` (1.0 for an exact local hit, lower for fuzzy or API matches, 0.0 for unresolved), a `source` recording provenance (`lancedb`, `pubchem`, `reference_db_fts`, …), and `alternatives` — viable candidates not chosen. A result is **ambiguous** when `alternatives` is non-empty. Unresolved inputs are returned as stubs (`resolved_value=None`, `confidence=0.0`, `source="none"`) rather than dropped, so every input maps to an output.
 
@@ -42,7 +42,7 @@ The `guide_rnas` table is a true **read-write cache**, including a negative cach
 
 ## Fallback APIs
 
-When a value misses the local cache, resolvers cascade to external services in a defined order, then cache the result. Calls are wrapped by `auto_atlas._rate_limit` (a per-endpoint token bucket with exponential-backoff retry on HTTP 429/503):
+When a value misses the local cache, resolvers cascade to external services in a defined order, then cache the result. Calls are wrapped by `polycomb._rate_limit` (a per-endpoint token bucket with exponential-backoff retry on HTTP 429/503):
 
 | Entity | Local source | Fallback order |
 |--------|-------------|----------------|
@@ -77,7 +77,7 @@ The ontology entrypoints are wrappers over a shared `resolve_ontology_terms(valu
 
 ## Registries
 
-`auto_atlas/registry.py` defines the **authorities** that resolution targets and binds each one to the resolver that fills it. Two enums name the authorities:
+`polycomb/registry.py` defines the **authorities** that resolution targets and binds each one to the resolver that fills it. Two enums name the authorities:
 
 - **`OntologyRegistry`** — ontology prefixes that share the unified `ontology_terms` table: `CL` (cell types), `UBERON` (tissues), `MONDO` (diseases), `NCBITaxon` (organisms), `EFO` (assays), `HANCESTRO` (ancestry), `HsapDv`/`MmusDv` (developmental stage).
 - **`CrossReferenceDbRegistry`** — external identifier authorities: `ENSEMBL`, `GENCODE`, `NCBI Gene`, `UniProt`, `PubChem`, `Cellosaurus`, `ChEMBL`, `InChI`, plus reference-only ones (`DOI`, `PubMed`, `GenBank`, `RefSeq`, …) that have no resolver.

@@ -24,15 +24,14 @@ import os
 import sys
 
 import lancedb
-
-from auto_atlas import (
+from polycomb import (
     AddColumn,
     CurationApplicator,
     CurationTransaction,
     SetColumn,
     default_audit_db_path,
 )
-from auto_atlas.collection import Collection
+from polycomb.collection import Collection
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"

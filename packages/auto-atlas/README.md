@@ -1,6 +1,6 @@
-# auto-atlas
+# polycomb
 
-Automatic atlas design and curation utilities for building [homeobox](https://epiblast.ai/homeobox/) atlases from public datasets. The repository provides a Python library (`auto_atlas`), agent skills that guide each workflow step, and scripts that automate repetitive operations.
+Automatic atlas design and curation utilities for building [homeobox](https://epiblast.ai/homeobox/) atlases from public datasets. The repository provides a Python library (`polycomb`), agent skills that guide each workflow step, and scripts that automate repetitive operations.
 
 ## Install
 
@@ -8,14 +8,14 @@ Install the package and agent skills:
 
 ```bash
 pip install -e .
-curl -sSL https://raw.githubusercontent.com/epiblastai/auto-atlas/refs/heads/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/epiblastai/polycomb/refs/heads/main/install.sh | bash
 ```
 
 The install script copies skills from `skills/` into `~/.agents/skills/` and links them for Claude at `~/.claude/skills/`. Each skill documents the procedures and scripts for one workflow stage.
 
 ## Workflow overview
 
-An auto-atlas run turns a public dataset (GEO, SRA, SCP, …) into a finalized homeobox atlas. The stages are sequential; each skill assumes the previous ones have completed.
+An polycomb run turns a public dataset (GEO, SRA, SCP, …) into a finalized homeobox atlas. The stages are sequential; each skill assumes the previous ones have completed.
 
 ```mermaid
 flowchart LR
@@ -37,7 +37,7 @@ flowchart LR
 | 4 | `multimodal-alignment` | *(Multimodal datasets only.)* Reconcile per-modality barcodes and write `multimodal_barcode` so cells can be joined across feature spaces. |
 | 5 | `schema-harmonization` | Align columns to the schema, resolve raw values to canonical identifiers (genes, ontologies, proteins, …), and record registry-key join columns. All mutations are audited. |
 | 6 | `finalize-tables` | Assign automatic columns (`uid`, `dataset_uid`, `zarr_group`), join multimodal obs tables, populate registry keys, validate every table against the schema. |
-| 7 | `write-ingestion-script` | Stream raw DATA matrices into the atlas as zarr groups via `auto_atlas.ingestion.ingest_collection`. |
+| 7 | `write-ingestion-script` | Stream raw DATA matrices into the atlas as zarr groups via `polycomb.ingestion.ingest_collection`. |
 
 Steps 1 and 2 are technically independent — neither requires the other's output — but in practice you define the atlas schema before downloading and organizing data, so that feature spaces, registry tables, and metadata fields are settled before staging begins.
 
@@ -51,7 +51,7 @@ No scripts — this skill produces a `schema.py` file. A reference example lives
 
 ### 2. create-data-package
 
-Organize downloaded files into a collection data package using the Collection API (`auto_atlas.collection`). Scripts assist with common public-database sources.
+Organize downloaded files into a collection data package using the Collection API (`polycomb.collection`). Scripts assist with common public-database sources.
 
 | Script | Usage | Purpose |
 |--------|-------|---------|
@@ -109,7 +109,7 @@ Run after harmonization has finished on **every** table in the collection. The m
 
 ### 7. write-ingestion-script
 
-Ingestion scripts are collection-specific — they declare one `Loader` per feature space and call `auto_atlas.ingestion.ingest_collection`. An example for a finalized GSE264667 collection:
+Ingestion scripts are collection-specific — they declare one `Loader` per feature space and call `polycomb.ingestion.ingest_collection`. An example for a finalized GSE264667 collection:
 
 | Script | Purpose |
 |--------|---------|

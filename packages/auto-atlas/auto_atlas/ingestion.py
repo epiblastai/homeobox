@@ -1,4 +1,4 @@
-"""Add a finalized :class:`~auto_atlas.collection.Collection` to a homeobox atlas.
+"""Add a finalized :class:`~polycomb.collection.Collection` to a homeobox atlas.
 
 This is the final write step, after the collection has been harmonized and
 ``skills/finalize-tables`` has run. By then the on-disk state is fixed:
@@ -41,10 +41,9 @@ from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.group_specs import get_spec
 from homeobox.ingestion import Ingestor, Reader
 from homeobox.schema import PointerField, _extract_pointer_fields
-
-from auto_atlas.collection import Collection, FileTypeTag
-from auto_atlas.types import SchemaInfo
-from auto_atlas.util import load_schema_info
+from polycomb.collection import Collection, FileTypeTag
+from polycomb.types import SchemaInfo
+from polycomb.util import load_schema_info
 
 LANCE_DB_DIR = "lance_db"
 UID_COLUMN = "uid"
@@ -72,7 +71,7 @@ class LoaderContext:
 class LoaderResult(NamedTuple):
     """A homeobox source plus the per-write metadata it needs.
 
-    The reader emits row-batches in DATA-file row order; auto-atlas maps that
+    The reader emits row-batches in DATA-file row order; polycomb maps that
     order onto finalized obs positions (see :func:`_obs_indices`). The array
     *type* the reader yields selects the converter, so the loader never names
     one.
@@ -269,7 +268,7 @@ def _copy_registry_key_tables(
 ) -> dict[str, int]:
     """Copy collection-level registry-key target tables into the atlas (dedup on uid).
 
-    Homeobox has no helper for cross-db table copies, so auto-atlas owns this.
+    Homeobox has no helper for cross-db table copies, so polycomb owns this.
     """
     copied: dict[str, int] = {}
     src_path = os.path.join(collection_root, LANCE_DB_DIR)
@@ -477,7 +476,7 @@ def _prepare_obs_df(bare_obs: pa.Table, schema: _SchemaModel, plans: list[_Plan]
     """Build the obs frame for homeobox.Ingestor, stamping ``has_<field>`` flags.
 
     Homeobox null-fills unwritten pointer columns but does not derive presence
-    flags, so auto-atlas sets them: ``False`` everywhere, then ``True`` at the
+    flags, so polycomb sets them: ``False`` everywhere, then ``True`` at the
     rows each feature space actually covers.
     """
     obs_df = bare_obs.to_pandas()

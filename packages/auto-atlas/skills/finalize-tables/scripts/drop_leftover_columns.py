@@ -22,14 +22,14 @@ import argparse
 import os
 import sys
 
-from auto_atlas import (
+from polycomb import (
     CurationApplicator,
     CurationTransaction,
     DropColumn,
     default_audit_db_path,
 )
-from auto_atlas.types import SchemaInfo, TableRef
-from auto_atlas.util import discover_tables, load_schema_info, open_table
+from polycomb.types import SchemaInfo, TableRef
+from polycomb.util import discover_tables, load_schema_info, open_table
 
 
 def leftover_columns(column_names: list[str], cls: type) -> list[str]:

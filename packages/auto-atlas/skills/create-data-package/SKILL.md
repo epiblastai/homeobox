@@ -15,7 +15,7 @@ If the user does not provide a link or path, or if the link or path does not con
 
 ## The Collection API
 
-The main tool you'll be using is the Collection API defined in `auto_atlas`. A `Collection` is a set of related datasets, commonly part of the same publication or experiment. A `Dataset` is a set of files that go together. Following AnnData, files that contain row-level metadata are called `OBS` and those that contain feature-level metadata are called `VAR`. `DATA` is reserved for files with array data, which can come in many different formats. At the collection level, there can be `LIBRARY` tables and `OTHER` files that are relevant to all datasets.
+The main tool you'll be using is the Collection API defined in `polycomb`. A `Collection` is a set of related datasets, commonly part of the same publication or experiment. A `Dataset` is a set of files that go together. Following AnnData, files that contain row-level metadata are called `OBS` and those that contain feature-level metadata are called `VAR`. `DATA` is reserved for files with array data, which can come in many different formats. At the collection level, there can be `LIBRARY` tables and `OTHER` files that are relevant to all datasets.
 
 Each `(dataset, feature_space)` pair has **at most one** primary `OBS` and **at most one** `VAR` — the tables that align with that feature space's matrix rows and columns. Additional row-level metadata that joins to the main OBS on a shared ID (clinical annotations, batch labels, separate QC exports, etc.) should still be included in the package, but tagged as `OTHER`, not `OBS`.
 
@@ -50,7 +50,7 @@ Before tagging files as `OBS`, `VAR`, and `DATA`, it may be necessary to split t
 Among the supported file types, `h5ad` packs `OBS`, `VAR`, and `DATA` into a single file. Use the provided utility to make separate csv files for `OBS` and `VAR`:
 
 ```python
-from auto_atlas.util import extract_h5ad_obs_var
+from polycomb.util import extract_h5ad_obs_var
 h5ad_fpath = ".../GSE..._HepG2.h5ad"
 # This saves the csv files at the same path and with the same name as h5ad, but
 # a different suffix and file extension.
@@ -71,7 +71,7 @@ When completed with this workflow, be sure to tell the user if record metadata o
 
 ### 5. Create collection, coalesce, and save
 
-Organize files with `auto_atlas.collection`. Create one `Dataset` per experiment, add each file with the appropriate `FileTypeTag` (and feature space for obs/var/data files), add the datasets to a `Collection`, then `coalesce()` to lay out the directory structure on disk and `to_json()` to write the manifest to the root directory.
+Organize files with `polycomb.collection`. Create one `Dataset` per experiment, add each file with the appropriate `FileTypeTag` (and feature space for obs/var/data files), add the datasets to a `Collection`, then `coalesce()` to lay out the directory structure on disk and `to_json()` to write the manifest to the root directory.
 
 - A `Dataset` is one experiment. Multimodal modalities from the same experiment go in the SAME dataset, distinguished by `feature_space` — do not split them.
 - Tag files with `FileTypeTag`: `DATA` for matrices (h5ad, mtx, etc.), `OBS`/`VAR` for metadata tables, `LIBRARY` for reagent/guide/donor libraries, `OTHER` for free-form informational files (READMEs, protocols).
@@ -81,11 +81,11 @@ Organize files with `auto_atlas.collection`. Create one `Dataset` per experiment
 - Files shared across datasets (e.g. one guide library used by every experiment) are added to the `Collection` via `add_file`, not to an individual `Dataset`.
 
 ```python
-from auto_atlas.collection import Collection, Dataset, FileTypeTag
+from polycomb.collection import Collection, Dataset, FileTypeTag
 
 # IMPORTANT: While the downloaded data might be in a temp directory, the root
 # directory of a collection data package SHOULD NOT be in temp.
-collection = Collection(root_dir="/home/ubuntu/auto_atlas_data_packages/<accession_id>")
+collection = Collection(root_dir="/home/ubuntu/polycomb_data_packages/<accession_id>")
 
 hepg2 = Dataset("HepG2")
 

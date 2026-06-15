@@ -130,7 +130,7 @@ These annotate ordinary schema columns to describe relationships to other tables
 Common patterns:
 
 ```python
-from auto_atlas.registry import CrossReferenceDbRegistry, OntologyRegistry
+from polycomb.registry import CrossReferenceDbRegistry, OntologyRegistry
 
 publication_uid: str | None = RegistryKeyField.declare(target_schema=PublicationSchema)
 donor_uid: str | None = RegistryKeyField.declare(target_schema=DonorSchema)
@@ -164,7 +164,7 @@ pubchem_cid: int | None = combine_markers(
 Rules:
 
 - Use `*_uid` / `*_uids` names for registry-key references.
-- Prefer `OntologyAlignedField` for ontology terms and `CrossReferenceField` for external database IDs. Pass values from `auto_atlas.registry.OntologyRegistry` and `CrossReferenceDbRegistry` — not free-form strings — so resolution tooling can look up the correct resolver.
+- Prefer `OntologyAlignedField` for ontology terms and `CrossReferenceField` for external database IDs. Pass values from `polycomb.registry.OntologyRegistry` and `CrossReferenceDbRegistry` — not free-form strings — so resolution tooling can look up the correct resolver.
 - Prefer `PolymorphicRegistryKeyField` over undecorated parallel list columns for polymorphic references.
 - Declare `SummaryField` on `DatasetSchema` subclasses to document high-level aggregates over obs tables (row counts, distinct organisms/tissues, …). Use a string forward ref for `target_schema` when the obs schema is declared later in the module.
 - Use `combine_markers` when a single column is both a stable-UID source and a cross-reference (or carries any other combination of markers).
@@ -227,7 +227,7 @@ from homeobox.schema import (
     make_uid,
 )
 
-from auto_atlas.registry import CrossReferenceDbRegistry, OntologyRegistry
+from polycomb.registry import CrossReferenceDbRegistry, OntologyRegistry
 
 
 class Assay(str, Enum):

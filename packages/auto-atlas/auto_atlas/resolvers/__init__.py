@@ -1,7 +1,7 @@
 """Shared resolver framework (see ``specs/resolver-framework.md``)."""
 
-from auto_atlas.resolvers.common import AliasLookup, CanonicalAliasDisambiguator
-from auto_atlas.resolvers.pipeline import (
+from polycomb.resolvers.common import AliasLookup, CanonicalAliasDisambiguator
+from polycomb.resolvers.pipeline import (
     CacheSink,
     Disambiguation,
     Disambiguator,

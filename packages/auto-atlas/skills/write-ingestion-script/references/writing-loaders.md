@@ -43,7 +43,7 @@ import scipy.io as sio
 import scipy.sparse as sp
 from homeobox.ingestion import AnnDataReader
 
-from auto_atlas.ingestion import LoaderContext, LoaderResult
+from polycomb.ingestion import LoaderContext, LoaderResult
 
 
 def load_mtx(ctx: LoaderContext) -> LoaderResult:

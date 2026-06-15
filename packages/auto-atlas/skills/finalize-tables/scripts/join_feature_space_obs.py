@@ -26,8 +26,7 @@ import sys
 import lancedb
 import pandas as pd
 import pyarrow as pa
-
-from auto_atlas.util import is_null
+from polycomb.util import is_null
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"

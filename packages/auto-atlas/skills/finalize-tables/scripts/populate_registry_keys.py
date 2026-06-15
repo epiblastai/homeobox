@@ -40,9 +40,8 @@ import os
 
 import pyarrow as pa
 from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField
-
-from auto_atlas.types import SchemaInfo, TableRef
-from auto_atlas.util import (
+from polycomb.types import SchemaInfo, TableRef
+from polycomb.util import (
     discover_tables,
     drop_arrow_columns,
     is_null,

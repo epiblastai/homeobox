@@ -28,8 +28,7 @@ import lancedb
 import pandas as pd
 from homeobox.schema import model_from_file, model_from_module
 from homeobox.schema.parser import parsed_result_from_model
-
-from auto_atlas.collection import Collection, FileTypeTag
+from polycomb.collection import Collection, FileTypeTag
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"

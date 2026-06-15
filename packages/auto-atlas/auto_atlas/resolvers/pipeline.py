@@ -7,7 +7,7 @@ Stages are optional; the pipeline supplies no-op defaults, so a cache-only
 resolver omits ``fallbacks``/``cache_sink`` rather than branching internally.
 
 See ``specs/resolver-framework.md`` for the design. The first resolver migrated
-onto it is ``resolve_guide_sequences`` (see ``auto_atlas.guide_rna``).
+onto it is ``resolve_guide_sequences`` (see ``polycomb.guide_rna``).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from auto_atlas.types import Resolution, ResolutionReport
+from polycomb.types import Resolution, ResolutionReport
 
 # ---------------------------------------------------------------------------
 # Per-run context and intermediate state

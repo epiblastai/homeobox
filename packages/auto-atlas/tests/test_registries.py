@@ -1,6 +1,5 @@
 import pytest
-
-from auto_atlas.registry import (
+from polycomb.registry import (
     CROSSREF_BINDINGS,
     ONTOLOGY_BINDINGS,
     RESOLVER_TOOLS,

@@ -31,8 +31,7 @@ import os
 import sys
 
 import lancedb
-
-from auto_atlas import (
+from polycomb import (
     AddColumn,
     CurationApplicator,
     CurationTransaction,

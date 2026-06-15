@@ -3,7 +3,7 @@
 Every resolver returns one of the :class:`Resolution` dataclasses instead of raw
 dicts or bare strings. The finalization step adds :class:`SchemaInfo` and
 :class:`TableRef`, which describe a target homeobox schema and the concrete Lance
-tables discovered for it (built by ``auto_atlas.util``).
+tables discovered for it (built by ``polycomb.util``).
 """
 
 from __future__ import annotations
@@ -13,8 +13,7 @@ from typing import Any
 
 import pandas as pd
 from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField, SummaryField
-
-from auto_atlas.curation.types import MergeColumns, ReplaceValue
+from polycomb.curation.types import MergeColumns, ReplaceValue
 
 
 def _values_equal(a: Any, b: Any) -> bool:
@@ -242,7 +241,7 @@ class ResolutionReport:
 #
 # Registry keys are described by homeobox's own ``RegistryKeyField`` /
 # ``PolymorphicRegistryKeyField`` markers — there is no need for parallel local
-# dataclasses. ``auto_atlas.util.load_schema_info`` reconstructs those markers
+# dataclasses. ``polycomb.util.load_schema_info`` reconstructs those markers
 # from the parsed schema and hangs them off the ``SchemaInfo`` below.
 
 

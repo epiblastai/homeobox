@@ -23,8 +23,7 @@ import os
 
 import lancedb
 import pandas as pd
-
-from auto_atlas.collection import FileTypeTag
+from polycomb.collection import FileTypeTag
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"

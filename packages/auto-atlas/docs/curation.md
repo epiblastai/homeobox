@@ -31,7 +31,7 @@ A note on `value_sql`: expressions are evaluated by LanceDB's DataFusion dialect
 Operations are grouped into a `CurationTransaction` targeting one table, then handed to `CurationApplicator.apply()`:
 
 ```python
-from auto_atlas import (
+from polycomb import (
     CurationApplicator, CurationTransaction, ReplaceValue, default_audit_db_path,
 )
 

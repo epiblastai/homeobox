@@ -1,4 +1,4 @@
-"""End-to-end tests for ``auto_atlas.ingestion.ingest_collection``.
+"""End-to-end tests for ``polycomb.ingestion.ingest_collection``.
 
 Builds a tiny *finalized* collection on disk (the state ``finalize-tables``
 leaves behind) and ingests it into a fresh atlas. The dense ``image_features``
@@ -17,9 +17,8 @@ import pyarrow as pa
 import pytest
 from homeobox.ingestion import AnnDataReader, Ingestor
 from homeobox.schema import make_uid
-
-from auto_atlas.collection import Collection, Dataset, FileTypeTag
-from auto_atlas.ingestion import (
+from polycomb.collection import Collection, Dataset, FileTypeTag
+from polycomb.ingestion import (
     LoaderContext,
     LoaderResult,
     _obs_indices,

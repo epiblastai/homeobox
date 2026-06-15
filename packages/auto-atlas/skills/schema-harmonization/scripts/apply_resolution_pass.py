@@ -28,14 +28,14 @@ field to its column with repeated ``--map FIELD:COLUMN``:
 
 **From schema** (``--from-schema``) — parse a homeobox schema with ``homeobox.schema``,
 look up ``OntologyAlignedField`` / ``CrossReferenceField`` markers on ``--table``,
-and run one single-column pass per resolvable field (see ``auto_atlas.registry``):
+and run one single-column pass per resolvable field (see ``polycomb.registry``):
 
     python ... <lance_db> --table CellIndex --schema schema.py --from-schema --dry-run
 
     python ... --dry-run   # validate and report only; no Lance or audit writes
 
 Tools: ``--list-tools``. Optional kwargs: ``--organism``, ``--input-type``.
-Built-in tools are listed in ``auto_atlas.registry``.
+Built-in tools are listed in ``polycomb.registry``.
 """
 
 from __future__ import annotations
@@ -50,11 +50,10 @@ import lancedb
 import pandas as pd
 from homeobox.schema import model_from_module
 from homeobox.schema.parser import parsed_result_from_model
-
-from auto_atlas import AddColumn, CurationApplicator, CurationTransaction, default_audit_db_path
-from auto_atlas.curation.sql import infer_arrow_type
-from auto_atlas.curation.types import ApplyResult
-from auto_atlas.registry import (
+from polycomb import AddColumn, CurationApplicator, CurationTransaction, default_audit_db_path
+from polycomb.curation.sql import infer_arrow_type
+from polycomb.curation.types import ApplyResult
+from polycomb.registry import (
     RESOLVER_TOOLS,
     ResolverBinding,
     crossref_binding,
@@ -63,7 +62,7 @@ from auto_atlas.registry import (
     parse_crossref,
     parse_ontology,
 )
-from auto_atlas.types import ResolutionReport
+from polycomb.types import ResolutionReport
 
 
 def _optional_str(value: Any) -> str | None:

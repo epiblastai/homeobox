@@ -17,14 +17,13 @@ from typing import Literal
 
 import polars as pl
 from homeobox.util import sql_escape
-
-from auto_atlas.metadata_table import (
+from polycomb.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
     ORGANISMS_TABLE,
     get_reference_db,
 )
-from auto_atlas.resolvers import (
+from polycomb.resolvers import (
     AliasLookup,
     CanonicalAliasDisambiguator,
     Disambiguation,
@@ -32,7 +31,7 @@ from auto_atlas.resolvers import (
     ResolverContext,
     ResolverPipeline,
 )
-from auto_atlas.types import GeneResolution, ResolutionReport
+from polycomb.types import GeneResolution, ResolutionReport
 
 _ENSEMBL_ID_RE = re.compile(r"^ENS[A-Z]*G\d+(\.\d+)?$")
 

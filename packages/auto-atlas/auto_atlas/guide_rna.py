@@ -16,20 +16,19 @@ import re
 import pandas as pd
 import requests
 from homeobox.util import sql_escape
-
-from auto_atlas._rate_limit import rate_limited
-from auto_atlas.metadata_table import (
+from polycomb._rate_limit import rate_limited
+from polycomb.metadata_table import (
     GUIDE_RNAS_TABLE,
     GuideRnaRecord,
     get_reference_db,
 )
-from auto_atlas.resolvers import (
+from polycomb.resolvers import (
     Disambiguation,
     LookupHit,
     ResolverContext,
     ResolverPipeline,
 )
-from auto_atlas.types import GuideRnaResolution, ResolutionReport
+from polycomb.types import GuideRnaResolution, ResolutionReport
 
 logger = logging.getLogger(__name__)
 

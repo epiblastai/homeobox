@@ -1,5 +1,5 @@
 [project]
-name = "auto-atlas"
+name = "polycomb"
 version = "0.0.1"
 description = "Automatic atlas design and curation utilities"
 readme = "README.md"
@@ -23,7 +23,7 @@ dependencies = [
 
 [project.optional-dependencies]
 all = [
-    "auto-atlas",
+    "polycomb",
     "duckdb",
 ]
 dev = [
@@ -68,4 +68,4 @@ quote-style = "double"
 testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
-include = ["auto_atlas*"]
+include = ["polycomb*"]

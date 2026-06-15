@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo="${AUTO_ATLAS_REPO:-epiblastai/auto-atlas}"
+repo="${AUTO_ATLAS_REPO:-epiblastai/polycomb}"
 ref="${AUTO_ATLAS_REF:-main}"
 agent_skills_dir="${AGENT_SKILLS_DIR:-"$HOME/.agents/skills"}"
 claude_skills_dir="${CLAUDE_SKILLS_DIR:-"$HOME/.claude/skills"}"
@@ -39,5 +39,5 @@ if [ "$skill_count" -eq 0 ]; then
   exit 1
 fi
 
-echo "Installed $skill_count auto-atlas skills to $agent_skills_dir"
+echo "Installed $skill_count polycomb skills to $agent_skills_dir"
 echo "Linked Claude skills in $claude_skills_dir"

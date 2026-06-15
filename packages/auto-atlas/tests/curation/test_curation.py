@@ -9,8 +9,7 @@ from unittest.mock import patch
 import lancedb
 import pyarrow as pa
 import pytest
-
-from auto_atlas.curation import (
+from polycomb.curation import (
     AddColumn,
     CastColumn,
     CurationApplicator,
@@ -24,9 +23,9 @@ from auto_atlas.curation import (
     TransactionStatus,
     default_audit_db_path,
 )
-from auto_atlas.curation.sql import arrow_type_from_alias, build_where_clause
-from auto_atlas.registry import RESOLVER_TOOLS, ResolverTool
-from auto_atlas.types import GeneResolution, ResolutionReport
+from polycomb.curation.sql import arrow_type_from_alias, build_where_clause
+from polycomb.registry import RESOLVER_TOOLS, ResolverTool
+from polycomb.types import GeneResolution, ResolutionReport
 
 
 @pytest.fixture

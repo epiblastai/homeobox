@@ -2,8 +2,8 @@
 
 Nine tables: organisms, genomic features, genomic feature aliases, ontology terms,
 compounds, compound synonyms, proteins, protein aliases, and guide RNAs.
-Stored in a single LanceDB at ``~/.cache/auto_atlas/reference_db/`` by default,
-or at the path configured in ``~/.auto_atlas/config.json``.
+Stored in a single LanceDB at ``~/.cache/polycomb/reference_db/`` by default,
+or at the path configured in ``~/.polycomb/config.json``.
 """
 
 import json
@@ -26,9 +26,9 @@ GUIDE_RNAS_TABLE = "guide_rnas"
 CELL_LINES_TABLE = "cell_lines"
 CELL_LINE_SYNONYMS_TABLE = "cell_line_synonyms"
 
-CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".auto_atlas", "config.json")
+CONFIG_PATH = os.path.join(os.path.expanduser("~"), ".polycomb", "config.json")
 DEFAULT_REFERENCE_DB_PATH = os.path.join(
-    os.path.expanduser("~"), ".cache", "auto_atlas", "reference_db"
+    os.path.expanduser("~"), ".cache", "polycomb", "reference_db"
 )
 
 
@@ -404,7 +404,7 @@ def _is_remote_path(path: str) -> bool:
 
 
 def _config_reference_db() -> dict:
-    """Read reference DB settings from ~/.auto_atlas/config.json."""
+    """Read reference DB settings from ~/.polycomb/config.json."""
     if not os.path.exists(CONFIG_PATH):
         return {}
     with open(CONFIG_PATH) as f:

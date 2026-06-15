@@ -1,8 +1,8 @@
-# auto-atlas
+# polycomb
 
-auto-atlas automates the ingestion of public datasets — unimodal and multimodal, across many modalities — into [homeobox](https://epiblast.ai/homeobox/) atlases.
+polycomb automates the ingestion of public datasets — unimodal and multimodal, across many modalities — into [homeobox](https://epiblast.ai/homeobox/) atlases.
 
-Turning a public dataset into a finalized atlas means downloading and organizing files, aligning their ad-hoc columns and values to a target schema, and streaming the matrices into storage. auto-atlas provides:
+Turning a public dataset into a finalized atlas means downloading and organizing files, aligning their ad-hoc columns and values to a target schema, and streaming the matrices into storage. polycomb provides:
 
 - **Standardized data packages** — the [Collection API](collections.md) for assembling related datasets into a tagged, serialized `collection.json` package, the unit the rest of the pipeline operates on.
 - **Schema alignment with resolution** — a [resolver pipeline](resolvers.md) that maps raw values to canonical identifiers: ontology terms (cell types, tissues, diseases), registries, and external database cross-references (Ensembl, UniProt, PubChem, Cellosaurus, …), cached in a LanceDB reference database with external-API fallbacks.

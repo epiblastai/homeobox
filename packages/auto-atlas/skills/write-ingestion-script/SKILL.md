@@ -1,13 +1,13 @@
 ---
 name: write-ingestion-script
-description: Write an ingestion script that adds a finalized collection of harmonized datasets to a homeobox atlas. The script wires per-feature-space loaders to auto_atlas.ingestion.ingest_collection; the only real work is turning a dataset's raw DATA files into a homeobox Reader.
+description: Write an ingestion script that adds a finalized collection of harmonized datasets to a homeobox atlas. The script wires per-feature-space loaders to polycomb.ingestion.ingest_collection; the only real work is turning a dataset's raw DATA files into a homeobox Reader.
 ---
 
 # Write an ingestion script
 
 Ingestion is the **final write step**. After `schema-harmonization`, `multimodal-alignment`, and `finalize-tables` have run, a collection's tables are linked and schema-conformant but the modality arrays themselves have never been written. Ingestion streams each dataset's raw matrices into the atlas as zarr groups and stamps one pointer per obs row.
 
-`auto_atlas.ingestion.ingest_collection` does almost all of this for you — open the atlas, copy registry-key tables, register features, assemble obs, align DATA rows to obs positions, drive the homeobox `Ingestor`. Writing an ingestion script is therefore **mostly mechanical**: declare one `Loader` per feature space and call `ingest_collection`. The single piece that varies per dataset is turning that dataset's raw DATA files into a homeobox `Reader`. For common formats a built-in reader covers it; only genuinely new source shapes need new homeobox code (covered in `references/writing-loaders.md`).
+`polycomb.ingestion.ingest_collection` does almost all of this for you — open the atlas, copy registry-key tables, register features, assemble obs, align DATA rows to obs positions, drive the homeobox `Ingestor`. Writing an ingestion script is therefore **mostly mechanical**: declare one `Loader` per feature space and call `ingest_collection`. The single piece that varies per dataset is turning that dataset's raw DATA files into a homeobox `Reader`. For common formats a built-in reader covers it; only genuinely new source shapes need new homeobox code (covered in `references/writing-loaders.md`).
 
 ## When to use this skill
 
@@ -39,7 +39,7 @@ The whole script is a set of loaders keyed by feature space and a single `ingest
 import anndata as ad
 from homeobox.ingestion import AnnDataReader
 
-from auto_atlas.ingestion import LoaderContext, LoaderResult, ingest_collection
+from polycomb.ingestion import LoaderContext, LoaderResult, ingest_collection
 
 
 def load_gene_expression(ctx: LoaderContext) -> LoaderResult:

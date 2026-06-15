@@ -9,16 +9,15 @@ from typing import Any
 import lancedb
 import pandas as pd
 import pyarrow as pa
-
-from auto_atlas.curation.audit import CurationAuditStore, default_audit_db_path
-from auto_atlas.curation.sql import (
+from polycomb.curation.audit import CurationAuditStore, default_audit_db_path
+from polycomb.curation.sql import (
     arrow_alias_to_sql_cast,
     arrow_type_from_alias,
     build_add_column_expr,
     build_where_clause,
     infer_arrow_type,
 )
-from auto_atlas.curation.types import (
+from polycomb.curation.types import (
     AddColumn,
     AppliedChange,
     ApplyResult,

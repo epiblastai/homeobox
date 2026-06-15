@@ -7,7 +7,7 @@ import os
 import sqlite3
 from typing import Any
 
-from auto_atlas.curation.types import (
+from polycomb.curation.types import (
     AddColumn,
     AppliedChange,
     CastColumn,
@@ -74,7 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_changes_txn ON curation_changes(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_changes_column ON curation_changes(table_name, column_name);
 """
 
-_JSON_VALUE_KEY = "__auto_atlas_json_value__"
+_JSON_VALUE_KEY = "__polycomb_json_value__"
 
 
 def _serialize_value(value: Any) -> Any:

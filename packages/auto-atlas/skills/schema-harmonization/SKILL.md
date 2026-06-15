@@ -66,7 +66,7 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
 
 Pass `--input-type` (resolver-specific, e.g. `symbol`/`ensembl_id` for `resolve_genes`) when you already know what a column holds; it is more precise than the default `auto` and avoids mis-inference. Resolver kwargs like `--organism` and `--input-type` are forwarded to the tool.
 
-**From-schema mode (`--from-schema`)** — run one single-column pass per resolvable `OntologyAlignedField` / `CrossReferenceField` on the target schema class, without choosing tools manually. The script parses the schema with `homeobox.parser`, looks up each field's authority in `auto_atlas.registry` (`OntologyRegistry` / `CrossReferenceDbRegistry` → resolver binding), prints the plan, then runs each pass in order (one audited transaction per field). Schema markers must use those registry enums — not free-form strings — so the authority string is unambiguous.
+**From-schema mode (`--from-schema`)** — run one single-column pass per resolvable `OntologyAlignedField` / `CrossReferenceField` on the target schema class, without choosing tools manually. The script parses the schema with `homeobox.parser`, looks up each field's authority in `polycomb.registry` (`OntologyRegistry` / `CrossReferenceDbRegistry` → resolver binding), prints the plan, then runs each pass in order (one audited transaction per field). Schema markers must use those registry enums — not free-form strings — so the authority string is unambiguous.
 
 ```bash
 python skills/schema-harmonization/scripts/apply_resolution_pass.py \
@@ -112,7 +112,7 @@ Resolution maps raw values to canonical identifiers per domain. Per-domain refer
 - **references/gene_resolution.md** — gene symbols and Ensembl IDs (var-level), with a full worked example.
 - **references/genetic_perturbation_resolution.md** — genetic perturbation targets, reagents, guide sequences, and row-multiplying reshapes.
 - **references/molecule_resolution.md** — small-molecule names, SMILES, and PubChem CIDs to canonical structures.
-- **references/ontology_resolution.md** — free-text biological metadata to ontology term labels (obs / cell-index fields). Prefer `--from-schema` on aligned obs tables when markers use `auto_atlas.registry` enums; use the reference for custom entities and manual passes.
+- **references/ontology_resolution.md** — free-text biological metadata to ontology term labels (obs / cell-index fields). Prefer `--from-schema` on aligned obs tables when markers use `polycomb.registry` enums; use the reference for custom entities and manual passes.
 - **references/protein_resolution.md** — protein aliases, antibody targets, and UniProt accessions.
 - **references/publication_resolution.md** — collection-level publication and section tables (mostly column alignment).
 

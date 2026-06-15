@@ -38,9 +38,8 @@ import os
 
 import lancedb
 import pyarrow as pa
-
-from auto_atlas.collection import Collection
-from auto_atlas.util import load_schema_info
+from polycomb.collection import Collection
+from polycomb.util import load_schema_info
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"

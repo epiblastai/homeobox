@@ -1,6 +1,6 @@
 """Null-initialize schema columns that harmonization left absent.
 
-See :mod:`auto_atlas.finalize_columns` for details.
+See :mod:`polycomb.finalize_columns` for details.
 
     python ensure_schema_columns.py <collection_root> --schema <schema.py> \\
         [--table GenomicFeatureSchema] [--dry-run]
@@ -11,8 +11,8 @@ from __future__ import annotations
 import argparse
 import os
 
-from auto_atlas.finalize_columns import ensure_schema_columns_for_table
-from auto_atlas.util import discover_tables, load_schema_info
+from polycomb.finalize_columns import ensure_schema_columns_for_table
+from polycomb.util import discover_tables, load_schema_info
 
 
 def ensure_schema_columns(

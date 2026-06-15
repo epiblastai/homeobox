@@ -2,7 +2,7 @@
 
 Provides on-demand access to OLS4 as a complement to the local LanceDB
 ontology tables.  All functions are cached (30-day TTL via
-:mod:`auto_atlas.cache`) and rate-limited (10 req/s via the
+:mod:`polycomb.cache`) and rate-limited (10 req/s via the
 shared ``ols4`` token bucket).
 
 Primary use cases:
@@ -19,8 +19,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 import requests
-
-from auto_atlas._rate_limit import rate_limited
+from polycomb._rate_limit import rate_limited
 
 OLS4_BASE = "https://www.ebi.ac.uk/ols4/api"
 

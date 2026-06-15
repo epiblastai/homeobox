@@ -3,8 +3,7 @@ import os
 import tempfile
 
 import pytest
-
-from auto_atlas.collection import Collection, Dataset, FileTypeTag
+from polycomb.collection import Collection, Dataset, FileTypeTag
 
 
 def test_to_json_writes_collection_manifest_under_root_dir() -> None:

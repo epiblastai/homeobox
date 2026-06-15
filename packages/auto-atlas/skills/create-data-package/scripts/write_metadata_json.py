@@ -11,7 +11,7 @@ import os
 import re
 import sys
 
-from auto_atlas.ncbi import fetch_geo_metadata_dict
+from polycomb.ncbi import fetch_geo_metadata_dict
 
 ACCESSION_RE = re.compile(r"^GS[EM]\d+$")
 

@@ -1,6 +1,6 @@
 # Protein resolution
 
-Resolve protein identifiers — protein aliases, antibody targets, gene names, and UniProt accessions — to canonical UniProt-backed values (`uniprot_id`, `protein_name`, `gene_name`, `sequence`, `sequence_length`) with `resolve_proteins` from the `auto_atlas` suite.
+Resolve protein identifiers — protein aliases, antibody targets, gene names, and UniProt accessions — to canonical UniProt-backed values (`uniprot_id`, `protein_name`, `gene_name`, `sequence`, `sequence_length`) with `resolve_proteins` from the `polycomb` suite.
 
 Proteins appear in more than one kind of table, so do not assume a `var`/feature table. The same resolver fills the protein-identity columns wherever they live — for example the surface-protein panel of an ADT/CITE-seq feature registry, or a biologic-perturbation registry whose rows are proteins, cytokines, or antibodies applied to cells and carry a UniProt accession alongside their own name/type columns. What differs between tables is only which protein-identity columns the schema defines and how non-protein rows (isotype controls, non-protein biologics) are handled.
 
@@ -36,8 +36,8 @@ This reference is designed to guide you through the specific resolution consider
 ## Tools
 
 ```python
-from auto_atlas import resolve_proteins, resolve_organisms
-from auto_atlas.types import ProteinResolution, ResolutionReport
+from polycomb import resolve_proteins, resolve_organisms
+from polycomb.types import ProteinResolution, ResolutionReport
 ```
 
 | Tool | Input | What it finds (resolver result fields) | Use it to fill |
@@ -86,7 +86,7 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
 Isotype controls (and CLR-normalization controls) are not proteins. The fan-out already leaves their identity columns null because they resolve nothing — the only deliberate write is a flag, **and only if the schema has one**. Because `is_control_label()` does not catch isotypes, match them in SQL and set the flag column directly. Lance evaluates `value_sql` with DataFusion, where `regexp_match(...) IS NOT NULL` yields the boolean (it does **not** parse `CASE WHEN` or the `~` operator):
 
 ```python
-from auto_atlas import (
+from polycomb import (
     SetColumn, CurationApplicator, CurationTransaction, default_audit_db_path,
 )
 

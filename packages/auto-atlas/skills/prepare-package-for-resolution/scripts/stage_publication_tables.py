@@ -51,10 +51,9 @@ import os
 
 import lancedb
 import pandas as pd
-
-from auto_atlas.collection import FileTypeTag
-from auto_atlas.types import SchemaInfo
-from auto_atlas.util import load_schema_info
+from polycomb.collection import FileTypeTag
+from polycomb.types import SchemaInfo
+from polycomb.util import load_schema_info
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"

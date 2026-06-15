@@ -11,7 +11,7 @@ import argparse
 import json
 import os
 
-from auto_atlas import fetch_publication_metadata, search_pubmed_by_title
+from polycomb import fetch_publication_metadata, search_pubmed_by_title
 
 
 def write_publication_json(data_dir: str, pmid: str | None = None, title: str | None = None) -> str:

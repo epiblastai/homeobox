@@ -22,9 +22,8 @@ import os
 
 import pyarrow as pa
 from homeobox.schema import DatasetSchema, make_uid
-
-from auto_atlas.types import SchemaInfo, TableRef
-from auto_atlas.util import (
+from polycomb.types import SchemaInfo, TableRef
+from polycomb.util import (
     discover_tables,
     join_key,
     load_schema_info,

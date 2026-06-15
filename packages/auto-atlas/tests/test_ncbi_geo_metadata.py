@@ -1,4 +1,4 @@
-from auto_atlas.ncbi import (
+from polycomb.ncbi import (
     GeoSampleMetadata,
     GeoSeriesMetadata,
     fetch_geo_sample,
@@ -79,7 +79,7 @@ def test_fetch_geo_sample_preserves_characteristic_key_labels(monkeypatch) -> No
         ]
     )
 
-    monkeypatch.setattr("auto_atlas.ncbi._geo_soft_get", lambda accession: soft_text)
+    monkeypatch.setattr("polycomb.ncbi._geo_soft_get", lambda accession: soft_text)
 
     metadata = fetch_geo_sample("GSM123")
 

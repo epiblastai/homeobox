@@ -1,8 +1,8 @@
 # Collections
 
-A **data package** is a collection of related datasets organized in a single root directory, with every file tagged by its role. It is the unit auto-atlas standardizes and aligns: once a collection is assembled and serialized to a `collection.json` manifest, the downstream skills ([staging](workflow.md), [harmonization](curation.md), finalization, ingestion) all read that manifest to discover datasets, feature spaces, and the files that back them.
+A **data package** is a collection of related datasets organized in a single root directory, with every file tagged by its role. It is the unit polycomb standardizes and aligns: once a collection is assembled and serialized to a `collection.json` manifest, the downstream skills ([staging](workflow.md), [harmonization](curation.md), finalization, ingestion) all read that manifest to discover datasets, feature spaces, and the files that back them.
 
-The `auto_atlas.collection` module provides the API for assembling a package. A collection is built in memory by registering datasets and files, then **coalesced** — files are physically organized into a predictable on-disk layout — and written to `collection.json`.
+The `polycomb.collection` module provides the API for assembling a package. A collection is built in memory by registering datasets and files, then **coalesced** — files are physically organized into a predictable on-disk layout — and written to `collection.json`.
 
 A `Collection` commonly corresponds to one publication or experiment; each `Dataset` within it corresponds to a sample, condition, or cell line that will become one logical dataset in the homeobox atlas.
 
@@ -32,7 +32,7 @@ The `feature_space` argument (e.g. `"gene_expression"`, `"protein_abundance"`, `
 A `Dataset` groups the files for one logical dataset and carries a stable `uid`:
 
 ```python
-from auto_atlas.collection import Dataset, FileTypeTag
+from polycomb.collection import Dataset, FileTypeTag
 
 hepg2 = Dataset("HepG2")  # uid auto-generated if not passed
 hepg2.add_file("gex.h5ad",     FileTypeTag.DATA, "gene_expression")
@@ -67,7 +67,7 @@ cite.add_file("adt_var.csv",   FileTypeTag.VAR,  "protein_abundance")
 A `Collection` owns the root directory, the datasets, and any collection-level shared files:
 
 ```python
-from auto_atlas.collection import Collection, Dataset, FileTypeTag
+from polycomb.collection import Collection, Dataset, FileTypeTag
 
 collection = Collection(root_dir="/data/GSE264667")
 collection.add_dataset(hepg2)
@@ -136,10 +136,10 @@ Round-tripping is lossless — `Collection.from_json(path).dumps()` reproduces t
 
 ## Helper utilities
 
-When a source ships a single `h5ad`, `auto_atlas.util.extract_h5ad_obs_var` writes its obs and var tables out as CSVs so they can be tagged separately:
+When a source ships a single `h5ad`, `polycomb.util.extract_h5ad_obs_var` writes its obs and var tables out as CSVs so they can be tagged separately:
 
 ```python
-from auto_atlas.util import extract_h5ad_obs_var
+from polycomb.util import extract_h5ad_obs_var
 
 obs_csv, var_csv = extract_h5ad_obs_var("GSE264667_HepG2.h5ad")
 hepg2.add_file("GSE264667_HepG2.h5ad", FileTypeTag.DATA, "gene_expression")

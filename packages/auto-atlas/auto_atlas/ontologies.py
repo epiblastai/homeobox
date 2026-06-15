@@ -19,20 +19,19 @@ from enum import StrEnum
 
 import polars as pl
 from homeobox.util import sql_escape
-
-from auto_atlas.metadata_table import (
+from polycomb.metadata_table import (
     CELL_LINE_SYNONYMS_TABLE,
     CELL_LINES_TABLE,
     ONTOLOGY_TERMS_TABLE,
     get_reference_db,
 )
-from auto_atlas.resolvers import (
+from polycomb.resolvers import (
     Disambiguation,
     LookupHit,
     ResolverContext,
     ResolverPipeline,
 )
-from auto_atlas.types import CellLineResolution, OntologyResolution, ResolutionReport
+from polycomb.types import CellLineResolution, OntologyResolution, ResolutionReport
 
 
 class OntologyEntity(StrEnum):

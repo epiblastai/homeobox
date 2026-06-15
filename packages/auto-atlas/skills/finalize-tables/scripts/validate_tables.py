@@ -22,10 +22,9 @@ import os
 import sys
 
 from homeobox.schema import _iter_pointer_annotations
-
-from auto_atlas.finalize_columns import deferred_field_names
-from auto_atlas.types import SchemaInfo, TableRef
-from auto_atlas.util import discover_tables, load_schema_info, read_arrow
+from polycomb.finalize_columns import deferred_field_names
+from polycomb.types import SchemaInfo, TableRef
+from polycomb.util import discover_tables, load_schema_info, read_arrow
 
 _SAMPLE = 10
 _DEFERRED_POINTER_MSG = "requires at least one populated zarr pointer field"

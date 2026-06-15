@@ -15,21 +15,20 @@ from typing import Literal
 import polars as pl
 import requests
 from homeobox.util import sql_escape
-
-from auto_atlas._rate_limit import rate_limited
-from auto_atlas.metadata_table import (
+from polycomb._rate_limit import rate_limited
+from polycomb.metadata_table import (
     COMPOUND_SYNONYMS_TABLE,
     COMPOUNDS_TABLE,
     get_reference_db,
 )
-from auto_atlas.perturbations import _CHEMICAL_NEGATIVE_CONTROLS
-from auto_atlas.resolvers import (
+from polycomb.perturbations import _CHEMICAL_NEGATIVE_CONTROLS
+from polycomb.resolvers import (
     Disambiguation,
     LookupHit,
     ResolverContext,
     ResolverPipeline,
 )
-from auto_atlas.types import MoleculeResolution, ResolutionReport
+from polycomb.types import MoleculeResolution, ResolutionReport
 
 # Salt suffixes to strip from compound names
 _SALT_SUFFIXES = re.compile(

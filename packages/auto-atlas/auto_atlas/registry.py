@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
-from auto_atlas.genes import resolve_genes
-from auto_atlas.guide_rna import resolve_guide_sequences
-from auto_atlas.molecules import resolve_molecules
-from auto_atlas.ontologies import (
+from polycomb.genes import resolve_genes
+from polycomb.guide_rna import resolve_guide_sequences
+from polycomb.molecules import resolve_molecules
+from polycomb.ontologies import (
     OntologyEntity,
     resolve_assays,
     resolve_cell_lines,
@@ -19,8 +19,8 @@ from auto_atlas.ontologies import (
     resolve_organisms,
     resolve_tissues,
 )
-from auto_atlas.proteins import resolve_proteins
-from auto_atlas.types import ResolutionReport
+from polycomb.proteins import resolve_proteins
+from polycomb.types import ResolutionReport
 
 ResolutionMode = Literal["single", "custom", "none"]
 

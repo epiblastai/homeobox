@@ -5,7 +5,7 @@ Deep reference for the curation/apply API. The skill body (`SKILL.md`) covers th
 ## Imports
 
 ```python
-from auto_atlas import (
+from polycomb import (
     AddColumn,
     CastColumn,
     CurationApplicator,

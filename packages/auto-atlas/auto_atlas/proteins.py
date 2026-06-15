@@ -7,21 +7,20 @@ resolver pipeline (see ``specs/resolver-framework.md``).
 
 import polars as pl
 from homeobox.util import sql_escape
-
-from auto_atlas.genes import _get_organism_record
-from auto_atlas.metadata_table import (
+from polycomb.genes import _get_organism_record
+from polycomb.metadata_table import (
     PROTEIN_ALIASES_TABLE,
     PROTEINS_TABLE,
     get_reference_db,
 )
-from auto_atlas.resolvers import (
+from polycomb.resolvers import (
     AliasLookup,
     CanonicalAliasDisambiguator,
     Disambiguation,
     ResolverContext,
     ResolverPipeline,
 )
-from auto_atlas.types import ProteinResolution, ResolutionReport
+from polycomb.types import ProteinResolution, ResolutionReport
 
 
 def _batch_lookup_proteins(uniprot_ids: list[str]) -> dict[str, dict]:

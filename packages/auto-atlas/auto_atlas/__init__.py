@@ -5,7 +5,7 @@ metadata to canonical identifiers and CELLxGENE-compatible ontology term IDs.
 No coupling to ingestion_utils.py or LanceDB.
 """
 
-from auto_atlas.curation import (
+from polycomb.curation import (
     AddColumn,
     ApplyResult,
     CastColumn,
@@ -24,20 +24,20 @@ from auto_atlas.curation import (
     WideToLong,
     default_audit_db_path,
 )
-from auto_atlas.genes import (
+from polycomb.genes import (
     detect_organism_from_ensembl_ids,
     is_placeholder_symbol,
     resolve_genes,
 )
-from auto_atlas.guide_rna import annotate_genomic_coordinates, resolve_guide_sequences
-from auto_atlas.metadata_table import configure_reference_db, get_reference_db
-from auto_atlas.molecules import (
+from polycomb.guide_rna import annotate_genomic_coordinates, resolve_guide_sequences
+from polycomb.metadata_table import configure_reference_db, get_reference_db
+from polycomb.molecules import (
     canonicalize_smiles,
     clean_compound_name,
     is_control_compound,
     resolve_molecules,
 )
-from auto_atlas.ncbi import (
+from polycomb.ncbi import (
     BioProjectMetadata,
     BioSampleMetadata,
     GeoSampleMetadata,
@@ -59,7 +59,7 @@ from auto_atlas.ncbi import (
     link_accessions,
     search_pubmed_by_title,
 )
-from auto_atlas.ontologies import (
+from polycomb.ontologies import (
     OntologyEntity,
     get_ontology_ancestors,
     get_ontology_descendants,
@@ -73,7 +73,7 @@ from auto_atlas.ontologies import (
     resolve_organisms,
     resolve_tissues,
 )
-from auto_atlas.perturbations import (
+from polycomb.perturbations import (
     GeneticPerturbationType,
     classify_perturbation_method,
     detect_control_labels,
@@ -81,8 +81,8 @@ from auto_atlas.perturbations import (
     is_control_label,
     parse_combinatorial_perturbations,
 )
-from auto_atlas.proteins import resolve_proteins
-from auto_atlas.registry import (
+from polycomb.proteins import resolve_proteins
+from polycomb.registry import (
     CrossReferenceDbRegistry,
     OntologyRegistry,
     ResolverBinding,
@@ -91,7 +91,7 @@ from auto_atlas.registry import (
     parse_crossref,
     parse_ontology,
 )
-from auto_atlas.types import (
+from polycomb.types import (
     CellLineResolution,
     GeneResolution,
     GuideRnaResolution,

@@ -1,6 +1,6 @@
 # Molecule resolution
 
-Resolve small-molecule identifiers — compound names, SMILES strings, and PubChem CIDs — to canonical structures (`pubchem_cid`, `canonical_smiles`, `inchi_key`, `iupac_name`, `chembl_id`) with `resolve_molecules` from the `auto_atlas` suite.
+Resolve small-molecule identifiers — compound names, SMILES strings, and PubChem CIDs — to canonical structures (`pubchem_cid`, `canonical_smiles`, `inchi_key`, `iupac_name`, `chembl_id`) with `resolve_molecules` from the `polycomb` suite.
 
 Molecules appear in more than one kind of table, so do not assume one. The same resolver fills the structural-identity columns wherever they live — a molecule feature registry, or a perturbation registry whose rows are compounds applied to cells. What differs between tables is only which structural columns the schema declares and how control rows (vehicle, untreated, DMSO) are treated.
 
@@ -34,8 +34,8 @@ This reference is designed to guide you through the specific resolution consider
 ## Tools
 
 ```python
-from auto_atlas import resolve_molecules, is_control_label, is_control_compound, detect_negative_control_type
-from auto_atlas.types import MoleculeResolution, ResolutionReport
+from polycomb import resolve_molecules, is_control_label, is_control_compound, detect_negative_control_type
+from polycomb.types import MoleculeResolution, ResolutionReport
 ```
 
 | Tool | Input | What it finds (resolver result fields) | Use it to fill |
@@ -87,7 +87,7 @@ python skills/schema-harmonization/scripts/apply_resolution_pass.py \
 Vehicle and solvent controls (`DMSO`, `vehicle`, `untreated`, `water`, …) are not compounds to structurally resolve. The fan-out already leaves their structural columns null because the resolver returns no structure for them, so usually no extra op is needed in the registry. Where the schema has a control-status or control-type field, set it deliberately using the helpers rather than leaving it to the resolver:
 
 ```python
-from auto_atlas import (
+from polycomb import (
     ReplaceValue, CurationApplicator, CurationTransaction, default_audit_db_path,
     is_control_label, detect_negative_control_type,
 )

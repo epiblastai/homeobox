@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import polars as pl
 from homeobox.util import sql_escape
-
-from auto_atlas.metadata_table import get_reference_db
-from auto_atlas.resolvers.pipeline import Disambiguation, LookupHit, ResolverContext
+from polycomb.metadata_table import get_reference_db
+from polycomb.resolvers.pipeline import Disambiguation, LookupHit, ResolverContext
 
 _CHUNK = 500
 

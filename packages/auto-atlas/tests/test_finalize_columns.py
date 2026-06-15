@@ -7,10 +7,9 @@ import os
 
 import lancedb
 import pyarrow as pa
-
-from auto_atlas.finalize_columns import deferred_field_names, ensure_schema_columns_for_table
-from auto_atlas.types import TableRef
-from auto_atlas.util import load_schema_info
+from polycomb.finalize_columns import deferred_field_names, ensure_schema_columns_for_table
+from polycomb.types import TableRef
+from polycomb.util import load_schema_info
 
 SCHEMA_PATH = os.path.join(
     os.path.dirname(__file__),

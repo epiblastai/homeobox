@@ -16,8 +16,7 @@ from datetime import datetime
 from xml.etree import ElementTree
 
 import requests
-
-from auto_atlas._rate_limit import rate_limited
+from polycomb._rate_limit import rate_limited
 
 # ---------------------------------------------------------------------------
 # Rate limit — dynamic based on API key

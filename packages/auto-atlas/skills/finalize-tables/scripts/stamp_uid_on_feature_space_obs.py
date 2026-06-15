@@ -38,9 +38,8 @@ from join_feature_space_obs import (
     assert_unique_multimodal_barcode,
     suffixed_obs_tables,
 )
-
-from auto_atlas.collection import Collection
-from auto_atlas.util import is_null
+from polycomb.collection import Collection
+from polycomb.util import is_null
 
 UID_COLUMN = "uid"
 

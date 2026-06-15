@@ -1,8 +1,8 @@
 """Auditable column-operation curation for Lance tables."""
 
-from auto_atlas.curation.applicator import CurationApplicator
-from auto_atlas.curation.audit import CurationAuditStore, default_audit_db_path
-from auto_atlas.curation.types import (
+from polycomb.curation.applicator import CurationApplicator
+from polycomb.curation.audit import CurationAuditStore, default_audit_db_path
+from polycomb.curation.types import (
     AddColumn,
     AppliedChange,
     ApplyResult,

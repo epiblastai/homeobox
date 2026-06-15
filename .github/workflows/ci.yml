@@ -31,14 +31,14 @@ jobs:
           args: --uv --extras dev
       - run: uv run pytest
 
-  test-auto-atlas:
-    name: Test auto-atlas
+  test-polycomb:
+    name: Test polycomb
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uv sync --package auto-atlas --extra dev
-      # auto_atlas imports homeobox, which is a maturin (Rust) extension, so it
+      - run: uv sync --package polycomb --extra dev
+      # polycomb imports homeobox, which is a maturin (Rust) extension, so it
       # must be compiled into the workspace venv before the tests can import it.
       - uses: PyO3/maturin-action@v1
         with:
@@ -48,4 +48,4 @@ jobs:
       # path relative to the working directory. --project points uv at the
       # workspace root so it reuses the synced venv instead of re-resolving.
       - run: uv run --project ${{ github.workspace }} pytest
-        working-directory: packages/auto-atlas
+        working-directory: packages/polycomb

@@ -33,19 +33,10 @@ import pyarrow as pa
 from assign_uids import assign_uids_for_table
 from drop_leftover_columns import drop_leftovers_for_table
 from join_feature_space_obs import join_collection
-from populate_registry_keys import (
-    discover_publication_target_schemas,
-    populate_fks_for_table,
-    seed_publication_referencing_joins,
-)
-from set_dataset_uid import set_dataset_uid
-from stamp_uid_on_feature_space_obs import stamp_uid_on_feature_space_obs
-from validate_tables import validate_table
-
-from auto_atlas.collection import Collection
-from auto_atlas.finalize_columns import ensure_schema_columns_for_table
-from auto_atlas.types import SchemaInfo, TableRef
-from auto_atlas.util import (
+from polycomb.collection import Collection
+from polycomb.finalize_columns import ensure_schema_columns_for_table
+from polycomb.types import SchemaInfo, TableRef
+from polycomb.util import (
     discover_tables,
     drop_arrow_columns,
     finalization_order,
@@ -55,6 +46,14 @@ from auto_atlas.util import (
     set_arrow_column,
     tables_for_class,
 )
+from populate_registry_keys import (
+    discover_publication_target_schemas,
+    populate_fks_for_table,
+    seed_publication_referencing_joins,
+)
+from set_dataset_uid import set_dataset_uid
+from stamp_uid_on_feature_space_obs import stamp_uid_on_feature_space_obs
+from validate_tables import validate_table
 
 
 def compute_auto_fields_for_table(
