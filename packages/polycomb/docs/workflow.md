@@ -31,8 +31,8 @@ Steps 1 and 2 are technically independent — neither requires the other's outpu
 Install the package and agent skills:
 
 ```bash
-pip install -e .
-curl -sSL https://raw.githubusercontent.com/epiblastai/polycomb/refs/heads/main/install.sh | bash
+pip install polycomb
+curl -sSL https://raw.githubusercontent.com/epiblastai/homeobox/refs/heads/main/packages/polycomb/install.sh | bash
 ```
 
 The install script copies skills from `skills/` into `~/.agents/skills/` and links them for Claude at `~/.claude/skills/`. Each skill documents the procedures and scripts for one workflow stage.
