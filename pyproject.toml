@@ -22,7 +22,7 @@ dependencies = [
 ]
 
 [tool.uv.workspace]
-members = ["homeobox_examples"]
+members = ["homeobox_examples", "packages/*"]
 
 [[tool.uv.index]]
 name = "pytorch-cu128"

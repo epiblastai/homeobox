@@ -1,0 +1,56 @@
+site_name: auto-atlas
+site_url: https://epiblastai.github.io/auto-atlas/
+site_description: Automatic atlas design and curation utilities
+repo_url: https://github.com/epiblastai/auto-atlas
+repo_name: epiblastai/auto-atlas
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          options:
+            docstring_style: google
+            show_source: true
+            show_root_heading: true
+
+nav:
+  - Overview: index.md
+  - Workflow: workflow.md
+  - Concepts:
+    - Collections: collections.md
+    - Resolvers: resolvers.md
+    - Curation: curation.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true

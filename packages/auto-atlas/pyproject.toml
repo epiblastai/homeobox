@@ -1,0 +1,71 @@
+[project]
+name = "auto-atlas"
+version = "0.0.1"
+description = "Automatic atlas design and curation utilities"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "anndata",
+    "lancedb",
+    "numpy",
+    "polars",
+    "pydantic",
+    "pyarrow",
+    "requests",
+    "pylance>=2.0.0",
+    "boto3",
+    "gget",
+    "mygene",
+    "homeobox>=0.2.8",
+    "openpyxl",
+    "pubchempy",
+]
+
+[project.optional-dependencies]
+all = [
+    "auto-atlas",
+    "duckdb",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "pre-commit",
+]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
+
+[tool.uv.sources]
+homeobox = { workspace = true }
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = ["notebooks/"]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["auto_atlas*"]
