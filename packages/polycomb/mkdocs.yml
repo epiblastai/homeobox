@@ -1,8 +1,8 @@
 site_name: polycomb
-site_url: https://epiblastai.github.io/polycomb/
+site_url: https://epiblastai.github.io/homeobox/polycomb/
 site_description: Automatic atlas design and curation utilities
-repo_url: https://github.com/epiblastai/polycomb
-repo_name: epiblastai/polycomb
+repo_url: https://github.com/epiblastai/homeobox
+repo_name: epiblastai/homeobox
 
 theme:
   name: material

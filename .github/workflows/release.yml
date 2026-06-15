@@ -1,8 +1,10 @@
-name: Release to PyPI
+name: Release homeobox to PyPI
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "homeobox-v*"
+  workflow_dispatch:
 
 permissions:
   contents: read
