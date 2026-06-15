@@ -19,7 +19,7 @@ References:
 - **How to write the YAML** (document structure, fields, markers, pointers, enums, constraints, computed fields): `references/schema_yaml_ir.md`. Read this before authoring.
 - Core mechanics (feature spaces, pointer types, stable UIDs, datasets table, FKs): `references/homeobox_concepts.md`. Always read this file.
 - Complete bundled example IR: `references/multimodal_perturbation_atlas_schema.yaml`. The ceiling case — every section, enum, marker, constraint, and computed field. Use it as the template to adapt; do not copy its biological model unless the requested atlas matches it.
-- The hand-written Python equivalent: `references/multimodal_perturbation_atlas_schema.py`. The same atlas as a `schema.py`, useful for seeing how a marker maps to a `*.declare(...)` call. It predates the IR — it uses `polycomb.registry` enums and value-checking validators that the IR drops — so it is illustrative, not byte-for-byte what codegen emits. Do not author schema.py by hand; author the YAML.
+Do not author `schema.py` by hand — author the YAML. To see the Python a given IR codegens into, run `scripts/validate_schema_ir.py <schema.yaml> --emit-to schema.py`; how each marker maps to a `*.declare(...)` call is documented in `references/schema_yaml_ir.md`.
 
 Official docs pages for homeobox:
 - Homeobox schemas: https://epiblast.ai/homeobox/schemas/
