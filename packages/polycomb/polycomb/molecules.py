@@ -20,7 +20,8 @@ from polycomb._rate_limit import rate_limited
 from polycomb.metadata_table import (
     COMPOUND_SYNONYMS_TABLE,
     COMPOUNDS_TABLE,
-    get_reference_db,
+    get_reference_db_or_none,
+    open_reference_table_or_none,
 )
 from polycomb.perturbations import _CHEMICAL_NEGATIVE_CONTROLS
 from polycomb.resolvers import (
@@ -185,7 +186,9 @@ def _resolve_chembl_fallback(name: str, cleaned: str) -> MoleculeResolution | No
 def _has_compound_tables() -> bool:
     """Check if the compound LanceDB tables are populated."""
     try:
-        db = get_reference_db()
+        db = get_reference_db_or_none()
+        if db is None:
+            return False
         tables = db.list_tables().tables
         return COMPOUND_SYNONYMS_TABLE in tables
     except (RuntimeError, Exception):
@@ -315,8 +318,9 @@ class CompoundSynonymLookup:
         if not keys or not _has_compound_tables():
             return {key: None for key in keys}
 
-        db = get_reference_db()
-        table = db.open_table(COMPOUND_SYNONYMS_TABLE)
+        table = open_reference_table_or_none(COMPOUND_SYNONYMS_TABLE)
+        if table is None:
+            return {key: None for key in keys}
 
         frames: list[pl.DataFrame] = []
         for i in range(0, len(keys), 500):
@@ -364,10 +368,12 @@ class CompoundSmilesEnricher:
         self, results: dict[str, MoleculeResolution], ctx: ResolverContext
     ) -> dict[str, MoleculeResolution]:
         cids = list({r.pubchem_cid for r in results.values() if r.pubchem_cid is not None})
-        if not cids or COMPOUNDS_TABLE not in get_reference_db().list_tables().tables:
+        if not cids:
+            return results
+        db = get_reference_db_or_none()
+        if db is None or COMPOUNDS_TABLE not in db.list_tables().tables:
             return results
 
-        db = get_reference_db()
         table = db.open_table(COMPOUNDS_TABLE)
         smiles_map: dict[int, str | None] = {}
         for i in range(0, len(cids), 500):

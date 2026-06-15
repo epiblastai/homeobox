@@ -10,7 +10,7 @@ from __future__ import annotations
 import polars as pl
 from homeobox.util import sql_escape
 
-from polycomb.metadata_table import get_reference_db
+from polycomb.metadata_table import open_reference_table_or_none
 from polycomb.resolvers.pipeline import Disambiguation, LookupHit, ResolverContext
 
 _CHUNK = 500
@@ -34,8 +34,9 @@ class AliasLookup:
         if not keys:
             return {}
         scientific_name = ctx.extras["scientific_name"]
-        db = get_reference_db()
-        table = db.open_table(self.table_name)
+        table = open_reference_table_or_none(self.table_name)
+        if table is None:
+            return {key: None for key in keys}
 
         frames: list[pl.DataFrame] = []
         for i in range(0, len(keys), _CHUNK):

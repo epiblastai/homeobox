@@ -24,7 +24,7 @@ from polycomb.metadata_table import (
     CELL_LINE_SYNONYMS_TABLE,
     CELL_LINES_TABLE,
     ONTOLOGY_TERMS_TABLE,
-    get_reference_db,
+    open_reference_table_or_none,
 )
 from polycomb.resolvers import (
     Disambiguation,
@@ -104,11 +104,37 @@ def _get_prefixes(entity: OntologyEntity, organism: str | None = None) -> list[s
     return prefixes
 
 
+def _empty_ontology_terms_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "ontology_term_id": pl.Utf8,
+            "name": pl.Utf8,
+            "synonyms": pl.Utf8,
+            "parent_ids": pl.List(pl.Utf8),
+        }
+    )
+
+
+def _empty_cell_lines_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "cellosaurus_id": pl.Utf8,
+            "cell_line_name": pl.Utf8,
+            "species": pl.Utf8,
+            "ncbi_taxonomy_id": pl.Int64,
+            "disease": pl.Utf8,
+            "sex": pl.Utf8,
+            "category": pl.Utf8,
+        }
+    )
+
+
 @functools.lru_cache(maxsize=32)
 def _load_ontology_terms(prefix: str) -> pl.DataFrame:
     """Load all non-obsolete terms for a given ontology prefix. Cached."""
-    db = get_reference_db()
-    table = db.open_table(ONTOLOGY_TERMS_TABLE)
+    table = open_reference_table_or_none(ONTOLOGY_TERMS_TABLE)
+    if table is None:
+        return _empty_ontology_terms_df()
     return (
         table.search()
         .where(
@@ -152,8 +178,9 @@ def _build_synonym_index(prefix: str) -> dict[str, tuple[str, str, str]]:
 @functools.lru_cache(maxsize=1)
 def _load_cell_lines() -> pl.DataFrame:
     """Load all cell lines from the reference DB. Cached."""
-    db = get_reference_db()
-    table = db.open_table(CELL_LINES_TABLE)
+    table = open_reference_table_or_none(CELL_LINES_TABLE)
+    if table is None:
+        return _empty_cell_lines_df()
     return (
         table.search()
         .select(
@@ -186,8 +213,9 @@ def _build_cell_line_name_index() -> dict[str, str]:
 @functools.lru_cache(maxsize=1)
 def _build_cell_line_synonym_index() -> dict[str, str]:
     """Build lowercased synonym → cellosaurus_id index (non-primary names only)."""
-    db = get_reference_db()
-    table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
+    table = open_reference_table_or_none(CELL_LINE_SYNONYMS_TABLE)
+    if table is None:
+        return {}
     df = (
         table.search()
         .where("is_primary_name = false", prefilter=True)
@@ -370,9 +398,13 @@ class CellLineFTSFallback:
         if not original.strip():
             return None  # empty input stays unresolved
         record_lookup = _build_cell_line_record_lookup()
-        db = get_reference_db()
-        fts_table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
-        fts_results = fts_table.search(original.strip(), query_type="fts").limit(5).to_polars()
+        fts_table = open_reference_table_or_none(CELL_LINE_SYNONYMS_TABLE)
+        if fts_table is None:
+            return None
+        try:
+            fts_results = fts_table.search(original.strip(), query_type="fts").limit(5).to_polars()
+        except Exception:
+            return None
         if fts_results.is_empty():
             return None
         top_id = fts_results.row(0, named=True)["cellosaurus_id"]

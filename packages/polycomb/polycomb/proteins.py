@@ -8,11 +8,11 @@ resolver pipeline (see ``specs/resolver-framework.md``).
 import polars as pl
 from homeobox.util import sql_escape
 
-from polycomb.genes import _get_organism_record
+from polycomb.genes import _try_get_organism_record
 from polycomb.metadata_table import (
     PROTEIN_ALIASES_TABLE,
     PROTEINS_TABLE,
-    get_reference_db,
+    open_reference_table_or_none,
 )
 from polycomb.resolvers import (
     AliasLookup,
@@ -28,8 +28,9 @@ def _batch_lookup_proteins(uniprot_ids: list[str]) -> dict[str, dict]:
     """Batch lookup protein records by uniprot_id, returning a map of id -> record."""
     if not uniprot_ids:
         return {}
-    db = get_reference_db()
-    table = db.open_table(PROTEINS_TABLE)
+    table = open_reference_table_or_none(PROTEINS_TABLE)
+    if table is None:
+        return {}
     frames: list[pl.DataFrame] = []
     for i in range(0, len(uniprot_ids), 500):
         batch = uniprot_ids[i : i + 500]
@@ -146,5 +147,25 @@ def resolve_proteins(
     """
     extras: dict[str, object] = {}
     if values:
-        extras["scientific_name"] = _get_organism_record(organism)["scientific_name"]
+        record = _try_get_organism_record(organism)
+        if record is None:
+            results = [
+                ProteinResolution(
+                    input_value=value,
+                    resolved_value=None,
+                    confidence=0.0,
+                    source="none",
+                    organism=organism,
+                )
+                for value in values
+            ]
+            return ResolutionReport(
+                tool="resolve_proteins",
+                total=len(results),
+                resolved=0,
+                unresolved=len(results),
+                ambiguous=0,
+                results=results,
+            )
+        extras["scientific_name"] = record["scientific_name"]
     return protein_pipeline.resolve(values, organism=organism, extras=extras)

@@ -30,7 +30,13 @@ from polycomb.genes import (
     resolve_genes,
 )
 from polycomb.guide_rna import annotate_genomic_coordinates, resolve_guide_sequences
-from polycomb.metadata_table import configure_reference_db, get_reference_db
+from polycomb.metadata_table import (
+    configure_reference_db,
+    get_reference_db,
+    initialize_reference_db,
+    reference_table_exists,
+    write_reference_db_config,
+)
 from polycomb.molecules import (
     canonicalize_smiles,
     clean_compound_name,
@@ -133,6 +139,9 @@ __all__ = [
     # Reference DB
     "configure_reference_db",
     "get_reference_db",
+    "initialize_reference_db",
+    "write_reference_db_config",
+    "reference_table_exists",
     "CrossReferenceDbRegistry",
     "OntologyRegistry",
     "parse_crossref",

@@ -22,7 +22,7 @@ from polycomb.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
     ORGANISMS_TABLE,
-    get_reference_db,
+    open_reference_table_or_none,
 )
 from polycomb.resolvers import (
     AliasLookup,
@@ -63,13 +63,25 @@ _organism_by_common: dict[str, dict] | None = None
 _organism_by_scientific: dict[str, dict] | None = None
 
 
+def _empty_features_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "ensembl_gene_id": pl.Utf8,
+            "symbol": pl.Utf8,
+            "ncbi_gene_id": pl.Int64,
+            "organism": pl.Utf8,
+        }
+    )
+
+
 def _load_all_organisms() -> list[dict]:
     """Load all organism records from the DB."""
     global _organism_list, _organism_by_common, _organism_by_scientific
     if _organism_list is not None:
         return _organism_list
-    db = get_reference_db()
-    table = db.open_table(ORGANISMS_TABLE)
+    table = open_reference_table_or_none(ORGANISMS_TABLE)
+    if table is None:
+        return []
     df = table.search().to_polars()
     _organism_list = list(df.iter_rows(named=True))
     _organism_by_common = {row["common_name"]: row for row in _organism_list}
@@ -80,14 +92,23 @@ def _load_all_organisms() -> list[dict]:
 def _get_organism_record(organism: str) -> dict:
     """Look up an organism by common_name or scientific_name. Raises ValueError if unknown."""
     _load_all_organisms()
-    if organism in _organism_by_common:
-        return _organism_by_common[organism]
-    if organism in _organism_by_scientific:
-        return _organism_by_scientific[organism]
+    by_common = _organism_by_common or {}
+    by_scientific = _organism_by_scientific or {}
+    if organism in by_common:
+        return by_common[organism]
+    if organism in by_scientific:
+        return by_scientific[organism]
     raise ValueError(
         f"Unknown organism '{organism}'. Pass a common_name (e.g. 'human') "
         f"or scientific_name (e.g. 'homo_sapiens')."
     )
+
+
+def _try_get_organism_record(organism: str) -> dict | None:
+    try:
+        return _get_organism_record(organism)
+    except ValueError:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -102,16 +123,10 @@ def _is_ensembl_id(value: str) -> bool:
 def _batch_lookup_features(ensembl_gene_ids: list[str], scientific_name: str) -> pl.DataFrame:
     """Batch lookup genomic_features by ensembl_gene_id, returning a polars DataFrame."""
     if not ensembl_gene_ids:
-        return pl.DataFrame(
-            schema={
-                "ensembl_gene_id": pl.Utf8,
-                "symbol": pl.Utf8,
-                "ncbi_gene_id": pl.Int64,
-                "organism": pl.Utf8,
-            }
-        )
-    db = get_reference_db()
-    table = db.open_table(GENOMIC_FEATURES_TABLE)
+        return _empty_features_df()
+    table = open_reference_table_or_none(GENOMIC_FEATURES_TABLE)
+    if table is None:
+        return _empty_features_df()
     frames: list[pl.DataFrame] = []
     for i in range(0, len(ensembl_gene_ids), 500):
         batch = ensembl_gene_ids[i : i + 500]
@@ -127,14 +142,7 @@ def _batch_lookup_features(ensembl_gene_ids: list[str], scientific_name: str) ->
         )
         frames.append(df)
     if not frames:
-        return pl.DataFrame(
-            schema={
-                "ensembl_gene_id": pl.Utf8,
-                "symbol": pl.Utf8,
-                "ncbi_gene_id": pl.Int64,
-                "organism": pl.Utf8,
-            }
-        )
+        return _empty_features_df()
     result = pl.concat(frames)
     # Prefer current assembly over older assemblies when gene exists in multiple
     if result.height > result.get_column("ensembl_gene_id").n_unique():
@@ -261,7 +269,12 @@ class GeneEnsemblLookup:
 
         hits: dict[str, LookupHit | None] = {}
         for organism, group_keys in groups.items():
-            scientific_name = _get_organism_record(organism)["scientific_name"]
+            record = _try_get_organism_record(organism)
+            if record is None:
+                for key in group_keys:
+                    hits[key] = None
+                continue
+            scientific_name = record["scientific_name"]
             base_ids = list({id_to_base[key] for key in group_keys})
             features_df = _batch_lookup_features(base_ids, scientific_name)
             base_map = {row["ensembl_gene_id"]: row for row in features_df.iter_rows(named=True)}
@@ -361,12 +374,23 @@ def resolve_genes(
     results: list[GeneResolution] = [None] * len(values)  # type: ignore[list-item]
 
     if symbol_idx:
-        extras = {"scientific_name": _get_organism_record(organism)["scientific_name"]}
-        report = gene_symbol_pipeline.resolve(
-            [values[i] for i in symbol_idx], organism=organism, extras=extras
-        )
-        for i, res in zip(symbol_idx, report.results, strict=True):
-            results[i] = res
+        record = _try_get_organism_record(organism)
+        if record is None:
+            for i in symbol_idx:
+                results[i] = GeneResolution(
+                    input_value=values[i],
+                    resolved_value=None,
+                    confidence=0.0,
+                    source="none",
+                    organism=organism,
+                )
+        else:
+            extras = {"scientific_name": record["scientific_name"]}
+            report = gene_symbol_pipeline.resolve(
+                [values[i] for i in symbol_idx], organism=organism, extras=extras
+            )
+            for i, res in zip(symbol_idx, report.results, strict=True):
+                results[i] = res
 
     if ensembl_idx:
         report = gene_ensembl_pipeline.resolve([values[i] for i in ensembl_idx], organism=organism)
