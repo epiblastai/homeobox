@@ -14,10 +14,7 @@ from polycomb.util import load_schema_info
 
 SCHEMA_PATH = os.path.join(
     os.path.dirname(__file__),
-    "..",
-    "skills",
-    "atlas-designer",
-    "references",
+    "fixtures",
     "multimodal_perturbation_atlas_schema.py",
 )
 

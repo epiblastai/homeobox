@@ -43,7 +43,11 @@ Paths are relative to the repository root. When a skill is installed, its script
 
 ### 1. atlas-designer
 
-No scripts — this skill produces a `schema.py` file. A reference example lives at `skills/atlas-designer/references/multimodal_perturbation_atlas_schema.py`.
+Produces a schema YAML (the homeobox schema IR), which codegens into a `schema.py`. A reference example IR lives at `skills/atlas-designer/references/multimodal_perturbation_atlas_schema.yaml`.
+
+| Script | Purpose |
+|--------|---------|
+| `skills/atlas-designer/scripts/validate_schema_ir.py` | Parse a schema YAML into a live atlas: check registry markers, codegen `schema.py`, exec it, and build a throwaway atlas. |
 
 ### 2. create-data-package
 
