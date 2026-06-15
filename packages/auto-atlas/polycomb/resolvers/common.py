@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import polars as pl
 from homeobox.util import sql_escape
+
 from polycomb.metadata_table import get_reference_db
 from polycomb.resolvers.pipeline import Disambiguation, LookupHit, ResolverContext
 

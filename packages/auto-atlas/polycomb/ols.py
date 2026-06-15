@@ -19,6 +19,7 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 import requests
+
 from polycomb._rate_limit import rate_limited
 
 OLS4_BASE = "https://www.ebi.ac.uk/ols4/api"

@@ -9,6 +9,7 @@ from typing import Any
 import lancedb
 import pandas as pd
 import pyarrow as pa
+
 from polycomb.curation.audit import CurationAuditStore, default_audit_db_path
 from polycomb.curation.sql import (
     arrow_alias_to_sql_cast,

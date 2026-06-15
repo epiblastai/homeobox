@@ -19,6 +19,7 @@ from enum import StrEnum
 
 import polars as pl
 from homeobox.util import sql_escape
+
 from polycomb.metadata_table import (
     CELL_LINE_SYNONYMS_TABLE,
     CELL_LINES_TABLE,

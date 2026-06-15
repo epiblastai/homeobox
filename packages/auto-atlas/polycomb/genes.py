@@ -17,6 +17,7 @@ from typing import Literal
 
 import polars as pl
 from homeobox.util import sql_escape
+
 from polycomb.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,

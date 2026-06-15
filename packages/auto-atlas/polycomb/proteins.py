@@ -7,6 +7,7 @@ resolver pipeline (see ``specs/resolver-framework.md``).
 
 import polars as pl
 from homeobox.util import sql_escape
+
 from polycomb.genes import _get_organism_record
 from polycomb.metadata_table import (
     PROTEIN_ALIASES_TABLE,

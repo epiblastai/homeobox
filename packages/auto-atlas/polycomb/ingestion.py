@@ -41,6 +41,7 @@ from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.group_specs import get_spec
 from homeobox.ingestion import Ingestor, Reader
 from homeobox.schema import PointerField, _extract_pointer_fields
+
 from polycomb.collection import Collection, FileTypeTag
 from polycomb.types import SchemaInfo
 from polycomb.util import load_schema_info

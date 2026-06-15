@@ -19,6 +19,7 @@ from homeobox.schema import (
     model_from_module,
 )
 from homeobox.schema.parser import parsed_result_from_model
+
 from polycomb.types import SchemaInfo, TableRef
 
 

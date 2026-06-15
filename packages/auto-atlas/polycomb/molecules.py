@@ -15,6 +15,7 @@ from typing import Literal
 import polars as pl
 import requests
 from homeobox.util import sql_escape
+
 from polycomb._rate_limit import rate_limited
 from polycomb.metadata_table import (
     COMPOUND_SYNONYMS_TABLE,

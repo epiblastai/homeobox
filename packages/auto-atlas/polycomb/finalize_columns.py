@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pyarrow as pa
 from homeobox.schema import _iter_pointer_annotations
+
 from polycomb.types import SchemaInfo, TableRef
 from polycomb.util import overwrite_table, read_arrow, set_arrow_column
 

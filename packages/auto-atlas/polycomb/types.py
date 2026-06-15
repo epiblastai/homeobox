@@ -13,6 +13,7 @@ from typing import Any
 
 import pandas as pd
 from homeobox.schema import PolymorphicRegistryKeyField, RegistryKeyField, SummaryField
+
 from polycomb.curation.types import MergeColumns, ReplaceValue
 
 
