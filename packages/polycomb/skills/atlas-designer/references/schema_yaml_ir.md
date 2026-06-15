@@ -85,7 +85,7 @@ Shorthand — a single-string payload may be written bare:
 ```yaml
 - name: organism
   type: str
-  ontology_aligned: NCBITAXON          # == {ontology_name: NCBITAXON}
+  ontology_aligned: NCBITaxon          # == {ontology_name: NCBITaxon}
 - name: doi
   type: str | None
   cross_reference: DOI                  # == {database_name: DOI}
@@ -102,7 +102,7 @@ Combined markers (a column that is both a stable UID and a cross-reference):
   default: null
   markers:
     stable_uid: true
-    cross_reference: PUBCHEM
+    cross_reference: PubChem
 ```
 
 Polymorphic key (the discriminator column is a plain parallel list):
@@ -122,7 +122,7 @@ Polymorphic key (the discriminator column is a plain parallel list):
 Rules:
 
 - Name registry-key references `*_uid` / `*_uids`.
-- Use `ontology_name` / `database_name` values that are members of `polycomb.registry.OntologyRegistry` (CL, UBERON, MONDO, NCBITAXON, EFO, HSAPDV, MMUSDV, HANCESTRO) and `CrossReferenceDbRegistry` (ENSEMBL, UNIPROT, PUBCHEM, CELLOSAURUS, DOI, PUBMED, GENBANK, REFSEQ, INCHI, CHEMBL, …) so resolution tooling finds the right resolver. (The IR carries these as bare strings; it does not import the registry.)
+- `ontology_name` / `database_name` must be the **value** string of a member of `polycomb.registry.OntologyRegistry` (`CL`, `UBERON`, `MONDO`, `NCBITaxon`, `EFO`, `HsapDv`, `MmusDv`, `HANCESTRO`) or `CrossReferenceDbRegistry` (`ENSEMBL`, `UniProt`, `PubChem`, `Cellosaurus`, `DOI`, `PubMed`, `GenBank`, `RefSeq`, `InChI`, `ChEMBL`, …) — note the mixed casing; resolution tooling matches by value (`parse_ontology` / `parse_crossref`), not by the upper-cased member name. The IR carries these as bare strings and does not import the registry, so `scripts/validate_schema_ir.py` checks them against the registry for you.
 - Prefer `polymorphic_registry_key` over hand-rolled parallel columns for polymorphic references.
 - Declare `summary` markers on the `dataset_table` to document aggregates over the obs table; use the obs class name as `target_schema`.
 

@@ -58,10 +58,12 @@ table. See `references/schema_yaml_ir.md` for the full vocabulary.
 ## Validation
 
 After writing or editing the YAML, validate it with the bundled script. It parses
-the YAML into the IR, codegens `schema.py` (guaranteeing valid Python), executes
-the generated classes (so pointer fields validate against registered feature-space
-specs and enum references resolve), and builds a throwaway atlas (exercising
-Arrow/Lance schema generation):
+the YAML into the IR, checks every `ontology_aligned` / `cross_reference` value
+against `polycomb.registry` (the same `parse_ontology` / `parse_crossref` the
+resolution tooling uses), codegens `schema.py` (guaranteeing valid Python),
+executes the generated classes (so pointer fields validate against registered
+feature-space specs and enum references resolve), and builds a throwaway atlas
+(exercising Arrow/Lance schema generation):
 
 ```bash
 python scripts/validate_schema_ir.py path/to/schema.yaml
@@ -85,7 +87,7 @@ ingestion validation.
 - Pointers for spaces with a feature axis carry `feature_registry_schema`; raw spaces (image tiles) omit it.
 - Every table has at most one `stable_uid` field; composite identities are a single derived field marked stable.
 - Scalar references use `registry_key`; polymorphic references use `polymorphic_registry_key` with a companion discriminator column; both are named `*_uid`/`*_uids`.
-- Ontology terms use `ontology_aligned`; external database IDs use `cross_reference`; values are registry member names.
+- Ontology terms use `ontology_aligned`; external database IDs use `cross_reference`; values are the registry **value** strings (e.g. `NCBITaxon`, `UniProt`), which the validator checks against `polycomb.registry`.
 - Dataset-level aggregates use `summary` with a valid `op` (`count`, `nunique`, `unique`).
 - Columns with multiple roles use a `markers:` block (→ `combine_markers`).
 - Enum-typed fields replace value-checking validators; only `require_any`/`equal_length` constraints and `computed` fields are used — no hand-written validators.
