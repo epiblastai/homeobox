@@ -5,6 +5,7 @@ metadata to canonical identifiers and CELLxGENE-compatible ontology term IDs.
 No coupling to ingestion_utils.py or LanceDB.
 """
 
+from polycomb._version import __version__
 from polycomb.curation import (
     AddColumn,
     ApplyResult,
@@ -109,6 +110,7 @@ from polycomb.types import (
 )
 
 __all__ = [
+    "__version__",
     # Curation
     "AddColumn",
     "ApplyResult",

@@ -1,6 +1,6 @@
 [project]
 name = "polycomb"
-version = "0.0.1"
+version = "0.0.2"
 description = "Automatic atlas design and curation utilities"
 readme = "README.md"
 requires-python = ">=3.12"
