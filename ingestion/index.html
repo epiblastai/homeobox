@@ -1,0 +1,1847 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal biomedical databases built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/homeobox/ingestion/">
+      
+      
+        <link rel="prev" href="../querying/">
+      
+      
+        <link rel="next" href="../reconstructors/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Ingestion - homeobox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#ingestion" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="homeobox" class="md-header__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            homeobox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Ingestion
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="homeobox" class="md-nav__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    homeobox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Registries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../schemas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pointer_types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pointer Types
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../batch_array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    BatchArray
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-streaming-core" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The streaming core
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The streaming core">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#readers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Readers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#converters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Converters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Converters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-converter-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The converter registry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#writers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-ingestor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Ingestor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-functional-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The functional API
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The functional API">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ingesting-an-anndata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ingesting an AnnData
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ingesting-aligned-multimodal-anndata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ingesting aligned multimodal AnnData
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#var_df-and-the-feature-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        var_df and the feature registry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-oriented-copies-post-ingestion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-oriented copies (post-ingestion)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adding-a-feature-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a feature space
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataloader Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polycomb
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Polycomb
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/collections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Collections
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/resolvers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Resolvers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/curation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Curation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-streaming-core" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The streaming core
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The streaming core">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#readers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Readers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#converters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Converters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Converters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#the-converter-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The converter registry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#writers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Writers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-ingestor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The Ingestor
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-functional-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The functional API
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The functional API">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ingesting-an-anndata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ingesting an AnnData
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ingesting-aligned-multimodal-anndata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ingesting aligned multimodal AnnData
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#var_df-and-the-feature-registry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        var_df and the feature registry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#feature-oriented-copies-post-ingestion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-oriented copies (post-ingestion)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#adding-a-feature-space" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Adding a feature space
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="ingestion">Ingestion</h1>
+<p>Ingestion is the write path: it takes a source (an <code>AnnData</code>, a COO triplet file, a BED fragment file, …) and lands it in an atlas as <strong>one zarr group of arrays plus one pointer per obs row</strong>. It is the mirror image of <a href="../reconstructors/">reconstruction</a> — where a reconstructor reads a feature space back into a modality-native object, ingestion writes a modality-native source into a feature space.</p>
+<p>The design splits that work into three small, single-responsibility pieces resolved automatically from a feature space's <a href="../array_storage/"><code>FeatureSpaceSpec</code></a>:</p>
+<pre class="mermaid"><code>flowchart LR
+    R["**Reader**&lt;br/&gt;source → row-batches&lt;br/&gt;of layer arrays"] --&gt; C["**Converter**&lt;br/&gt;array type → spec-aligned&lt;br/&gt;arrays + origin-zero pointers"]
+    C --&gt; W["**Writer**&lt;br/&gt;append to zarr&lt;br/&gt;rebase pointers to absolute"]
+    W --&gt; P["pointer table&lt;br/&gt;(one row per cell)"]
+    P --&gt; O["stamp onto&lt;br/&gt;obs records"]</code></pre>
+<p>A reader streams a source as row-batches; a converter adapts each batch onto the arrays the spec wants; a writer owns the zarr group and the running offsets. Because the trio is resolved from the spec, <strong>adding a feature space of an existing layout family usually needs no new ingestion code</strong> — only the names change, and those are read from the spec.</p>
+<p>On top of that streaming core sit two user-facing layers:</p>
+<ul>
+<li>The <strong><code>Ingestor</code></strong> engine, which decouples <em>writing a matrix</em> from <em>writing obs rows</em> so several matrices can populate one obs record (multimodal).</li>
+<li>A <strong>functional API</strong> (<code>ingest_dataset</code>, <code>add_from_anndata</code>, <code>ingest_multimodal</code>, <code>ingest_fragments</code>) for the common cases.</li>
+</ul>
+<p>Everything below lives in <code>homeobox.ingestion</code>.</p>
+<hr />
+<h2 id="the-streaming-core">The streaming core</h2>
+<h3 id="readers">Readers</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">Reader</span><span class="p">,</span> <span class="n">AnnDataReader</span><span class="p">,</span> <span class="n">COOReader</span><span class="p">,</span> <span class="n">FragmentReader</span>
+</code></pre></div>
+<p>A <code>Reader</code> is a source adapter. Its one job is to emit row-batches of layer arrays:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">Reader</span><span class="p">(</span><span class="n">Protocol</span><span class="p">):</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="k">def</span><span class="w"> </span><span class="nf">iter_layer_batches</span><span class="p">(</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>        <span class="bp">self</span><span class="p">,</span> <span class="n">batch_size</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">layer_mapping</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]:</span> <span class="o">...</span>
+</code></pre></div>
+<p>Each yielded batch is a <code>{target_layer: array}</code> dict where every layer shares one sparsity structure. <code>layer_mapping</code> maps the <strong>source</strong> layer names the reader should read to their <strong>destination</strong> layer names in the spec's <code>layers/</code> group (e.g. <code>{"X": "counts"}</code>, or <code>{"X": "counts", "spliced": "spliced"}</code> for a multi-layer write).</p>
+<p>A reader is deliberately <strong>spec-agnostic</strong>: it decodes whatever source it wants and emits in row order. The array <em>type</em> it yields (a <code>csr_matrix</code>, a dense <code>ndarray</code>, a bespoke carrier) is what selects the converter downstream — so one reader works for any feature space of a compatible layout.</p>
+<table>
+<thead>
+<tr>
+<th>Reader</th>
+<th>Source</th>
+<th>Emits</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AnnDataReader</code></td>
+<td>in-memory <code>AnnData</code> or <code>.h5ad</code> path (incl. <code>backed="r"</code>)</td>
+<td>CSR / dense row-batches of <code>X</code> and/or <code>layers</code></td>
+</tr>
+<tr>
+<td><code>COOReader</code></td>
+<td>cell-sorted <code>(feature, cell, value)</code> triplet file</td>
+<td>CSR row-batches over the full <code>[0, n_rows)</code> row space</td>
+</tr>
+<tr>
+<td><code>FragmentReader</code></td>
+<td>BED fragment file / pre-parsed frame</td>
+<td><code>FragmentBatch</code> cell-batches for chromatin accessibility</td>
+</tr>
+</tbody>
+</table>
+<p><code>COOReader</code> and <code>FragmentReader</code> show the pattern's reach: the cell-sorted invariant is load-bearing (both fail loudly on out-of-order input), but neither needs a bespoke writer — they decode into a structure an existing converter already understands.</p>
+<h3 id="converters">Converters</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">ArrayConverter</span><span class="p">,</span> <span class="n">register_converter</span><span class="p">,</span> <span class="n">converter_for</span>
+</code></pre></div>
+<p>A converter is the adapter between <strong>one in-memory array type</strong> (CSR, dense, fragment intervals) and <strong>one pointer-type layout family</strong> (the sparse range layout, the dense row layout). It is <em>pure and per-batch</em>: given the layers of a single row-batch, <code>convert()</code> returns a dict of batch-relative arrays and <strong>origin-zero</strong> pointer fields — it knows nothing about how much has already been written.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="s2">&quot;required_arrays&quot;</span><span class="p">:</span> <span class="p">{</span><span class="o">...</span><span class="p">},</span>   <span class="c1"># structural arrays keyed by spec-declared name (e.g. &quot;csr/indices&quot;)</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="s2">&quot;layers&quot;</span><span class="p">:</span>          <span class="p">{</span><span class="o">...</span><span class="p">},</span>   <span class="c1"># {layer_name: values} for each requested layer</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="s2">&quot;pointer_fields&quot;</span><span class="p">:</span>  <span class="p">{</span><span class="o">...</span><span class="p">},</span>   <span class="c1"># origin-zero pointer components (start/end/zarr_row, or position)</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="s2">&quot;n_rows&quot;</span><span class="p">:</span>          <span class="nb">int</span><span class="p">,</span>     <span class="c1"># rows in this batch</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">}</span>
+</code></pre></div>
+<p>A converter is <strong>not</strong> bound to a single feature space. What varies between feature spaces of the same family is only the <em>names</em> — the structural array name (<code>csr/indices</code> vs <code>gene/indices</code>), the layer names — and those are read from the spec, never hardcoded. The base class validates that a converter targets the spec's pointer type and emits exactly the fields that pointer type declares.</p>
+<h4 id="the-converter-registry">The converter registry</h4>
+<p>Converters are selected <strong>by feature space</strong>, not by pointer type — because two feature spaces can share a pointer type yet need entirely different layouts (gene expression and chromatin accessibility are both <code>SparseZarrPointer</code>, but one is a CSR value-layout and the other an interval layout). A small registry maps feature-space name → converter class:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nd">@register_converter</span><span class="p">(</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">)</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="k">class</span><span class="w"> </span><span class="nc">CSRSparseConverter</span><span class="p">(</span><span class="n">ArrayConverter</span><span class="p">):</span> <span class="o">...</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">converter</span> <span class="o">=</span> <span class="n">converter_for</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">sample</span><span class="p">)</span>   <span class="c1"># resolve + validate input array type</span>
+</code></pre></div>
+<p><code>converter_for</code> raises rather than silently mis-mapping: an unregistered feature space, or a sample whose type doesn't match the converter's <code>input_type</code>, fails loudly.</p>
+<table>
+<thead>
+<tr>
+<th>Converter</th>
+<th>Feature spaces</th>
+<th>Input type</th>
+<th>Pointer type</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>CSRSparseConverter</code></td>
+<td><code>gene_expression</code></td>
+<td><code>csr_matrix</code>, dense <code>ndarray</code></td>
+<td><code>SparseZarrPointer</code></td>
+</tr>
+<tr>
+<td><code>FragmentConverter</code></td>
+<td><code>chromatin_accessibility</code></td>
+<td><code>FragmentBatch</code></td>
+<td><code>SparseZarrPointer</code></td>
+</tr>
+<tr>
+<td><code>DenseConverter</code></td>
+<td><code>image_features</code>, <code>protein_abundance</code></td>
+<td>dense <code>ndarray</code></td>
+<td><code>DenseZarrPointer</code></td>
+</tr>
+</tbody>
+</table>
+<p>Add a sparse feature space whose matrix is CSR and the existing <code>CSRSparseConverter</code> already handles it (bind it by name). Add a fundamentally new <em>layout</em> (fragments needed a <code>chromosomes</code> structural array and two value layers a <code>csr_matrix</code> can't carry) and you write a converter and register it.</p>
+<h3 id="writers">Writers</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">SparseZarrWriter</span><span class="p">,</span> <span class="n">DenseZarrWriter</span><span class="p">,</span> <span class="n">writer_for</span><span class="p">,</span> <span class="n">write_feature_space</span>
+</code></pre></div>
+<p>The writer owns the zarr group and the running offsets — it is the only piece that knows how much has already been written. It does the two things the reader and converter cannot:</p>
+<ol>
+<li><strong>Appends</strong> each batch's arrays into the (growable) zarr arrays.</li>
+<li><strong>Rebases</strong> the converter's origin-zero pointer fields into absolute coordinates by adding the relevant running counter.</li>
+</ol>
+<p>Which counter rebases which field is declared on the pointer type (<code>pointer_type.offset_axes</code>), so the writer body stays generic across pointer types — it holds the counters, advances each by however much the subclass appended, and emits a pointer table whose columns are exactly the pointer type's fields plus <code>zarr_group</code>. Writers are resolved by pointer type:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">_WRITERS</span> <span class="o">=</span> <span class="p">{</span><span class="n">SparseZarrPointer</span><span class="p">:</span> <span class="n">SparseZarrWriter</span><span class="p">,</span> <span class="n">DenseZarrPointer</span><span class="p">:</span> <span class="n">DenseZarrWriter</span><span class="p">}</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">writer</span> <span class="o">=</span> <span class="n">writer_for</span><span class="p">(</span><span class="n">spec</span><span class="p">,</span> <span class="n">group</span><span class="p">,</span> <span class="n">layer_names</span><span class="o">=...</span><span class="p">,</span> <span class="o">**</span><span class="n">create_kwargs</span><span class="p">)</span>
+</code></pre></div>
+<p><code>write_feature_space</code> is the seam that drives all three together — resolve the writer (by pointer type) and, from the first batch, the converter (by array type), then stream:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">pointer_columns</span> <span class="o">=</span> <span class="n">write_feature_space</span><span class="p">(</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    <span class="n">reader</span><span class="p">,</span> <span class="n">spec</span><span class="p">,</span> <span class="n">group</span><span class="p">,</span>
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    <span class="n">batch_size</span><span class="o">=...</span><span class="p">,</span> <span class="n">layer_mapping</span><span class="o">=...</span><span class="p">,</span> <span class="n">layer_names</span><span class="o">=...</span><span class="p">,</span> <span class="n">zarr_group_name</span><span class="o">=...</span><span class="p">,</span>
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="p">)</span>
+</code></pre></div>
+<p>It returns the <strong>pointer table</strong>: a columnar dict (<code>zarr_group</code>, plus the pointer type's fields) with one row per cell, ready to be stamped onto the obs records. This is the boundary between "write the matrix" and "write the obs rows" — and the boundary the <code>Ingestor</code> exploits.</p>
+<hr />
+<h2 id="the-ingestor">The <code>Ingestor</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">Ingestor</span>
+</code></pre></div>
+<p><code>write_feature_space</code> produces a pointer table; something has to register the dataset and stamp those pointers onto obs rows. For a single matrix that is one call. <strong>Multimodal data breaks the single-call shape</strong>: several matrices — each its own dataset record and zarr group, all sharing one <code>dataset_uid</code> — must populate <em>different pointer fields on the same obs rows</em>, and those rows must be inserted exactly once.</p>
+<p><code>Ingestor</code> splits the two steps:</p>
+<ul>
+<li><strong><code>write_array(...)</code></strong> — does the per-matrix work (validate var, register the dataset, write the zarr group via <code>write_feature_space</code>, compute the pointer column) and <strong>accumulates</strong> the pointer struct keyed by its field. Call it once per feature space.</li>
+<li><strong><code>write_obs_records()</code></strong> — builds one obs table from every accumulated pointer field — <strong>null-filling</strong> the pointer fields no pass wrote — and inserts it. Call it once.</li>
+</ul>
+<p>obs columns and the obs table are validated <strong>once, up front</strong>, in the constructor, so a bad obs frame fails before any zarr is written.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">ingestor</span> <span class="o">=</span> <span class="n">Ingestor</span><span class="p">(</span><span class="n">atlas</span><span class="p">,</span> <span class="n">obs_df</span><span class="o">=</span><span class="n">obs_df</span><span class="p">)</span>            <span class="c1"># obs validated here</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="n">ingestor</span><span class="o">.</span><span class="n">write_array</span><span class="p">(</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">AnnDataReader</span><span class="p">(</span><span class="n">rna_adata</span><span class="p">),</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a>    <span class="n">field_name</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a>    <span class="n">layer_mapping</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;X&quot;</span><span class="p">:</span> <span class="s2">&quot;counts&quot;</span><span class="p">},</span>
+<a id="__codelineno-9-7" name="__codelineno-9-7" href="#__codelineno-9-7"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">DatasetSchema</span><span class="p">(</span><span class="n">dataset_uid</span><span class="o">=</span><span class="n">uid</span><span class="p">,</span> <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;ds0/rna&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">),</span>
+<a id="__codelineno-9-8" name="__codelineno-9-8" href="#__codelineno-9-8"></a>    <span class="n">n_vars</span><span class="o">=</span><span class="n">rna_adata</span><span class="o">.</span><span class="n">n_vars</span><span class="p">,</span> <span class="n">var_df</span><span class="o">=</span><span class="n">rna_adata</span><span class="o">.</span><span class="n">var</span><span class="p">,</span>
+<a id="__codelineno-9-9" name="__codelineno-9-9" href="#__codelineno-9-9"></a><span class="p">)</span>
+<a id="__codelineno-9-10" name="__codelineno-9-10" href="#__codelineno-9-10"></a><span class="n">ingestor</span><span class="o">.</span><span class="n">write_array</span><span class="p">(</span>
+<a id="__codelineno-9-11" name="__codelineno-9-11" href="#__codelineno-9-11"></a>    <span class="n">AnnDataReader</span><span class="p">(</span><span class="n">protein_adata</span><span class="p">),</span>
+<a id="__codelineno-9-12" name="__codelineno-9-12" href="#__codelineno-9-12"></a>    <span class="n">field_name</span><span class="o">=</span><span class="s2">&quot;protein_abundance&quot;</span><span class="p">,</span>
+<a id="__codelineno-9-13" name="__codelineno-9-13" href="#__codelineno-9-13"></a>    <span class="n">layer_mapping</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;X&quot;</span><span class="p">:</span> <span class="s2">&quot;ctrl_standardized&quot;</span><span class="p">},</span>
+<a id="__codelineno-9-14" name="__codelineno-9-14" href="#__codelineno-9-14"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">DatasetSchema</span><span class="p">(</span><span class="n">dataset_uid</span><span class="o">=</span><span class="n">uid</span><span class="p">,</span> <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;ds0/protein&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;protein_abundance&quot;</span><span class="p">),</span>
+<a id="__codelineno-9-15" name="__codelineno-9-15" href="#__codelineno-9-15"></a>    <span class="n">n_vars</span><span class="o">=</span><span class="n">protein_adata</span><span class="o">.</span><span class="n">n_vars</span><span class="p">,</span> <span class="n">var_df</span><span class="o">=</span><span class="n">protein_adata</span><span class="o">.</span><span class="n">var</span><span class="p">,</span>
+<a id="__codelineno-9-16" name="__codelineno-9-16" href="#__codelineno-9-16"></a><span class="p">)</span>
+<a id="__codelineno-9-17" name="__codelineno-9-17" href="#__codelineno-9-17"></a>
+<a id="__codelineno-9-18" name="__codelineno-9-18" href="#__codelineno-9-18"></a><span class="n">n_cells</span> <span class="o">=</span> <span class="n">ingestor</span><span class="o">.</span><span class="n">write_obs_records</span><span class="p">()</span>               <span class="c1"># one obs record per cell, both fields populated</span>
+</code></pre></div>
+<p>The engine enforces its invariants loudly: every <code>write_array</code> must share one <code>dataset_uid</code>; each reader must emit exactly <code>len(obs_df)</code> rows; a field can't be written twice; <code>write_array</code> after <code>write_obs_records</code> (or a second <code>write_obs_records</code>) raises — the ingestor is single-use. Heterogeneous modalities (here a sparse and a dense feature space, with different destination layers) are exactly what the per-call <code>layer_mapping</code> is for.</p>
+<hr />
+<h2 id="the-functional-api">The functional API</h2>
+<p>For the common cases you don't construct an <code>Ingestor</code> directly — these wrappers do it for you.</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Use it for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ingest_dataset(atlas, reader, ...)</code></td>
+<td>One feature space from any <code>Reader</code>. The shared spine: one <code>write_array</code> + one <code>write_obs_records</code>.</td>
+</tr>
+<tr>
+<td><code>add_from_anndata(atlas, adata, ...)</code></td>
+<td>The everyday case: ingest an <code>AnnData</code> (or <code>.h5ad</code> path, incl. <code>backed</code>). A thin source adapter over <code>ingest_dataset</code>.</td>
+</tr>
+<tr>
+<td><code>ingest_multimodal(atlas, modalities, ...)</code></td>
+<td>Several aligned <code>AnnData</code> modalities sharing one obs schema → one obs record per cell. Drives the <code>Ingestor</code> for you.</td>
+</tr>
+<tr>
+<td><code>ingest_fragments(atlas, ...)</code></td>
+<td>Chromatin-accessibility BED fragments (cell-sorted, row-oriented).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ingesting-an-anndata">Ingesting an AnnData</h3>
+<p>The 90% case. Register the feature's registry schema, then stream <code>adata.X</code> into a named layer; the feature space is derived from the obs field's <code>PointerField</code>, and the spec decides whether a <code>var_df</code> is needed and which converter/writer apply.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">add_from_anndata</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="n">add_from_anndata</span><span class="p">(</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a>    <span class="n">atlas</span><span class="p">,</span> <span class="n">adata</span><span class="p">,</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>    <span class="n">field_name</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>   <span class="c1"># obs-schema pointer column to populate</span>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a>    <span class="n">zarr_layer</span><span class="o">=</span><span class="s2">&quot;counts&quot;</span><span class="p">,</span>            <span class="c1"># destination layer for adata.X</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a>    <span class="n">dataset_record</span><span class="o">=</span><span class="n">DatasetSchema</span><span class="p">(</span><span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;ds1/gene_expression&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">),</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>layer_mapping={"spliced": "spliced"}</code> writes extra <code>adata.layers</code> alongside <code>X</code>; <code>backed="r"</code> streams the matrix off disk one batch at a time instead of reading it fully into memory.</p>
+<h3 id="ingesting-aligned-multimodal-anndata">Ingesting aligned multimodal AnnData</h3>
+<p><code>ingest_multimodal</code> is the convenience wrapper over <code>Ingestor</code> for the homogeneous case — modalities keyed by pointer field, each written to the <strong>same</strong> destination layer, all sharing one <code>dataset_uid</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.ingestion</span><span class="w"> </span><span class="kn">import</span> <span class="n">ingest_multimodal</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="n">uid</span> <span class="o">=</span> <span class="n">make_uid</span><span class="p">()</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a><span class="n">ingest_multimodal</span><span class="p">(</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="n">atlas</span><span class="p">,</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="p">{</span><span class="s2">&quot;img_a&quot;</span><span class="p">:</span> <span class="n">adata_a</span><span class="p">,</span> <span class="s2">&quot;img_b&quot;</span><span class="p">:</span> <span class="n">adata_b</span><span class="p">},</span>      <span class="c1"># {field_name: AnnData}</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>    <span class="n">obs_df</span><span class="o">=</span><span class="n">obs_df</span><span class="p">,</span>                              <span class="c1"># shared obs, one row per cell</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">zarr_layer</span><span class="o">=</span><span class="s2">&quot;ctrl_standardized&quot;</span><span class="p">,</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a>    <span class="n">dataset_records</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a>        <span class="s2">&quot;img_a&quot;</span><span class="p">:</span> <span class="n">DatasetSchema</span><span class="p">(</span><span class="n">dataset_uid</span><span class="o">=</span><span class="n">uid</span><span class="p">,</span> <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;ds0/img_a&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;image_features&quot;</span><span class="p">),</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a>        <span class="s2">&quot;img_b&quot;</span><span class="p">:</span> <span class="n">DatasetSchema</span><span class="p">(</span><span class="n">dataset_uid</span><span class="o">=</span><span class="n">uid</span><span class="p">,</span> <span class="n">zarr_group</span><span class="o">=</span><span class="s2">&quot;ds0/img_b&quot;</span><span class="p">,</span> <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;image_features&quot;</span><span class="p">),</span>
+<a id="__codelineno-11-12" name="__codelineno-11-12" href="#__codelineno-11-12"></a>    <span class="p">},</span>
+<a id="__codelineno-11-13" name="__codelineno-11-13" href="#__codelineno-11-13"></a><span class="p">)</span>
+</code></pre></div>
+<p>It checks every modality's cell count against <code>len(obs_df)</code> up front, then loops <code>write_array</code> per modality and calls <code>write_obs_records</code> once. When modalities need <strong>different</strong> destination layers (a sparse + a dense feature space), reach past the wrapper and drive the <code>Ingestor</code> directly, as shown above.</p>
+<h3 id="var_df-and-the-feature-registry"><code>var_df</code> and the feature registry</h3>
+<p>For feature spaces with <code>has_var_df=True</code> (gene expression, dense features, chromatin accessibility), each <code>write_array</code> validates the supplied <code>var_df</code> against that feature space's <a href="../feature_registries/">registry schema</a> — exact column match, no duplicate uids — before registering the dataset. This is the link between ingestion and the feature registries: the registry defines the global feature vocabulary, and a dataset's <code>var_df</code> must speak it. <code>add_from_anndata</code> passes <code>adata.var</code> through automatically.</p>
+<hr />
+<h2 id="feature-oriented-copies-post-ingestion">Feature-oriented copies (post-ingestion)</h2>
+<p>The streaming path always writes the <strong>row-oriented</strong> copy: cells are the outer axis, so a per-cell pointer addresses a contiguous slice. Some feature spaces also support a <strong>feature-oriented</strong> copy for efficient feature-filtered or range queries. Those are built <strong>after</strong> ingestion as a separate, optional step — never in the same pass:</p>
+<table>
+<thead>
+<tr>
+<th>Function</th>
+<th>Builds</th>
+<th>From</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>add_csc(atlas, zarr_group, field_name)</code></td>
+<td>a CSC (feature-major) copy beside the CSR group</td>
+<td>reads the CSR arrays back from zarr</td>
+</tr>
+<tr>
+<td><code>add_genome_sorted(atlas, zarr_group, field_name)</code></td>
+<td>the <code>genome_sorted/</code> arrays for fragment range queries</td>
+<td>reads the cell-sorted arrays back from zarr</td>
+</tr>
+</tbody>
+</table>
+<p>Both follow the same shape as <code>add_csc</code>: read the row-oriented copy back out of zarr, transpose / re-sort, and write the feature-oriented copy alongside it, then invalidate the group's reader cache. Keeping this out of the ingest pass means the expensive, optional index is decoupled from the load-bearing write and can be (re)built at any time. So fragment ingestion is two calls — <code>ingest_fragments(...)</code> then, if you want range queries, <code>add_genome_sorted(...)</code>.</p>
+<hr />
+<h2 id="adding-a-feature-space">Adding a feature space</h2>
+<p>The payoff of the spec-driven trio: most new feature spaces need <strong>no ingestion code at all</strong>. Declare a <code>FeatureSpaceSpec</code> (see <a href="../array_storage/">Array Storage</a>), and:</p>
+<ul>
+<li>If its matrix is CSR/dense and its layout matches an existing converter's family, bind that converter to the new name with <code>@register_converter("your_space")</code> — done.</li>
+<li>If it introduces a genuinely new in-memory shape (as fragments did), write an <code>ArrayConverter</code> subclass and register it. The generic <code>SparseZarrWriter</code> / <code>DenseZarrWriter</code> usually still apply; a new <em>pointer type</em> is what would require a new writer in <code>_WRITERS</code>.</li>
+</ul>
+<p>Reader, writer, and the obs-stamping path stay untouched — they were never feature-space-specific to begin with.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

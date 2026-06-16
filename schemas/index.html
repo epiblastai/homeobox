@@ -1,0 +1,2180 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Multimodal biomedical databases built on LanceDB and Zarr">
+      
+      
+      
+        <link rel="canonical" href="https://epiblastai.github.io/homeobox/schemas/">
+      
+      
+        <link rel="prev" href="../versioning/">
+      
+      
+        <link rel="next" href="../pointer_types/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Schemas - homeobox</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#schemas" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="homeobox" class="md-header__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            homeobox
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Schemas
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="homeobox" class="md-nav__button md-logo" aria-label="homeobox" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    homeobox
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/epiblastai/homeobox" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    epiblastai/homeobox
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../atlas/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building an Atlas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Registries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../feature_layouts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Feature Layouts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array_storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Array Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schemas
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#inheritance-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inheritance hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hoxbaseschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HoxBaseSchema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="HoxBaseSchema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#auto-populated-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-populated fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pointer-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pointer fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pointerfield-and-arrow-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PointerField and Arrow metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#informational-field-markers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Informational field markers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Informational field markers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#registrykeyfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RegistryKeyField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#polymorphicregistrykeyfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PolymorphicRegistryKeyField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ontologyalignedfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OntologyAlignedField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#crossreferencefield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CrossReferenceField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#summaryfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SummaryField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#combining-markers-with-combine_markers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combining markers with combine_markers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multimodal-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multimodal example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#unimodal-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unimodal example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#featurebaseschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FeatureBaseSchema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="FeatureBaseSchema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#subclassing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subclassing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datasetschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DatasetSchema
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#featurelayout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FeatureLayout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#atlasversionrecord" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AtlasVersionRecord
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pointer_types/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pointer Types
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../batch_array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    BatchArray
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../querying/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Querying
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ingestion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstructors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reconstructors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    PyTorch Data Loading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Benchmarks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dataloader_benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dataloader Benchmark
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Polycomb
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Polycomb
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_3" id="__nav_6_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Concepts
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/collections/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Collections
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/resolvers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Resolvers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polycomb/curation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Curation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#inheritance-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inheritance hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#hoxbaseschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        HoxBaseSchema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="HoxBaseSchema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#auto-populated-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-populated fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pointer-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pointer fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pointerfield-and-arrow-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PointerField and Arrow metadata
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#informational-field-markers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Informational field markers
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Informational field markers">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#registrykeyfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RegistryKeyField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#polymorphicregistrykeyfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PolymorphicRegistryKeyField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ontologyalignedfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        OntologyAlignedField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#crossreferencefield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CrossReferenceField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#summaryfield" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SummaryField
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#combining-markers-with-combine_markers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Combining markers with combine_markers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#multimodal-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Multimodal example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#unimodal-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unimodal example
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#featurebaseschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FeatureBaseSchema
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="FeatureBaseSchema">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#subclassing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Subclassing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datasetschema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DatasetSchema
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#featurelayout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FeatureLayout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#atlasversionrecord" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        AtlasVersionRecord
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="schemas">Schemas</h1>
+<p>Every Lance table in a homeobox atlas is backed by a Pydantic schema class that subclasses LanceDB's <code>LanceModel</code>. These schemas are the ground-level contracts between application code and the database: they define what columns each table has, what types those columns hold, and which fields are optional or auto-populated.</p>
+<p>There are two user-extensible families:</p>
+<ul>
+<li><strong>Obs schemas</strong> — subclasses of <code>HoxBaseSchema</code>. One or more obs tables per atlas; rows represent whatever the table indexes (cells, nuclei, spatial tiles, image crops, perturbation conditions, donors, …). An atlas may declare many obs tables side by side, each with its own schema.</li>
+<li><strong>Feature schemas</strong> — subclasses of <code>FeatureBaseSchema</code>. One table per feature space; rows represent features (genes, proteins, peaks, image-feature channels, …) that have a stable identity across datasets.</li>
+</ul>
+<p>Three internal tables are also covered below: <code>DatasetSchema</code>, <code>FeatureLayout</code>, and <code>AtlasVersionRecord</code>. You interact with these indirectly during ingestion and versioning.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.schema</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">HoxBaseSchema</span><span class="p">,</span> <span class="n">FeatureBaseSchema</span><span class="p">,</span> <span class="n">PointerField</span><span class="p">,</span> <span class="n">StableUIDField</span><span class="p">,</span> <span class="n">RegistryKeyField</span><span class="p">,</span>
+<a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">PolymorphicRegistryKeyField</span><span class="p">,</span> <span class="n">OntologyAlignedField</span><span class="p">,</span> <span class="n">CrossReferenceField</span><span class="p">,</span> <span class="n">SummaryField</span><span class="p">,</span>
+<a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">combine_markers</span><span class="p">,</span> <span class="n">DatasetSchema</span><span class="p">,</span> <span class="n">FeatureLayout</span><span class="p">,</span> <span class="n">AtlasVersionRecord</span><span class="p">,</span>
+<a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">)</span>
+</code></pre></div>
+<p>For the pointer types that obs schemas reference (<code>SparseZarrPointer</code>, <code>DenseZarrPointer</code>, <code>DiscreteSpatialPointer</code>), see <a href="../pointer_types/">Pointer types</a>.</p>
+<hr />
+<h2 id="inheritance-hierarchy">Inheritance hierarchy</h2>
+<pre class="mermaid"><code>classDiagram
+    class HoxBaseSchema {
+        +str uid
+        +str dataset_uid
+    }
+    class UserObsSchema {
+        +SparseZarrPointer | None gene_expression
+        +DenseZarrPointer | None protein_abundance
+        +DiscreteSpatialPointer | None image_tile
+        +str cell_type
+    }
+    class StableUIDBaseSchema {
+        +str uid
+    }
+    class FeatureBaseSchema {
+        +int | None global_index
+    }
+    class UserFeatureSchema {
+        +str gene_symbol
+        +str ensembl_id
+    }
+
+    HoxBaseSchema &lt;|-- UserObsSchema
+    StableUIDBaseSchema &lt;|-- FeatureBaseSchema
+    FeatureBaseSchema &lt;|-- UserFeatureSchema</code></pre>
+<hr />
+<h2 id="hoxbaseschema"><code>HoxBaseSchema</code></h2>
+<p><code>HoxBaseSchema</code> is the base class for obs tables. Every row in an obs table is an instance of a subclass of this class.</p>
+<h3 id="auto-populated-fields">Auto-populated fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uid</code></td>
+<td><code>str</code></td>
+<td>16-character random hex string, generated by <code>make_uid()</code> (which calls <code>uuid4().hex[:16]</code>). Unique per row. Safe for concurrent writers because generation needs no coordination.</td>
+</tr>
+<tr>
+<td><code>dataset_uid</code></td>
+<td><code>str</code></td>
+<td>Filled automatically by the ingestion layer to match the <code>dataset_uid</code> of the <code>DatasetSchema</code> the row was ingested with. Do not set manually.</td>
+</tr>
+</tbody>
+</table>
+<p>Both are defined on the base class and should not be redeclared in subclasses.</p>
+<h3 id="pointer-fields">Pointer fields</h3>
+<p>A pointer field tells the atlas that rows in this obs table may be measured in a given feature space, and stores the per-row addressing into that feature space's zarr group. Each pointer field is declared with <code>PointerField.declare(feature_space=...)</code>. When the feature space has a registry schema, you can also annotate it with <code>feature_registry_schema</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">field_name</span><span class="p">:</span> <span class="n">SparseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">feature_registry_schema</span><span class="o">=</span><span class="n">GeneFeatureSchema</span><span class="p">,</span>
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">)</span>
+<a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">other_name</span><span class="p">:</span> <span class="n">DenseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;protein_abundance&quot;</span><span class="p">,</span>
+<a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">feature_registry_schema</span><span class="o">=</span><span class="n">ProteinFeatureSchema</span><span class="p">,</span>
+<a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="p">)</span>
+<a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">crop_field</span><span class="p">:</span> <span class="n">DiscreteSpatialPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;image_tiles&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>The Python attribute name is independent of the feature_space name — the same feature_space may back several columns (e.g. <code>cycle1_image_tiles</code> and <code>cycle2_image_tiles</code>, both <code>feature_space="image_tiles"</code>). The <code>| None</code> annotation is required so that rows not measured in a given modality can leave the pointer null; the reconstruction layer treats null pointers as absent data.</p>
+<p><code>feature_registry_schema</code> is lightweight Python metadata only. It is not stored in Arrow metadata and is not required for feature spaces without a registry.</p>
+<p>Class-definition-time invariants (enforced in <code>__init_subclass__</code>):</p>
+<ol>
+<li>The subclass declares <strong>at least one</strong> pointer-typed field.</li>
+<li>Every pointer-typed field is declared via <code>PointerField.declare(...)</code> — a bare <code>= None</code> default raises <code>TypeError</code>.</li>
+<li>The declared <code>feature_space</code> is already registered via <code>register_spec()</code>.</li>
+<li>The annotation's pointer type matches <code>spec.pointer_type</code> (<code>SparseZarrPointer</code> ↔ sparse spec, <code>DenseZarrPointer</code> ↔ dense spec, <code>DiscreteSpatialPointer</code> ↔ discrete_spatial spec).</li>
+</ol>
+<p>A model validator additionally requires that at least one pointer column be non-null per row at instance construction.</p>
+<h3 id="pointerfield-and-arrow-metadata"><code>PointerField</code> and Arrow metadata</h3>
+<p><code>PointerField.declare(feature_space=..., feature_registry_schema=...)</code> returns a pydantic <code>Field</code> whose <code>json_schema_extra</code> carries <code>{"is_pointer": True, "feature_space": &lt;name&gt;}</code> and, optionally, <code>{"feature_registry_schema": &lt;schema name&gt;}</code>. This binding is what the rest of the codebase uses to know which feature space a column points into — the pointer struct itself only carries <code>zarr_group</code> plus addressing fields, never the feature_space name.</p>
+<p><code>HoxBaseSchema.to_arrow_schema()</code> then <strong>persists the feature-space binding on the Arrow schema</strong> of the obs table. For every pointer field it stamps the per-field metadata:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>b&quot;homeobox.feature_space&quot; → &lt;feature_space&gt;.encode(&quot;utf-8&quot;)
+</code></pre></div>
+<p>(The exact key is <code>schema.POINTER_FEATURE_SPACE_METADATA_KEY</code>.) Because Lance stores Arrow field metadata, this binding survives the round-trip into the on-disk table. <code>feature_registry_schema</code> is deliberately not persisted.</p>
+<p>The point of this is that <strong>the Python schema class is no longer required to interpret an existing atlas</strong>. When <code>RaggedAtlas.checkout(...)</code> is called without obs schemas, <code>_infer_pointer_fields_from_arrow</code> walks the Arrow schema, identifies struct columns whose sub-field names match a known pointer type (sparse / dense / discrete_spatial), and reads <code>homeobox.feature_space</code> off each field to resolve the binding:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Schema-less open path, from RaggedAtlas.checkout(...)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">arrow_schema</span> <span class="o">=</span> <span class="n">obs_table</span><span class="o">.</span><span class="n">schema</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">pointer_fields</span> <span class="o">=</span> <span class="n">_infer_pointer_fields_from_arrow</span><span class="p">(</span><span class="n">arrow_schema</span><span class="p">)</span>
+<a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># {&quot;gene_expression&quot;: PointerField(field_name=&quot;gene_expression&quot;,</span>
+<a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="c1">#                                  feature_space=&quot;gene_expression&quot;,</span>
+<a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="c1">#                                  feature_registry_schema=None),</span>
+<a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="c1">#  &quot;cycle1_image_tiles&quot;: PointerField(field_name=&quot;cycle1_image_tiles&quot;,</span>
+<a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1">#                                     feature_space=&quot;image_tiles&quot;,</span>
+<a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="c1">#                                     feature_registry_schema=None), ...}</span>
+</code></pre></div>
+<p>This is why <code>obs_schemas</code> is optional on <code>checkout()</code>: read paths can recover the full pointer-field map from the on-disk schema alone. Writing still requires the Python class so that pydantic validation can run.</p>
+<h3 id="informational-field-markers">Informational field markers</h3>
+<p>The markers below annotate ordinary schema columns to describe how their values relate to other tables, ontologies, external databases, or aggregations over another schema. They make schema definitions more self-documenting and let tooling (code parsers, agents, visualizers, validators) reason about relationships. None of them currently have any runtime effect: they are not written to Arrow metadata and homeobox does not enforce them as database constraints. Future versions may use this metadata to validate or enforce relationships.</p>
+<h4 id="registrykeyfield"><code>RegistryKeyField</code></h4>
+<p>Use <code>RegistryKeyField.declare(...)</code> to mark a normal schema column as referring to another schema field:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">publication_uid</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">RegistryKeyField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">target_schema</span><span class="o">=</span><span class="n">PublicationSchema</span><span class="p">)</span>
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">target_chromosome</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">RegistryKeyField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">target_schema</span><span class="o">=</span><span class="n">ReferenceSequenceSchema</span><span class="p">,</span>
+<a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">target_field</span><span class="o">=</span><span class="s2">&quot;genbank_accession&quot;</span><span class="p">,</span>
+<a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
+</code></pre></div>
+<h4 id="polymorphicregistrykeyfield"><code>PolymorphicRegistryKeyField</code></h4>
+<p>Like <code>RegistryKeyField</code>, but the target schema is selected by a parallel discriminator column rather than fixed at declaration time:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">perturbation_uids</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PolymorphicRegistryKeyField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">type_field</span><span class="o">=</span><span class="s2">&quot;perturbation_types&quot;</span><span class="p">,</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">variants</span><span class="o">=</span><span class="p">{</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>        <span class="s2">&quot;small_molecule&quot;</span><span class="p">:</span> <span class="n">SmallMoleculeSchema</span><span class="p">,</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="s2">&quot;genetic_perturbation&quot;</span><span class="p">:</span> <span class="n">GeneticPerturbationSchema</span><span class="p">,</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="s2">&quot;biologic_perturbation&quot;</span><span class="p">:</span> <span class="n">BiologicPerturbationSchema</span><span class="p">,</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>    <span class="p">},</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="p">)</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">perturbation_types</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>
+</code></pre></div>
+<p>Use this when the same value column can refer to different tables depending on another field; use <code>RegistryKeyField</code> when the target is always one schema.</p>
+<h4 id="ontologyalignedfield"><code>OntologyAlignedField</code></h4>
+<p>Use <code>OntologyAlignedField.declare(...)</code> to mark a normal schema column as aligned to an ontology:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">gene_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="n">OntologyAlignedField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">ontology_name</span><span class="o">=</span><span class="s2">&quot;ensembl&quot;</span><span class="p">)</span>
+</code></pre></div>
+<h4 id="crossreferencefield"><code>CrossReferenceField</code></h4>
+<p>Use <code>CrossReferenceField.declare(...)</code> to mark a normal schema column as a cross-reference into an external database (DOI, PubMed, PubChem, UniProt, …):</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">doi</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">CrossReferenceField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">database_name</span><span class="o">=</span><span class="s2">&quot;doi&quot;</span><span class="p">)</span>
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">pubchem_cid</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">CrossReferenceField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">database_name</span><span class="o">=</span><span class="s2">&quot;pubchem&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>This is the database analogue of <code>OntologyAlignedField</code>: use <code>OntologyAlignedField</code> when the column aligns to an ontology and <code>CrossReferenceField</code> when it references an external database record.</p>
+<h4 id="summaryfield"><code>SummaryField</code></h4>
+<p>Use <code>SummaryField.declare(...)</code> to mark a normal schema column as derived by aggregating a column on another schema:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">n_rows</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">SummaryField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="n">target_schema</span><span class="o">=</span><span class="n">ObsSchema</span><span class="p">,</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">target_field</span><span class="o">=</span><span class="s2">&quot;uid&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">op</span><span class="o">=</span><span class="s2">&quot;count&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">default</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="p">)</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="n">organism</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="nb">str</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">SummaryField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">target_schema</span><span class="o">=</span><span class="n">ObsSchema</span><span class="p">,</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="n">target_field</span><span class="o">=</span><span class="s2">&quot;organism&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>    <span class="n">op</span><span class="o">=</span><span class="s2">&quot;unique&quot;</span><span class="p">,</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="p">)</span>
+</code></pre></div>
+<p><code>op</code> must be one of <code>count</code>, <code>nunique</code>, or <code>unique</code>. A common pattern is to declare summary fields on a <code>DatasetSchema</code> subclass that aggregate over the atlas's obs table — for example, row count via <code>op="count"</code> and high-level metadata such as distinct organisms or tissues via <code>op="unique"</code>. The schema parser surfaces these as <code>summary</code> relationships between the declaring table and the target schema.</p>
+<h4 id="combining-markers-with-combine_markers">Combining markers with <code>combine_markers</code></h4>
+<p>A single column often plays more than one role at once: a PubChem CID, for instance, is both the value that drives stable-UID generation <strong>and</strong> a cross-reference into an external database. Each marker factory writes its metadata under a distinct top-level key in the field's <code>json_schema_extra</code> (<code>stable_uid</code>, <code>cross_reference</code>, <code>registry_key</code>, <code>summary</code>, …), so the markers are orthogonal and can be merged onto one field with <code>combine_markers(...)</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="n">pubchem_cid</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">combine_markers</span><span class="p">(</span>
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>    <span class="n">StableUIDField</span><span class="o">.</span><span class="n">declare</span><span class="p">(),</span>
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    <span class="n">CrossReferenceField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">database_name</span><span class="o">=</span><span class="s2">&quot;pubchem&quot;</span><span class="p">),</span>
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>    <span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="p">)</span>
+</code></pre></div>
+<h3 id="multimodal-example">Multimodal example</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.pointer_types</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>    <span class="n">SparseZarrPointer</span><span class="p">,</span> <span class="n">DenseZarrPointer</span><span class="p">,</span> <span class="n">DiscreteSpatialPointer</span><span class="p">,</span>
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="p">)</span>
+<a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.schema</span><span class="w"> </span><span class="kn">import</span> <span class="n">HoxBaseSchema</span><span class="p">,</span> <span class="n">PointerField</span>
+<a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a>
+<a id="__codelineno-10-6" name="__codelineno-10-6" href="#__codelineno-10-6"></a><span class="c1"># Assume GeneFeature, ChromatinPeak, and ProteinFeature are FeatureBaseSchema subclasses.</span>
+<a id="__codelineno-10-7" name="__codelineno-10-7" href="#__codelineno-10-7"></a><span class="k">class</span><span class="w"> </span><span class="nc">MultimodalObs</span><span class="p">(</span><span class="n">HoxBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-10-8" name="__codelineno-10-8" href="#__codelineno-10-8"></a>    <span class="n">gene_expression</span><span class="p">:</span> <span class="n">SparseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-10-9" name="__codelineno-10-9" href="#__codelineno-10-9"></a>        <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-10" name="__codelineno-10-10" href="#__codelineno-10-10"></a>        <span class="n">feature_registry_schema</span><span class="o">=</span><span class="n">GeneFeature</span><span class="p">,</span>
+<a id="__codelineno-10-11" name="__codelineno-10-11" href="#__codelineno-10-11"></a>    <span class="p">)</span>
+<a id="__codelineno-10-12" name="__codelineno-10-12" href="#__codelineno-10-12"></a>    <span class="n">chromatin_accessibility</span><span class="p">:</span> <span class="n">SparseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-10-13" name="__codelineno-10-13" href="#__codelineno-10-13"></a>        <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;chromatin_accessibility&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-14" name="__codelineno-10-14" href="#__codelineno-10-14"></a>        <span class="n">feature_registry_schema</span><span class="o">=</span><span class="n">ChromatinPeak</span><span class="p">,</span>
+<a id="__codelineno-10-15" name="__codelineno-10-15" href="#__codelineno-10-15"></a>    <span class="p">)</span>
+<a id="__codelineno-10-16" name="__codelineno-10-16" href="#__codelineno-10-16"></a>    <span class="n">protein_abundance</span><span class="p">:</span> <span class="n">DenseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-10-17" name="__codelineno-10-17" href="#__codelineno-10-17"></a>        <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;protein_abundance&quot;</span><span class="p">,</span>
+<a id="__codelineno-10-18" name="__codelineno-10-18" href="#__codelineno-10-18"></a>        <span class="n">feature_registry_schema</span><span class="o">=</span><span class="n">ProteinFeature</span><span class="p">,</span>
+<a id="__codelineno-10-19" name="__codelineno-10-19" href="#__codelineno-10-19"></a>    <span class="p">)</span>
+<a id="__codelineno-10-20" name="__codelineno-10-20" href="#__codelineno-10-20"></a>    <span class="n">image_tile</span><span class="p">:</span> <span class="n">DiscreteSpatialPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-10-21" name="__codelineno-10-21" href="#__codelineno-10-21"></a>        <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;image_tiles&quot;</span>
+<a id="__codelineno-10-22" name="__codelineno-10-22" href="#__codelineno-10-22"></a>    <span class="p">)</span>
+<a id="__codelineno-10-23" name="__codelineno-10-23" href="#__codelineno-10-23"></a>
+<a id="__codelineno-10-24" name="__codelineno-10-24" href="#__codelineno-10-24"></a>    <span class="c1"># Arbitrary obs metadata — any LanceDB-compatible types</span>
+<a id="__codelineno-10-25" name="__codelineno-10-25" href="#__codelineno-10-25"></a>    <span class="n">cell_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-10-26" name="__codelineno-10-26" href="#__codelineno-10-26"></a>    <span class="n">tissue</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-10-27" name="__codelineno-10-27" href="#__codelineno-10-27"></a>    <span class="n">donor_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-10-28" name="__codelineno-10-28" href="#__codelineno-10-28"></a>    <span class="n">assay</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+<p>A CITE-seq row might populate <code>gene_expression</code> and <code>protein_abundance</code> while leaving <code>chromatin_accessibility</code> and <code>image_tile</code> null. A single-nucleus ATAC-seq row would populate only <code>chromatin_accessibility</code>. Both are valid rows in the same obs table.</p>
+<h3 id="unimodal-example">Unimodal example</h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">CensusObs</span><span class="p">(</span><span class="n">HoxBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>    <span class="n">gene_expression</span><span class="p">:</span> <span class="n">SparseZarrPointer</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">PointerField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>        <span class="n">feature_space</span><span class="o">=</span><span class="s2">&quot;gene_expression&quot;</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>    <span class="p">)</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">cell_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a>    <span class="n">tissue</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a>    <span class="n">assay</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+<p>For a unimodal atlas, a single pointer field is sufficient. The <code>| None</code> is still required so that pointer validation runs through the model validator rather than silently accepting null rows.</p>
+<hr />
+<h2 id="featurebaseschema"><code>FeatureBaseSchema</code></h2>
+<p><code>FeatureBaseSchema</code> is the base class for feature registry tables. Each feature space with a stable feature axis (genes, proteins, peaks, image-feature channels, …) maintains its own registry whose schema subclasses this class.</p>
+<p><code>FeatureBaseSchema</code> itself inherits from <code>StableUIDBaseSchema</code>, which contributes the <code>uid</code> field and the <code>StableUIDField.declare(...)</code> machinery used to derive deterministic <code>uid</code> values from a canonical identifier (Ensembl gene ID, UniProt accession, …). See <a href="../feature_registries/">Feature registries</a> for the design rationale, the dedup semantics, and the bulk <code>compute_stable_uids</code> path.</p>
+<h3 id="fields">Fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>uid</code></td>
+<td><code>str</code></td>
+<td>16-character hex identifier. Stable across runs when the schema declares a <code>StableUIDField</code>; otherwise random per row. Never reassigned once written.</td>
+</tr>
+<tr>
+<td><code>global_index</code></td>
+<td><code>int \| None</code></td>
+<td>Dense integer index assigned by <code>optimize()</code> / <code>reindex_registry()</code>. Starts as <code>None</code>; new features get <code>max(existing) + 1</code>. Used as a scatter/gather key during reconstruction.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="subclassing">Subclassing</h3>
+<p>Add modality-specific fields as ordinary pydantic fields. Mark the field that drives stable UID generation (if any) with <code>StableUIDField.declare(...)</code>:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">homeobox.schema</span><span class="w"> </span><span class="kn">import</span> <span class="n">FeatureBaseSchema</span><span class="p">,</span> <span class="n">StableUIDField</span>
+<a id="__codelineno-12-2" name="__codelineno-12-2" href="#__codelineno-12-2"></a>
+<a id="__codelineno-12-3" name="__codelineno-12-3" href="#__codelineno-12-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">GeneFeature</span><span class="p">(</span><span class="n">FeatureBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-12-4" name="__codelineno-12-4" href="#__codelineno-12-4"></a>    <span class="n">gene_symbol</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-12-5" name="__codelineno-12-5" href="#__codelineno-12-5"></a>    <span class="n">ensembl_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">StableUIDField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<a id="__codelineno-12-6" name="__codelineno-12-6" href="#__codelineno-12-6"></a>    <span class="n">feature_biotype</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>     <span class="c1"># e.g. &quot;protein_coding&quot;, &quot;lncRNA&quot;</span>
+<a id="__codelineno-12-7" name="__codelineno-12-7" href="#__codelineno-12-7"></a>    <span class="n">feature_length</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">ProteinFeature</span><span class="p">(</span><span class="n">FeatureBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>    <span class="n">uniprot_id</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">StableUIDField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+<a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>    <span class="n">protein_name</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+<a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>    <span class="n">organism</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">ChromatinPeak</span><span class="p">(</span><span class="n">FeatureBaseSchema</span><span class="p">):</span>
+<a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>    <span class="n">coord</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n">StableUIDField</span><span class="o">.</span><span class="n">declare</span><span class="p">(</span><span class="n">default</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>   <span class="c1"># e.g. &quot;chr1:100000-100500&quot;</span>
+<a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>    <span class="n">peak_type</span><span class="p">:</span> <span class="nb">str</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>                               <span class="c1"># e.g. &quot;promoter&quot;, &quot;enhancer&quot;</span>
+</code></pre></div>
+<p>At most one field per schema may be declared as a <code>StableUIDField</code>; declaring two is a class-definition-time error. The <code>StableUIDField</code> itself is stamped onto the Arrow schema with metadata key <code>homeobox.stable_uid = "true"</code>, so the choice survives to disk alongside the pointer-field metadata above.</p>
+<hr />
+<h2 id="datasetschema"><code>DatasetSchema</code></h2>
+<p><code>DatasetSchema</code> is the dataset inventory table. One row is written per zarr group ingested into the atlas.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dataset_uid</code></td>
+<td><code>str</code></td>
+<td>Auto-generated 16-char hex identifier for the logical dataset. Written to <code>HoxBaseSchema.dataset_uid</code> on every obs row ingested from this dataset. May be shared across rows that represent different modalities of the same multimodal batch.</td>
+</tr>
+<tr>
+<td><code>zarr_group</code></td>
+<td><code>str</code></td>
+<td>Path to the zarr group within the object store. The per-row primary key of the datasets table, and the same path stored in pointer structs on obs rows — so the two can be joined.</td>
+</tr>
+<tr>
+<td><code>feature_space</code></td>
+<td><code>str</code></td>
+<td>The registered feature space name for this group (e.g. <code>"gene_expression"</code>, <code>"protein_abundance"</code>).</td>
+</tr>
+<tr>
+<td><code>n_rows</code></td>
+<td><code>int</code></td>
+<td>Number of rows in the dataset. Recorded at ingest time; used by <code>validate()</code> to check consistency between obs tables and zarr arrays.</td>
+</tr>
+<tr>
+<td><code>layout_uid</code></td>
+<td><code>str</code></td>
+<td>Content-hash identifying the feature ordering for this dataset. Set by <code>register_dataset()</code> during ingestion; empty string until that call completes. Joins the dataset against <code>_feature_layouts</code> rows.</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td><code>str</code></td>
+<td>UTC ISO 8601 timestamp, set automatically at instantiation.</td>
+</tr>
+</tbody>
+</table>
+<p>You construct a <code>DatasetSchema</code> explicitly when calling <code>add_from_anndata()</code> or the lower-level ingestion functions. To attach provenance fields (source database accession, DOI, release date, …), subclass <code>DatasetSchema</code> and pass your subclass to <code>create_or_open_atlas</code> as the <code>dataset_schema</code> argument:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">CensusDatasetSchema</span><span class="p">(</span><span class="n">DatasetSchema</span><span class="p">):</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>    <span class="n">cellxgene_dataset_id</span><span class="p">:</span> <span class="nb">str</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">census_release_date</span><span class="p">:</span> <span class="nb">str</span>
+</code></pre></div>
+<p><code>validate()</code> uses the datasets table to enumerate all expected zarr groups and check that their row counts match the obs tables.</p>
+<hr />
+<h2 id="featurelayout"><code>FeatureLayout</code></h2>
+<p><code>FeatureLayout</code> stores feature orderings shared across datasets. Each unique feature ordering is stored once as a "layout" identified by a content-hash <code>layout_uid</code>; datasets with identical feature orderings reference the same layout, dramatically reducing row count.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>layout_uid</code></td>
+<td><code>str</code></td>
+<td>Content-hash of the ordered feature list. Shared across datasets with the same ordering. Scalar-indexed for layout → features lookup.</td>
+</tr>
+<tr>
+<td><code>feature_uid</code></td>
+<td><code>str</code></td>
+<td>The <code>uid</code> from the feature registry. FTS-indexed for feature → layouts lookup.</td>
+</tr>
+<tr>
+<td><code>local_index</code></td>
+<td><code>int</code></td>
+<td>0-based position of this feature in the layout's zarr array (i.e. the column index stored in <code>csr/indices</code>). Used as the sort key when building the local → global remap.</td>
+</tr>
+<tr>
+<td><code>global_index</code></td>
+<td><code>int \| None</code></td>
+<td>Denormalized copy of the feature's <code>global_index</code> from the registry. Written by <code>optimize()</code> after <code>reindex_registry()</code> runs. Used as the scatter/gather key in the reconstruction hot path — no database lookup needed during training.</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>_feature_layouts</code> table supports two query directions efficiently via an FTS index on <code>feature_uid</code> and a scalar index on <code>layout_uid</code>:</p>
+<ul>
+<li><strong>Feature → datasets</strong>: given a feature <code>uid</code>, which layouts (and thus datasets) include it? Drives queries like <code>find_datasets_with_features</code>.</li>
+<li><strong>Layout → features</strong>: given a <code>layout_uid</code>, reconstruct the full <code>local_index → global_index</code> remap array for vectorised scatter/gather during batch assembly.</li>
+</ul>
+<p><code>FeatureLayout</code> rows are written by the ingestion layer and updated by <code>optimize()</code>. They are an internal implementation detail of the reconstruction and sampling pipeline. For the Python API that builds, queries, and validates layouts, see <a href="../feature_layouts/">Feature Layouts</a>.</p>
+<hr />
+<h2 id="atlasversionrecord"><code>AtlasVersionRecord</code></h2>
+<p><code>AtlasVersionRecord</code> captures a consistent snapshot of every Lance table in the atlas. One row is written each time <code>snapshot()</code> is called.</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td><code>int</code></td>
+<td>Monotonically increasing snapshot number. Returned by <code>snapshot()</code>.</td>
+</tr>
+<tr>
+<td><code>obs_table_versions</code></td>
+<td><code>str</code></td>
+<td>JSON object mapping obs-table name to its Lance version integer, e.g. <code>'{"cells": 4, "donors": 2}'</code>. Encodes one entry per obs table declared on the atlas.</td>
+</tr>
+<tr>
+<td><code>dataset_table_name</code></td>
+<td><code>str</code></td>
+<td>Name of the datasets Lance table.</td>
+</tr>
+<tr>
+<td><code>dataset_table_version</code></td>
+<td><code>int</code></td>
+<td>Lance internal version of the datasets table.</td>
+</tr>
+<tr>
+<td><code>registry_table_names</code></td>
+<td><code>str</code></td>
+<td>JSON object mapping feature space name to registry table name, e.g. <code>'{"gene_expression": "gene_expression_registry"}'</code>.</td>
+</tr>
+<tr>
+<td><code>registry_table_versions</code></td>
+<td><code>str</code></td>
+<td>JSON object mapping feature space name to its Lance version integer.</td>
+</tr>
+<tr>
+<td><code>feature_layouts_table_version</code></td>
+<td><code>int</code></td>
+<td>Lance internal version of the <code>_feature_layouts</code> table.</td>
+</tr>
+<tr>
+<td><code>total_rows</code></td>
+<td><code>int</code></td>
+<td>Total row count across all obs tables at snapshot time. Written for quick inspection without opening any obs table.</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td><code>str</code></td>
+<td>UTC ISO 8601 timestamp.</td>
+</tr>
+</tbody>
+</table>
+<p><code>checkout(version)</code> reads the matching <code>AtlasVersionRecord</code> and reopens every table pinned to the exact Lance version captured there, so any checked-out atlas is fully reproducible: subsequent writes to the underlying tables do not affect the checked-out view.</p>
+<p>The per-table version columns are stored as JSON strings rather than structured columns because the sets of obs tables and feature registries are user-defined and vary between atlas configurations. <code>checkout</code> deserialises them with <code>json.loads</code> and iterates over the pairs.</p>
+<p>You do not construct <code>AtlasVersionRecord</code> instances directly — they are created by <code>snapshot()</code> and read by <code>checkout()</code> and <code>list_versions()</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
