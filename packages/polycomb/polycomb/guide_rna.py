@@ -21,7 +21,7 @@ from polycomb._rate_limit import rate_limited
 from polycomb.metadata_table import (
     GUIDE_RNAS_TABLE,
     GuideRnaRecord,
-    get_reference_db,
+    get_reference_db_or_none,
 )
 from polycomb.resolvers import (
     Disambiguation,
@@ -375,7 +375,9 @@ def _lookup_cached(sequences: list[str], species: str) -> dict[str, dict]:
 
     Returns ``{uppercase_sequence: row_dict}`` for sequences found in cache.
     """
-    db = get_reference_db()
+    db = get_reference_db_or_none()
+    if db is None:
+        return {}
     if GUIDE_RNAS_TABLE not in db.list_tables().tables:
         return {}
 
@@ -403,7 +405,9 @@ def _save_to_cache(records: list[dict]) -> None:
     """Append new resolution results to the guide RNA cache table."""
     if not records:
         return
-    db = get_reference_db()
+    db = get_reference_db_or_none()
+    if db is None:
+        return
     if GUIDE_RNAS_TABLE in db.list_tables().tables:
         table = db.open_table(GUIDE_RNAS_TABLE)
         table.add(records)

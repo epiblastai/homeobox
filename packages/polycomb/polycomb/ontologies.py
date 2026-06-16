@@ -24,8 +24,9 @@ from polycomb.metadata_table import (
     CELL_LINE_SYNONYMS_TABLE,
     CELL_LINES_TABLE,
     ONTOLOGY_TERMS_TABLE,
-    get_reference_db,
+    open_reference_table_or_none,
 )
+from polycomb.ols import OLSTerm, get_ols_term, search_ols
 from polycomb.resolvers import (
     Disambiguation,
     LookupHit,
@@ -86,6 +87,15 @@ _SEX_TERMS: dict[str, tuple[str, str]] = {
     "other": ("PATO:0000461", "unknown sex"),
 }
 
+_ORGANISM_QUERY_ALIASES: dict[str, str] = {
+    "human": "Homo sapiens",
+    "homo sapiens": "Homo sapiens",
+    "homo_sapiens": "Homo sapiens",
+    "mouse": "Mus musculus",
+    "mus musculus": "Mus musculus",
+    "mus_musculus": "Mus musculus",
+}
+
 
 # ---------------------------------------------------------------------------
 # Ontology data loading (cached)
@@ -104,11 +114,37 @@ def _get_prefixes(entity: OntologyEntity, organism: str | None = None) -> list[s
     return prefixes
 
 
+def _empty_ontology_terms_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "ontology_term_id": pl.Utf8,
+            "name": pl.Utf8,
+            "synonyms": pl.Utf8,
+            "parent_ids": pl.List(pl.Utf8),
+        }
+    )
+
+
+def _empty_cell_lines_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "cellosaurus_id": pl.Utf8,
+            "cell_line_name": pl.Utf8,
+            "species": pl.Utf8,
+            "ncbi_taxonomy_id": pl.Int64,
+            "disease": pl.Utf8,
+            "sex": pl.Utf8,
+            "category": pl.Utf8,
+        }
+    )
+
+
 @functools.lru_cache(maxsize=32)
 def _load_ontology_terms(prefix: str) -> pl.DataFrame:
     """Load all non-obsolete terms for a given ontology prefix. Cached."""
-    db = get_reference_db()
-    table = db.open_table(ONTOLOGY_TERMS_TABLE)
+    table = open_reference_table_or_none(ONTOLOGY_TERMS_TABLE)
+    if table is None:
+        return _empty_ontology_terms_df()
     return (
         table.search()
         .where(
@@ -152,8 +188,9 @@ def _build_synonym_index(prefix: str) -> dict[str, tuple[str, str, str]]:
 @functools.lru_cache(maxsize=1)
 def _load_cell_lines() -> pl.DataFrame:
     """Load all cell lines from the reference DB. Cached."""
-    db = get_reference_db()
-    table = db.open_table(CELL_LINES_TABLE)
+    table = open_reference_table_or_none(CELL_LINES_TABLE)
+    if table is None:
+        return _empty_cell_lines_df()
     return (
         table.search()
         .select(
@@ -186,8 +223,9 @@ def _build_cell_line_name_index() -> dict[str, str]:
 @functools.lru_cache(maxsize=1)
 def _build_cell_line_synonym_index() -> dict[str, str]:
     """Build lowercased synonym → cellosaurus_id index (non-primary names only)."""
-    db = get_reference_db()
-    table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
+    table = open_reference_table_or_none(CELL_LINE_SYNONYMS_TABLE)
+    if table is None:
+        return {}
     df = (
         table.search()
         .where("is_primary_name = false", prefilter=True)
@@ -329,6 +367,97 @@ class OntologyResultBuilder:
         )
 
 
+class OLSFallback:
+    """Fallback: exact OLS match for standard ontology terms."""
+
+    def try_resolve(
+        self, key: str, original: str, ctx: ResolverContext
+    ) -> OntologyResolution | None:
+        entity = ctx.extras["entity"]
+        if not isinstance(entity, OntologyEntity):
+            return None
+        prefixes = _get_prefixes(entity, ctx.organism)
+        ontology_name = ENTITY_TO_ONTOLOGY_NAME.get(entity, entity.value)
+
+        curie_result = self._resolve_curie(original, prefixes, ontology_name)
+        if curie_result is not None:
+            return curie_result
+
+        query = self._query_for_entity(key, original, entity)
+        try:
+            candidates = [
+                term
+                for prefix in prefixes
+                for term in search_ols(query, ontology=prefix, exact=True, rows=10)
+            ]
+        except Exception:
+            return None
+
+        picked, source, confidence = self._pick_exact_match(candidates, key, original, query)
+        if picked is None:
+            return None
+        return self._resolution(original, picked, confidence, source, ontology_name)
+
+    def _resolve_curie(
+        self, original: str, prefixes: list[str], ontology_name: str
+    ) -> OntologyResolution | None:
+        if ":" not in original:
+            return None
+        prefix = original.split(":", 1)[0]
+        if prefix.lower() not in {allowed.lower() for allowed in prefixes}:
+            return None
+        try:
+            term = get_ols_term(original)
+        except Exception:
+            return None
+        if term is None or term.is_obsolete:
+            return None
+        return self._resolution(original, term, 1.0, "ols_curie", ontology_name)
+
+    def _query_for_entity(self, key: str, original: str, entity: OntologyEntity) -> str:
+        if entity == OntologyEntity.ORGANISM:
+            return _ORGANISM_QUERY_ALIASES.get(key, original.strip())
+        return original.strip()
+
+    def _pick_exact_match(
+        self, candidates: list[OLSTerm], key: str, original: str, query: str
+    ) -> tuple[OLSTerm | None, str, float]:
+        original_key = original.strip().lower()
+        query_key = query.strip().lower()
+        fallback_synonym_match: OLSTerm | None = None
+        for term in candidates:
+            if term.is_obsolete or not term.obo_id or not term.label:
+                continue
+            label_key = term.label.strip().lower()
+            if label_key in {original_key, query_key}:
+                return term, "ols", 1.0
+            synonym_keys = {syn.strip().lower() for syn in term.synonyms}
+            if original_key in synonym_keys:
+                return term, "ols_synonym", 0.9
+            if query_key in synonym_keys and fallback_synonym_match is None:
+                fallback_synonym_match = term
+        if fallback_synonym_match is not None:
+            return fallback_synonym_match, "ols_synonym", 0.9
+        return None, "", 0.0
+
+    def _resolution(
+        self,
+        original: str,
+        term: OLSTerm,
+        confidence: float,
+        source: str,
+        ontology_name: str,
+    ) -> OntologyResolution:
+        return OntologyResolution(
+            input_value=original,
+            resolved_value=term.label,
+            confidence=confidence,
+            source=source,
+            ontology_term_id=term.obo_id,
+            ontology_name=ontology_name,
+        )
+
+
 class CellLineLookup:
     """Cellosaurus name (1.0) then synonym (0.9) index lookup."""
 
@@ -370,9 +499,13 @@ class CellLineFTSFallback:
         if not original.strip():
             return None  # empty input stays unresolved
         record_lookup = _build_cell_line_record_lookup()
-        db = get_reference_db()
-        fts_table = db.open_table(CELL_LINE_SYNONYMS_TABLE)
-        fts_results = fts_table.search(original.strip(), query_type="fts").limit(5).to_polars()
+        fts_table = open_reference_table_or_none(CELL_LINE_SYNONYMS_TABLE)
+        if fts_table is None:
+            return None
+        try:
+            fts_results = fts_table.search(original.strip(), query_type="fts").limit(5).to_polars()
+        except Exception:
+            return None
         if fts_results.is_empty():
             return None
         top_id = fts_results.row(0, named=True)["cellosaurus_id"]
@@ -404,6 +537,7 @@ ontology_term_pipeline: ResolverPipeline[OntologyResolution] = ResolverPipeline(
     result_builder=OntologyResultBuilder(),
     preprocessor=_strip_lower,
     local_lookup=OntologyTermLookup(),
+    fallbacks=[OLSFallback()],
 )
 
 sex_pipeline: ResolverPipeline[OntologyResolution] = ResolverPipeline(

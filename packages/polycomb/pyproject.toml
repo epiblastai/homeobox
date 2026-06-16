@@ -36,6 +36,9 @@ docs = [
     "mkdocstrings[python]>=0.27",
 ]
 
+[project.scripts]
+polycomb = "polycomb.cli:main"
+
 [tool.uv.sources]
 homeobox = { workspace = true }
 

@@ -22,7 +22,7 @@ from polycomb.metadata_table import (
     GENOMIC_FEATURE_ALIASES_TABLE,
     GENOMIC_FEATURES_TABLE,
     ORGANISMS_TABLE,
-    get_reference_db,
+    open_reference_table_or_none,
 )
 from polycomb.resolvers import (
     AliasLookup,
@@ -41,6 +41,13 @@ _ACCESSION_PLACEHOLDER_RE = re.compile(r"^[A-Z]{2}\d{6}\.\d+$")
 
 # Riken clone symbols from mouse datasets (e.g., 1700049J03Rik, 2410002F23Rik)
 _RIKEN_CLONE_RE = re.compile(r"^\d+[A-Z]\d+Rik$")
+
+_FALLBACK_SPECIES_BY_ORGANISM = {
+    "human": "homo_sapiens",
+    "homo_sapiens": "homo_sapiens",
+    "mouse": "mus_musculus",
+    "mus_musculus": "mus_musculus",
+}
 
 
 def is_placeholder_symbol(symbol: str) -> bool:
@@ -63,13 +70,25 @@ _organism_by_common: dict[str, dict] | None = None
 _organism_by_scientific: dict[str, dict] | None = None
 
 
+def _empty_features_df() -> pl.DataFrame:
+    return pl.DataFrame(
+        schema={
+            "ensembl_gene_id": pl.Utf8,
+            "symbol": pl.Utf8,
+            "ncbi_gene_id": pl.Int64,
+            "organism": pl.Utf8,
+        }
+    )
+
+
 def _load_all_organisms() -> list[dict]:
     """Load all organism records from the DB."""
     global _organism_list, _organism_by_common, _organism_by_scientific
     if _organism_list is not None:
         return _organism_list
-    db = get_reference_db()
-    table = db.open_table(ORGANISMS_TABLE)
+    table = open_reference_table_or_none(ORGANISMS_TABLE)
+    if table is None:
+        return []
     df = table.search().to_polars()
     _organism_list = list(df.iter_rows(named=True))
     _organism_by_common = {row["common_name"]: row for row in _organism_list}
@@ -80,14 +99,30 @@ def _load_all_organisms() -> list[dict]:
 def _get_organism_record(organism: str) -> dict:
     """Look up an organism by common_name or scientific_name. Raises ValueError if unknown."""
     _load_all_organisms()
-    if organism in _organism_by_common:
-        return _organism_by_common[organism]
-    if organism in _organism_by_scientific:
-        return _organism_by_scientific[organism]
+    by_common = _organism_by_common or {}
+    by_scientific = _organism_by_scientific or {}
+    if organism in by_common:
+        return by_common[organism]
+    if organism in by_scientific:
+        return by_scientific[organism]
     raise ValueError(
         f"Unknown organism '{organism}'. Pass a common_name (e.g. 'human') "
         f"or scientific_name (e.g. 'homo_sapiens')."
     )
+
+
+def _try_get_organism_record(organism: str) -> dict | None:
+    try:
+        return _get_organism_record(organism)
+    except ValueError:
+        return None
+
+
+def _scientific_name_for_organism(organism: str) -> str | None:
+    record = _try_get_organism_record(organism)
+    if record is not None:
+        return record["scientific_name"]
+    return _FALLBACK_SPECIES_BY_ORGANISM.get(organism.lower())
 
 
 # ---------------------------------------------------------------------------
@@ -99,19 +134,37 @@ def _is_ensembl_id(value: str) -> bool:
     return bool(_ENSEMBL_ID_RE.match(value.split(".")[0]))
 
 
+def _base_ensembl_id(value: str) -> str:
+    return value.split(".")[0]
+
+
+def _optional_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        if value != value:
+            return None
+    except TypeError:
+        pass
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(float(text))
+
+
+def _synonyms_contain(value, key: str) -> bool:
+    if not isinstance(value, list):
+        return False
+    return key in {str(item).lower() for item in value}
+
+
 def _batch_lookup_features(ensembl_gene_ids: list[str], scientific_name: str) -> pl.DataFrame:
     """Batch lookup genomic_features by ensembl_gene_id, returning a polars DataFrame."""
     if not ensembl_gene_ids:
-        return pl.DataFrame(
-            schema={
-                "ensembl_gene_id": pl.Utf8,
-                "symbol": pl.Utf8,
-                "ncbi_gene_id": pl.Int64,
-                "organism": pl.Utf8,
-            }
-        )
-    db = get_reference_db()
-    table = db.open_table(GENOMIC_FEATURES_TABLE)
+        return _empty_features_df()
+    table = open_reference_table_or_none(GENOMIC_FEATURES_TABLE)
+    if table is None:
+        return _empty_features_df()
     frames: list[pl.DataFrame] = []
     for i in range(0, len(ensembl_gene_ids), 500):
         batch = ensembl_gene_ids[i : i + 500]
@@ -127,14 +180,7 @@ def _batch_lookup_features(ensembl_gene_ids: list[str], scientific_name: str) ->
         )
         frames.append(df)
     if not frames:
-        return pl.DataFrame(
-            schema={
-                "ensembl_gene_id": pl.Utf8,
-                "symbol": pl.Utf8,
-                "ncbi_gene_id": pl.Int64,
-                "organism": pl.Utf8,
-            }
-        )
+        return _empty_features_df()
     result = pl.concat(frames)
     # Prefer current assembly over older assemblies when gene exists in multiple
     if result.height > result.get_column("ensembl_gene_id").n_unique():
@@ -231,6 +277,68 @@ class GeneFeatureEnricher:
         return results
 
 
+class GeneSymbolGgetFallback:
+    """Fallback: resolve exact symbols/synonyms through Ensembl via gget.search."""
+
+    def try_resolve(self, key: str, original: str, ctx: ResolverContext) -> GeneResolution | None:
+        species = ctx.extras.get("scientific_name")
+        if not isinstance(species, str) or not species:
+            return None
+        try:
+            import gget
+
+            df = gget.search(original, species=species, id_type="gene", limit=None, verbose=False)
+        except Exception:
+            return None
+        if df is None or df.empty:
+            return None
+        required_columns = {"ensembl_id", "gene_name", "biotype", "synonym"}
+        if not required_columns.issubset(df.columns):
+            return None
+
+        candidate_df = df[df["ensembl_id"].apply(lambda value: _is_ensembl_id(str(value)))]
+        if candidate_df.empty:
+            return None
+
+        exact_gene = candidate_df[candidate_df["gene_name"].str.lower() == key]
+        source = "gget_search"
+        confidence = 1.0
+        matches = exact_gene
+        if matches.empty:
+            exact_synonym = candidate_df[
+                candidate_df["synonym"].apply(lambda value: _synonyms_contain(value, key))
+            ]
+            matches = exact_synonym
+            confidence = 0.9
+            source = "gget_search_synonym"
+        if matches.empty:
+            return None
+
+        matches = matches.assign(
+            _is_protein_coding=matches["biotype"].apply(lambda value: value == "protein_coding")
+        ).sort_values("_is_protein_coding", ascending=False)
+        rows = list(matches.iter_rows(named=True)) if hasattr(matches, "iter_rows") else None
+        if rows is None:
+            rows = [row.to_dict() for _, row in matches.iterrows()]
+        picked = rows[0]
+        ensembl_id = _base_ensembl_id(str(picked["ensembl_id"]))
+        alternatives = [
+            _base_ensembl_id(str(row["ensembl_id"]))
+            for row in rows[1:]
+            if _base_ensembl_id(str(row["ensembl_id"])) != ensembl_id
+        ]
+        return GeneResolution(
+            input_value=original,
+            resolved_value=ensembl_id,
+            confidence=confidence,
+            source=source,
+            alternatives=alternatives,
+            ensembl_gene_id=ensembl_id,
+            symbol=picked.get("gene_name"),
+            organism=ctx.organism,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Pipeline stages: Ensembl-ID lane (features table, organism per-ID prefix)
 # ---------------------------------------------------------------------------
@@ -261,7 +369,12 @@ class GeneEnsemblLookup:
 
         hits: dict[str, LookupHit | None] = {}
         for organism, group_keys in groups.items():
-            scientific_name = _get_organism_record(organism)["scientific_name"]
+            record = _try_get_organism_record(organism)
+            if record is None:
+                for key in group_keys:
+                    hits[key] = None
+                continue
+            scientific_name = record["scientific_name"]
             base_ids = list({id_to_base[key] for key in group_keys})
             features_df = _batch_lookup_features(base_ids, scientific_name)
             base_map = {row["ensembl_gene_id"]: row for row in features_df.iter_rows(named=True)}
@@ -303,6 +416,41 @@ class GeneEnsemblResultBuilder:
         )
 
 
+class GeneEnsemblGgetFallback:
+    """Fallback: resolve Ensembl gene IDs through gget.info."""
+
+    def try_resolve(self, key: str, original: str, ctx: ResolverContext) -> GeneResolution | None:
+        try:
+            import gget
+
+            df = gget.info(original, verbose=False)
+        except Exception:
+            return None
+        if df is None or df.empty:
+            return None
+
+        row = df.iloc[0].to_dict()
+        if row.get("object_type") != "Gene":
+            return None
+        raw_ensembl_id = row.get("ensembl_id")
+        if raw_ensembl_id is None:
+            return None
+        ensembl_id = _base_ensembl_id(str(raw_ensembl_id))
+        if not _is_ensembl_id(ensembl_id):
+            return None
+        symbol = row.get("primary_gene_name") or row.get("ensembl_gene_name")
+        return GeneResolution(
+            input_value=original,
+            resolved_value=ensembl_id,
+            confidence=1.0,
+            source="gget_info",
+            symbol=None if symbol is None else str(symbol),
+            ensembl_gene_id=ensembl_id,
+            organism=ctx.organism,
+            ncbi_gene_id=_optional_int(row.get("ncbi_gene_id")),
+        )
+
+
 gene_symbol_pipeline: ResolverPipeline[GeneResolution] = ResolverPipeline(
     tool="resolve_genes",
     result_builder=GeneSymbolResultBuilder(),
@@ -310,12 +458,14 @@ gene_symbol_pipeline: ResolverPipeline[GeneResolution] = ResolverPipeline(
     local_lookup=AliasLookup(GENOMIC_FEATURE_ALIASES_TABLE, "ensembl_gene_id"),
     disambiguator=CanonicalAliasDisambiguator(),
     enricher=GeneFeatureEnricher(),
+    fallbacks=[GeneSymbolGgetFallback()],
 )
 
 gene_ensembl_pipeline: ResolverPipeline[GeneResolution] = ResolverPipeline(
     tool="resolve_genes",
     result_builder=GeneEnsemblResultBuilder(),
     local_lookup=GeneEnsemblLookup(),
+    fallbacks=[GeneEnsemblGgetFallback()],
 )
 
 
@@ -361,12 +511,23 @@ def resolve_genes(
     results: list[GeneResolution] = [None] * len(values)  # type: ignore[list-item]
 
     if symbol_idx:
-        extras = {"scientific_name": _get_organism_record(organism)["scientific_name"]}
-        report = gene_symbol_pipeline.resolve(
-            [values[i] for i in symbol_idx], organism=organism, extras=extras
-        )
-        for i, res in zip(symbol_idx, report.results, strict=True):
-            results[i] = res
+        scientific_name = _scientific_name_for_organism(organism)
+        if scientific_name is None:
+            for i in symbol_idx:
+                results[i] = GeneResolution(
+                    input_value=values[i],
+                    resolved_value=None,
+                    confidence=0.0,
+                    source="none",
+                    organism=organism,
+                )
+        else:
+            extras = {"scientific_name": scientific_name}
+            report = gene_symbol_pipeline.resolve(
+                [values[i] for i in symbol_idx], organism=organism, extras=extras
+            )
+            for i, res in zip(symbol_idx, report.results, strict=True):
+                results[i] = res
 
     if ensembl_idx:
         report = gene_ensembl_pipeline.resolve([values[i] for i in ensembl_idx], organism=organism)

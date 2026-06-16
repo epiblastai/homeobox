@@ -11,6 +11,7 @@ import os
 from collections.abc import Iterator
 
 import lancedb
+import pyarrow as pa
 from lancedb.pydantic import LanceModel
 
 # Table name constants
@@ -393,6 +394,21 @@ class CellLineSynonymRecord(LanceModel):
     source: str
 
 
+REFERENCE_TABLE_SCHEMAS: dict[str, type[LanceModel]] = {
+    ORGANISMS_TABLE: OrganismRecord,
+    GENOMIC_FEATURES_TABLE: GenomicFeatureRecord,
+    GENOMIC_FEATURE_ALIASES_TABLE: GenomicFeatureAliasRecord,
+    ONTOLOGY_TERMS_TABLE: OntologyTermRecord,
+    COMPOUNDS_TABLE: CompoundRecord,
+    COMPOUND_SYNONYMS_TABLE: CompoundSynonymRecord,
+    PROTEINS_TABLE: ProteinRecord,
+    PROTEIN_ALIASES_TABLE: ProteinAliasRecord,
+    GUIDE_RNAS_TABLE: GuideRnaRecord,
+    CELL_LINES_TABLE: CellLineRecord,
+    CELL_LINE_SYNONYMS_TABLE: CellLineSynonymRecord,
+}
+
+
 # ---------------------------------------------------------------------------
 # DB helpers
 # ---------------------------------------------------------------------------
@@ -410,6 +426,29 @@ def _config_reference_db() -> dict:
     with open(CONFIG_PATH) as f:
         config = json.load(f)
     return config.get("reference_db", {})
+
+
+def write_reference_db_config(
+    db_path: str,
+    *,
+    storage_options: dict | None = None,
+    force: bool = False,
+    config_path: str | None = None,
+) -> str:
+    """Write the reference DB config file and return its path."""
+    target = os.path.expanduser(config_path or CONFIG_PATH)
+    if os.path.exists(target) and not force:
+        raise FileExistsError(
+            f"Config file already exists at {target}. Pass force=True to overwrite it."
+        )
+    payload: dict[str, dict] = {"reference_db": {"path": os.fspath(db_path)}}
+    if storage_options:
+        payload["reference_db"]["storage_options"] = storage_options
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    with open(target, "w") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+        f.write("\n")
+    return target
 
 
 def open_reference_db(db_path: str | None = None, **connect_kwargs) -> lancedb.DBConnection:
@@ -439,6 +478,26 @@ def ensure_table(
 ) -> lancedb.table.Table:
     """Create or overwrite a table with the given data."""
     return db.create_table(table_name, data=data, schema=schema, mode=mode)
+
+
+def _empty_arrow_table(schema: type[LanceModel]) -> pa.Table:
+    return pa.Table.from_batches([], schema=schema.to_arrow_schema())
+
+
+def ensure_empty_reference_table(
+    db: lancedb.DBConnection,
+    table_name: str,
+    schema: type[LanceModel],
+    *,
+    mode: str = "create",
+) -> lancedb.table.Table:
+    """Create an empty Lance table with a reference schema."""
+    return db.create_table(
+        table_name,
+        data=_empty_arrow_table(schema),
+        schema=schema,
+        mode=mode,
+    )
 
 
 def ensure_table_chunked(
@@ -483,6 +542,51 @@ def reference_db_exists(db_path: str | None = None, **connect_kwargs) -> bool:
         return False
     db = lancedb.connect(db_path, **connect_kwargs)
     return ORGANISMS_TABLE in db.list_tables().tables
+
+
+def reference_table_exists(
+    table_name: str,
+    *,
+    db_path: str | None = None,
+    **connect_kwargs,
+) -> bool:
+    """Return whether a reference table exists without creating a local DB."""
+    if db_path is None:
+        db_path, connect_kwargs = _resolved_db_config()
+    db_path = os.fspath(db_path)
+    if not _is_remote_path(db_path):
+        db_path = os.path.expanduser(db_path)
+        if not os.path.exists(db_path):
+            return False
+    try:
+        db = lancedb.connect(db_path, **connect_kwargs)
+        return table_name in db.list_tables().tables
+    except RuntimeError:
+        return False
+
+
+def initialize_reference_db(
+    db_path: str | None = None,
+    *,
+    force: bool = False,
+    **connect_kwargs,
+) -> dict[str, str]:
+    """Create the reference DB and any missing empty reference tables.
+
+    Returns a ``table_name -> status`` mapping where status is ``"created"``,
+    ``"exists"``, or ``"recreated"``.
+    """
+    db = open_reference_db(db_path, **connect_kwargs)
+    existing = set(db.list_tables().tables)
+    result: dict[str, str] = {}
+    for table_name, schema in REFERENCE_TABLE_SCHEMAS.items():
+        if table_name in existing and not force:
+            result[table_name] = "exists"
+            continue
+        mode = "overwrite" if table_name in existing and force else "create"
+        ensure_empty_reference_table(db, table_name, schema, mode=mode)
+        result[table_name] = "recreated" if table_name in existing else "created"
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -570,3 +674,24 @@ def get_reference_db() -> lancedb.DBConnection:
         )
     _shared_db_connection = open_reference_db(db_path, **connect_kwargs)
     return _shared_db_connection
+
+
+def get_reference_db_or_none() -> lancedb.DBConnection | None:
+    """Return the configured reference DB, or ``None`` when it is not initialized."""
+    try:
+        return get_reference_db()
+    except RuntimeError:
+        return None
+
+
+def open_reference_table_or_none(table_name: str) -> lancedb.table.Table | None:
+    """Open a configured reference table, returning ``None`` if it is unavailable."""
+    db = get_reference_db_or_none()
+    if db is None:
+        return None
+    if table_name not in db.list_tables().tables:
+        return None
+    try:
+        return db.open_table(table_name)
+    except (FileNotFoundError, ValueError):
+        return None

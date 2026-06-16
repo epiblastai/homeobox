@@ -13,6 +13,97 @@ curl -sSL https://raw.githubusercontent.com/epiblastai/homeobox/refs/heads/main/
 
 The install script copies skills from `skills/` into `~/.agents/skills/` and links them for Claude at `~/.claude/skills/`. Each skill documents the procedures and scripts for one workflow stage.
 
+## Reference cache setup and maintenance
+
+Polycomb resolvers use a shared LanceDB reference cache for fast local lookup of
+genes, proteins, ontology terms, molecules, guide RNAs, organisms, and cell
+lines. The cache is optional: resolvers are expected to return structured
+reports when the cache is missing or empty, and several resolvers can fall back
+to online services such as Ensembl/gget, OLS, PubChem, ChEMBL, and BLAT where
+appropriate. A populated cache is still recommended for speed, reproducibility,
+and offline runs.
+
+By default, Polycomb looks for:
+
+```text
+~/.cache/polycomb/reference_db
+```
+
+You can initialize an empty cache with the correct table schemas:
+
+```bash
+polycomb setup
+```
+
+This creates empty LanceDB tables with the expected schemas.
+
+To initialize a cache at a specific path:
+
+```bash
+polycomb setup --db-path /path/to/reference_db
+```
+
+To make that path the default for future resolver calls, write
+`~/.polycomb/config.json`:
+
+```bash
+polycomb setup --db-path /path/to/reference_db --write-config
+```
+
+The config file has this shape:
+
+```json
+{
+  "reference_db": {
+    "path": "/path/to/reference_db"
+  }
+}
+```
+
+For object-store-backed LanceDB caches, pass storage options as JSON or from a
+file:
+
+```bash
+polycomb setup \
+  --db-path s3://bucket/polycomb/reference_db \
+  --write-config \
+  --storage-options-json '{"region": "us-east-1"}'
+
+polycomb setup \
+  --db-path s3://bucket/polycomb/reference_db \
+  --write-config \
+  --storage-options-file storage-options.json
+```
+
+Use `--force-config` to overwrite an existing config file. Use `--force-tables`
+only when you deliberately want to recreate existing reference tables as empty
+tables:
+
+```bash
+polycomb setup --db-path /path/to/reference_db --force-tables
+```
+
+After populating or updating reference tables, create/update indexes and compact
+the cache:
+
+```bash
+polycomb optimize-cache
+```
+
+Useful maintenance variants:
+
+```bash
+polycomb optimize-cache --db-path /path/to/reference_db
+polycomb optimize-cache --dry-run
+polycomb optimize-cache --tables ontology_terms genomic_feature_aliases
+polycomb optimize-cache --skip-indexes
+polycomb optimize-cache --skip-optimize
+```
+
+`optimize-cache` skips missing tables, missing columns, and empty tables. It
+creates full-text indexes for text-heavy lookup columns, scalar indexes for
+exact-match columns, and runs LanceDB table optimization unless disabled.
+
 ## Workflow overview
 
 An polycomb run turns a public dataset (GEO, SRA, SCP, …) into a finalized homeobox atlas. The stages are sequential; each skill assumes the previous ones have completed.
