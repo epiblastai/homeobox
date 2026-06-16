@@ -68,13 +68,12 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     if storage_options:
         connect_kwargs["storage_options"] = storage_options
 
-    if args.write_config:
-        config_path = write_reference_db_config(
-            args.db_path or DEFAULT_REFERENCE_DB_PATH,
-            storage_options=storage_options,
-            force=args.force_config,
-        )
-        print(f"Wrote config: {config_path}")
+    config_path = write_reference_db_config(
+        args.db_path or DEFAULT_REFERENCE_DB_PATH,
+        storage_options=storage_options,
+        force=True,
+    )
+    print(f"Wrote config: {config_path}")
 
     statuses = initialize_reference_db(
         args.db_path,
@@ -202,19 +201,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     setup = subparsers.add_parser("setup", help="Initialize the reference LanceDB cache")
     setup.add_argument("--db-path", default=None, help="Reference LanceDB path or URI")
-    setup.add_argument(
-        "--write-config",
-        action="store_true",
-        help="Write ~/.polycomb/config.json for this reference DB",
-    )
     storage = setup.add_mutually_exclusive_group()
     storage.add_argument("--storage-options-json", help="Object-store options JSON object")
     storage.add_argument("--storage-options-file", help="Path to object-store options JSON")
-    setup.add_argument(
-        "--force-config",
-        action="store_true",
-        help="Overwrite an existing ~/.polycomb/config.json",
-    )
     setup.add_argument(
         "--force-tables",
         action="store_true",

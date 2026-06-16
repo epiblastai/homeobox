@@ -29,13 +29,17 @@ By default, Polycomb looks for:
 ~/.cache/polycomb/reference_db
 ```
 
+A prefilled cache is available for download from Hugging Face at
+[epiblastai/polycomb-lancedb](https://huggingface.co/datasets/epiblastai/polycomb-lancedb).
+It ships with a few ontologies, PubChem, and Ensembl, plus guide RNAs
+pre-resolved using bowtie2. Download it and point `setup` at the resulting path
+to use it as your reference cache.
+
 You can initialize an empty cache with the correct table schemas:
 
 ```bash
 polycomb setup
 ```
-
-This creates empty LanceDB tables with the expected schemas.
 
 To initialize a cache at a specific path:
 
@@ -43,41 +47,20 @@ To initialize a cache at a specific path:
 polycomb setup --db-path /path/to/reference_db
 ```
 
-To make that path the default for future resolver calls, write
-`~/.polycomb/config.json`:
-
-```bash
-polycomb setup --db-path /path/to/reference_db --write-config
-```
-
-The config file has this shape:
-
-```json
-{
-  "reference_db": {
-    "path": "/path/to/reference_db"
-  }
-}
-```
+Every `setup` run writes `~/.polycomb/config.json`, making the given `--db-path`
+(or the default path) the reference DB used by future resolver calls.
 
 For object-store-backed LanceDB caches, pass storage options as JSON or from a
 file:
 
 ```bash
-polycomb setup \
-  --db-path s3://bucket/polycomb/reference_db \
-  --write-config \
-  --storage-options-json '{"region": "us-east-1"}'
+polycomb setup --db-path s3://bucket/polycomb/reference_db --storage-options-json '{"region": "us-east-1"}'
 
-polycomb setup \
-  --db-path s3://bucket/polycomb/reference_db \
-  --write-config \
-  --storage-options-file storage-options.json
+polycomb setup --db-path s3://bucket/polycomb/reference_db --storage-options-file storage-options.json
 ```
 
-Use `--force-config` to overwrite an existing config file. Use `--force-tables`
-only when you deliberately want to recreate existing reference tables as empty
-tables:
+Use `--force-tables` only when you deliberately want to recreate existing
+reference tables as empty tables:
 
 ```bash
 polycomb setup --db-path /path/to/reference_db --force-tables
