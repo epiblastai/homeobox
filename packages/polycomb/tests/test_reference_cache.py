@@ -33,7 +33,6 @@ def test_cli_setup_writes_config_and_initializes_tables(tmp_path, monkeypatch, c
             "setup",
             "--db-path",
             db_path,
-            "--write-config",
             "--storage-options-json",
             '{"region": "auto"}',
         ]
