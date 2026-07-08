@@ -14,7 +14,6 @@ from pydantic import Field, model_validator
 from homeobox.group_specs import get_spec, registered_feature_spaces
 from homeobox.pointer_types import (
     ZARR_POINTER_TYPES,
-    ZarrPointer,
 )
 
 # Arrow field metadata key used to persist the feature_space for each pointer column.
@@ -694,16 +693,6 @@ class HoxBaseSchema(LanceModel):
                 feature_registry_schema=feature_registry_schema,
                 context=f"{cls.__name__}.{name}",
             )
-
-    @model_validator(mode="after")
-    def _require_at_least_one_pointer(self):
-        """Instance-time: at least one pointer must be non-None."""
-        for name in self.model_fields:
-            if isinstance(getattr(self, name), ZarrPointer):
-                return self
-        raise ValueError(
-            f"{type(self).__name__} requires at least one populated zarr pointer field"
-        )
 
     @classmethod
     def to_arrow_schema(cls) -> pa.Schema:
