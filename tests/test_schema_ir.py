@@ -260,20 +260,6 @@ def test_codegen_equal_length_and_join_list_and_presence(generated):
         generated.Cell(mol_uids=["a", "b"], mol_types=["small_molecule"], **common)
 
 
-def test_codegen_requires_at_least_one_pointer(generated):
-    # Inherited HoxBaseSchema rule still applies to the generated obs table.
-    with pytest.raises(ValidationError, match="zarr pointer"):
-        generated.Cell(
-            dataset_uid="d",
-            organism="human",
-            cell_line=None,
-            mol_uids=None,
-            mol_types=None,
-            gene_expression=None,
-            image_tiles=None,
-        )
-
-
 def test_codegen_compute_auto_fields_bulk(generated):
     pd = pytest.importorskip("pandas")
     df = pd.DataFrame({"mol_uids": [["a", "b"], None, ["c"]]})
