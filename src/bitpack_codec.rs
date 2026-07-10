@@ -55,9 +55,9 @@ impl BitpackCodec {
 
     pub fn from_configuration(config: &BitpackCodecConfiguration) -> Result<Self, String> {
         let transform = Transform::from_str(&config.transform)?;
-        if config.element_size != 4 {
+        if config.element_size != 4 && config.element_size != 8 {
             return Err(format!(
-                "bitpacking codec only supports element_size=4 (uint32), got {}",
+                "bitpacking codec only supports element_size=4 (uint32) or element_size=8 (uint64), got {}",
                 config.element_size
             ));
         }
@@ -151,13 +151,29 @@ impl BytesToBytesCodecTraits for BitpackCodec {
             ));
         }
 
-        // Reinterpret as u32 (native endian — zarr bytes codec handles endianness)
-        let values: Vec<u32> = bytes
-            .chunks_exact(4)
-            .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
-            .collect();
-
-        let encoded = bitpacking::encode(&values, self.transform);
+        // Reinterpret as the configured integer width (native endian — the zarr
+        // bytes codec handles endianness) and bitpack.
+        let encoded = match self.element_size {
+            4 => {
+                let values: Vec<u32> = bytes
+                    .chunks_exact(4)
+                    .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
+                    .collect();
+                bitpacking::encode(&values, self.transform)
+            }
+            8 => {
+                let values: Vec<u64> = bytes
+                    .chunks_exact(8)
+                    .map(|chunk| u64::from_ne_bytes(chunk.try_into().unwrap()))
+                    .collect();
+                bitpacking::encode_u64(&values, self.transform)
+            }
+            other => {
+                return Err(CodecError::Other(
+                    format!("bitpacking: unsupported element_size {other}").into(),
+                ));
+            }
+        };
         Ok(Cow::Owned(encoded))
     }
 
@@ -167,14 +183,33 @@ impl BytesToBytesCodecTraits for BitpackCodec {
         _decoded_representation: &BytesRepresentation,
         _options: &CodecOptions,
     ) -> Result<ArrayBytesRaw<'a>, CodecError> {
-        let values = bitpacking::decode(encoded_value.as_ref())
-            .map_err(|e| CodecError::Other(e.into()))?;
-
-        // Convert u32 values back to bytes (native endian)
-        let mut out = Vec::with_capacity(values.len() * 4);
-        for v in &values {
-            out.extend_from_slice(&v.to_ne_bytes());
-        }
+        // Decode at the configured integer width and convert back to bytes
+        // (native endian).
+        let out = match self.element_size {
+            4 => {
+                let values = bitpacking::decode(encoded_value.as_ref())
+                    .map_err(|e| CodecError::Other(e.into()))?;
+                let mut out = Vec::with_capacity(values.len() * 4);
+                for v in &values {
+                    out.extend_from_slice(&v.to_ne_bytes());
+                }
+                out
+            }
+            8 => {
+                let values = bitpacking::decode_u64(encoded_value.as_ref())
+                    .map_err(|e| CodecError::Other(e.into()))?;
+                let mut out = Vec::with_capacity(values.len() * 8);
+                for v in &values {
+                    out.extend_from_slice(&v.to_ne_bytes());
+                }
+                out
+            }
+            other => {
+                return Err(CodecError::Other(
+                    format!("bitpacking: unsupported element_size {other}").into(),
+                ));
+            }
+        };
         Ok(Cow::Owned(out))
     }
 
@@ -186,11 +221,13 @@ impl BytesToBytesCodecTraits for BitpackCodec {
         decoded_representation.size().map_or(
             BytesRepresentation::UnboundedSize,
             |size| {
-                // Worst case: header (5) + ceil(N/128) * (1 + 128*4) per block
-                // But generally much smaller. Report bounded at input size + overhead.
+                // Worst case: header (5) + streams * ceil(N/128) * (1 + 128*4)
+                // per block. u64 splits into two u32 streams; everything else is
+                // a single stream. Generally much smaller in practice.
                 let num_elements = size / self.element_size as u64;
                 let num_blocks = num_elements.div_ceil(128);
-                let max_encoded = 5 + num_blocks * (1 + 128 * 4);
+                let streams = if self.element_size == 8 { 2 } else { 1 };
+                let max_encoded = 5 + streams * num_blocks * (1 + 128 * 4);
                 BytesRepresentation::BoundedSize(max_encoded)
             },
         )

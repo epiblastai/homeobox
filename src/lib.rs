@@ -1107,26 +1107,44 @@ impl RustBatchReader {
 /// -------
 /// numpy array of encoded bytes.
 #[pyfunction]
+#[pyo3(signature = (data, transform, element_size=4))]
 fn bitpack_encode<'py>(
     py: Python<'py>,
     data: &[u8],
     transform: &str,
+    element_size: usize,
 ) -> PyResult<Py<PyArray1<u8>>> {
-    if data.len() % 4 != 0 {
+    if data.len() % element_size != 0 {
         return Err(PyRuntimeError::new_err(format!(
-            "bitpack_encode: input length {} is not a multiple of 4",
-            data.len()
+            "bitpack_encode: input length {} is not a multiple of element_size {}",
+            data.len(),
+            element_size
         )));
     }
     let t = bitpacking::Transform::from_str(transform)
         .map_err(|e| PyRuntimeError::new_err(e))?;
 
-    let values: Vec<u32> = data
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect();
-
-    let encoded = bitpacking::encode(&values, t);
+    let encoded = match element_size {
+        4 => {
+            let values: Vec<u32> = data
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            bitpacking::encode(&values, t)
+        }
+        8 => {
+            let values: Vec<u64> = data
+                .chunks_exact(8)
+                .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            bitpacking::encode_u64(&values, t)
+        }
+        other => {
+            return Err(PyRuntimeError::new_err(format!(
+                "bitpack_encode: unsupported element_size {other} (expected 4 or 8)"
+            )));
+        }
+    };
     Ok(PyArray1::from_vec(py, encoded).into())
 }
 
@@ -1141,17 +1159,35 @@ fn bitpack_encode<'py>(
 /// -------
 /// numpy array of decoded bytes (little-endian uint32).
 #[pyfunction]
+#[pyo3(signature = (data, element_size=4))]
 fn bitpack_decode<'py>(
     py: Python<'py>,
     data: &[u8],
+    element_size: usize,
 ) -> PyResult<Py<PyArray1<u8>>> {
-    let values = bitpacking::decode(data)
-        .map_err(|e| PyRuntimeError::new_err(e))?;
-
-    let mut out = Vec::with_capacity(values.len() * 4);
-    for v in &values {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
+    let out = match element_size {
+        4 => {
+            let values = bitpacking::decode(data).map_err(|e| PyRuntimeError::new_err(e))?;
+            let mut out = Vec::with_capacity(values.len() * 4);
+            for v in &values {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out
+        }
+        8 => {
+            let values = bitpacking::decode_u64(data).map_err(|e| PyRuntimeError::new_err(e))?;
+            let mut out = Vec::with_capacity(values.len() * 8);
+            for v in &values {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+            out
+        }
+        other => {
+            return Err(PyRuntimeError::new_err(format!(
+                "bitpack_decode: unsupported element_size {other} (expected 4 or 8)"
+            )));
+        }
+    };
     Ok(PyArray1::from_vec(py, out).into())
 }
 
