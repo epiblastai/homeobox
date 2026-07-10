@@ -8,6 +8,11 @@
 //! ...                                                          -- ceil(N/128) blocks
 //! ```
 //! Last block padded to 128 values with zeros; `element_count` is authoritative.
+//!
+//! For 64-bit values (`encode_u64`/`decode_u64`) the header is identical, but the
+//! blocks are written as two back-to-back u32 streams: first all low-half blocks,
+//! then all high-half blocks (each `ceil(N/128)` blocks). The integer width is not
+//! stored in the stream — callers select it out of band (e.g. codec `element_size`).
 
 use bitpacking::{BitPacker, BitPacker4x};
 
@@ -49,41 +54,30 @@ impl Transform {
     }
 }
 
-/// Encode a slice of u32 values using BP-128 bitpacking.
-pub fn encode(values: &[u32], transform: Transform) -> Vec<u8> {
-    let n = values.len();
-    if n == 0 {
-        // Header only: transform byte + element_count (0)
-        let mut out = Vec::with_capacity(5);
-        out.push(transform as u8);
-        out.extend_from_slice(&0u32.to_le_bytes());
-        return out;
-    }
-
-    let packer = BitPacker4x::new();
-    let num_blocks = n.div_ceil(BLOCK_LEN);
-
-    // Worst case: header (5) + num_blocks * (1 byte width + 128*32/8 packed)
-    let max_size = 5 + num_blocks * (1 + BLOCK_LEN * 4);
-    let mut out = Vec::with_capacity(max_size);
-
-    // Header
+/// Write the chunk header: `[1 byte transform][4 bytes element_count LE u32]`.
+fn write_header(out: &mut Vec<u8>, transform: Transform, n: usize) {
     out.push(transform as u8);
     out.extend_from_slice(&(n as u32).to_le_bytes());
+}
 
-    // Apply transform to a working copy if needed
-    let work: Vec<u32>;
-    let src = match transform {
-        Transform::None => values,
-        Transform::Delta => {
-            work = delta_encode(values);
-            &work
-        }
-        Transform::DeltaZigzag => {
-            work = delta_zigzag_encode(values);
-            &work
-        }
-    };
+/// Read the chunk header, returning `(transform, element_count, offset_after_header)`.
+fn read_header(encoded: &[u8]) -> Result<(Transform, usize, usize), String> {
+    if encoded.len() < 5 {
+        return Err(format!(
+            "bitpacking: encoded data too short ({} bytes, need at least 5)",
+            encoded.len()
+        ));
+    }
+    let transform = Transform::from_byte(encoded[0])?;
+    let element_count = u32::from_le_bytes(encoded[1..5].try_into().unwrap()) as usize;
+    Ok((transform, element_count, 5))
+}
+
+/// Pack a stream of (already-transformed) u32 values into `out` as BP-128 blocks,
+/// zero-padding the tail block to 128 values.
+fn pack_blocks(packer: &BitPacker4x, src: &[u32], out: &mut Vec<u8>) {
+    let n = src.len();
+    let num_blocks = n.div_ceil(BLOCK_LEN);
 
     for block_idx in 0..num_blocks {
         let start = block_idx * BLOCK_LEN;
@@ -106,60 +100,165 @@ pub fn encode(values: &[u32], transform: Transform) -> Vec<u8> {
         out.resize(write_start + packed_size, 0);
         packer.compress(&block, &mut out[write_start..], num_bits);
     }
-
-    out
 }
 
-/// Decode bitpacked data back to u32 values.
-pub fn decode(encoded: &[u8]) -> Result<Vec<u32>, String> {
-    if encoded.len() < 5 {
-        return Err(format!(
-            "bitpacking: encoded data too short ({} bytes, need at least 5)",
-            encoded.len()
-        ));
-    }
-
-    let transform = Transform::from_byte(encoded[0])?;
-    let element_count =
-        u32::from_le_bytes(encoded[1..5].try_into().unwrap()) as usize;
-
-    if element_count == 0 {
-        return Ok(Vec::new());
-    }
-
-    let packer = BitPacker4x::new();
-    let num_blocks = element_count.div_ceil(BLOCK_LEN);
+/// Unpack `count` u32 values from `encoded` starting at `*pos`, advancing `*pos`
+/// past the blocks consumed. Tail padding is truncated so exactly `count` values
+/// are returned.
+fn unpack_blocks(
+    packer: &BitPacker4x,
+    encoded: &[u8],
+    pos: &mut usize,
+    count: usize,
+) -> Result<Vec<u32>, String> {
+    let num_blocks = count.div_ceil(BLOCK_LEN);
     let mut result = Vec::with_capacity(num_blocks * BLOCK_LEN);
-    let mut pos = 5; // after header
 
     for _ in 0..num_blocks {
-        if pos >= encoded.len() {
+        if *pos >= encoded.len() {
             return Err("bitpacking: unexpected end of data (missing bit_width byte)".into());
         }
-        let num_bits = encoded[pos];
-        pos += 1;
+        let num_bits = encoded[*pos];
+        *pos += 1;
 
         let packed_size = (BLOCK_LEN * num_bits as usize) / 8;
-        if pos + packed_size > encoded.len() {
+        if *pos + packed_size > encoded.len() {
+            let offset = *pos;
             return Err(format!(
-                "bitpacking: unexpected end of data (need {packed_size} bytes at offset {pos}, have {})",
+                "bitpacking: unexpected end of data (need {packed_size} bytes at offset {offset}, have {})",
                 encoded.len()
             ));
         }
 
         let mut block = [0u32; BLOCK_LEN];
-        packer.decompress(&encoded[pos..pos + packed_size], &mut block, num_bits);
+        packer.decompress(&encoded[*pos..*pos + packed_size], &mut block, num_bits);
         result.extend_from_slice(&block);
-        pos += packed_size;
+        *pos += packed_size;
     }
 
     // Truncate to actual element count (remove tail padding)
-    result.truncate(element_count);
+    result.truncate(count);
+    Ok(result)
+}
+
+/// Encode a slice of u32 values using BP-128 bitpacking.
+pub fn encode(values: &[u32], transform: Transform) -> Vec<u8> {
+    let n = values.len();
+    let num_blocks = n.div_ceil(BLOCK_LEN);
+    // Worst case: header (5) + num_blocks * (1 byte width + 128*32/8 packed)
+    let max_size = 5 + num_blocks * (1 + BLOCK_LEN * 4);
+    let mut out = Vec::with_capacity(max_size);
+
+    write_header(&mut out, transform, n);
+    if n == 0 {
+        return out;
+    }
+
+    // Apply transform to a working copy if needed
+    let work: Vec<u32>;
+    let src = match transform {
+        Transform::None => values,
+        Transform::Delta => {
+            work = delta_encode(values);
+            &work
+        }
+        Transform::DeltaZigzag => {
+            work = delta_zigzag_encode(values);
+            &work
+        }
+    };
+
+    pack_blocks(&BitPacker4x::new(), src, &mut out);
+    out
+}
+
+/// Decode bitpacked data back to u32 values.
+pub fn decode(encoded: &[u8]) -> Result<Vec<u32>, String> {
+    let (transform, element_count, mut pos) = read_header(encoded)?;
+    if element_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut result = unpack_blocks(&BitPacker4x::new(), encoded, &mut pos, element_count)?;
 
     // Undo transform if needed
     match transform {
         Transform::Delta => delta_decode_in_place(&mut result),
         Transform::DeltaZigzag => delta_zigzag_decode_in_place(&mut result),
+        Transform::None => {}
+    }
+
+    Ok(result)
+}
+
+/// Encode a slice of u64 values using BP-128 bitpacking.
+///
+/// The BP-128 SIMD packer only operates on u32, so each u64 is split into its
+/// low and high 32-bit halves after the (u64-space) transform is applied. The
+/// low-half stream and high-half stream are packed independently and written
+/// back to back. Values that fit in 32 bits leave the high stream all-zero,
+/// which compresses to a single bit-width byte per block.
+pub fn encode_u64(values: &[u64], transform: Transform) -> Vec<u8> {
+    let n = values.len();
+    let num_blocks = n.div_ceil(BLOCK_LEN);
+    // Worst case: header (5) + two streams * num_blocks * (1 byte width + 128*32/8 packed)
+    let max_size = 5 + 2 * num_blocks * (1 + BLOCK_LEN * 4);
+    let mut out = Vec::with_capacity(max_size);
+
+    write_header(&mut out, transform, n);
+    if n == 0 {
+        return out;
+    }
+
+    // Apply transform in u64 space to a working copy if needed
+    let work: Vec<u64>;
+    let src = match transform {
+        Transform::None => values,
+        Transform::Delta => {
+            work = delta_encode_u64(values);
+            &work
+        }
+        Transform::DeltaZigzag => {
+            work = delta_zigzag_encode_u64(values);
+            &work
+        }
+    };
+
+    // Split into low/high 32-bit streams and pack each separately.
+    let mut lo = Vec::with_capacity(n);
+    let mut hi = Vec::with_capacity(n);
+    for &v in src {
+        lo.push(v as u32);
+        hi.push((v >> 32) as u32);
+    }
+
+    let packer = BitPacker4x::new();
+    pack_blocks(&packer, &lo, &mut out);
+    pack_blocks(&packer, &hi, &mut out);
+    out
+}
+
+/// Decode bitpacked data back to u64 values (see [`encode_u64`] for the layout).
+pub fn decode_u64(encoded: &[u8]) -> Result<Vec<u64>, String> {
+    let (transform, element_count, mut pos) = read_header(encoded)?;
+    if element_count == 0 {
+        return Ok(Vec::new());
+    }
+
+    let packer = BitPacker4x::new();
+    let lo = unpack_blocks(&packer, encoded, &mut pos, element_count)?;
+    let hi = unpack_blocks(&packer, encoded, &mut pos, element_count)?;
+
+    let mut result: Vec<u64> = lo
+        .iter()
+        .zip(hi.iter())
+        .map(|(&l, &h)| (l as u64) | ((h as u64) << 32))
+        .collect();
+
+    // Undo transform if needed
+    match transform {
+        Transform::Delta => delta_decode_in_place_u64(&mut result),
+        Transform::DeltaZigzag => delta_zigzag_decode_in_place_u64(&mut result),
         Transform::None => {}
     }
 
@@ -222,6 +321,66 @@ fn delta_zigzag_decode_in_place(values: &mut [u32]) {
     values[0] = zigzag_decode(values[0]);
     for i in 1..values.len() {
         values[i] = values[i - 1].wrapping_add(zigzag_decode(values[i]));
+    }
+}
+
+// --- u64 transforms (identical logic to the u32 variants, widened) ---
+
+/// Delta-encode: output[0] = values[0], output[i] = values[i] - values[i-1]
+fn delta_encode_u64(values: &[u64]) -> Vec<u64> {
+    let mut out = Vec::with_capacity(values.len());
+    if values.is_empty() {
+        return out;
+    }
+    out.push(values[0]);
+    for i in 1..values.len() {
+        out.push(values[i].wrapping_sub(values[i - 1]));
+    }
+    out
+}
+
+/// Delta-decode in place: values[i] += values[i-1]
+fn delta_decode_in_place_u64(values: &mut [u64]) {
+    for i in 1..values.len() {
+        values[i] = values[i].wrapping_add(values[i - 1]);
+    }
+}
+
+/// Zigzag-encode a signed delta (stored as u64) to unsigned.
+#[inline]
+fn zigzag_encode_u64(v: u64) -> u64 {
+    let s = v as i64;
+    ((s << 1) ^ (s >> 63)) as u64
+}
+
+/// Zigzag-decode unsigned back to signed delta (stored as u64).
+#[inline]
+fn zigzag_decode_u64(v: u64) -> u64 {
+    (v >> 1) ^ (v & 1).wrapping_neg()
+}
+
+/// Delta-zigzag encode: compute deltas then zigzag-encode each.
+fn delta_zigzag_encode_u64(values: &[u64]) -> Vec<u64> {
+    let mut out = Vec::with_capacity(values.len());
+    if values.is_empty() {
+        return out;
+    }
+    out.push(zigzag_encode_u64(values[0]));
+    for i in 1..values.len() {
+        let delta = values[i].wrapping_sub(values[i - 1]);
+        out.push(zigzag_encode_u64(delta));
+    }
+    out
+}
+
+/// Delta-zigzag decode in place: zigzag-decode each, then prefix-sum.
+fn delta_zigzag_decode_in_place_u64(values: &mut [u64]) {
+    if values.is_empty() {
+        return;
+    }
+    values[0] = zigzag_decode_u64(values[0]);
+    for i in 1..values.len() {
+        values[i] = values[i - 1].wrapping_add(zigzag_decode_u64(values[i]));
     }
 }
 
@@ -370,5 +529,97 @@ mod tests {
         let encoded = encode(&data, Transform::DeltaZigzag);
         let decoded = decode(&encoded).unwrap();
         assert_eq!(data, decoded);
+    }
+
+    // --- u64 tests ---
+
+    #[test]
+    fn round_trip_u64_basic() {
+        let data: Vec<u64> = (0..512u64).collect();
+        let encoded = encode_u64(&data, Transform::None);
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_u64_high_bits() {
+        // Values that genuinely need the high 32 bits.
+        let data: Vec<u64> = (0..1000u64)
+            .map(|i| (i << 40) | (i.wrapping_mul(2_654_435_761) & 0xFFFF_FFFF))
+            .collect();
+        let encoded = encode_u64(&data, Transform::None);
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_u64_max() {
+        let data = vec![u64::MAX; 300];
+        let encoded = encode_u64(&data, Transform::None);
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_u64_delta() {
+        // Sorted 64-bit ids with a large base offset; deltas are small.
+        let base = 1u64 << 50;
+        let data: Vec<u64> = (0..4096u64).map(|i| base + i * 7).collect();
+        let encoded = encode_u64(&data, Transform::Delta);
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn u64_delta_high_stream_compresses() {
+        // Sorted values with a huge base: after delta the high halves are all
+        // zero, so delta must beat raw packing substantially.
+        let base = 1u64 << 50;
+        let data: Vec<u64> = (0..4096u64).map(|i| base + i).collect();
+        let enc_none = encode_u64(&data, Transform::None);
+        let enc_delta = encode_u64(&data, Transform::Delta);
+        assert!(enc_delta.len() < enc_none.len());
+    }
+
+    #[test]
+    fn round_trip_u64_delta_zigzag() {
+        // Ascending then resetting, spanning >32 bits.
+        let data: Vec<u64> = vec![
+            0,
+            1 << 33,
+            (1 << 33) + 5,
+            10,
+            u64::MAX,
+            0,
+            (1 << 40) + 7,
+        ];
+        let encoded = encode_u64(&data, Transform::DeltaZigzag);
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_u64_empty() {
+        let data: Vec<u64> = vec![];
+        let encoded = encode_u64(&data, Transform::None);
+        assert_eq!(encoded.len(), 5); // header only
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn round_trip_u64_tail() {
+        // 130 values = 1 full block + 2 tail values per stream
+        let data: Vec<u64> = (0..130u64).map(|i| (i * 7) << 32).collect();
+        let encoded = encode_u64(&data, Transform::None);
+        let decoded = decode_u64(&encoded).unwrap();
+        assert_eq!(data, decoded);
+    }
+
+    #[test]
+    fn zigzag_u64_round_trip_values() {
+        for v in [0u64, 1, 2, 100, u64::MAX, 1 << 63, (1 << 63) - 1] {
+            assert_eq!(super::zigzag_decode_u64(super::zigzag_encode_u64(v)), v);
+        }
     }
 }

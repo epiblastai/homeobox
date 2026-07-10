@@ -29,14 +29,16 @@ CODEC_NAME = "homeobox.bitpacking"
 
 @dataclass(frozen=True)
 class BitpackingCodec(BytesBytesCodec):
-    """BP-128 bitpacking codec for uint32 arrays.
+    """BP-128 bitpacking codec for uint32 / uint64 arrays.
 
     Parameters
     ----------
     transform
-        "none" for raw values (counts), "delta" for sorted indices.
+        "none" for raw values (counts), "delta" for sorted indices,
+        "delta_zigzag" for sorted-with-resets indices.
     element_size
-        Bytes per element. Only 4 (uint32) is supported.
+        Bytes per element: 4 (uint32) or 8 (uint64). uint64 is packed as two
+        independent 32-bit (low/high) streams under the hood.
     """
 
     is_fixed_size = False
@@ -45,6 +47,10 @@ class BitpackingCodec(BytesBytesCodec):
     element_size: int = 4
 
     def __init__(self, *, transform: str = "none", element_size: int = 4) -> None:
+        if element_size not in (4, 8):
+            raise ValueError(
+                f"BitpackingCodec element_size must be 4 (uint32) or 8 (uint64), got {element_size}"
+            )
         object.__setattr__(self, "transform", transform)
         object.__setattr__(self, "element_size", element_size)
 
@@ -68,7 +74,7 @@ class BitpackingCodec(BytesBytesCodec):
         chunk_spec: ArraySpec,
     ) -> Buffer:
         encoded = bytes(chunk_bytes.as_numpy_array())
-        decoded_array = bitpack_decode(encoded)
+        decoded_array = bitpack_decode(encoded, self.element_size)
         return chunk_spec.prototype.buffer.from_bytes(bytes(decoded_array))
 
     async def _encode_single(
@@ -77,7 +83,7 @@ class BitpackingCodec(BytesBytesCodec):
         chunk_spec: ArraySpec,
     ) -> Buffer | None:
         raw = bytes(chunk_bytes.as_numpy_array())
-        encoded_array = bitpack_encode(raw, self.transform)
+        encoded_array = bitpack_encode(raw, self.transform, self.element_size)
         return chunk_spec.prototype.buffer.from_bytes(bytes(encoded_array))
 
     def compute_encoded_size(self, input_byte_length: int, _chunk_spec: ArraySpec) -> int:
