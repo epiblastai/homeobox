@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
+from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SparseSetBatch, SpatialTileBatch
 from homeobox.group_reader import LayoutReader
 from homeobox.group_specs import ArraySpec, FeatureSpaceSpec, LayersSpec, ZarrGroupSpec, get_spec
 from homeobox.pointer_types import DiscreteSpatialPointer, SparseZarrPointer
@@ -223,6 +223,37 @@ def test_remap_sparse_indices_and_values_keeps_lengths_when_all_features_are_pre
     assert filtered_lengths is lengths
 
 
+def test_sparse_set_batch_empty_and_slice_sets():
+    empty = SparseSetBatch.empty(
+        n_rows=0,
+        n_features=7,
+        layer_dtypes={"counts": np.dtype(np.uint32)},
+    )
+
+    assert len(empty) == 0
+    np.testing.assert_array_equal(empty.offsets, np.array([0], dtype=np.int64))
+    np.testing.assert_array_equal(empty.set_offsets, np.array([0], dtype=np.int64))
+
+    batch = SparseSetBatch(
+        indices=np.array([1, 3, 2, 0, 4], dtype=np.int32),
+        offsets=np.array([0, 2, 3, 5], dtype=np.int64),
+        set_offsets=np.array([0, 2, 3], dtype=np.int64),
+        layers={"counts": np.array([10, 11, 12, 13, 14], dtype=np.uint32)},
+        n_features=5,
+        metadata=pl.DataFrame({"set": ["a", "b"]}),
+    )
+
+    sliced = batch[1:2]
+
+    assert len(sliced) == 1
+    np.testing.assert_array_equal(sliced.indices, np.array([0, 4], dtype=np.int32))
+    np.testing.assert_array_equal(sliced.offsets, np.array([0, 2], dtype=np.int64))
+    np.testing.assert_array_equal(sliced.set_offsets, np.array([0, 1], dtype=np.int64))
+    np.testing.assert_array_equal(sliced.layers["counts"], np.array([13, 14], dtype=np.uint32))
+    assert sliced.n_features == 5
+    assert sliced.metadata["set"].to_list() == ["b"]
+
+
 # ---------------------------------------------------------------------------
 # read_arrays_by_group
 # ---------------------------------------------------------------------------
@@ -359,6 +390,40 @@ def test_concat_remapped_batches_sparse_remaps_and_concatenates():
     np.testing.assert_array_equal(batch.layers["counts"], np.array([10, 20, 30, 40]))
     assert batch.metadata["r"].to_list() == [0, 1, 2]
     assert batch.n_features == 4
+
+
+def test_concat_remapped_batches_sparse_sets_remaps_both_offset_levels():
+    g0 = SparseSetBatch(
+        indices=np.array([0, 1, 2, 1], dtype=np.int32),
+        offsets=np.array([0, 2, 3, 4], dtype=np.int64),
+        set_offsets=np.array([0, 2, 3], dtype=np.int64),
+        layers={"counts": np.array([10, 20, 30, 40], dtype=np.int32)},
+        n_features=3,
+        metadata=pl.DataFrame({"r": [0, 1]}),
+    )
+    g1 = SparseSetBatch(
+        indices=np.array([0], dtype=np.int32),
+        offsets=np.array([0, 1], dtype=np.int64),
+        set_offsets=np.array([0, 1], dtype=np.int64),
+        layers={"counts": np.array([50], dtype=np.int32)},
+        n_features=1,
+        metadata=pl.DataFrame({"r": [2]}),
+    )
+    layouts = {"g0": _layout([2, -1, 0]), "g1": _layout([1])}
+
+    batch = concat_remapped_batches(
+        [("g0", g0), ("g1", g1)],
+        layouts_per_group=layouts,
+        n_features=3,
+    )
+
+    assert isinstance(batch, SparseSetBatch)
+    np.testing.assert_array_equal(batch.indices, np.array([2, 0, 1], dtype=np.int32))
+    np.testing.assert_array_equal(batch.offsets, np.array([0, 1, 2, 2, 3], dtype=np.int64))
+    np.testing.assert_array_equal(batch.set_offsets, np.array([0, 2, 3, 4], dtype=np.int64))
+    np.testing.assert_array_equal(batch.layers["counts"], np.array([10, 30, 50]))
+    assert batch.metadata["r"].to_list() == [0, 1, 2]
+    assert batch.n_features == 3
 
 
 def test_concat_remapped_batches_dense_scatters_into_joined_columns():
@@ -500,6 +565,29 @@ def test_reorder_batch_rows_sparse_permutes_offsets_indices_and_values():
     np.testing.assert_array_equal(out.offsets, np.array([0, 2, 3, 3], dtype=np.int64))
     np.testing.assert_array_equal(out.indices, np.array([7, 8, 5], dtype=np.int32))
     np.testing.assert_array_equal(out.layers["counts"], np.array([200, 300, 100]))
+    assert out.metadata["_rowid"].to_list() == [30, 10, 20]
+
+
+def test_reorder_batch_rows_sparse_sets_permutes_set_segments():
+    batch = SparseSetBatch(
+        indices=np.array([1, 2, 3, 4, 5, 6], dtype=np.int32),
+        offsets=np.array([0, 1, 3, 4, 6], dtype=np.int64),
+        set_offsets=np.array([0, 2, 3, 4], dtype=np.int64),
+        layers={"counts": np.array([10, 20, 21, 30, 40, 41], dtype=np.int32)},
+        n_features=7,
+        metadata=pl.DataFrame({"_rowid": [10, 20, 30]}),
+    )
+    mapping = RowOrderMapping(
+        source_row_ids=np.array([10, 20, 30]),
+        target_row_ids=np.array([30, 10, 20]),
+    )
+
+    out = reorder_batch_rows(batch, mapping)
+
+    np.testing.assert_array_equal(out.indices, np.array([5, 6, 1, 2, 3, 4], dtype=np.int32))
+    np.testing.assert_array_equal(out.offsets, np.array([0, 2, 3, 5, 6], dtype=np.int64))
+    np.testing.assert_array_equal(out.set_offsets, np.array([0, 1, 3, 4], dtype=np.int64))
+    np.testing.assert_array_equal(out.layers["counts"], np.array([40, 41, 10, 20, 21, 30]))
     assert out.metadata["_rowid"].to_list() == [30, 10, 20]
 
 

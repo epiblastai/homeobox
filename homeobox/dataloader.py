@@ -39,17 +39,13 @@ except ImportError:
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
-from homeobox.batch_types import (
-    DenseFeatureBatch,
-    MultimodalBatch,
-    SparseBatch,
-    SpatialTileBatch,
-)
+from homeobox.batch_types import MultimodalBatch
 from homeobox.group_specs import get_spec
 from homeobox.pointer_types import DiscreteSpatialPointer
 from homeobox.read import _prepare_obs_and_groups
 from homeobox.reconstruction_functional import (
     FeatureReadPlan,
+    GroupBatch,
     build_feature_read_plan,
     finalize_grouped_read,
     read_arrays_by_group,
@@ -204,7 +200,7 @@ def _build_grouped_batch(
     plan: FeatureReadPlan,
     groups: GroupBy,
     batch_row_ids: np.ndarray,
-) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+) -> GroupBatch:
     """Read groups and stack into a single batch.
 
     Pointer-type-agnostic: the spec's reconstructor handles batch construction
@@ -231,7 +227,7 @@ async def _take_from_pointers(
     groups: GroupBy,
     batch_row_ids: np.ndarray,
     plan: FeatureReadPlan,
-) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+) -> GroupBatch:
     """Async wrapper around :func:`_build_grouped_batch` for the multimodal path."""
     batch = _build_grouped_batch(plan, groups, batch_row_ids)
     if batch.metadata is not None:
@@ -278,7 +274,7 @@ async def _take_multimodal(
 
     results = list(await asyncio.gather(*tasks)) if tasks else []
 
-    modalities: dict[str, SparseBatch | DenseFeatureBatch | SpatialTileBatch] = {}
+    modalities: dict[str, GroupBatch] = {}
     for fs, result in zip(task_fs, results, strict=True):
         modalities[fs] = result
 
@@ -401,15 +397,14 @@ class UnimodalHoxDataset(_AsyncDataset):
     def __len__(self) -> int:
         return self._n_rows
 
-    def __getitems__(
-        self, row_indices: list[int]
-    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    def __getitems__(self, row_indices: list[int]) -> GroupBatch:
         """Fetch a batch of rows by index.
 
         Called by PyTorch's DataLoader when ``batch_sampler`` yields a list of
         indices (PyTorch >= 2.0 ``__getitems__`` protocol).
 
         Returns :class:`SparseBatch` for sparse feature spaces,
+        :class:`SparseSetBatch` for sets of sparse rows,
         :class:`DenseFeatureBatch` for dense feature spaces, or
         :class:`SpatialTileBatch` for spatial arrays.
 
@@ -465,7 +460,7 @@ class UnimodalHoxDataset(_AsyncDataset):
         )
         return _reorder_take_result(meta_pl, batch_row_ids).select(self._metadata_columns)
 
-    def __getitem__(self, idx: int) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    def __getitem__(self, idx: int) -> GroupBatch:
         """Fetch a single row as a batch."""
         return self.__getitems__([idx])
 
@@ -500,9 +495,7 @@ class UnimodalHoxDataset(_AsyncDataset):
             table.checkout(table_version)
             self._obs_table = table
 
-    def _take_block_sync(
-        self, row_indices: list[int] | np.ndarray
-    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    def _take_block_sync(self, row_indices: list[int] | np.ndarray) -> GroupBatch:
         """Synchronous take that bypasses ``self._loop``.
 
         Reads + decode + (optional) metadata fetch run inline on the calling
@@ -638,9 +631,7 @@ class UnimodalHoxIterableDataset(IterableDataset):
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=self._prefetch)
 
-    def _fetch_block(
-        self, indices: np.ndarray
-    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    def _fetch_block(self, indices: np.ndarray) -> GroupBatch:
         # Bypass the inner dataset's per-instance asyncio loop: its coroutines
         # have no await points, so the loop processes them serially and caps
         # block-level concurrency at one regardless of prefetch. Calling

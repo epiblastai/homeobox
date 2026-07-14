@@ -9,7 +9,7 @@ import pytest
 import zarr
 
 from homeobox.atlas import RaggedAtlas
-from homeobox.dataloader import SpatialTileBatch
+from homeobox.batch_types import SpatialTileBatch
 from homeobox.pointer_types import DenseZarrPointer
 from homeobox.schema import (
     DatasetSchema,

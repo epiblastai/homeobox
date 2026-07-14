@@ -6,7 +6,7 @@ import numpy as np
 import polars as pl
 from polars.dataframe.group_by import GroupBy
 
-from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
+from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SparseSetBatch, SpatialTileBatch
 from homeobox.group_reader import GroupReader, LayoutReader
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.read import (
@@ -17,7 +17,7 @@ from homeobox.read import (
     _sync_gather,
 )
 
-GroupBatch: TypeAlias = SparseBatch | DenseFeatureBatch | SpatialTileBatch
+GroupBatch: TypeAlias = SparseBatch | SparseSetBatch | DenseFeatureBatch | SpatialTileBatch
 
 if TYPE_CHECKING:
     from homeobox.atlas import RaggedAtlas
@@ -61,7 +61,7 @@ def cast_batch_layers_to_dtypes(
     layer_dtypes: dict[str, np.dtype],
 ) -> GroupBatch:
     """Cast a batch's layer arrays in place to the requested per-layer dtypes."""
-    if isinstance(batch, SparseBatch | DenseFeatureBatch):
+    if isinstance(batch, SparseBatch | SparseSetBatch | DenseFeatureBatch):
         batch.layers = {
             name: arr
             if arr.dtype == layer_dtypes[name]
@@ -468,6 +468,8 @@ def concat_remapped_batches(
       preserving the dense allocation pattern.
     - :class:`SpatialTileBatch`: concat per-layer row lists. ``layouts_per_group``
       and ``n_features`` are ignored.
+    - :class:`SparseSetBatch`: per-group remap of the flattened sparse rows,
+      followed by concatenation of both CSR offset levels.
 
     Parameters
     ----------
@@ -495,6 +497,8 @@ def concat_remapped_batches(
         return _concat_remapped_dense_feature_batches(batches, layouts_per_group, n_features)
     if isinstance(first_batch, SpatialTileBatch):
         return _concat_spatial_tile_batches(batches)
+    if isinstance(first_batch, SparseSetBatch):
+        return _concat_sparse_set_batches(batches, layouts_per_group, n_features)
     raise TypeError(f"Unsupported batch type: {type(first_batch).__name__}")
 
 
@@ -596,6 +600,63 @@ def _concat_remapped_dense_feature_batches(
     )
 
 
+def _concat_sparse_set_batches(
+    batches: "list[tuple[str, SparseSetBatch]]",
+    layouts_per_group: LayoutsByZarrGroup | None,
+    n_features: int,
+) -> SparseSetBatch:
+    layer_names = list(batches[0][1].layers.keys())
+    layer_dtypes = {ln: batches[0][1].layers[ln].dtype for ln in layer_names}
+    all_indices: list[np.ndarray] = []
+    all_values_per_layer: dict[str, list[np.ndarray]] = {ln: [] for ln in layer_names}
+    all_row_lengths: list[np.ndarray] = []
+    all_set_lengths: list[np.ndarray] = []
+
+    for zg, batch in batches:
+        flat_indices = batch.indices
+        flat_values_per_layer = batch.layers
+        row_lengths = np.diff(batch.offsets)
+
+        if layouts_per_group is not None and zg in layouts_per_group:
+            flat_indices, flat_values_per_layer, row_lengths = remap_sparse_indices_and_values(
+                remapping_array=layouts_per_group[zg].get_remap(),
+                flat_indices=flat_indices,
+                flat_values_per_layer=flat_values_per_layer,
+                lengths=row_lengths,
+            )
+
+        all_indices.append(flat_indices)
+        for ln in layer_names:
+            all_values_per_layer[ln].append(flat_values_per_layer[ln])
+        all_row_lengths.append(row_lengths)
+        all_set_lengths.append(np.diff(batch.set_offsets))
+
+    indices = np.concatenate(all_indices) if all_indices else np.array([], dtype=np.int32)
+    layers = {
+        ln: (np.concatenate(parts) if parts else np.array([], dtype=layer_dtypes[ln]))
+        for ln, parts in all_values_per_layer.items()
+    }
+    row_lengths = (
+        np.concatenate(all_row_lengths) if all_row_lengths else np.array([], dtype=np.int64)
+    )
+    offsets = np.zeros(len(row_lengths) + 1, dtype=np.int64)
+    np.cumsum(row_lengths, out=offsets[1:])
+    set_lengths = (
+        np.concatenate(all_set_lengths) if all_set_lengths else np.array([], dtype=np.int64)
+    )
+    set_offsets = np.zeros(len(set_lengths) + 1, dtype=np.int64)
+    np.cumsum(set_lengths, out=set_offsets[1:])
+
+    return SparseSetBatch(
+        indices=indices,
+        offsets=offsets,
+        set_offsets=set_offsets,
+        layers=layers,
+        n_features=n_features,
+        metadata=_concat_metadata(batches),
+    )
+
+
 def _concat_spatial_tile_batches(
     batches: "list[tuple[str, SpatialTileBatch]]",
 ) -> SpatialTileBatch:
@@ -653,6 +714,8 @@ def reorder_batch_rows(
         return _reorder_dense_feature_batch_rows(batch, perm)
     if isinstance(batch, SpatialTileBatch):
         return _reorder_spatial_tile_batch_rows(batch, perm)
+    if isinstance(batch, SparseSetBatch):
+        return _reorder_sparse_set_batch_rows(batch, perm)
     raise TypeError(f"Unsupported batch type: {type(batch).__name__}")
 
 
@@ -709,6 +772,49 @@ def _reorder_spatial_tile_batch_rows(batch: SpatialTileBatch, perm: np.ndarray) 
     perm_idx = [int(i) for i in perm]
     return SpatialTileBatch(
         layers={name: [rows[i] for i in perm_idx] for name, rows in batch.layers.items()},
+        metadata=reordered_metadata,
+    )
+
+
+def _reorder_sparse_set_batch_rows(batch: SparseSetBatch, perm: np.ndarray) -> SparseSetBatch:
+    """Reorder sets; ``perm[i]`` is the source set for output set ``i``."""
+    set_lengths = np.diff(batch.set_offsets)[perm]
+    set_offsets = np.zeros(len(perm) + 1, dtype=np.int64)
+    np.cumsum(set_lengths, out=set_offsets[1:])
+
+    source_rows = (
+        np.concatenate(
+            [
+                np.arange(batch.set_offsets[i], batch.set_offsets[i + 1], dtype=np.int64)
+                for i in perm
+            ]
+        )
+        if len(perm)
+        else np.array([], dtype=np.int64)
+    )
+    row_lengths = np.diff(batch.offsets)[source_rows]
+    offsets = np.zeros(len(source_rows) + 1, dtype=np.int64)
+    np.cumsum(row_lengths, out=offsets[1:])
+
+    total = int(row_lengths.sum())
+    if total:
+        source_starts = batch.offsets[:-1][source_rows]
+        cumulative_lengths = np.zeros(len(source_rows) + 1, dtype=np.int64)
+        np.cumsum(row_lengths, out=cumulative_lengths[1:])
+        within_rows = np.arange(total, dtype=np.int64) - np.repeat(
+            cumulative_lengths[:-1], row_lengths
+        )
+        gather = np.repeat(source_starts, row_lengths) + within_rows
+    else:
+        gather = np.array([], dtype=np.int64)
+
+    reordered_metadata = batch.metadata[perm.tolist()] if batch.metadata is not None else None
+    return SparseSetBatch(
+        indices=batch.indices[gather],
+        offsets=offsets,
+        set_offsets=set_offsets,
+        layers={name: values[gather] for name, values in batch.layers.items()},
+        n_features=batch.n_features,
         metadata=reordered_metadata,
     )
 
