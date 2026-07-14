@@ -77,6 +77,67 @@ class SparseBatch:
 
 
 @dataclass
+class SparseSetBatch:
+    """A batch of variable-sized sets of sparse rows.
+
+    ``offsets`` maps sparse rows to ranges in ``indices`` and each layer,
+    while ``set_offsets`` maps sets to ranges of sparse rows. Metadata has one
+    row per set.
+    """
+
+    indices: np.ndarray
+    offsets: np.ndarray
+    set_offsets: np.ndarray
+    layers: dict[str, np.ndarray]
+    n_features: int
+    metadata: pl.DataFrame | None = None
+
+    @classmethod
+    def empty(
+        cls,
+        n_rows: int,
+        n_features: int,
+        layer_dtypes: dict[str, np.dtype],
+        metadata: pl.DataFrame | None = None,
+    ) -> "SparseSetBatch":
+        """Construct ``n_rows`` empty sets."""
+        return cls(
+            indices=np.array([], dtype=np.int32),
+            offsets=np.zeros(1, dtype=np.int64),
+            set_offsets=np.zeros(n_rows + 1, dtype=np.int64),
+            layers={name: np.array([], dtype=dtype) for name, dtype in layer_dtypes.items()},
+            n_features=n_features,
+            metadata=metadata,
+        )
+
+    def __len__(self) -> int:
+        return len(self.set_offsets) - 1
+
+    def __getitem__(self, sl: slice) -> "SparseSetBatch":
+        """Return a sub-batch holding the sets in *sl* (contiguous slices only)."""
+        if not isinstance(sl, slice):
+            raise TypeError(f"SparseSetBatch only supports slice indexing, got {type(sl).__name__}")
+
+        start, stop, step = sl.indices(len(self))
+        if step != 1:
+            raise ValueError("SparseSetBatch slicing requires step == 1")
+
+        row_start = int(self.set_offsets[start])
+        row_stop = int(self.set_offsets[stop])
+        nnz_start = int(self.offsets[row_start])
+        nnz_stop = int(self.offsets[row_stop])
+
+        return SparseSetBatch(
+            indices=self.indices[nnz_start:nnz_stop],
+            offsets=self.offsets[row_start : row_stop + 1] - nnz_start,
+            set_offsets=self.set_offsets[start : stop + 1] - row_start,
+            layers={name: values[nnz_start:nnz_stop] for name, values in self.layers.items()},
+            n_features=self.n_features,
+            metadata=self.metadata[start:stop] if self.metadata is not None else None,
+        )
+
+
+@dataclass
 class DenseFeatureBatch:
     """Dense feature batch for ML training.
 
@@ -192,7 +253,7 @@ class MultimodalBatch:
     metadata:
         Optional polars DataFrame aligned to ``n_rows`` (query order).
     modalities:
-        ``{feature_space: SparseBatch | DenseFeatureBatch | SpatialTileBatch}``.
+        ``{feature_space: SparseBatch | SparseSetBatch | DenseFeatureBatch | SpatialTileBatch}``.
         Each sub-batch has
         ``present[fs].sum()`` rows in query order.
     present:
@@ -201,5 +262,5 @@ class MultimodalBatch:
 
     n_rows: int
     metadata: pl.DataFrame | None
-    modalities: dict[str, "SparseBatch | DenseFeatureBatch | SpatialTileBatch"]
+    modalities: dict[str, "SparseBatch | SparseSetBatch | DenseFeatureBatch | SpatialTileBatch"]
     present: dict[str, np.ndarray]

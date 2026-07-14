@@ -14,7 +14,12 @@ if TYPE_CHECKING:
     import numpy as np
     import polars as pl
 
-    from homeobox.batch_types import DenseFeatureBatch, SparseBatch, SpatialTileBatch
+    from homeobox.batch_types import (
+        DenseFeatureBatch,
+        SparseBatch,
+        SparseSetBatch,
+        SpatialTileBatch,
+    )
     from homeobox.group_reader import GroupReader
 
 F = TypeVar("F", bound=Callable)
@@ -64,7 +69,7 @@ class Reconstructor:
         group_rows: "pl.DataFrame",
         layer_names: list[str],
         results: list,
-    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    ) -> "SparseBatch | SparseSetBatch | DenseFeatureBatch | SpatialTileBatch":
         """Package one group's raw read results as a local-space batch.
 
         Implemented by reconstructors that drive ``read_arrays_by_group``.
@@ -78,7 +83,7 @@ class Reconstructor:
         n_features: int,
         layer_dtypes: "dict[str, np.dtype]",
         layer_names: list[str],
-    ) -> "SparseBatch | DenseFeatureBatch | SpatialTileBatch":
+    ) -> "SparseBatch | SparseSetBatch | DenseFeatureBatch | SpatialTileBatch":
         """Construct an empty batch matching this reconstructor's batch type.
 
         Called when ``read_arrays_by_group`` returns no groups (empty query).
