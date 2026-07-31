@@ -19,6 +19,7 @@ from homeobox.schema import (
     FeatureBaseSchema,
     HoxBaseSchema,
     PointerField,
+    RegistrySpec,
 )
 
 # ---------------------------------------------------------------------------
@@ -166,7 +167,7 @@ class TestSnapshot:
                 obs_schemas={"cells": TestCellSchema},
                 dataset_table_name="datasets",
                 store=store,
-                registry_tables={"gene_expression": "gene_expression_registry"},
+                registry_tables={"gene_expression": "gene_feature_schema_registry"},
                 version_table_name="nonexistent_versions",
             )
 
@@ -492,6 +493,7 @@ class TestOpenDefaults:
     """open() with optional parameters."""
 
     def test_open_with_defaults(self, tmp_path):
+        """Registry names are recovered from the newest snapshot record."""
         atlas, gene_uids, atlas_dir, store = _make_atlas(tmp_path)
         adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
         add_from_anndata(
@@ -501,6 +503,7 @@ class TestOpenDefaults:
             zarr_layer="counts",
             dataset_record=_ds(adata, "ds1/gene_expression"),
         )
+        atlas.snapshot()
 
         reopened = RaggedAtlas.open(
             db_uri=atlas_dir,
@@ -510,6 +513,48 @@ class TestOpenDefaults:
         assert reopened.obs_table.count_rows() == 5
         assert "gene_expression" in reopened.pointer_fields
         assert "gene_expression" in reopened._registry_tables
+        # Name derives from the registry schema class, not the feature space.
+        assert reopened._registry_tables["gene_expression"].name == "gene_feature_schema_registry"
+
+    def test_open_with_defaults_falls_back_to_legacy_names(self, tmp_path):
+        """A never-snapshotted atlas using {fs}_registry still resolves."""
+        atlas_dir = str(tmp_path / "atlas")
+        os.makedirs(atlas_dir + "/zarr_store", exist_ok=True)
+        store = obstore.store.LocalStore(prefix=atlas_dir + "/zarr_store")
+        atlas = RaggedAtlas.create(
+            db_uri=atlas_dir,
+            obs_schemas={"cells": TestCellSchema},
+            store=store,
+            registry_schemas={
+                "gene_expression": RegistrySpec(
+                    GeneFeatureSchema, table_name="gene_expression_registry"
+                )
+            },
+            dataset_table_name="datasets",
+            dataset_schema=DatasetSchema,
+        )
+        gene_uids = [f"gene_{i}" for i in range(10)]
+        atlas.register_features(
+            "gene_expression",
+            [GeneFeatureSchema(uid=uid, gene_name=f"GENE{i}") for i, uid in enumerate(gene_uids)],
+        )
+        reindex_registry(atlas._registry_tables["gene_expression"])
+        adata = align_obs_to_schema(_make_sparse_adata(5, 10, gene_uids), TestCellSchema)
+        add_from_anndata(
+            atlas,
+            adata,
+            field_name="gene_expression",
+            zarr_layer="counts",
+            dataset_record=_ds(adata, "ds1/gene_expression"),
+        )
+
+        # No snapshot: the version table is empty, so inference must fall back.
+        reopened = RaggedAtlas.open(
+            db_uri=atlas_dir,
+            obs_table_names=["cells"],
+            store=store,
+        )
+        assert reopened._registry_tables["gene_expression"].name == "gene_expression_registry"
 
 
 class TestBackwardCompat:
@@ -532,6 +577,6 @@ class TestBackwardCompat:
                 obs_schemas={"cells": TestCellSchema},
                 dataset_table_name="datasets",
                 store=store,
-                registry_tables={"gene_expression": "gene_expression_registry"},
+                registry_tables={"gene_expression": "gene_feature_schema_registry"},
                 version_table_name="nonexistent_versions",
             )

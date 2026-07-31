@@ -43,6 +43,46 @@ You might be tempted to skip `StableUIDField` and just assign `uid=ensembl_id` d
 
 `StableUIDField` handles this cleanly. If the declared field is `None`, the row gets a random `uid` from `make_uid()`. The cost is that those particular features will not dedupe across runs — but the features that *do* have a canonical ID still will. Mixing the two is the common case and is supported by design.
 
+## Sharing a registry across feature spaces
+
+A registry table is named after its **schema class**, not its feature space: `GeneFeature` becomes `gene_feature_registry`, `ProteinSchema` becomes `protein_schema_registry`. Two feature spaces that declare the same registry schema therefore resolve to the same table by default, and share one set of registrations and one `global_index` space.
+
+That default exists because a feature space bundles two things that do not have to vary together: what the feature axis *means*, and how the arrays are laid out. When the same antibody panel is stored both as one panel per cell and as a set of panels per row, those are two feature spaces but one entity space:
+
+```python
+registry_schemas = {
+    "protein_abundance": ProteinSchema,        # dense, DenseZarrPointer
+    "protein_abundance_table": ProteinSchema,  # spatial, DiscreteSpatialPointer
+}
+```
+
+Both spaces now write into `protein_schema_registry`. CD4 is registered once, holds one `global_index`, and column *i* of the dense form is the same feature as column *i* of the table form — no detour through `_feature_layouts` to find out.
+
+### Overriding the table name
+
+Pass `RegistrySpec` in place of the bare class to name the table yourself. This is how you opt *out* of sharing:
+
+```python
+import homeobox as hox
+
+registry_schemas = {
+    "protein_abundance": ProteinSchema,
+    # Same schema, but a separate entity space and its own global_index range.
+    "control_panel": hox.RegistrySpec(ProteinSchema, table_name="control_panel_registry"),
+}
+```
+
+and equally how you point a feature space at a table that already exists under a different name — for instance an atlas created before this convention, whose tables are named `{feature_space}_registry`.
+
+Two feature spaces that resolve to the same table under *different* schema classes is a configuration error and raises at `create()`: the two would fight over the column set.
+
+### Constraints
+
+- **Var columns must match.** Ingestion requires a dataset's var table to have exactly the registry schema's columns (minus `global_index`). Feature spaces sharing a registry therefore have to ship identical var columns. If they can't, give them separate tables.
+- **`feature_registry(fs)` returns the whole table.** With a shared registry, `feature_registry("protein_abundance")` and `feature_registry("protein_abundance_table")` return the same rows — that is the point, but it means the result is not scoped to one feature space. Queries and reconstruction are unaffected: they select by the `global_index` values the queried datasets' layouts actually reference.
+- **Acronyms don't always round-trip.** The name is derived by camel-to-snake conversion, which mangles an acronym followed by a single lowercase letter (`CRISPRiPerturbation` → `crisp_ri_perturbation`). Declare `RegistrySpec(cls, table_name=...)` when the derived name is wrong.
+- **Registries are created once.** Registry tables are created when the atlas is initialised. A feature space cannot be added to an existing atlas; `create_or_open_atlas` raises rather than silently opening an atlas with a registry missing.
+
 ## Parallel writes and the dedup pass
 
 Ingestion is designed to run as many parallel processes against the same atlas. `register_features` uses LanceDB's `merge_insert(on="uid").when_not_matched_insert_all()`, which means that within a single call, rows whose `uid` already exists in the registry are silently skipped. Two workers that each register the same gene end up with one row, not two, provided their `uid`s match.
@@ -91,7 +131,7 @@ atlas.register_features("gene_expression", genes_df)
 
 ## After ingestion: `global_index` assignment
 
-Registering features inserts rows with `global_index = None`. The integers are assigned later by `atlas.optimize()`, which runs `reindex_registry()` over each registry:
+Registering features inserts rows with `global_index = None`. The integers are assigned later by `atlas.optimize()`, which runs `reindex_registry()` over each distinct registry table (a table shared by several feature spaces is processed once):
 
 ```python
 atlas.optimize()    # dedupes newly-added rows, assigns global_index

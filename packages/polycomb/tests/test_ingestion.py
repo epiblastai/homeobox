@@ -274,3 +274,40 @@ def test_skip_existing(tmp_path):
     assert report.datasets_skipped == [DATASET]
     assert report.datasets_ingested == []
     assert len(_read_atlas_table(atlas_path, OBS_CLASS)) == 4  # no duplicate rows
+
+
+def test_shared_registry_registered_once(tmp_path, monkeypatch):
+    """Two feature spaces declaring one registry class register it once.
+
+    Both spaces read the same staged var table into the same atlas registry,
+    so only the first-declared ("owning") space does the work.
+    """
+    from polycomb.ingestion import _register_feature_registries
+
+    class _Reg:
+        __name__ = "FeatureSchema"
+
+    class _Schema:
+        def feature_space_registry(self):
+            return {"fs_a": _Reg, "fs_b": _Reg}
+
+    class _Collection:
+        datasets = ["ds1", "ds2"]
+
+    calls: list[tuple[str, int]] = []
+
+    class _Atlas:
+        def register_features(self, feature_space, df):
+            calls.append((feature_space, len(df)))
+            return len(df)
+
+    monkeypatch.setattr(
+        "polycomb.ingestion._read_table",
+        lambda root, name, table: pa.table({"uid": ["u1", "u2"]}),
+    )
+
+    registered = _register_feature_registries(_Collection(), "/unused", _Atlas(), _Schema())
+
+    # Once per dataset, not once per (dataset, feature space).
+    assert calls == [("fs_a", 2), ("fs_a", 2)]
+    assert registered == {"fs_a": 4}

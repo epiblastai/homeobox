@@ -116,7 +116,7 @@ class CellSchema(hox.HoxBaseSchema):
 
 ### 3. Create the atlas
 
-`create_or_open_atlas()` initialises the LanceDB tables and opens the zarr store at a single `atlas_path`. It creates `lance_db/` and `zarr_store/` subdirectories on first call and reopens them on subsequent calls. `atlas_path` accepts local paths or cloud URIs (`s3://`, `gs://`, `az://`); pass cloud credentials through `store_kwargs=`. `obs_schemas` is a `{table_name: HoxBaseSchema subclass}` mapping — pass a single-entry dict for the common one-table case, or several entries to register multiple obs tables at once. `registry_schemas` tells the atlas which feature spaces have a feature registry — required for any space with `has_var_df=True`.
+`create_or_open_atlas()` initialises the LanceDB tables and opens the zarr store at a single `atlas_path`. It creates `lance_db/` and `zarr_store/` subdirectories on first call and reopens them on subsequent calls. `atlas_path` accepts local paths or cloud URIs (`s3://`, `gs://`, `az://`); pass cloud credentials through `store_kwargs=`. `obs_schemas` is a `{table_name: HoxBaseSchema subclass}` mapping — pass a single-entry dict for the common one-table case, or several entries to register multiple obs tables at once. `registry_schemas` tells the atlas which feature spaces have a feature registry — required for any space with `has_var_df=True`. Each registry's LanceDB table is named after its schema class (`GeneFeature` → `gene_feature_registry`), so two feature spaces declaring the same schema share one registry and one `global_index` space; see [Feature registries](feature_registries.md#sharing-a-registry-across-feature-spaces) for how to override that with `RegistrySpec`.
 
 ```python
 atlas = hox.create_or_open_atlas(

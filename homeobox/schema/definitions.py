@@ -1,5 +1,6 @@
 import dataclasses
 import datetime
+import re
 import uuid
 from types import UnionType
 from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
@@ -740,6 +741,75 @@ class FeatureBaseSchema(RegistryBaseSchema):
         if self.global_index is not None:
             raise ValueError("global_index must be None when creating feature records")
         return self
+
+
+# ``(.)([A-Z][a-z]+)`` splits before a capitalised word (``ATACPeak`` -> ``ATAC_Peak``);
+# ``([a-z0-9])([A-Z])`` splits an uppercase run from what precedes it (``rnaSeq`` -> ``rna_Seq``).
+_CAMEL_TAIL = re.compile(r"(.)([A-Z][a-z]+)")
+_CAMEL_HEAD = re.compile(r"([a-z0-9])([A-Z])")
+
+
+def _snake_case(name: str) -> str:
+    """Convert a CamelCase class name to snake_case.
+
+    ``Gene`` -> ``gene``, ``ProteinSchema`` -> ``protein_schema``,
+    ``ATACPeak`` -> ``atac_peak``, ``RNASeqFeature`` -> ``rna_seq_feature``.
+    Already-snake names pass through unchanged.
+
+    Repeated underscores are collapsed so that ``Protein_Schema`` and
+    ``ProteinSchema`` resolve to the same name rather than two distinct tables.
+    """
+    s = _CAMEL_TAIL.sub(r"\1_\2", name)
+    s = _CAMEL_HEAD.sub(r"\1_\2", s)
+    return re.sub(r"_+", "_", s).strip("_").lower()
+
+
+def default_registry_table_name(schema_cls: type[FeatureBaseSchema]) -> str:
+    """LanceDB table name a feature registry gets when none is declared.
+
+    Derived from the *schema class*, not the feature space, so two feature
+    spaces declaring the same registry schema resolve to one shared table.
+
+    An acronym followed by a single lowercase letter does not round-trip
+    (``CRISPRiPerturbation`` -> ``crisp_ri_perturbation``); declare
+    ``RegistrySpec(cls, table_name=...)`` when the derived name is wrong.
+    """
+    return f"{_snake_case(schema_cls.__name__)}_registry"
+
+
+@dataclasses.dataclass(frozen=True)
+class RegistrySpec:
+    """A feature registry declaration that names its LanceDB table explicitly.
+
+    Usable anywhere a bare ``FeatureBaseSchema`` subclass is accepted as a
+    ``registry_schemas`` value. Pass ``table_name`` to override
+    :func:`default_registry_table_name` — either to point a feature space at a
+    table another feature space already uses, or to keep a feature space off a
+    table it would otherwise share.
+
+    Feature spaces that share a registry table share one ``global_index``
+    space, and must ingest var tables with identical columns.
+    """
+
+    schema_cls: type[FeatureBaseSchema]
+    table_name: str | None = None
+
+    def __post_init__(self) -> None:
+        # Catches the swapped-argument call RegistrySpec("gene_registry"),
+        # which would otherwise silently create a table named "str_registry".
+        if not (
+            isinstance(self.schema_cls, type) and issubclass(self.schema_cls, FeatureBaseSchema)
+        ):
+            raise TypeError(
+                f"RegistrySpec.schema_cls must be a FeatureBaseSchema subclass, "
+                f"got {self.schema_cls!r}."
+            )
+        if self.table_name is not None and not self.table_name.strip():
+            raise ValueError("RegistrySpec.table_name must be a non-empty string, or None.")
+
+    def resolve_table_name(self) -> str:
+        """The LanceDB table name this registry resolves to."""
+        return self.table_name or default_registry_table_name(self.schema_cls)
 
 
 class DatasetSchema(LanceModel):
