@@ -46,7 +46,7 @@ You might be tempted to skip `StableUIDField` and just assign `uid=ensembl_id` d
 
 ## Sharing a registry across feature spaces
 
-A registry table is named after its **schema class**, not its feature space: `GeneFeature` becomes `gene_feature_registry`, `ProteinSchema` becomes `protein_schema_registry`. Two feature spaces that declare the same registry schema therefore resolve to the same table by default, and share one set of registrations and one `global_index` space.
+A registry table is named after its **schema class**, not its feature space: `GeneFeature` becomes `gene_feature_registry`, `ATACPeak` becomes `atac_peak_registry`. Two feature spaces that declare the same registry schema therefore resolve to the same table by default, and share one set of registrations and one `global_index` space.
 
 That default exists because a feature space bundles two things that do not have to vary together: what the feature axis *means*, and how the arrays are laid out and reconstructed. The same set of genes stored in two layouts has to be declared as two feature spaces, but it is still one entity space:
 
