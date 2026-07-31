@@ -87,11 +87,14 @@ Isotype controls (and CLR-normalization controls) are not proteins. The fan-out 
 
 ```python
 from polycomb import (
-    SetColumn, CurationApplicator, CurationTransaction, default_audit_db_path,
+    SetColumn,
+    CurationApplicator,
+    CurationTransaction,
+    default_audit_db_path,
 )
 
 lance_path, table_name = "<path/to/lance_db>", "<table>"
-control_col = "<control_flag_col>"   # whatever the schema calls it, if it has one
+control_col = "<control_flag_col>"  # whatever the schema calls it, if it has one
 name_col = "<name_column>"
 txn = CurationTransaction(
     table_name=table_name,

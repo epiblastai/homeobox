@@ -72,14 +72,18 @@ A `ZarrGroupSpec` declares the expected zarr layout for a feature space. Registe
 import numpy as np
 import homeobox as hox
 from homeobox.group_specs import (
-    ZarrGroupSpec, FeatureSpaceSpec, LayersSpec, ArraySpec, register_spec,
+    ZarrGroupSpec,
+    FeatureSpaceSpec,
+    LayersSpec,
+    ArraySpec,
+    register_spec,
 )
 from homeobox.reconstruction import DenseFeatureReconstructor
 
 LOGNORM_RNA_SPEC = FeatureSpaceSpec(
     feature_space="lognorm_rna",
-    pointer_type=hox.DenseZarrPointer,    # each obs row stores a row index, not a byte range
-    has_var_df=True,                      # this space has a feature registry + _feature_layouts rows
+    pointer_type=hox.DenseZarrPointer,  # each obs row stores a row index, not a byte range
+    has_var_df=True,  # this space has a feature registry + _feature_layouts rows
     reconstructor=DenseFeatureReconstructor(),
     zarr_group_spec=ZarrGroupSpec(
         layers=LayersSpec(
@@ -107,7 +111,7 @@ An obs schema extends `HoxBaseSchema` and declares one pointer field per column 
 
 ```python
 class CellSchema(hox.HoxBaseSchema):
-    cell_type: str | None = None     # user-defined obs metadata
+    cell_type: str | None = None  # user-defined obs metadata
     lognorm_rna: hox.DenseZarrPointer | None = hox.PointerField.declare(
         feature_space="lognorm_rna",
         feature_registry_schema=GeneFeature,
@@ -121,9 +125,11 @@ class CellSchema(hox.HoxBaseSchema):
 ```python
 atlas = hox.create_or_open_atlas(
     atlas_path="/tmp/pbmc_atlas",
-    obs_schemas={"cells": CellSchema},   # single obs table here; add more entries to register additional ones
+    obs_schemas={
+        "cells": CellSchema
+    },  # single obs table here; add more entries to register additional ones
     dataset_table_name="datasets",
-    dataset_schema=hox.DatasetSchema,    # use a subclass to add provenance fields
+    dataset_schema=hox.DatasetSchema,  # use a subclass to add provenance fields
     registry_schemas={"lognorm_rna": GeneFeature},  # one entry per has_var_df=True space
 )
 ```
@@ -163,16 +169,14 @@ pbmc3k.var = var_df
 from homeobox.obs_alignment import align_obs_to_schema
 
 # pbmc3k uses "louvain" for cluster/cell-type labels; our schema expects "cell_type"
-pbmc3k_aligned = align_obs_to_schema(
-    pbmc3k, CellSchema, obs_to_schema={"louvain": "cell_type"}
-)
+pbmc3k_aligned = align_obs_to_schema(pbmc3k, CellSchema, obs_to_schema={"louvain": "cell_type"})
 ```
 
 ### 5. Ingest
 
 ```python
 dataset_3k = hox.DatasetSchema(
-    zarr_group="pbmc3k",          # path within the object store
+    zarr_group="pbmc3k",  # path within the object store
     feature_space="lognorm_rna",
     n_rows=pbmc3k.n_obs,
 )

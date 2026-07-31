@@ -48,7 +48,7 @@ dataset = (
     )
 )
 
-print(dataset.n_rows)      # rows in the query result
+print(dataset.n_rows)  # rows in the query result
 print(dataset.n_features)  # width of the feature space
 ```
 
@@ -219,12 +219,16 @@ optimizer = torch.optim.Adam(model.parameters())
 for epoch in range(10):
     for batch in loader:
         # SparseBatch: convert to whatever tensor layout the model wants.
-        X = torch.sparse_csr_tensor(
-            torch.from_numpy(batch.offsets),
-            torch.from_numpy(batch.indices),
-            torch.from_numpy(batch.layers["counts"]),
-            size=(len(batch), batch.n_features),
-        ).to_dense().cuda()
+        X = (
+            torch.sparse_csr_tensor(
+                torch.from_numpy(batch.offsets),
+                torch.from_numpy(batch.indices),
+                torch.from_numpy(batch.layers["counts"]),
+                size=(len(batch), batch.n_features),
+            )
+            .to_dense()
+            .cuda()
+        )
 
         loss = model(X)
         loss.backward()
