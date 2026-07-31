@@ -58,6 +58,7 @@ Among the supported file types, `h5ad` packs `OBS`, `VAR`, and `DATA` into a sin
 
 ```python
 from polycomb.util import extract_h5ad_obs_var
+
 h5ad_fpath = ".../GSE..._HepG2.h5ad"
 # This saves the csv files at the same path and with the same name as h5ad, but
 # a different suffix and file extension.
@@ -107,7 +108,9 @@ collection.add_file(".../guide_library.csv", FileTypeTag.LIBRARY)
 collection.add_file(".../record_metadata.json", FileTypeTag.OTHER)
 collection.add_file(".../publication.json", FileTypeTag.OTHER)
 
-collection.coalesce(copy=False)  # moves dataset files under root/<name>/, OTHER files under root/other_files/
+collection.coalesce(
+    copy=False
+)  # moves dataset files under root/<name>/, OTHER files under root/other_files/
 collection.to_json()  # write collection.json under root_dir
 ```
 

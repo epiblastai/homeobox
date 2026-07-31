@@ -1,7 +1,11 @@
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.9.2
+    rev: v0.16.1
     hooks:
-      - id: ruff
+      - id: ruff-check
         args: [--fix]
       - id: ruff-format
+        # The stock hook only matches [python, pyi, jupyter]. ruff >=0.16
+        # formats python code blocks inside markdown, and CI checks them, so
+        # markdown has to be here too or local runs pass while CI fails.
+        types_or: [python, pyi, jupyter, markdown]

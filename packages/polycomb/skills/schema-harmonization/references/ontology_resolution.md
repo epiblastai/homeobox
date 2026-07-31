@@ -77,11 +77,11 @@ table_name = "<table>"
 column = "development_stage"
 table = lancedb.connect(lance_path).open_table(table_name)
 
-distinct = list(dict.fromkeys(
-    v for v in table.to_arrow().column(column).to_pylist() if v
-))
+distinct = list(dict.fromkeys(v for v in table.to_arrow().column(column).to_pylist() if v))
 report = resolve_ontology_terms(
-    distinct, OntologyEntity.DEVELOPMENT_STAGE, organism="<organism>"  # selects HsapDv / MmusDv
+    distinct,
+    OntologyEntity.DEVELOPMENT_STAGE,
+    organism="<organism>",  # selects HsapDv / MmusDv
 )
 ops = report.propose_column_replacements(
     distinct,

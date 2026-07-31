@@ -109,10 +109,10 @@ BLAT and `GuideRnaResolution` return **UCSC** chromosome names (e.g. `chr1`). A 
 
 ```python
 report = get_assembly_report("human", "GRCh38")
-seq = report.lookup("chr1")   # accepts UCSC, bare, GenBank, or RefSeq names
+seq = report.lookup("chr1")  # accepts UCSC, bare, GenBank, or RefSeq names
 seq.genbank_accession  # "CM000663.2"
-seq.ucsc_name          # "chr1"
-seq.sequence_name      # "1"
+seq.ucsc_name  # "chr1"
+seq.sequence_name  # "1"
 ```
 
 ## Splitting combinatorial perturbations into rows
@@ -126,19 +126,23 @@ Two auditable **reshape ops** split one row into many so each output row holds e
 
 ```python
 # Combinations packed into one cell: "GENE1|GENE2" -> two rows
-ExplodeColumn(column="target", delimiter=r"\|", tool="schema_align",
-              reason="split combinatorial targets into one per row")
+ExplodeColumn(
+    column="target",
+    delimiter=r"\|",
+    tool="schema_align",
+    reason="split combinatorial targets into one per row",
+)
 
 # Dual-guide families -> one guide per row. groups names the OUTPUT columns;
 # the source family columns are consumed, the id columns are repeated.
 WideToLong(
-    column="targeting sequence A",   # audit anchor (a representative source column)
+    column="targeting sequence A",  # audit anchor (a representative source column)
     groups={
         "guide_sequence": ["targeting sequence A", "targeting sequence B"],
         "reagent_id": ["sgID_A", "sgID_B"],
     },
-    slot_labels=["A", "B"],          # len must match each group's source list
-    drop_null_slots=True,            # drop a slot's row when all its outputs are null
+    slot_labels=["A", "B"],  # len must match each group's source list
+    drop_null_slots=True,  # drop a slot's row when all its outputs are null
     tool="schema_align",
     reason="dual-guide pair -> one reagent (guide) per row",
 )

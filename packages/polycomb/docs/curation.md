@@ -32,7 +32,10 @@ Operations are grouped into a `CurationTransaction` targeting one table, then ha
 
 ```python
 from polycomb import (
-    CurationApplicator, CurationTransaction, ReplaceValue, default_audit_db_path,
+    CurationApplicator,
+    CurationTransaction,
+    ReplaceValue,
+    default_audit_db_path,
 )
 
 lance_path = "<collection>/<dataset>/lance_db"
@@ -42,9 +45,13 @@ txn = CurationTransaction(
     table_name="gene_expression",
     changes=[
         ReplaceValue(
-            column="gene_symbol", old_value="brca2", new_value="BRCA2",
-            tool="resolve_genes", reason="standardize gene symbols",
-            confidence=1.0, source="lancedb",
+            column="gene_symbol",
+            old_value="brca2",
+            new_value="BRCA2",
+            tool="resolve_genes",
+            reason="standardize gene symbols",
+            confidence=1.0,
+            source="lancedb",
         ),
     ],
     metadata={"organism": "human"},
@@ -98,7 +105,7 @@ ops = report.propose_column_replacements(
     distinct_values,
     column="gene_symbol",
     reason="standardize gene symbols",
-    resolution_field_name="symbol",   # which field of the resolution to write
+    resolution_field_name="symbol",  # which field of the resolution to write
 )
 ```
 

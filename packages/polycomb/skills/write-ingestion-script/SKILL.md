@@ -44,12 +44,12 @@ from polycomb.ingestion import LoaderContext, LoaderResult, ingest_collection
 
 def load_gene_expression(ctx: LoaderContext) -> LoaderResult:
     h5ad = next(p for p in ctx.data_files if p.endswith(".h5ad"))
-    adata = ad.read_h5ad(h5ad, backed="r")          # stream off disk, don't load fully
+    adata = ad.read_h5ad(h5ad, backed="r")  # stream off disk, don't load fully
     return LoaderResult(
         reader=AnnDataReader(adata),
-        layer_mapping={"X": "counts"},               # source layer -> destination zarr layer
+        layer_mapping={"X": "counts"},  # source layer -> destination zarr layer
         n_vars=ctx.var_table.num_rows,
-        var_df=ctx.var_table.to_pandas(),            # has_var_df=True -> var_df required
+        var_df=ctx.var_table.to_pandas(),  # has_var_df=True -> var_df required
     )
 
 

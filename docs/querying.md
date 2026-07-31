@@ -203,7 +203,7 @@ adata = atlas_r.query().where("cell_type = 'NK cells'").to_anndata()
 
 ```python
 mdata = atlas_r.query().to_mudata()
-mdata["gene_expression"]    # AnnData for RNA
+mdata["gene_expression"]  # AnnData for RNA
 mdata["protein_abundance"]  # AnnData for protein
 ```
 
@@ -211,10 +211,10 @@ mdata["protein_abundance"]  # AnnData for protein
 
 ```python
 result = atlas_r.query().to_multimodal()
-result.mod["gene_expression"]          # AnnData
+result.mod["gene_expression"]  # AnnData
 result.mod["chromatin_accessibility"]  # FragmentResult
-result.mod["image_tiles"]              # SpatialTileBatch
-result.present["gene_expression"]      # boolean mask of which rows have this modality
+result.mod["image_tiles"]  # SpatialTileBatch
+result.present["gene_expression"]  # boolean mask of which rows have this modality
 ```
 
 **`.to_fragments(field_name: str = "chromatin_accessibility")`** reconstructs a single fragment-based pointer field as a `FragmentResult`. The field's feature space must expose an `as_fragments` endpoint.
@@ -252,8 +252,7 @@ Every builder method returns `self`, so you can compose an entire query in a sin
 
 ```python
 adata = (
-    atlas_r
-    .query()
+    atlas_r.query()
     .where("tissue = 'bone marrow'")
     .feature_spaces("gene_expression")
     .layers("gene_expression", ["log_normalized"])

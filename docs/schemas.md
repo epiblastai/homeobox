@@ -11,9 +11,19 @@ Three internal tables are also covered below: `DatasetSchema`, `FeatureLayout`, 
 
 ```python
 from homeobox.schema import (
-    HoxBaseSchema, FeatureBaseSchema, PointerField, StableUIDField, RegistryKeyField,
-    PolymorphicRegistryKeyField, OntologyAlignedField, CrossReferenceField, SummaryField,
-    combine_markers, DatasetSchema, FeatureLayout, AtlasVersionRecord,
+    HoxBaseSchema,
+    FeatureBaseSchema,
+    PointerField,
+    StableUIDField,
+    RegistryKeyField,
+    PolymorphicRegistryKeyField,
+    OntologyAlignedField,
+    CrossReferenceField,
+    SummaryField,
+    combine_markers,
+    DatasetSchema,
+    FeatureLayout,
+    AtlasVersionRecord,
 )
 ```
 
@@ -214,9 +224,12 @@ pubchem_cid: int | None = combine_markers(
 
 ```python
 from homeobox.pointer_types import (
-    SparseZarrPointer, DenseZarrPointer, DiscreteSpatialPointer,
+    SparseZarrPointer,
+    DenseZarrPointer,
+    DiscreteSpatialPointer,
 )
 from homeobox.schema import HoxBaseSchema, PointerField
+
 
 # Assume GeneFeature, ChromatinPeak, and ProteinFeature are FeatureBaseSchema subclasses.
 class MultimodalObs(HoxBaseSchema):
@@ -232,9 +245,7 @@ class MultimodalObs(HoxBaseSchema):
         feature_space="protein_abundance",
         feature_registry_schema=ProteinFeature,
     )
-    image_tile: DiscreteSpatialPointer | None = PointerField.declare(
-        feature_space="image_tiles"
-    )
+    image_tile: DiscreteSpatialPointer | None = PointerField.declare(feature_space="image_tiles")
 
     # Arbitrary obs metadata — any LanceDB-compatible types
     cell_type: str | None = None
@@ -282,10 +293,11 @@ Add modality-specific fields as ordinary pydantic fields. Mark the field that dr
 ```python
 from homeobox.schema import FeatureBaseSchema, StableUIDField
 
+
 class GeneFeature(FeatureBaseSchema):
     gene_symbol: str | None = None
     ensembl_id: str | None = StableUIDField.declare(default=None)
-    feature_biotype: str | None = None     # e.g. "protein_coding", "lncRNA"
+    feature_biotype: str | None = None  # e.g. "protein_coding", "lncRNA"
     feature_length: int | None = None
 ```
 
@@ -298,8 +310,8 @@ class ProteinFeature(FeatureBaseSchema):
 
 ```python
 class ChromatinPeak(FeatureBaseSchema):
-    coord: str | None = StableUIDField.declare(default=None)   # e.g. "chr1:100000-100500"
-    peak_type: str | None = None                               # e.g. "promoter", "enhancer"
+    coord: str | None = StableUIDField.declare(default=None)  # e.g. "chr1:100000-100500"
+    peak_type: str | None = None  # e.g. "promoter", "enhancer"
 ```
 
 At most one field per schema may be declared as a `StableUIDField`; declaring two is a class-definition-time error. The `StableUIDField` itself is stamped onto the Arrow schema with metadata key `homeobox.stable_uid = "true"`, so the choice survives to disk alongside the pointer-field metadata above.

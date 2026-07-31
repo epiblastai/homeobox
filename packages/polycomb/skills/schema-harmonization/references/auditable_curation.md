@@ -57,7 +57,7 @@ The resolution-pass script is the happy path for resolving a single column in pl
 distinct = list(dict.fromkeys(gene_symbols))  # values sent to the resolver
 report = resolve_genes(distinct, organism="human")
 ops = report.propose_column_replacements(
-    distinct,                # same distinct old values, aligned with report.results
+    distinct,  # same distinct old values, aligned with report.results
     column="gene_symbol",
     reason="standardize gene symbols",
     resolution_field_name="symbol",
@@ -71,12 +71,12 @@ ops = report.propose_column_replacements(
 `propose_column_replacements` rewrites a **single** column. When one resolver call returns many correlated fields that each belong in a *different* column — a guide RNA's coordinates, strand, intended gene, and context; a coordinate annotation's overlapping gene and context — use `propose_keyed_columns` to build a single `MergeColumns` op instead. It keys on the column that was resolved and updates the mapped target columns where the key matches (an update-only `merge_insert`; it never inserts or deletes rows, but it **does reorder** them):
 
 ```python
-distinct = list(dict.fromkeys(guide_seqs))   # values sent to the resolver
+distinct = list(dict.fromkeys(guide_seqs))  # values sent to the resolver
 report = resolve_guide_sequences(distinct, organism="human")
 op = report.propose_keyed_columns(
-    distinct,                          # aligned with report.results, as above
-    key_column="guide_sequence",       # the resolved column, used as the join key
-    field_to_column={                  # resolution field -> target column
+    distinct,  # aligned with report.results, as above
+    key_column="guide_sequence",  # the resolved column, used as the join key
+    field_to_column={  # resolution field -> target column
         "target_start": "target_start",
         "target_end": "target_end",
         "target_strand": "target_strand",

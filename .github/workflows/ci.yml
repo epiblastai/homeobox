@@ -15,8 +15,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - run: uvx ruff check
-      - run: uvx ruff format --check
+      # Pinned so a ruff release can't fail CI on unrelated PRs. Keep in sync
+      # with .pre-commit-config.yaml and the dev dependency in pyproject.toml.
+      - run: uvx ruff@0.16.1 check
+      - run: uvx ruff@0.16.1 format --check
 
   test:
     name: Test

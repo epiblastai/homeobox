@@ -82,7 +82,7 @@ The reconstruction path (`reconstruction_functional.py`) is uniform across point
 
 ```python
 obs_pl = pointer_type.prepare_obs(obs_pl, column_name)  # adds _zg, _start/_end, etc.
-groups = obs_pl.group_by("_zg")                          # one entry per zarr group
+groups = obs_pl.group_by("_zg")  # one entry per zarr group
 
 for zg, group_rows in groups:
     readers = [plan.group_readers[zg].get_array_reader(p) for p in array_paths]
