@@ -48,16 +48,16 @@ You might be tempted to skip `StableUIDField` and just assign `uid=ensembl_id` d
 
 A registry table is named after its **schema class**, not its feature space: `GeneFeature` becomes `gene_feature_registry`, `ProteinSchema` becomes `protein_schema_registry`. Two feature spaces that declare the same registry schema therefore resolve to the same table by default, and share one set of registrations and one `global_index` space.
 
-That default exists because a feature space bundles two things that do not have to vary together: what the feature axis *means*, and how the arrays are laid out. When the same antibody panel is stored both as one panel per cell and as a set of panels per row, those are two feature spaces but one entity space:
+That default exists because a feature space bundles two things that do not have to vary together: what the feature axis *means*, and how the arrays are laid out and reconstructed. The same set of genes stored in two layouts has to be declared as two feature spaces, but it is still one entity space:
 
 ```python
 registry_schemas = {
-    "protein_abundance": ProteinSchema,        # dense, DenseZarrPointer
-    "protein_abundance_table": ProteinSchema,  # spatial, DiscreteSpatialPointer
+    "gene_expression": GeneFeature,  # sparse, one profile per cell
+    "marker_panel": GeneFeature,  # dense, a fixed panel per cell
 }
 ```
 
-Both spaces now write into `protein_schema_registry`. CD4 is registered once, holds one `global_index`, and column *i* of the dense form is the same feature as column *i* of the table form — no detour through `_feature_layouts` to find out.
+Both spaces now write into `gene_feature_registry`. BRCA2 is registered once and holds one `global_index`, so column *i* of one layout is the same gene as column *i* of the other — no detour through `_feature_layouts` per dataset to work out that correspondence. Without sharing, the two registries assign indices independently and the layouts cannot be joined on index at all.
 
 ### Overriding the table name
 
@@ -67,9 +67,9 @@ Pass `RegistrySpec` in place of the bare class to name the table yourself. This 
 import homeobox as hox
 
 registry_schemas = {
-    "protein_abundance": ProteinSchema,
+    "gene_expression": GeneFeature,
     # Same schema, but a separate entity space and its own global_index range.
-    "control_panel": hox.RegistrySpec(ProteinSchema, table_name="control_panel_registry"),
+    "spike_ins": hox.RegistrySpec(GeneFeature, table_name="spike_in_registry"),
 }
 ```
 
@@ -80,7 +80,7 @@ Two feature spaces that resolve to the same table under *different* schema class
 ### Constraints
 
 - **Var columns must match.** Ingestion requires a dataset's var table to have exactly the registry schema's columns (minus `global_index`). Feature spaces sharing a registry therefore have to ship identical var columns. If they can't, give them separate tables.
-- **`feature_registry(fs)` returns the whole table.** With a shared registry, `feature_registry("protein_abundance")` and `feature_registry("protein_abundance_table")` return the same rows — that is the point, but it means the result is not scoped to one feature space. Queries and reconstruction are unaffected: they select by the `global_index` values the queried datasets' layouts actually reference.
+- **`feature_registry(fs)` returns the whole table.** With a shared registry, calling it for either feature space returns the same rows — that is the point, but it means the result is not scoped to one feature space. Queries and reconstruction are unaffected: they select by the `global_index` values the queried datasets' layouts actually reference.
 - **Acronyms don't always round-trip.** The name is derived by camel-to-snake conversion, which mangles an acronym followed by a single lowercase letter (`CRISPRiPerturbation` → `crisp_ri_perturbation`). Declare `RegistrySpec(cls, table_name=...)` when the derived name is wrong.
 - **Registries are created once.** Registry tables are created when the atlas is initialised. A feature space cannot be added to an existing atlas; `create_or_open_atlas` raises rather than silently opening an atlas with a registry missing.
 
