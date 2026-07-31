@@ -32,6 +32,7 @@ from homeobox.schema import (
     FeatureLayout,
     HoxBaseSchema,
     PointerField,
+    RegistrySpec,
     _extract_pointer_fields,
     _infer_pointer_fields_from_arrow,
 )
@@ -124,6 +125,109 @@ def _derive_store_from_db_uri(db_uri: str, **store_kwargs) -> obstore.store.Obje
 
 
 # ---------------------------------------------------------------------------
+# Feature registry resolution
+# ---------------------------------------------------------------------------
+#
+# A registry table's name is derived from its *schema class*, not its feature
+# space, so several feature spaces declaring the same registry schema resolve
+# to one shared table and therefore one ``global_index`` space. ``RegistrySpec``
+# overrides the derived name in either direction.
+
+
+def _qualname(cls: type) -> str:
+    return f"{cls.__module__}.{cls.__qualname__}"
+
+
+def _normalize_registry_specs(
+    registry_schemas: dict[str, type[FeatureBaseSchema] | RegistrySpec],
+) -> dict[str, RegistrySpec]:
+    """Wrap bare schema classes so every feature space maps to a RegistrySpec."""
+    specs: dict[str, RegistrySpec] = {}
+    for fs, declared in registry_schemas.items():
+        specs[fs] = declared if isinstance(declared, RegistrySpec) else RegistrySpec(declared)
+    return specs
+
+
+def _group_registry_specs(
+    specs: dict[str, RegistrySpec],
+) -> dict[str, tuple[type[FeatureBaseSchema], list[str]]]:
+    """Group feature spaces by resolved table name as ``{name: (schema_cls, [fs, ...])}``.
+
+    Raises if two feature spaces claim one table under different schema classes:
+    they would fight over the column set, so this is a configuration error
+    rather than something to resolve silently.
+    """
+    grouped: dict[str, tuple[type[FeatureBaseSchema], list[str]]] = {}
+    for fs, spec in specs.items():
+        table_name = spec.resolve_table_name()
+        if table_name not in grouped:
+            grouped[table_name] = (spec.schema_cls, [fs])
+            continue
+        existing_cls, spaces = grouped[table_name]
+        if existing_cls is not spec.schema_cls:
+            raise ValueError(
+                f"Feature spaces {spaces[0]!r} and {fs!r} both resolve to registry table "
+                f"{table_name!r} but declare different registry schemas: "
+                f"{_qualname(existing_cls)} vs {_qualname(spec.schema_cls)}. Feature spaces "
+                f"sharing a registry table must declare the same schema class; pass "
+                f"RegistrySpec({spec.schema_cls.__name__}, table_name=...) to give one of "
+                f"them its own table."
+            )
+        spaces.append(fs)
+    return grouped
+
+
+def _open_registry_tables(
+    db: lancedb.DBConnection,
+    names: dict[str, str],
+    *,
+    versions: dict[str, int] | None = None,
+    restore: bool = False,
+) -> dict[str, lancedb.table.Table]:
+    """Open ``{feature_space: table_name}``, sharing one handle per distinct table.
+
+    Feature spaces aliased to the same table must share a single ``Table``
+    object: registry writes advance a handle's version in place, so two
+    independent handles would drift apart and break ``snapshot()``'s
+    stale-handle check. ``checkout``/``restore`` likewise run once per table —
+    restoring twice would commit on top of the first restore and leave the
+    earlier handle behind.
+    """
+    handles: dict[str, lancedb.table.Table] = {}
+    owner: dict[str, str] = {}
+    resolved: dict[str, lancedb.table.Table] = {}
+    for fs, table_name in names.items():
+        if table_name in handles:
+            if versions is not None and versions[fs] != versions[owner[table_name]]:
+                raise ValueError(
+                    f"Snapshot record maps feature spaces {owner[table_name]!r} and {fs!r} to "
+                    f"the same registry table {table_name!r} but records different Lance "
+                    f"versions ({versions[owner[table_name]]} vs {versions[fs]}). The record is "
+                    f"inconsistent and cannot be checked out; inspect "
+                    f"RaggedAtlas.list_versions(db_uri)."
+                )
+        else:
+            table = db.open_table(table_name)
+            if versions is not None:
+                table.checkout(versions[fs])
+                if restore:
+                    table.restore()
+            handles[table_name] = table
+            owner[table_name] = fs
+        resolved[fs] = handles[table_name]
+    return resolved
+
+
+def _recorded_registry_names(version_table: lancedb.table.Table) -> dict[str, str]:
+    """``{feature_space: table_name}`` from the newest snapshot, or ``{}`` if none."""
+    rows = version_table.search().select(["version", "registry_table_names"]).to_polars()
+    if rows.is_empty():
+        return {}
+    newest = rows.sort("version").row(-1, named=True)
+    return json.loads(newest["registry_table_names"])
+
+
+# ---------------------------------------------------------------------------
 # RaggedAtlas
 # ---------------------------------------------------------------------------
 
@@ -184,6 +288,20 @@ class RaggedAtlas:
                     )
                 self._field_to_tables.setdefault(fn, []).append(tbl_name)
 
+        # Feature spaces aliased to one registry table must share one handle:
+        # registry writes advance a handle's version in place, so independent
+        # handles drift apart and snapshot()'s stale-handle check starts failing.
+        handle_owner: dict[str, tuple[str, lancedb.table.Table]] = {}
+        for fs, table in registry_tables.items():
+            owner_fs, owner_table = handle_owner.setdefault(table.name, (fs, table))
+            if owner_table is not table:
+                raise ValueError(
+                    f"Feature spaces {owner_fs!r} and {fs!r} share registry table "
+                    f"{table.name!r} but were given independent Table handles "
+                    f"(v{owner_table.version} and v{table.version}). They must share one "
+                    f"handle so their versions cannot diverge; use RaggedAtlas.open() or "
+                    f"RaggedAtlas.checkout() rather than constructing RaggedAtlas directly."
+                )
         self._registry_tables = registry_tables
         self._dataset_table = dataset_table
         self._version_table = version_table
@@ -213,7 +331,7 @@ class RaggedAtlas:
         dataset_schema: type[DatasetSchema],
         *,
         store: obstore.store.ObjectStore,
-        registry_schemas: dict[str, type[FeatureBaseSchema]],
+        registry_schemas: dict[str, type[FeatureBaseSchema] | RegistrySpec],
         version_table_name: str = "atlas_versions",
         store_kwargs: dict | None = None,
     ) -> "RaggedAtlas":
@@ -238,8 +356,13 @@ class RaggedAtlas:
         store:
             An obstore ObjectStore for zarr I/O.
         registry_schemas:
-            Mapping of feature space names to their registry schema classes.
-            Table names default to ``"{feature_space}_registry"``.
+            Mapping of feature space names to either a registry schema class or
+            a :class:`~homeobox.schema.RegistrySpec`. Table names default to
+            ``"{snake_case(schema_cls.__name__)}_registry"``, so two feature
+            spaces declaring the *same* registry schema share one table and one
+            ``global_index`` space. Pass ``RegistrySpec(cls, table_name=...)``
+            to override — either to keep a feature space off a table it would
+            otherwise share, or to name an existing table explicitly.
         version_table_name:
             Name for the version tracking table.
         store_kwargs:
@@ -255,10 +378,23 @@ class RaggedAtlas:
             obs_tables[name] = db.create_table(name, schema=schema_cls)
         dataset_table = db.create_table(dataset_table_name, schema=dataset_schema)
 
-        registry_tables: dict[str, lancedb.table.Table] = {}
-        for fs, schema_cls in registry_schemas.items():
-            table_name = f"{fs}_registry"
-            registry_tables[fs] = db.create_table(table_name, schema=schema_cls)
+        specs = _normalize_registry_specs(registry_schemas)
+        grouped = _group_registry_specs(specs)
+        # Registry names now derive from user-supplied classes, so unlike
+        # "{fs}_registry" they can collide with the atlas's other tables.
+        reserved = set(obs_schemas) | {dataset_table_name, version_table_name, "_feature_layouts"}
+        clashes = reserved & set(grouped)
+        if clashes:
+            raise ValueError(
+                f"Registry table name(s) {sorted(clashes)} collide with other atlas tables "
+                f"{sorted(reserved)}. Rename with RegistrySpec(<schema>, table_name=...)."
+            )
+        created = {
+            table_name: db.create_table(table_name, schema=schema_cls)
+            for table_name, (schema_cls, _spaces) in grouped.items()
+        }
+        # Aliased feature spaces must share one handle, not two views of one table.
+        registry_tables = {fs: created[spec.resolve_table_name()] for fs, spec in specs.items()}
 
         version_table = db.create_table(version_table_name, schema=AtlasVersionRecord)
 
@@ -310,9 +446,17 @@ class RaggedAtlas:
         store:
             An obstore ObjectStore for zarr I/O.
         registry_tables:
-            Mapping of feature space names to LanceDB table names.
-            If ``None``, inferred from the dataset table using the naming
-            convention ``{feature_space}_registry``.
+            Mapping of feature space names to LanceDB table names. Several
+            feature spaces may name the same table; they then share one handle
+            and one ``global_index`` space.
+
+            If ``None``, the mapping recorded by the newest snapshot is used,
+            falling back to the legacy ``{feature_space}_registry`` convention
+            for feature spaces the snapshot does not cover. An atlas that has
+            never been snapshotted and does not use the legacy naming cannot be
+            resolved this way — pass ``registry_tables`` explicitly, or go
+            through :func:`create_or_open_atlas` / :meth:`checkout`, both of
+            which can resolve it.
         version_table_name:
             Name of the version tracking table.
         store_kwargs:
@@ -341,25 +485,33 @@ class RaggedAtlas:
         obs_schemas_full: dict[str, type[HoxBaseSchema] | None] = dict(obs_schemas)
         dataset_table = db.open_table(dataset_table_name)
 
+        version_table = db.open_table(version_table_name)
+
         if registry_tables is None:
+            all_tables = set(db.list_tables().tables)
+            # The snapshot record is authoritative: it names the tables as they
+            # actually are, including aliases and legacy names. Entries whose
+            # table has since been dropped are skipped rather than raising —
+            # that surfaces later as "No registry table for feature space".
+            registry_tables = {
+                fs: name
+                for fs, name in _recorded_registry_names(version_table).items()
+                if name in all_tables
+            }
+            # Feature spaces the newest snapshot doesn't cover (or an atlas that
+            # has never been snapshotted) fall back to the legacy convention.
             datasets_df = dataset_table.search().select(["feature_space"]).to_polars()
             feature_spaces = (
                 datasets_df["feature_space"].unique().to_list()
                 if not datasets_df.is_empty()
                 else []
             )
-            # Not all feature spaces are guaranteed to have registries, only
-            # load the ones that do
-            all_tables = set(db.list_tables().tables)
-            registry_tables = {
-                fs: f"{fs}_registry" for fs in feature_spaces if f"{fs}_registry" in all_tables
-            }
+            for fs in feature_spaces:
+                if fs not in registry_tables and f"{fs}_registry" in all_tables:
+                    registry_tables[fs] = f"{fs}_registry"
 
-        resolved_registries: dict[str, lancedb.table.Table] = {}
-        for fs, table_name in registry_tables.items():
-            resolved_registries[fs] = db.open_table(table_name)
+        resolved_registries = _open_registry_tables(db, registry_tables)
 
-        version_table = db.open_table(version_table_name)
         feature_layouts_table = db.open_table("_feature_layouts")
 
         root = zarr.open_group(zarr.storage.ObjectStore(store), mode="a")
@@ -470,8 +622,10 @@ class RaggedAtlas:
         for name, table in self._obs_tables.items():
             _fmt_table(f"Obs table [{name}]", table)
         _fmt_table("Dataset table", self._dataset_table)
-        for fs, reg_table in sorted(self._registry_tables.items()):
-            _fmt_table(f"Registry [{fs}]", reg_table)
+        for reg_table, spaces in sorted(
+            self._registry_tables_by_name().values(), key=lambda p: p[0].name
+        ):
+            _fmt_table(f"Registry [{', '.join(sorted(spaces))}]", reg_table)
 
         summary = "\n".join(lines)
         print(summary)
@@ -544,7 +698,11 @@ class RaggedAtlas:
 
     @property
     def registry_tables(self) -> dict[str, lancedb.table.Table]:
-        """Feature registry tables, keyed by feature space."""
+        """Feature registry tables, keyed by feature space.
+
+        Feature spaces that share a registry table map to the *same* ``Table``
+        object, so the mapping is not necessarily injective.
+        """
         return self._registry_tables
 
     @property
@@ -677,6 +835,18 @@ class RaggedAtlas:
         """Drop the cached GroupReader for ``(zarr_group, feature_space)``."""
         self._group_readers.pop((zarr_group, feature_space), None)
 
+    def _registry_tables_by_name(self) -> dict[str, tuple[lancedb.table.Table, list[str]]]:
+        """Distinct registry tables as ``{table_name: (table, [feature_space, ...])}``.
+
+        Use this instead of ``self._registry_tables.values()`` wherever work is
+        done *per table*: feature spaces sharing a registry would otherwise
+        have that work repeated once each.
+        """
+        by_name: dict[str, tuple[lancedb.table.Table, list[str]]] = {}
+        for fs, table in self._registry_tables.items():
+            by_name.setdefault(table.name, (table, []))[1].append(fs)
+        return by_name
+
     def _iter_managed_tables(self) -> Iterator[lancedb.table.Table]:
         """Yield every LanceDB table the atlas tracks for snapshotting.
 
@@ -685,7 +855,8 @@ class RaggedAtlas:
         """
         yield from self._obs_tables.values()
         yield self._dataset_table
-        yield from self._registry_tables.values()
+        for table, _spaces in self._registry_tables_by_name().values():
+            yield table
         yield self._feature_layouts_table
 
     def refresh(self) -> None:
@@ -792,7 +963,7 @@ class RaggedAtlas:
         self._deduplicate_new_rows(
             self._feature_layouts_table, subset=["layout_uid", "feature_uid"]
         )
-        for table in self._registry_tables.values():
+        for table, _spaces in self._registry_tables_by_name().values():
             self._deduplicate_new_rows(table, subset=["uid"])
             reindex_registry(table)
             table.create_scalar_index("uid", replace=True)
@@ -1000,14 +1171,18 @@ class RaggedAtlas:
 
     def _validate_registries(self) -> list[str]:
         errors: list[str] = []
-        for fs, table in self._registry_tables.items():
+        for table, spaces in self._registry_tables_by_name().values():
             df = table.search().select(["global_index"]).to_polars()
             if df.is_empty():
                 continue
             null_count = df["global_index"].null_count()
             if null_count > 0:
+                # Report per table, not per feature space: one defect on a
+                # shared registry would otherwise read as several problems.
+                label = ", ".join(sorted(spaces))
                 errors.append(
-                    f"Registry '{fs}': {null_count} row(s) have no global_index. "
+                    f"Registry table '{table.name}' (feature space(s) {label}): "
+                    f"{null_count} row(s) have no global_index. "
                     f"Run reindex_registry(table) to fix."
                 )
         return errors
@@ -1222,11 +1397,7 @@ class RaggedAtlas:
 
         registry_names: dict[str, str] = json.loads(row["registry_table_names"])
         registry_versions: dict[str, int] = json.loads(row["registry_table_versions"])
-        resolved_registries: dict[str, lancedb.table.Table] = {}
-        for fs, table_name in registry_names.items():
-            t = db.open_table(table_name)
-            t.checkout(registry_versions[fs])
-            resolved_registries[fs] = t
+        resolved_registries = _open_registry_tables(db, registry_names, versions=registry_versions)
 
         feature_layouts_table = db.open_table("_feature_layouts")
         feature_layouts_table.checkout(row["feature_layouts_table_version"])
@@ -1316,12 +1487,11 @@ class RaggedAtlas:
 
         registry_names: dict[str, str] = json.loads(row["registry_table_names"])
         registry_versions: dict[str, int] = json.loads(row["registry_table_versions"])
-        resolved_registries: dict[str, lancedb.table.Table] = {}
-        for fs, table_name in registry_names.items():
-            t = db.open_table(table_name)
-            t.checkout(registry_versions[fs])
-            t.restore()
-            resolved_registries[fs] = t
+        # Restoring once per *table*, not per feature space: a second restore
+        # would commit on top of the first and leave the earlier handle stale.
+        resolved_registries = _open_registry_tables(
+            db, registry_names, versions=registry_versions, restore=True
+        )
 
         feature_layouts_table = db.open_table("_feature_layouts")
         feature_layouts_table.checkout(row["feature_layouts_table_version"])
@@ -1401,7 +1571,7 @@ def create_or_open_atlas(
     dataset_table_name: str,
     dataset_schema: type[DatasetSchema],
     *,
-    registry_schemas: dict[str, type[FeatureBaseSchema]],
+    registry_schemas: dict[str, type[FeatureBaseSchema] | RegistrySpec],
     version_table_name: str = "atlas_versions",
     store_kwargs: dict | None = None,
 ) -> RaggedAtlas:
@@ -1427,7 +1597,13 @@ def create_or_open_atlas(
     dataset_schema:
         A :class:`DatasetSchema` subclass for the dataset schema.
     registry_schemas:
-        Mapping of feature space names to their registry schema classes.
+        Mapping of feature space names to either a registry schema class or a
+        :class:`~homeobox.schema.RegistrySpec`. See :meth:`RaggedAtlas.create`
+        for how table names are derived and how registries are shared.
+
+        Registry tables are only created when the atlas is initialised. When
+        reopening, every feature space listed here must already have a registry
+        table in the atlas.
     version_table_name:
         Name for the version tracking table.
     store_kwargs:
@@ -1466,9 +1642,54 @@ def create_or_open_atlas(
     if present:
         # Explicitly pass registry table names so open() doesn't rely on
         # the datasets table (which may be empty for a freshly-initialised atlas).
-        registry_tables = {
-            fs: f"{fs}_registry" for fs in registry_schemas if f"{fs}_registry" in existing_tables
-        }
+        specs = _normalize_registry_specs(registry_schemas)
+        _group_registry_specs(specs)  # reject conflicting schemas up front
+        recorded = (
+            _recorded_registry_names(db.open_table(version_table_name))
+            if version_table_name in existing_tables
+            else {}
+        )
+
+        registry_tables: dict[str, str] = {}
+        for fs, spec in specs.items():
+            # Snapshot record first: a legacy atlas must keep resolving to its
+            # recorded name even if the class-derived name happens to exist.
+            # The legacy name is the last resort, for legacy atlases that were
+            # never snapshotted (ingest_collection never calls snapshot()).
+            candidates = list(
+                dict.fromkeys(
+                    c for c in (recorded.get(fs), spec.resolve_table_name(), f"{fs}_registry") if c
+                )
+            )
+            found = next((c for c in candidates if c in existing_tables), None)
+            if found is None:
+                # TODO(shared-registry): support adding a feature space or
+                # registry to an existing atlas. The schema class is known here
+                # so we could db.create_table(...), but it interacts with
+                # snapshot records that predate the new table and with
+                # checkout()/restore() of those older versions.
+                raise ValueError(
+                    f"Atlas at {atlas_path!r} has no registry table for feature space {fs!r} "
+                    f"(looked for {candidates}). Registry tables are only created when the "
+                    f"atlas is initialised, so a feature space cannot be added to an existing "
+                    f"atlas. Either re-create the atlas with the full registry_schemas "
+                    f"mapping, or point this feature space at a table that already exists "
+                    f"with RegistrySpec({spec.schema_cls.__name__}, table_name=...)."
+                )
+            # Catch a registry table built from a different schema here, where
+            # the cause is obvious, rather than downstream in var validation.
+            existing_columns = set(db.open_table(found).schema.names) - {"global_index"}
+            declared_columns = set(spec.schema_cls.to_arrow_schema().names) - {"global_index"}
+            if existing_columns != declared_columns:
+                raise ValueError(
+                    f"Registry table {found!r} for feature space {fs!r} does not match the "
+                    f"declared schema {spec.schema_cls.__name__}. Table has "
+                    f"{sorted(existing_columns)}; schema declares {sorted(declared_columns)}. "
+                    f"Missing: {sorted(declared_columns - existing_columns)}. "
+                    f"Unexpected: {sorted(existing_columns - declared_columns)}."
+                )
+            registry_tables[fs] = found
+
         return RaggedAtlas.open(
             db_uri=db_uri,
             obs_table_names=obs_names,

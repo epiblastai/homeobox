@@ -86,7 +86,7 @@ AtlasVersionRecord(
     obs_table_versions='{"cells": 4}',  # JSON: one version per obs table
     dataset_table_name="datasets",
     dataset_table_version=2,
-    registry_table_names='{"gene_expression": "gene_expression_registry"}',
+    registry_table_names='{"gene_expression": "gene_feature_registry"}',
     registry_table_versions='{"gene_expression": 3}',
     feature_layouts_table_version=5,
     total_rows=1_234_567,
@@ -105,7 +105,7 @@ If any check fails, `snapshot()` raises a `ValueError` listing all errors:
 
 ```
 ValueError: Atlas validation failed — fix errors before snapshotting:
-  • Registry 'gene_expression': 142 row(s) have no global_index. Run reindex_registry(table) to fix.
+  • Registry table 'gene_feature_registry' (feature space(s) gene_expression): 142 row(s) have no global_index. Run reindex_registry(table) to fix.
 ```
 
 Snapshot will also fail if it detects that the currently checked out version of any tables in the atlas are not the latest versions. This can happen, for example, if data has been appended to tables since the atlas was opened. In that case we provide `atlas.refresh()`, which reopens all version-controlled tables to their latest versions.

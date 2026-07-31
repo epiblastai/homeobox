@@ -32,9 +32,11 @@ from homeobox.schema import (
     PointerField,
     PolymorphicRegistryKeyField,
     RegistryKeyField,
+    RegistrySpec,
     StableUIDBaseSchema,
     StableUIDField,
     combine_markers,
+    default_registry_table_name,
 )
 
 __all__ = [
@@ -57,11 +59,13 @@ __all__ = [
     "DatasetSchema",
     "RegistryKeyField",
     "PolymorphicRegistryKeyField",
+    "RegistrySpec",
     "OntologyAlignedField",
     "PointerField",
     "StableUIDBaseSchema",
     "StableUIDField",
     "combine_markers",
+    "default_registry_table_name",
     "SparseZarrPointer",
     "DenseZarrPointer",
     "FragmentResult",

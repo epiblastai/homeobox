@@ -163,6 +163,8 @@ class IngestReport:
     datasets_ingested: list[str] = field(default_factory=list)
     datasets_skipped: list[str] = field(default_factory=list)
     rows_per_feature_space: dict[str, int] = field(default_factory=dict)
+    # Keyed by the feature space that owns the registry table: feature spaces
+    # sharing one registry are counted once, under the first one declared.
     features_registered: dict[str, int] = field(default_factory=dict)
     registry_tables_copied: dict[str, int] = field(default_factory=dict)
 
@@ -305,9 +307,21 @@ def _register_feature_registries(
 
     ``register_features`` accepts a DataFrame and dedupes on ``uid``, so each
     dataset's registry table is passed through whole.
+
+    Feature spaces that declare the same registry class read the same staged
+    var table into the same atlas registry, so only the first-declared
+    ("owning") feature space does the work. Counts are keyed by that owner.
     """
     registered: dict[str, int] = {}
+    owner: dict[type, str] = {}
     for feature_space, registry_cls in schema.feature_space_registry().items():
+        owning_space = owner.setdefault(registry_cls, feature_space)
+        if owning_space != feature_space:
+            print(
+                f"  {feature_space}: shares registry {registry_cls.__name__} "
+                f"with {owning_space}, already registered"
+            )
+            continue
         for name in collection.datasets:
             table = _read_table(collection_root, name, registry_cls.__name__)
             if table is None:

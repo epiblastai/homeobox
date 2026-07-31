@@ -275,7 +275,7 @@ For a unimodal atlas, a single pointer field is sufficient. The `| None` is stil
 
 ## `FeatureBaseSchema`
 
-`FeatureBaseSchema` is the base class for feature registry tables. Each feature space with a stable feature axis (genes, proteins, peaks, image-feature channels, …) maintains its own registry whose schema subclasses this class.
+`FeatureBaseSchema` is the base class for feature registry tables. Each feature space with a stable feature axis (genes, proteins, peaks, image-feature channels, …) has a registry whose schema subclasses this class. The registry's LanceDB table is named after the schema class (`GeneFeature` → `gene_feature_registry`), so feature spaces declaring the same schema share one registry — see [Feature registries](feature_registries.md#sharing-a-registry-across-feature-spaces).
 
 `FeatureBaseSchema` itself inherits from `StableUIDBaseSchema`, which contributes the `uid` field and the `StableUIDField.declare(...)` machinery used to derive deterministic `uid` values from a canonical identifier (Ensembl gene ID, UniProt accession, …). See [Feature registries](feature_registries.md) for the design rationale, the dedup semantics, and the bulk `compute_stable_uids` path.
 
@@ -373,7 +373,7 @@ The `_feature_layouts` table supports two query directions efficiently via an FT
 | `obs_table_versions` | `str` | JSON object mapping obs-table name to its Lance version integer, e.g. `'{"cells": 4, "donors": 2}'`. Encodes one entry per obs table declared on the atlas. |
 | `dataset_table_name` | `str` | Name of the datasets Lance table. |
 | `dataset_table_version` | `int` | Lance internal version of the datasets table. |
-| `registry_table_names` | `str` | JSON object mapping feature space name to registry table name, e.g. `'{"gene_expression": "gene_expression_registry"}'`. |
+| `registry_table_names` | `str` | JSON object mapping feature space name to registry table name, e.g. `'{"gene_expression": "gene_feature_registry"}'`. Several feature spaces may name the same table when they share a registry. |
 | `registry_table_versions` | `str` | JSON object mapping feature space name to its Lance version integer. |
 | `feature_layouts_table_version` | `int` | Lance internal version of the `_feature_layouts` table. |
 | `total_rows` | `int` | Total row count across all obs tables at snapshot time. Written for quick inspection without opening any obs table. |
