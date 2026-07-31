@@ -147,6 +147,7 @@ Sharding matters for object-store performance: a shard is one file, so larger sh
 
 ```python
 import zarr
+
 group = zarr.open_group("/path/to/group")
 errors = spec.zarr_group_spec.validate_group(group)
 for e in errors:

@@ -96,6 +96,7 @@ import polars as pl
 import scanpy as sc
 import homeobox as hox
 
+
 # 1. Define schemas: one for gene features, one for cell metadata.
 #    `StableUIDField` marks `gene_symbol` as the deterministic source of
 #    `uid` (so parallel ingest jobs converge on the same uid for the same
@@ -104,10 +105,12 @@ import homeobox as hox
 class GeneFeature(hox.FeatureBaseSchema):
     gene_symbol: str = hox.StableUIDField.declare(default=...)
 
+
 class CellSchema(hox.HoxBaseSchema):
     gene_expression: hox.SparseZarrPointer | None = hox.PointerField.declare(
         feature_space="gene_expression"
     )
+
 
 # 2. Create an atlas
 atlas = hox.create_or_open_atlas(
@@ -136,11 +139,16 @@ adata.var = var_df
 # 5. Ingest. `field_name` selects the cell-schema column to populate;
 #    its feature_space is resolved from PointerField.declare.
 record = hox.DatasetSchema(
-    zarr_group="pbmc3k", feature_space="gene_expression", n_rows=adata.n_obs,
+    zarr_group="pbmc3k",
+    feature_space="gene_expression",
+    n_rows=adata.n_obs,
 )
 hox.add_from_anndata(
-    atlas, adata, field_name="gene_expression",
-    zarr_layer="counts", dataset_record=record,
+    atlas,
+    adata,
+    field_name="gene_expression",
+    zarr_layer="counts",
+    dataset_record=record,
 )
 
 # 6. Optimize tables and create a snapshot
@@ -171,9 +179,7 @@ class MultimodalCell(hox.HoxBaseSchema):
     protein_abundance: hox.DenseZarrPointer | None = hox.PointerField.declare(
         feature_space="protein_abundance"
     )
-    image_tiles: hox.DenseZarrPointer | None = hox.PointerField.declare(
-        feature_space="image_tiles"
-    )
+    image_tiles: hox.DenseZarrPointer | None = hox.PointerField.declare(feature_space="image_tiles")
 ```
 
 A query against this atlas streams within-row multimodal batches through a single `DataLoader`, regardless of how many modalities each cell has. See [`homeobox_examples/multimodal_perturbation_atlas/schema.py`](homeobox_examples/multimodal_perturbation_atlas/schema.py) for a five-modality production schema (gene expression, chromatin accessibility, protein abundance, image features, image tiles) plus perturbation, publication, and donor tables.

@@ -62,10 +62,10 @@ A converter is the adapter between **one in-memory array type** (CSR, dense, fra
 
 ```python
 {
-    "required_arrays": {...},   # structural arrays keyed by spec-declared name (e.g. "csr/indices")
-    "layers":          {...},   # {layer_name: values} for each requested layer
-    "pointer_fields":  {...},   # origin-zero pointer components (start/end/zarr_row, or position)
-    "n_rows":          int,     # rows in this batch
+    "required_arrays": {...},  # structural arrays keyed by spec-declared name (e.g. "csr/indices")
+    "layers": {...},  # {layer_name: values} for each requested layer
+    "pointer_fields": {...},  # origin-zero pointer components (start/end/zarr_row, or position)
+    "n_rows": int,  # rows in this batch
 }
 ```
 
@@ -79,7 +79,8 @@ Converters are selected **by feature space**, not by pointer type — because tw
 @register_converter("gene_expression")
 class CSRSparseConverter(ArrayConverter): ...
 
-converter = converter_for(spec, sample)   # resolve + validate input array type
+
+converter = converter_for(spec, sample)  # resolve + validate input array type
 ```
 
 `converter_for` raises rather than silently mis-mapping: an unregistered feature space, or a sample whose type doesn't match the converter's `input_type`, fails loudly.
@@ -114,8 +115,13 @@ writer = writer_for(spec, group, layer_names=..., **create_kwargs)
 
 ```python
 pointer_columns = write_feature_space(
-    reader, spec, group,
-    batch_size=..., layer_mapping=..., layer_names=..., zarr_group_name=...,
+    reader,
+    spec,
+    group,
+    batch_size=...,
+    layer_mapping=...,
+    layer_names=...,
+    zarr_group_name=...,
 )
 ```
 
@@ -139,24 +145,30 @@ from homeobox.ingestion import Ingestor
 obs columns and the obs table are validated **once, up front**, in the constructor, so a bad obs frame fails before any zarr is written.
 
 ```python
-ingestor = Ingestor(atlas, obs_df=obs_df)            # obs validated here
+ingestor = Ingestor(atlas, obs_df=obs_df)  # obs validated here
 
 ingestor.write_array(
     AnnDataReader(rna_adata),
     field_name="gene_expression",
     layer_mapping={"X": "counts"},
-    dataset_record=DatasetSchema(dataset_uid=uid, zarr_group="ds0/rna", feature_space="gene_expression"),
-    n_vars=rna_adata.n_vars, var_df=rna_adata.var,
+    dataset_record=DatasetSchema(
+        dataset_uid=uid, zarr_group="ds0/rna", feature_space="gene_expression"
+    ),
+    n_vars=rna_adata.n_vars,
+    var_df=rna_adata.var,
 )
 ingestor.write_array(
     AnnDataReader(protein_adata),
     field_name="protein_abundance",
     layer_mapping={"X": "ctrl_standardized"},
-    dataset_record=DatasetSchema(dataset_uid=uid, zarr_group="ds0/protein", feature_space="protein_abundance"),
-    n_vars=protein_adata.n_vars, var_df=protein_adata.var,
+    dataset_record=DatasetSchema(
+        dataset_uid=uid, zarr_group="ds0/protein", feature_space="protein_abundance"
+    ),
+    n_vars=protein_adata.n_vars,
+    var_df=protein_adata.var,
 )
 
-n_cells = ingestor.write_obs_records()               # one obs record per cell, both fields populated
+n_cells = ingestor.write_obs_records()  # one obs record per cell, both fields populated
 ```
 
 The engine enforces its invariants loudly: every `write_array` must share one `dataset_uid`; each reader must emit exactly `len(obs_df)` rows; a field can't be written twice; `write_array` after `write_obs_records` (or a second `write_obs_records`) raises — the ingestor is single-use. Heterogeneous modalities (here a sparse and a dense feature space, with different destination layers) are exactly what the per-call `layer_mapping` is for.
@@ -182,9 +194,10 @@ The 90% case. Register the feature's registry schema, then stream `adata.X` into
 from homeobox.ingestion import add_from_anndata
 
 add_from_anndata(
-    atlas, adata,
-    field_name="gene_expression",   # obs-schema pointer column to populate
-    zarr_layer="counts",            # destination layer for adata.X
+    atlas,
+    adata,
+    field_name="gene_expression",  # obs-schema pointer column to populate
+    zarr_layer="counts",  # destination layer for adata.X
     dataset_record=DatasetSchema(zarr_group="ds1/gene_expression", feature_space="gene_expression"),
 )
 ```
@@ -201,12 +214,16 @@ from homeobox.ingestion import ingest_multimodal
 uid = make_uid()
 ingest_multimodal(
     atlas,
-    {"img_a": adata_a, "img_b": adata_b},      # {field_name: AnnData}
-    obs_df=obs_df,                              # shared obs, one row per cell
+    {"img_a": adata_a, "img_b": adata_b},  # {field_name: AnnData}
+    obs_df=obs_df,  # shared obs, one row per cell
     zarr_layer="ctrl_standardized",
     dataset_records={
-        "img_a": DatasetSchema(dataset_uid=uid, zarr_group="ds0/img_a", feature_space="image_features"),
-        "img_b": DatasetSchema(dataset_uid=uid, zarr_group="ds0/img_b", feature_space="image_features"),
+        "img_a": DatasetSchema(
+            dataset_uid=uid, zarr_group="ds0/img_a", feature_space="image_features"
+        ),
+        "img_b": DatasetSchema(
+            dataset_uid=uid, zarr_group="ds0/img_b", feature_space="image_features"
+        ),
     },
 )
 ```

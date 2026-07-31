@@ -48,8 +48,8 @@ from polycomb.ingestion import LoaderContext, LoaderResult
 
 def load_mtx(ctx: LoaderContext) -> LoaderResult:
     mtx = next(p for p in ctx.data_files if p.endswith(".mtx") or p.endswith(".mtx.gz"))
-    matrix = sio.mmread(mtx)                       # features x cells, in many GEO dumps
-    matrix = sp.csr_matrix(matrix.T)               # -> cells x features, CSR
+    matrix = sio.mmread(mtx)  # features x cells, in many GEO dumps
+    matrix = sp.csr_matrix(matrix.T)  # -> cells x features, CSR
     adata = ad.AnnData(X=matrix)
     return LoaderResult(
         reader=AnnDataReader(adata),
@@ -76,9 +76,9 @@ class MyFormatReader:
         self._path = path
 
     def iter_layer_batches(self, batch_size, layer_mapping):
-        dest = layer_mapping["X"]                  # the destination zarr layer for this source
-        for row_block in _stream_rows(self._path, batch_size):   # your decode, in row order
-            yield {dest: _to_csr(row_block)}       # CSR -> existing sparse converter handles it
+        dest = layer_mapping["X"]  # the destination zarr layer for this source
+        for row_block in _stream_rows(self._path, batch_size):  # your decode, in row order
+            yield {dest: _to_csr(row_block)}  # CSR -> existing sparse converter handles it
 ```
 
 If a downstream invariant is load-bearing (e.g. the source must be cell-sorted), validate it and fail loud rather than emitting out-of-order rows — out-of-order emission silently misaligns every pointer.

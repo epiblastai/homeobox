@@ -85,8 +85,8 @@ The atlas takes advantage of this by keeping a separate cache for each:
 
 ```python
 # atlas.py
-self._group_readers:  OrderedDict[(zarr_group, feature_space), GroupReader]  # LRU
-self._layout_readers: dict[layout_uid, LayoutReader]                          # unbounded
+self._group_readers: OrderedDict[(zarr_group, feature_space), GroupReader]  # LRU
+self._layout_readers: dict[layout_uid, LayoutReader]  # unbounded
 ```
 
 When `get_group_reader(zarr_group, feature_space)` is called, the atlas resolves the dataset's `layout_uid`, looks it up in `_layout_readers`, and constructs one lazily if it is the first time. The resulting `GroupReader` holds a reference to that shared `LayoutReader`:

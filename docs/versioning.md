@@ -83,7 +83,7 @@ Under the hood, a snapshot record looks like this:
 ```python
 AtlasVersionRecord(
     version=0,
-    obs_table_versions='{"cells": 4}',   # JSON: one version per obs table
+    obs_table_versions='{"cells": 4}',  # JSON: one version per obs table
     dataset_table_name="datasets",
     dataset_table_version=2,
     registry_table_names='{"gene_expression": "gene_feature_registry"}',
@@ -130,10 +130,7 @@ Once checked out, the atlas is fully queryable:
 
 ```python
 adata = (
-    atlas_latest.query()
-    .where("tissue = 'liver'")
-    .feature_spaces("gene_expression")
-    .to_anndata()
+    atlas_latest.query().where("tissue = 'liver'").feature_spaces("gene_expression").to_anndata()
 )
 ```
 

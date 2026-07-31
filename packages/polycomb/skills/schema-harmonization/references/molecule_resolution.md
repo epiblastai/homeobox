@@ -34,7 +34,12 @@ This reference is designed to guide you through the specific resolution consider
 ## Tools
 
 ```python
-from polycomb import resolve_molecules, is_control_label, is_control_compound, detect_negative_control_type
+from polycomb import (
+    resolve_molecules,
+    is_control_label,
+    is_control_compound,
+    detect_negative_control_type,
+)
 from polycomb.types import MoleculeResolution, ResolutionReport
 ```
 
@@ -88,8 +93,12 @@ Vehicle and solvent controls (`DMSO`, `vehicle`, `untreated`, `water`, …) are 
 
 ```python
 from polycomb import (
-    ReplaceValue, CurationApplicator, CurationTransaction, default_audit_db_path,
-    is_control_label, detect_negative_control_type,
+    ReplaceValue,
+    CurationApplicator,
+    CurationTransaction,
+    default_audit_db_path,
+    is_control_label,
+    detect_negative_control_type,
 )
 
 lance_path, table_name = "<path/to/lance_db>", "<table>"

@@ -86,23 +86,27 @@ from homeobox.reconstruction_functional import (
     finalize_grouped_read,
 )
 
+
 class MyReconstructor(Reconstructor):
     required_arrays = ["..."]
     require_var_df = True
-    read_method = "ranges"   # or "boxes"
-    stack_uniform = True     # only for read_method == "boxes"
+    read_method = "ranges"  # or "boxes"
+    stack_uniform = True  # only for read_method == "boxes"
 
-    def build_group_batch(self, group_reader, group_rows, layer_names, results):
-        ...  # wrap raw read results in SparseBatch / DenseFeatureBatch / SpatialTileBatch
+    def build_group_batch(
+        self, group_reader, group_rows, layer_names, results
+    ): ...  # wrap raw read results in SparseBatch / DenseFeatureBatch / SpatialTileBatch
 
-    def build_empty_batch(self, *, n_rows, n_features, layer_dtypes, layer_names):
-        ...
+    def build_empty_batch(self, *, n_rows, n_features, layer_dtypes, layer_names): ...
 
     @endpoint
-    def as_anndata(self, atlas, obs_pl, pf, layer_overrides=None,
-                   feature_join="union", wanted_globals=None):
+    def as_anndata(
+        self, atlas, obs_pl, pf, layer_overrides=None, feature_join="union", wanted_globals=None
+    ):
         plan = build_feature_read_plan(
-            atlas, groups, pf,
+            atlas,
+            groups,
+            pf,
             layer_overrides=layer_overrides,
             feature_join=feature_join,
             wanted_globals=wanted_globals,

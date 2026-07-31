@@ -18,6 +18,7 @@ Subclasses add whatever modality-specific columns you need:
 ```python
 import homeobox as hox
 
+
 class GeneFeature(hox.FeatureBaseSchema):
     gene_symbol: str | None = None
     ensembl_id: str | None = hox.StableUIDField.declare(default=None)
@@ -115,10 +116,12 @@ For large feature tables (tens of thousands of genes, hundreds of thousands of p
 ```python
 import polars as pl
 
-genes_df = pl.DataFrame({
-    "ensembl_id": ["ENSG00000139618", "ENSG00000141510", None],
-    "gene_symbol": ["BRCA2", "TP53", "custom_probe_1"],
-})
+genes_df = pl.DataFrame(
+    {
+        "ensembl_id": ["ENSG00000139618", "ENSG00000141510", None],
+        "gene_symbol": ["BRCA2", "TP53", "custom_probe_1"],
+    }
+)
 
 # Compute uid from ensembl_id (pandas helper; convert as needed)
 genes_pdf = GeneFeature.compute_stable_uids(genes_df.to_pandas())
@@ -134,8 +137,8 @@ atlas.register_features("gene_expression", genes_df)
 Registering features inserts rows with `global_index = None`. The integers are assigned later by `atlas.optimize()`, which runs `reindex_registry()` over each distinct registry table (a table shared by several feature spaces is processed once):
 
 ```python
-atlas.optimize()    # dedupes newly-added rows, assigns global_index
-atlas.snapshot()    # validates and freezes the registry into a version
+atlas.optimize()  # dedupes newly-added rows, assigns global_index
+atlas.snapshot()  # validates and freezes the registry into a version
 ```
 
 The reason for splitting registration from indexing is the same race condition argument as above: assigning a `global_index` requires reading `max(existing_index)` and incrementing it, which is not safe to do from many writers concurrently. By leaving `global_index = None` during ingestion and concentrating the assignment in a single `optimize()` call, the atlas avoids any need for cross-worker coordination. See [Versioning](versioning.md) for the full snapshot lifecycle.

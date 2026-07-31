@@ -35,9 +35,9 @@ A `Dataset` groups the files for one logical dataset and carries a stable `uid`:
 from polycomb.collection import Dataset, FileTypeTag
 
 hepg2 = Dataset("HepG2")  # uid auto-generated if not passed
-hepg2.add_file("gex.h5ad",     FileTypeTag.DATA, "gene_expression")
-hepg2.add_file("gex_obs.csv",  FileTypeTag.OBS,  "gene_expression")
-hepg2.add_file("gex_var.csv",  FileTypeTag.VAR,  "gene_expression")
+hepg2.add_file("gex.h5ad", FileTypeTag.DATA, "gene_expression")
+hepg2.add_file("gex_obs.csv", FileTypeTag.OBS, "gene_expression")
+hepg2.add_file("gex_var.csv", FileTypeTag.VAR, "gene_expression")
 ```
 
 | Member | Signature | Purpose |
@@ -54,12 +54,12 @@ A multimodal dataset is just one `Dataset` with files in more than one feature s
 
 ```python
 cite = Dataset("sample1")
-cite.add_file("rna.h5ad",      FileTypeTag.DATA, "gene_expression")
-cite.add_file("rna_obs.csv",   FileTypeTag.OBS,  "gene_expression")
-cite.add_file("rna_var.csv",   FileTypeTag.VAR,  "gene_expression")
-cite.add_file("adt.tsv",       FileTypeTag.DATA, "protein_abundance")
-cite.add_file("adt_obs.csv",   FileTypeTag.OBS,  "protein_abundance")
-cite.add_file("adt_var.csv",   FileTypeTag.VAR,  "protein_abundance")
+cite.add_file("rna.h5ad", FileTypeTag.DATA, "gene_expression")
+cite.add_file("rna_obs.csv", FileTypeTag.OBS, "gene_expression")
+cite.add_file("rna_var.csv", FileTypeTag.VAR, "gene_expression")
+cite.add_file("adt.tsv", FileTypeTag.DATA, "protein_abundance")
+cite.add_file("adt_obs.csv", FileTypeTag.OBS, "protein_abundance")
+cite.add_file("adt_var.csv", FileTypeTag.VAR, "protein_abundance")
 ```
 
 ## Building a collection
@@ -74,10 +74,10 @@ collection.add_dataset(hepg2)
 
 # Collection-level files are shared across datasets — no feature space.
 collection.add_file("guide_library.csv", FileTypeTag.LIBRARY)
-collection.add_file("publication.json",  FileTypeTag.OTHER)
+collection.add_file("publication.json", FileTypeTag.OTHER)
 
-collection.coalesce(copy=True)   # organize files on disk
-collection.to_json()             # write <root_dir>/collection.json
+collection.coalesce(copy=True)  # organize files on disk
+collection.to_json()  # write <root_dir>/collection.json
 ```
 
 | Member | Signature | Purpose |
