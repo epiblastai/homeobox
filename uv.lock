@@ -2998,6 +2998,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pylance" },
     { name = "requests" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -3037,6 +3038,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'" },
     { name = "requests" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "tqdm" },
 ]
 provides-extras = ["all", "dev", "docs"]
 

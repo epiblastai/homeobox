@@ -129,6 +129,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--verify-md5", action="store_true", help="Check md5 (requires article id)")
     args = parser.parse_args()
+    assert not args.verify_md5 or args.article_id, "--verify-md5 requires --article-id"
 
     record = _lookup_file(args.article_id, args.file_id) if args.article_id else None
     path = download_figshare_file(
@@ -139,7 +140,6 @@ if __name__ == "__main__":
     )
 
     if args.verify_md5:
-        assert record, "--verify-md5 requires --article-id"
         checksum = _md5(path)
         expected = record.get("computed_md5") or record.get("supplied_md5")
         assert checksum == expected, f"md5 mismatch for {path}: got {checksum}, expected {expected}"
