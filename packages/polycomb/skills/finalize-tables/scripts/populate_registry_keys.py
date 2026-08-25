@@ -69,13 +69,18 @@ def _fail_unmatched(field_name: str, target: str, unmatched: list, total: int) -
 
 
 def build_target_key_map(
-    info: SchemaInfo, refs: list[TableRef], target_class: str
+    info: SchemaInfo, refs: list[TableRef], target_class: str, *, allow_missing_uid: bool = False
 ) -> dict[str, str]:
     """Map each target natural key to its uid, unioned over the target's tables.
 
     Enforces that a key identifies exactly one target row (one uid). Raises if the
     target join column or uid is missing — both are prerequisites finalization
     cannot invent.
+
+    ``allow_missing_uid`` is for dry runs only: assign_uids also wrote nothing, so
+    the target has no uid to join to. Standing in a per-row placeholder keeps the
+    checks that matter to a preview — key uniqueness in the target and coverage of
+    every source key — while nothing is written.
     """
     join_col = f"{target_class}_join"
     targets = tables_for_class(refs, target_class)
@@ -85,7 +90,8 @@ def build_target_key_map(
     mapping: dict[str, str] = {}
     for tref in targets:
         table = read_arrow(tref)
-        if "uid" not in table.column_names:
+        pending_uids = "uid" not in table.column_names
+        if pending_uids and not allow_missing_uid:
             raise ValueError(
                 f"Target {tref.table_name!r} has no 'uid'; assign uids before populating "
                 f"registry keys that reference {target_class}."
@@ -96,7 +102,11 @@ def build_target_key_map(
                 f"must record the natural key on the target side before this registry key can resolve."
             )
         keys = table.column(join_col).to_pylist()
-        uids = table.column("uid").to_pylist()
+        uids = (
+            [f"<pending uid {tref.table_name}:{i}>" for i in range(table.num_rows)]
+            if pending_uids
+            else table.column("uid").to_pylist()
+        )
         for raw_key, raw_uid in zip(keys, uids, strict=True):
             key = join_key(raw_key)
             if key is None:
@@ -310,7 +320,7 @@ def populate_fks_for_table(
 
     def get_map(target: str) -> dict[str, str]:
         if target not in map_cache:
-            map_cache[target] = build_target_key_map(info, refs, target)
+            map_cache[target] = build_target_key_map(info, refs, target, allow_missing_uid=dry_run)
         return map_cache[target]
 
     for fk in scalar:

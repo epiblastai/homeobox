@@ -86,6 +86,12 @@ def _materialize_single_modality_artifact(
         )
     bare = db.open_table(obs_class).to_arrow()
     if UID_COLUMN not in bare.column_names:
+        if dry_run:
+            # assign_uids ran in dry-run too, so the column it would have written
+            # is not there to copy. Report the intent rather than failing the
+            # preview on a dependency the same preview chose not to satisfy.
+            print(f"  {artifact_name}: would materialize {bare.num_rows} {UID_COLUMN}(s)")
+            return True
         raise ValueError(f"{obs_class}: column {UID_COLUMN!r} missing; run assign_uids first")
     artifact = bare.select([UID_COLUMN])
     print(
@@ -130,6 +136,14 @@ def stamp_uid_on_feature_space_obs(
         )
 
     joined = db.open_table(obs_class).to_arrow().to_pandas()
+    if dry_run and UID_COLUMN not in joined.columns and JOIN_KEY in joined.columns:
+        # Same as the single-modality case: a dry-run assign_uids left nothing to
+        # stamp, so report what the real run would do.
+        for table_name in tables_by_space.values():
+            rows = db.open_table(table_name).count_rows()
+            print(f"  {table_name}: would stamp {rows} {UID_COLUMN}(s)")
+        print("(dry run — Lance not mutated)")
+        return True
     for column in (JOIN_KEY, UID_COLUMN):
         if column not in joined.columns:
             raise ValueError(
