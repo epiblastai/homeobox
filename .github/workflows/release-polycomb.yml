@@ -18,7 +18,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       # polycomb is pure Python; build a single universal wheel + sdist. uv
       # strips the workspace source so the published metadata pins the PyPI
-      # release of homeobox (homeobox>=0.2.8).
+      # release of homeobox (homeobox>=0.2.9).
       - run: uv build --package polycomb --out-dir dist
       - uses: actions/upload-artifact@v4
         with:
