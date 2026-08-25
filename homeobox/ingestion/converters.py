@@ -267,12 +267,29 @@ class FragmentConverter(ArrayConverter):
         )
 
 
-@register_converter("image_features", "protein_abundance")
+@register_converter("image_features", "protein_abundance", "image_tiles")
 class DenseConverter(ArrayConverter):
-    """Dense 2-D arrays -> any row-addressed dense layout (``DenseZarrPointer``)."""
+    """Dense arrays -> any row-addressed dense layout (``DenseZarrPointer``).
+
+    Axis 0 is the addressed axis and everything after it is one row, so the same
+    conversion serves a 2-D block of feature vectors and a 4-D stack of ``(C, Y,
+    X)`` image tiles: both are rows at consecutive positions. Only the rank
+    differs, and that is checked against the spec rather than assumed, so a 2-D
+    block cannot be written into a tile layout (or the reverse) unnoticed.
+    """
 
     input_type = np.ndarray
     pointer_type = DenseZarrPointer
+
+    def _check_rank(self, name: str, block: np.ndarray) -> None:
+        array_spec = self.spec.zarr_group_spec.layers.array_specs_by_name.get(name)
+        if array_spec is None:
+            return
+        error = array_spec.check_ndim(block.ndim)
+        if error is not None:
+            raise ValueError(
+                f"layer '{name}' of feature space '{self.spec.feature_space}' has {error}"
+            )
 
     def convert(self, layers: dict[str, np.ndarray]) -> dict[str, Any]:
         ref = next(iter(layers.values()))
@@ -282,6 +299,14 @@ class DenseConverter(ArrayConverter):
                 raise ValueError(
                     f"layer '{name}' has {block.shape[0]} rows; expected {n_rows} to match {ref!r}"
                 )
+            # Layers of one batch are alternative encodings of the same rows, so
+            # they must agree on the row shape the writer sizes its arrays from.
+            if block.shape[1:] != ref.shape[1:]:
+                raise ValueError(
+                    f"layer '{name}' has row shape {block.shape[1:]}; expected {ref.shape[1:]} "
+                    f"to match {ref!r}"
+                )
+            self._check_rank(name, block)
         return self._validated(
             {
                 "required_arrays": {},

@@ -190,27 +190,56 @@ class SparseZarrWriter(_BaseZarrWriter):
 
 
 class DenseZarrWriter(_BaseZarrWriter):
+    """Row-addressed dense layouts, of any rank.
+
+    Axis 0 is the addressed axis — the one ``DenseZarrPointer.position`` indexes
+    — and everything after it is the shape of a single row: a feature vector for
+    ``image_features``, a ``(C, Y, X)`` tile for ``image_tiles``. The writer
+    treats that trailing shape opaquely, so the same code serves both; only its
+    rank differs.
+    """
+
     pointer_type = DenseZarrPointer
 
     def _create_arrays(self, *, chunk_rows: int = 4096, shard_rows: int = 4096 * 8) -> None:
-        # Dense arrays need the feature count, which is only known once the
-        # first batch arrives, so creation is deferred to the first append.
+        # Dense arrays need the row shape and dtype, neither of which is known
+        # until the first batch arrives, so creation is deferred to the first
+        # append.
         self._chunk_rows = chunk_rows
         self._shard_rows = shard_rows
+        self._row_shape: tuple[int, ...] | None = None
         self._layer_arrays: dict[str, zarr.Array] | None = None
 
-    def _create_layer_arrays(self, n_features: int) -> None:
+    def _storage_dtype(self, name: str, incoming: np.dtype) -> np.dtype | None:
+        """Store the data's own dtype when the layout permits it.
+
+        Passing no dtype makes the spec fall back to its first allowed dtype,
+        which for a layout that accepts several is a silent widening: uint8
+        tiles would land in a float32 array at four times the size. Where the
+        incoming dtype is allowed it is therefore honoured, and where it is not
+        the spec's own default still applies, so the long-standing casts (a
+        float64 matrix into a float32 layer) behave as before.
+        """
+        array_spec = self._spec.zarr_group_spec.layers.array_specs_by_name.get(name)
+        if array_spec is None:
+            return None
+        return incoming if incoming in array_spec.allowed_dtypes else None
+
+    def _create_layer_arrays(self, layers: dict[str, np.ndarray]) -> None:
         zgs = self._spec.zarr_group_spec
+        row_shape = next(iter(layers.values())).shape[1:]
         self._layer_arrays = {
             name: zgs.create_array(
                 self._group,
                 name,
-                (self._shard_rows, n_features),
-                chunks=(self._chunk_rows, n_features),
-                shards=(self._shard_rows, n_features),
+                (self._shard_rows, *row_shape),
+                dtype=self._storage_dtype(name, layers[name].dtype),
+                chunks=(self._chunk_rows, *row_shape),
+                shards=(self._shard_rows, *row_shape),
             )
             for name in self._layer_names
         }
+        self._row_shape = row_shape
         self._capacity = self._shard_rows
 
     def _ensure_capacity(self, extra: int) -> None:
@@ -220,14 +249,22 @@ class DenseZarrWriter(_BaseZarrWriter):
         new_cap = max(self._capacity * 2, required)
         new_cap = ((new_cap + self._shard_rows - 1) // self._shard_rows) * self._shard_rows
         for arr in self._layer_arrays.values():
-            arr.resize((new_cap, arr.shape[1]))
+            arr.resize((new_cap, *arr.shape[1:]))
         self._capacity = new_cap
 
     def _append(self, converted: dict[str, Any]) -> dict[str, int]:
         layers = converted["layers"]
-        ref = next(iter(layers.values()))
+        row_shape = next(iter(layers.values())).shape[1:]
         if self._layer_arrays is None:
-            self._create_layer_arrays(ref.shape[1])
+            self._create_layer_arrays(layers)
+        elif row_shape != self._row_shape:
+            # The arrays were sized from the first batch, so a later batch with
+            # a different row shape cannot be appended -- and silently letting
+            # zarr broadcast or truncate it would corrupt the group.
+            raise ValueError(
+                f"batch rows have shape {row_shape}, but this zarr group was created for "
+                f"{self._row_shape}; every batch written to one group must share a row shape"
+            )
 
         n_rows = converted["n_rows"]
         offset = self._counters["rows"]
@@ -244,7 +281,7 @@ class DenseZarrWriter(_BaseZarrWriter):
         written = self._counters["rows"]
         if written < self._capacity:
             for arr in self._layer_arrays.values():
-                arr.resize((written, arr.shape[1]))
+                arr.resize((written, *arr.shape[1:]))
             self._capacity = written
 
 

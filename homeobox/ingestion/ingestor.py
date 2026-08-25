@@ -123,8 +123,10 @@ class Ingestor:
             Dataset record to register; ``dataset_record.zarr_group`` is the zarr
             group path.
         n_vars:
-            Number of features (matrix width). Only used to size dense-writer
-            chunks/shards; ignored for sparse layouts.
+            Number of values in one row — the matrix width, or for a feature
+            space whose row is an N-D block (``image_tiles``) the product of that
+            block's dimensions. Only used to size dense-writer chunks/shards;
+            ignored for sparse layouts.
         var_df:
             Pandas var table (one row per feature, positional order); its index
             is dropped before use. Required for feature spaces whose spec sets
@@ -135,8 +137,9 @@ class Ingestor:
         batch_size:
             Rows read and written per batch.
         chunk_shape, shard_shape:
-            Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
-            dense). Default to this module's constants.
+            Optional zarr chunk/shard shapes (1-element for sparse; for dense,
+            rows first — only that leading count is used, since a row is always
+            written whole). Default to this module's constants.
         obs_indices:
             Optional integer positions into ``obs_df``. If omitted, emitted
             pointer row ``i`` is assigned to ``obs_df`` row ``i`` and the reader
@@ -422,9 +425,13 @@ def _writer_create_kwargs(
 ) -> dict[str, int]:
     """Translate chunk/shard shapes into the new writer's create kwargs.
 
-    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers
-    take ``chunk_rows``/``shard_rows`` (the feature dimension is the full
-    width). Defaults match the rest of this module's constants.
+    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers take
+    ``chunk_rows``/``shard_rows``, the rest of the row being written whole. Only
+    the row count is taken from an explicit dense ``chunk_shape``/``shard_shape``
+    for that reason, and the defaults divide this module's element budgets by
+    ``n_vars`` — the elements in one row, whether that row is a feature vector or
+    a whole image tile — so a chunk holds a similar number of values whatever the
+    rank.
     """
     if spec.pointer_type is SparseZarrPointer:
         chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
@@ -439,22 +446,22 @@ def _writer_create_kwargs(
     if spec.pointer_type is DenseZarrPointer:
         if chunk_shape is None:
             chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
-        elif len(chunk_shape) == 2:
+        elif len(chunk_shape) >= 2:
             chunk_rows = chunk_shape[0]
         else:
             raise ValueError(
-                f"Dense feature space '{spec.feature_space}' requires a 2-element chunk_shape, "
-                f"got {chunk_shape}"
+                f"Dense feature space '{spec.feature_space}' requires a chunk_shape of at least "
+                f"2 elements (rows first), got {chunk_shape}"
             )
         if shard_shape is None:
             shard_rows = max(1, _SHARD_ELEMS // n_vars)
             shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
-        elif len(shard_shape) == 2:
+        elif len(shard_shape) >= 2:
             shard_rows = shard_shape[0]
         else:
             raise ValueError(
-                f"Dense feature space '{spec.feature_space}' requires a 2-element shard_shape, "
-                f"got {shard_shape}"
+                f"Dense feature space '{spec.feature_space}' requires a shard_shape of at least "
+                f"2 elements (rows first), got {shard_shape}"
             )
         return {"chunk_rows": chunk_rows, "shard_rows": shard_rows}
 
