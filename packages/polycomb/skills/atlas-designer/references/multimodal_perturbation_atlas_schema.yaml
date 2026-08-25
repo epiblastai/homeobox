@@ -243,6 +243,7 @@ feature_registry_tables:
         cross_reference: ENSEMBL
       - name: feature_id
         type: str
+        stable_uid: true
         doc: "The specific feature identity. For gene-level == ensembl_gene_id."
       - name: feature_type
         type: FeatureType

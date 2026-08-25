@@ -1,4 +1,10 @@
-"""SQL helpers for Lance table update predicates."""
+"""SQL helpers for Lance column expressions.
+
+Value-changing ops no longer build row predicates -- a predicated Lance write
+rewrites matched rows at the end of the table, which would permute the obs and
+feature-registry tables that ingestion aligns positionally. What remains here
+serves ``AddColumn``/``SetColumn`` expressions and type coercion.
+"""
 
 from __future__ import annotations
 
@@ -26,14 +32,6 @@ def format_sql_literal(value: Any, field_type: pa.DataType) -> str:
         return str(float(value))
 
     return f"'{sql_escape(str(value))}'"
-
-
-def build_where_clause(column: str, old_value: Any, field_type: pa.DataType) -> str:
-    """Build a SQL WHERE predicate for a find-and-replace operation."""
-    if old_value is None:
-        return f"{column} IS NULL"
-    literal = format_sql_literal(old_value, field_type)
-    return f"{column} = {literal}"
 
 
 def arrow_type_from_alias(alias: str) -> pa.DataType:
@@ -93,6 +91,11 @@ _SQL_CAST_KEYWORDS = {
 }
 
 
+# FIXME: temporal aliases have no entry, so a CastColumn to "timestamp[us]" or
+# "date64" falls through to the Arrow repr and emits `cast(col as timestamp[us])`,
+# which the SQL parser rejects. Retyping a datetime column (e.g. publication_date,
+# staged as an ISO string) currently has to go through add/drop/rename with an
+# explicit `arrow_cast(...)` expression instead.
 def arrow_alias_to_sql_cast(alias: str) -> str:
     """Translate a serialized Arrow type alias to a SQL CAST target keyword."""
     key = str(arrow_type_from_alias(alias))

@@ -38,6 +38,8 @@ python scripts/stage_lance_tables.py <collection_root> \
 
 If the script fails because the schema defines multiple obs tables, ask the user which class to use and re-run with `--obs-class`.
 
+Staging also stamps two columns on every OBS/VAR table: `obs_key` / `var_key` (the source file's own index — a barcode or feature ID, i.e. a label, not a position) and `row_position` (an integer, the row's 0-based index in the source file). `row_position` is the anchor that keeps the table aligned to its DATA file through curation; nothing downstream may modify it, and finalization drops it once the ingestion artifact is built.
+
 ### 2. Stage LIBRARY tables
 
 Collection-level `LIBRARY` files (in `collection.json` → `shared_files`) may be staged into `<collection_root>/lance_db/`. Read the schema and decide which CamelCase table each library file belongs to (e.g. `GeneticPerturbationSchema`). If more than one table is plausible, ask the user.

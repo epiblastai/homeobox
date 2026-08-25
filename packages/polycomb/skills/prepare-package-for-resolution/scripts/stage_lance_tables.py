@@ -29,11 +29,13 @@ import os
 import sys
 
 import lancedb
+import numpy as np
 import pandas as pd
 from homeobox.schema.ir import load_yaml_file
 from homeobox.schema.parser import parsed_result_from_model
 
 from polycomb.collection import Collection, FileTypeTag
+from polycomb.curation.types import ROW_POSITION_COLUMN
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"
@@ -144,7 +146,7 @@ def load_indexed_table(path: str, index_name: str) -> pd.DataFrame:
             if df.columns.empty:
                 raise ValueError(f"{path} has no columns")
             first_col = df.columns[0]
-            if first_col in ("obs_index", "var_index", "index"):
+            if first_col in ("obs_key", "var_key", "obs_index", "var_index", "index"):
                 return df.rename(columns={first_col: index_name})
         if index_name not in df.columns:
             return df.reset_index(names=index_name)
@@ -203,6 +205,18 @@ def obs_table_name(obs_class: str, feature_space: str, n_feature_spaces: int) ->
 
 
 def stage_table(db: lancedb.DBConnection, table_name: str, df: pd.DataFrame) -> None:
+    """Write one staged OBS/VAR table, stamping the positional anchor on it.
+
+    ``row_position`` records each row's 0-based index in the source file. OBS and
+    VAR tables are positionally aligned to their DATA file -- ingestion maps
+    matrix rows onto obs positions and matrix columns onto registry positions --
+    but Lance's write primitives do not all preserve physical row order, so the
+    alignment needs an anchor that survives curation rather than trusting order.
+    The applicator refuses to touch it and verifies it after every operation;
+    finalization drops it once the alignment artifact has been built.
+    """
+    df = df.copy()
+    df[ROW_POSITION_COLUMN] = np.arange(len(df), dtype="int64")
     db.create_table(table_name, data=df, mode="overwrite")
     print(f"  {table_name}: {len(df)} rows, {len(df.columns)} columns")
 
@@ -231,7 +245,7 @@ def stage_dataset_tables(
             print(f"  skip obs ({feature_space}): no OBS file")
             continue
 
-        obs_df = load_indexed_table(obs_path, "obs_index")
+        obs_df = load_indexed_table(obs_path, "obs_key")
         table_name = obs_table_name(obs_class, feature_space, len(feature_spaces))
         stage_table(db, table_name, obs_df)
 
@@ -250,7 +264,7 @@ def stage_dataset_tables(
             )
             continue
 
-        var_df = load_indexed_table(var_path, "var_index")
+        var_df = load_indexed_table(var_path, "var_key")
         stage_table(db, registry_class, var_df)
 
 

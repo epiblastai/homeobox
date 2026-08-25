@@ -32,9 +32,11 @@ All harmonization mutates staged Lance tables through audited transactions:
 | `RenameColumn` | Rename a raw column toward a schema field (`column` → `new_name`). |
 | `DropColumn` | Remove a non-schema column during finalization. |
 | `CastColumn` | Coerce a column to a schema type (`data_type` Arrow alias, e.g. `"string"`, `"int64"`). |
-| `MergeColumns` | Fill **many** columns at once from a keyed resolution batch (update-only `merge_insert`). The fan-out counterpart to `ReplaceValue`, for multi-field resolvers. See **references/auditable_curation.md**. |
+| `MergeColumns` | Fill **many** columns at once from a keyed resolution batch (update-only). The fan-out counterpart to `ReplaceValue`, for multi-field resolvers. See **references/auditable_curation.md**. |
 
 Two further **row-multiplying reshape ops** (`ExplodeColumn`, `WideToLong`) split one row into many — for combinatorial perturbations encoded in a single cell or across parallel column families. They are mechanical reshapes (a whole-table rewrite, their own transaction), not value resolutions; they live in **references/genetic_perturbation_resolution.md** where they are most often needed.
+
+**Row order is data.** Staged OBS and VAR tables are positionally aligned to their DATA file — ingestion maps matrix rows onto obs positions and matrix columns onto feature-registry positions. Staging stamps a `row_position` anchor on them to make that alignment checkable, and the applicator verifies it after every op, failing the transaction rather than committing a permutation. Two consequences for you: **never** name `row_position` in an op (it is rejected), and the row-multiplying reshape ops are rejected outright on these tables — reshape the raw file before staging instead.
 
 Every op requires `column` and `tool`. Also set provenance when you have it: `reason`, `confidence`, `source`, `alternatives`, `input_value`. Ops in a transaction run **in order**, so later ops can depend on earlier ones (e.g. `AddColumn` then `SetColumn` on that column). Validation runs up front against the simulated post-op schema; nothing is written if it fails.
 

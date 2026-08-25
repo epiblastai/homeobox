@@ -68,7 +68,7 @@ ops = report.propose_column_replacements(
 
 ## Fanning one resolution out to many columns (`MergeColumns`)
 
-`propose_column_replacements` rewrites a **single** column. When one resolver call returns many correlated fields that each belong in a *different* column — a guide RNA's coordinates, strand, intended gene, and context; a coordinate annotation's overlapping gene and context — use `propose_keyed_columns` to build a single `MergeColumns` op instead. It keys on the column that was resolved and updates the mapped target columns where the key matches (an update-only `merge_insert`; it never inserts or deletes rows, but it **does reorder** them):
+`propose_column_replacements` rewrites a **single** column. When one resolver call returns many correlated fields that each belong in a *different* column — a guide RNA's coordinates, strand, intended gene, and context; a coordinate annotation's overlapping gene and context — use `propose_keyed_columns` to build a single `MergeColumns` op instead. It keys on the column that was resolved and updates the mapped target columns where the key matches (update-only: it never inserts or deletes rows, and it **preserves row order** — obs and feature-registry tables are positionally aligned to their DATA file, so the applicator applies the merge through Arrow rather than Lance's reordering `merge_insert`):
 
 ```python
 distinct = list(dict.fromkeys(guide_seqs))  # values sent to the resolver

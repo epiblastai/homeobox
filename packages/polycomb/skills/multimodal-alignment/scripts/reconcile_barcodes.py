@@ -10,7 +10,7 @@ Expects the per-dataset ``lance_db/`` produced by ``prepare-package-for-resoluti
 Obs tables are named after the obs schema class, suffixed with ``_<feature_space>`` when
 the dataset has more than one feature space (mirrors ``stage_lance_tables``).
 
-The script reads ``obs_index`` from each obs table, picks the normalization that
+The script reads ``obs_key`` from each obs table, picks the normalization that
 maximizes cross-modality overlap, and writes ``multimodal_barcode`` via audited
 ``CurationApplicator`` transactions (``AddColumn`` + ``MergeColumns``).
 
@@ -40,7 +40,7 @@ from polycomb import (
     default_audit_db_path,
 )
 
-OBS_INDEX_COLUMN = "obs_index"
+OBS_KEY_COLUMN = "obs_key"
 MULTIMODAL_BARCODE_COLUMN = "multimodal_barcode"
 TOOL = "reconcile_barcodes"
 
@@ -81,17 +81,17 @@ def obs_tables_by_feature_space(lance_path: str, obs_class: str) -> dict[str, st
     )
 
 
-def read_obs_index_values(lance_path: str, table_name: str) -> list[str]:
-    """Distinct non-null ``obs_index`` values in first-seen order."""
+def read_obs_key_values(lance_path: str, table_name: str) -> list[str]:
+    """Distinct non-null ``obs_key`` values in first-seen order."""
     table = lancedb.connect(lance_path).open_table(table_name)
     arrow = table.to_arrow()
-    if OBS_INDEX_COLUMN not in arrow.column_names:
+    if OBS_KEY_COLUMN not in arrow.column_names:
         raise ValueError(
-            f"Column {OBS_INDEX_COLUMN!r} not in {table_name!r}. "
+            f"Column {OBS_KEY_COLUMN!r} not in {table_name!r}. "
             f"Available: {list(arrow.column_names)}"
         )
     seen: dict[str, None] = {}
-    for value in arrow.column(OBS_INDEX_COLUMN).to_pylist():
+    for value in arrow.column(OBS_KEY_COLUMN).to_pylist():
         if value is None:
             continue
         text = str(value)
@@ -145,7 +145,7 @@ def _merge_rows(
 ) -> list[dict[str, str]]:
     return [
         {
-            OBS_INDEX_COLUMN: bc,
+            OBS_KEY_COLUMN: bc,
             MULTIMODAL_BARCODE_COLUMN: barcode_map.get(bc, bc),
         }
         for bc in obs_values
@@ -179,7 +179,7 @@ def apply_multimodal_barcode(
     changes.append(
         MergeColumns(
             column=MULTIMODAL_BARCODE_COLUMN,
-            key_column=OBS_INDEX_COLUMN,
+            key_column=OBS_KEY_COLUMN,
             rows=rows,
             tool=TOOL,
             reason=f"map raw barcodes via {norm_name} normalization",
@@ -220,7 +220,7 @@ def reconcile_barcodes(
     barcode_sets: dict[str, set[str]] = {}
     obs_values_by_space: dict[str, list[str]] = {}
     for feature_space, table_name in tables_by_space.items():
-        obs_values = read_obs_index_values(lance_path, table_name)
+        obs_values = read_obs_key_values(lance_path, table_name)
         barcode_sets[feature_space] = set(obs_values)
         obs_values_by_space[feature_space] = obs_values
         print(f"  {feature_space}: {len(obs_values)} barcodes ({table_name})")

@@ -8,6 +8,13 @@ from enum import StrEnum
 from typing import Any, ClassVar
 from uuid import uuid4
 
+# Positional anchor written by staging on every table that is bound to a DATA
+# file axis (per-feature-space obs, single-modality obs, feature registries).
+# It holds the row's 0-based index in the source file, and ingestion's positional
+# alignment depends on it surviving curation untouched. No curation op may name
+# it; see CurationApplicator._validate and preserves_row_order below.
+ROW_POSITION_COLUMN = "row_position"
+
 
 class TransactionStatus(StrEnum):
     """Lifecycle of a curation transaction in the audit store."""
@@ -54,6 +61,11 @@ class CurationOp:
 
     # Class-level discriminator; set by each subclass.
     kind: ClassVar[OpKind]
+    # Whether this op leaves physical row order untouched. True for every op
+    # that edits values or columns; False only for the row-multiplying reshapes
+    # below. The applicator asserts this after each op rather than trusting it,
+    # since the guarantee ultimately comes from Lance's write primitives.
+    preserves_row_order: ClassVar[bool] = True
 
     # Target column and justification metadata (shared by all ops).
     column: str
@@ -103,6 +115,11 @@ class AddColumn(CurationOp):
     - ``value``: a constant applied to all rows.
     - ``value_sql``: a SQL expression evaluated per row (may reference columns).
     - neither, with ``data_type`` set: a null-initialized column of that type.
+
+    A ``value_sql`` expression that evaluates to a list or struct must declare its
+    ``data_type`` (e.g. ``"list<string>"``). Lance cannot materialize a nested column
+    through the SQL path, so without the declared type the column is written all-null
+    and no error is raised.
     """
 
     kind: ClassVar[OpKind] = OpKind.ADD_COLUMN
@@ -158,9 +175,11 @@ class MergeColumns(CurationOp):
     per-key mapping is preserved in ``rows``. ``column`` is required by the base
     op and used only as an audit anchor; set it to a representative target column.
 
-    Note: the underlying merge reorders rows (matched rows are rewritten at the
-    end). It is row-count preserving and reversible via the Lance version, but
-    do not rely on row order across it.
+    Row order and row count are both preserved. The applicator applies this
+    through Arrow rather than Lance's ``merge_insert``, which would rewrite
+    matched rows at the end of the table and group duplicate keys together; obs
+    and feature-registry tables are positionally aligned to their DATA file, so
+    that reordering would silently break ingestion.
     """
 
     kind: ClassVar[OpKind] = OpKind.MERGE_COLUMNS
@@ -196,6 +215,7 @@ class ExplodeColumn(CurationOp):
     """
 
     kind: ClassVar[OpKind] = OpKind.EXPLODE_COLUMN
+    preserves_row_order: ClassVar[bool] = False
 
     # Regex delimiter the cell is split on (e.g. r"\s*[+&;|,]\s*").
     delimiter: str
@@ -234,6 +254,7 @@ class WideToLong(CurationOp):
     """
 
     kind: ClassVar[OpKind] = OpKind.WIDE_TO_LONG
+    preserves_row_order: ClassVar[bool] = False
 
     # Output column -> source columns (one per slot), aligned with slot_labels.
     groups: dict[str, list[str]]

@@ -40,33 +40,38 @@ from join_feature_space_obs import (
 )
 
 from polycomb.collection import Collection
+from polycomb.curation.types import ROW_POSITION_COLUMN
 from polycomb.util import is_null
 
 UID_COLUMN = "uid"
-OBS_INDEX_COLUMN = "obs_index"
 
 
 def restore_data_order(table: pa.Table, label: str) -> pa.Table:
-    """Return ``table`` in staged DATA row order.
+    """Return ``table`` in staged DATA row order, keyed on ``row_position``.
 
     The artifact's whole purpose is that its ``uid`` column is positionally
-    aligned with the DATA file, but physical order is not preserved by every
-    curation op — ``MergeColumns`` reorders rows as a side effect of its
-    ``merge_insert``. Staging writes the positional ``obs_index`` column for
-    exactly this reason, so sort on it rather than trusting whatever order the
-    table happens to be in.
+    aligned with the DATA file. ``row_position`` is the anchor staging writes for
+    exactly this: an integer holding each row's index in the source OBS file. The
+    curation applicator refuses to modify it and verifies it after every
+    operation, so in a healthy pipeline this sort is a no-op — it is kept as a
+    second line of defence, not as the primary guarantee.
+
+    A missing anchor is a hard error. Sorting on anything else cannot recover
+    DATA order (a barcode sorts alphabetically, not positionally), and silently
+    trusting physical order is what let earlier reordering bugs through.
     """
-    if OBS_INDEX_COLUMN not in table.column_names:
-        print(
-            f"  warning: {label} has no {OBS_INDEX_COLUMN!r} column; "
-            "assuming its physical order is still DATA order"
+    if ROW_POSITION_COLUMN not in table.column_names:
+        raise ValueError(
+            f"{label}: no {ROW_POSITION_COLUMN!r} column, so DATA row order cannot be "
+            f"verified. This table must be re-staged with stage_lance_tables.py — its "
+            f"uid artifact indexes matrix rows and cannot be built on assumed order."
         )
-        return table
-    positions = table.column(OBS_INDEX_COLUMN).to_pylist()
+    positions = table.column(ROW_POSITION_COLUMN).to_pylist()
     if positions == sorted(positions):
         return table
-    print(f"  {label}: restoring DATA order from {OBS_INDEX_COLUMN}")
-    return table.sort_by(OBS_INDEX_COLUMN)
+    # Reachable only if something bypassed the applicator's guarantees.
+    print(f"  {label}: restoring DATA order from {ROW_POSITION_COLUMN}")
+    return table.sort_by(ROW_POSITION_COLUMN)
 
 
 def _barcode_to_uid(joined: pd.DataFrame, obs_class: str) -> dict[object, str]:
@@ -208,14 +213,18 @@ def stamp_uid_on_feature_space_obs(
                 f"{obs_class!r} for {JOIN_KEY!r}; examples: {sample}"
             )
 
-        df[UID_COLUMN] = uids
         print(f"  {table_name}: stamped {len(uids)} {UID_COLUMN}(s)")
 
         if dry_run:
             continue
 
-        arrow = pa.Table.from_pandas(df, preserve_index=False)
-        db.create_table(table_name, data=arrow, mode="overwrite")
+        # The artifact carries uid only, matching the single-modality path: these
+        # tables exist purely as ingestion's DATA-row lookup, and every other
+        # column has already been coalesced into the joined obs table. Writing
+        # just the column keeps the artifact off the pandas round-trip, which
+        # retypes int64-with-nulls to double.
+        artifact = pa.table({UID_COLUMN: pa.array(uids, type=pa.string())})
+        db.create_table(table_name, data=artifact, mode="overwrite")
 
     if dry_run:
         print("(dry run — Lance not mutated)")
