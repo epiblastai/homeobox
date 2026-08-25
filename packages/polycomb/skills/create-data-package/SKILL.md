@@ -125,6 +125,8 @@ Depending on the public source of the data, you may use the following scripts as
 | Script | Usage | Purpose |
 |--------|-------|---------|
 | `scripts/write_publication_json.py` | `python scripts/write_publication_json.py <data_dir> --pmid 40259084` | Download a publication archive from pubmed, parse it, and save it as json |
+| `scripts/list_figshare_files.py` | `python scripts/list_figshare_files.py 27261219 --write-metadata <data_dir>` | List a figshare article's files and save its record metadata |
+| `scripts/download_figshare_file.py` | `python scripts/download_figshare_file.py 64650261 <data_dir> --article-id 27261219` | Download a figshare file by id, resumable, with size/md5 verification |
 
 ## References
 
@@ -133,3 +135,4 @@ More instructions for specific databases may be found in `references`:
 | File | Purpose |
 |------|---------|
 | `references/geo_instructions.md` | Additional scripts and instructions for working with GEO accession records (GSE or GSM) |
+| `references/figshare_instructions.md` | How to resolve figshare article/file ids and download from figshare portals |
