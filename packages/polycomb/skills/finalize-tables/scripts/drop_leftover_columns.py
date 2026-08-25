@@ -66,7 +66,11 @@ def drop_leftovers_for_table(
         ref.lance_db_path, audit_db_path=default_audit_db_path(ref.lance_db_path)
     )
     try:
-        result = applicator.apply(txn, dry_run=dry_run)
+        # The only caller entitled to drop reserved columns: row_position has
+        # served its purpose once stamp_uid_on_feature_space_obs has built the
+        # ingestion artifact, and it is not a schema field, so it is a leftover
+        # like any other from here on.
+        result = applicator.apply(txn, dry_run=dry_run, allow_reserved=True)
         if result.error:
             raise RuntimeError(f"{ref.table_name}: {result.error}")
     finally:

@@ -7,7 +7,7 @@ description: Use after prepare-package-for-resolution on multimodal datasets. Re
 
 Multimodal datasets (CITE-seq, NEAT-seq, Multiome, …) stage one obs table per feature space. The same physical cell can appear under different barcode string formats across modalities — GEX barcodes with a `-1` well suffix, ADT exports without it, ATAC fragments with a lane prefix like `lane1#ACGTACGT-1`. This skill picks the normalization that maximizes cross-modality overlap and writes a shared **`multimodal_barcode`** on every obs row so downstream steps can join cells across feature spaces.
 
-Run this **after** `prepare-package-for-resolution` has staged obs tables into each dataset's `lance_db/`. It does not read raw matrix or fragment files; barcodes come from the staged **`obs_index`** column.
+Run this **after** `prepare-package-for-resolution` has staged obs tables into each dataset's `lance_db/`. It does not read raw matrix or fragment files; barcodes come from the staged **`obs_key`** column.
 
 ## Input
 
@@ -31,7 +31,7 @@ All mutations go through audited transactions — **never edit Lance directly**.
 Each obs table gets one transaction:
 
 1. **`AddColumn`** — null-initialize `multimodal_barcode` (`data_type="string"`) when the column is not already present.
-2. **`MergeColumns`** — keyed on `obs_index`, fill `multimodal_barcode` from the reconciled raw→canonical mapping.
+2. **`MergeColumns`** — keyed on `obs_key`, fill `multimodal_barcode` from the reconciled raw→canonical mapping.
 
 Re-runs are safe: the script skips `AddColumn` when the column exists and re-applies the keyed merge.
 
@@ -70,13 +70,13 @@ The script picks whichever yields the largest **minimum** pairwise overlap acros
 
 ### Interpreting output
 
-Getting a good match may take iteration. If overlap is low, re-check feature-space pairing and whether `obs_index` values need correction upstream, then re-run the script. The goal is **high cross-modality overlap** before you apply — dry-run, adjust, and re-run until the statistics look right. Only after that fails to converge should you reach for a custom normalization script.
+Getting a good match may take iteration. If overlap is low, re-check feature-space pairing and whether `obs_key` values need correction upstream, then re-run the script. The goal is **high cross-modality overlap** before you apply — dry-run, adjust, and re-run until the statistics look right. Only after that fails to converge should you reach for a custom normalization script.
 
 - **`common barcodes`** — cells present in every modality after normalization.
 - **`unmatched`** per feature space — barcodes unique to that modality after normalization.
 - **`WARNING: <50% overlap`** — likely a file-pairing or modality-mismatch problem; investigate before continuing.
 
-Unmatched cells still receive a `multimodal_barcode` (the normalized form of their raw `obs_index`, or the raw value when no mapping applies). They simply will not join across modalities.
+Unmatched cells still receive a `multimodal_barcode` (the normalized form of their raw `obs_key`, or the raw value when no mapping applies). They simply will not join across modalities.
 
 ## Scripts
 

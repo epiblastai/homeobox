@@ -27,14 +27,17 @@ import lancedb
 import pandas as pd
 import pyarrow as pa
 
+from polycomb.curation.types import ROW_POSITION_COLUMN
 from polycomb.util import is_null
 
 COLLECTION_MANIFEST = "collection.json"
 LANCE_DB_DIR = "lance_db"
 JOIN_KEY = "multimodal_barcode"
-OBS_INDEX_COLUMN = "obs_index"
-# Per-modality raw barcodes differ by design; the joined table uses multimodal_barcode.
-_SKIP_COALESCE = frozenset({OBS_INDEX_COLUMN})
+OBS_KEY_COLUMN = "obs_key"
+# Per-modality raw barcodes differ by design; the joined table uses
+# multimodal_barcode. row_position is per-modality too, and the joined table is
+# keyed rather than positional, so neither survives the join.
+_SKIP_COALESCE = frozenset({OBS_KEY_COLUMN, ROW_POSITION_COLUMN})
 
 
 def assert_unique_multimodal_barcode(df: pd.DataFrame, table_name: str) -> None:
@@ -113,8 +116,9 @@ def merge_obs_tables(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
             left[column] = right[column]
         for column in sorted(overlap):
             left[column] = _coalesce_overlap(left[column], right[column], column, feature_space)
-        if OBS_INDEX_COLUMN in left.columns:
-            left = left.drop(columns=[OBS_INDEX_COLUMN])
+        stale = [c for c in (OBS_KEY_COLUMN, ROW_POSITION_COLUMN) if c in left.columns]
+        if stale:
+            left = left.drop(columns=stale)
 
         merged = left
         print(
@@ -123,7 +127,11 @@ def merge_obs_tables(frames: dict[str, pd.DataFrame]) -> pd.DataFrame:
         )
 
     merged = merged.reset_index()
-    merged[OBS_INDEX_COLUMN] = merged[JOIN_KEY].map(lambda v: None if is_null(v) else str(v))
+    # The joined table is keyed, not positional: its row order comes from a sorted
+    # index union and corresponds to no DATA file. It therefore carries obs_key
+    # (the canonical barcode) and deliberately no row_position -- ingestion looks
+    # its rows up by uid, via the per-feature-space artifact.
+    merged[OBS_KEY_COLUMN] = merged[JOIN_KEY].map(lambda v: None if is_null(v) else str(v))
     return merged
 
 

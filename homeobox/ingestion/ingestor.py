@@ -446,7 +446,12 @@ def _build_row_arrow_table(
     # Add obs columns
     for col in schema_fields:
         if col in obs_df.columns:
-            columns[col] = pa.array(obs_df[col].values, type=arrow_schema.field(col).type)
+            # from_pandas, and the Series rather than its ``.values``: pandas has
+            # no null integer, so an all-null int64 field arrives as float64 NaN
+            # and only the pandas-aware path reads those back as nulls.
+            columns[col] = pa.array(
+                obs_df[col], type=arrow_schema.field(col).type, from_pandas=True
+            )
     for col in schema_fields:
         if col not in columns:
             columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)

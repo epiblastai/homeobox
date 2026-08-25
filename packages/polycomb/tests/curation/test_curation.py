@@ -24,7 +24,7 @@ from polycomb.curation import (
     TransactionStatus,
     default_audit_db_path,
 )
-from polycomb.curation.sql import arrow_type_from_alias, build_where_clause
+from polycomb.curation.sql import arrow_type_from_alias
 from polycomb.registry import RESOLVER_TOOLS, ResolverTool
 from polycomb.types import GeneResolution, ResolutionReport
 
@@ -102,10 +102,16 @@ def test_propose_dedupes_shared_old_value():
 def _load_apply_resolution_pass_module():
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location(
-        "apply_resolution_pass",
-        "skills/schema-harmonization/scripts/apply_resolution_pass.py",
+    # Resolve from this file, not the working directory: the skills tree moved
+    # under packages/polycomb/ and a cwd-relative path silently stopped resolving.
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "skills"
+        / "schema-harmonization"
+        / "scripts"
+        / "apply_resolution_pass.py"
     )
+    spec = importlib.util.spec_from_file_location("apply_resolution_pass", script)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -268,11 +274,6 @@ def test_apply_null_old_value(atlas_dirs):
     assert symbols.count("UNKNOWN") == 1
     assert symbols.count("A") == 1
     assert symbols.count("B") == 1
-
-
-def test_build_where_clause_null():
-    field_type = pa.string()
-    assert build_where_clause("gene_symbol", None, field_type) == "gene_symbol IS NULL"
 
 
 def test_dry_run_does_not_mutate_lance(atlas_dirs):

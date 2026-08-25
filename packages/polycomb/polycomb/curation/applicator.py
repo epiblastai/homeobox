@@ -9,16 +9,17 @@ from typing import Any
 import lancedb
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from polycomb.curation.audit import CurationAuditStore, default_audit_db_path
 from polycomb.curation.sql import (
     arrow_alias_to_sql_cast,
     arrow_type_from_alias,
     build_add_column_expr,
-    build_where_clause,
     infer_arrow_type,
 )
 from polycomb.curation.types import (
+    ROW_POSITION_COLUMN,
     AddColumn,
     AppliedChange,
     ApplyResult,
@@ -39,6 +40,13 @@ from polycomb.curation.types import (
 # Ops that change the table's row count via a whole-table rewrite. After one
 # runs, the cached table handle and field types are stale and must be refreshed.
 _RESHAPE_KINDS = frozenset({OpKind.EXPLODE_COLUMN, OpKind.WIDE_TO_LONG})
+
+# Columns curation may never touch. ``row_position`` is the positional anchor
+# staging writes onto tables aligned to a DATA file axis; ingestion's row
+# alignment reads it, so an op that renamed, retyped, or refilled it would break
+# that alignment as surely as a reorder. Finalization drops it once the
+# alignment artifact has been built -- that one path passes allow_reserved.
+_RESERVED_COLUMNS = frozenset({ROW_POSITION_COLUMN})
 
 
 class CurationApplicator:
@@ -68,11 +76,19 @@ class CurationApplicator:
         *,
         dry_run: bool = False,
         allowed_columns: set[str] | None = None,
+        allow_reserved: bool = False,
     ) -> ApplyResult:
+        """Apply a transaction's ops in order, validating all of them up front.
+
+        ``allow_reserved`` lifts the :data:`_RESERVED_COLUMNS` guard for the one
+        caller entitled to it -- finalization's leftover sweep, which drops
+        ``row_position`` after the ingestion alignment artifact has been built.
+        Nothing else should pass it.
+        """
         table_name = transaction.table_name
 
         table = self._db.open_table(table_name)
-        self._validate(transaction, table, allowed_columns)
+        self._validate(transaction, table, allowed_columns, allow_reserved=allow_reserved)
 
         lance_version_before = table.version
         transaction.status = TransactionStatus.PENDING
@@ -110,14 +126,27 @@ class CurationApplicator:
 
         try:
             for change_id, change in zip(change_ids, transaction.changes, strict=True):
+                # An op that is allowed to operate on the anchor itself (only
+                # finalization's leftover sweep, dropping it) cannot be checked
+                # against it.
+                touches_anchor = bool(set(self._named_columns(change)) & _RESERVED_COLUMNS)
+                anchor_before = (
+                    self._row_anchor(table)
+                    if change.preserves_row_order and not touches_anchor
+                    else None
+                )
                 rows_updated, version = self._execute(change, table, table_name, field_types)
                 if change.kind in _RESHAPE_KINDS:
                     # A reshape rewrites the table; the old handle is stale.
                     table = self._db.open_table(table_name)
-                if change.kind not in (OpKind.REPLACE_VALUE, OpKind.SET_COLUMN):
-                    # Schema-altering ops change columns/types; refresh.
+                if change.kind is not OpKind.SET_COLUMN:
+                    # Schema-altering ops change columns/types, and the value ops
+                    # that rewrite through Arrow to keep row order (ReplaceValue,
+                    # MergeColumns) replace the table; either way the handle is stale.
                     table = self._db.open_table(table_name)
                     field_types = self._field_types(table)
+                if anchor_before is not None:
+                    self._assert_row_order(table_name, change, anchor_before, table)
                 self._audit.record_applied_change(
                     change_id,
                     rows_updated=rows_updated,
@@ -155,23 +184,110 @@ class CurationApplicator:
         schema = table.schema
         return {name: schema.field(name).type for name in schema.names}
 
+    @staticmethod
+    def _row_anchor(table: Any) -> list[Any] | None:
+        """The table's ``row_position`` column, or None when it carries none.
+
+        Tables not bound to a DATA file axis (the joined multimodal obs table,
+        library tables, registry-key targets) have no anchor and are not checked.
+        """
+        if ROW_POSITION_COLUMN not in table.schema.names:
+            return None
+        return table.to_arrow().column(ROW_POSITION_COLUMN).to_pylist()
+
+    @classmethod
+    def _assert_row_order(
+        cls, table_name: str, change: CurationOp, before: list[Any], table: Any
+    ) -> None:
+        """Fail the transaction if an order-preserving op moved any row.
+
+        The op *declares* ``preserves_row_order``, but the guarantee actually
+        comes from Lance's write primitives, which differ per op and can change
+        between releases. Checking is one int64 column read; the alternative is
+        a permutation that no downstream step can detect.
+        """
+        after = cls._row_anchor(table)
+        if after == before:
+            return
+        if after is None:
+            raise RuntimeError(
+                f"{table_name}: operation {change.kind.value} on column "
+                f"{change.column!r} removed the {ROW_POSITION_COLUMN!r} anchor."
+            )
+        if len(after) != len(before):
+            detail = f"row count changed from {len(before)} to {len(after)}"
+        else:
+            first = next(
+                (i for i, (a, b) in enumerate(zip(before, after, strict=True)) if a != b),
+                None,
+            )
+            detail = f"row order changed (first difference at index {first})"
+        raise RuntimeError(
+            f"{table_name}: operation {change.kind.value} on column {change.column!r} "
+            f"must preserve row order but {detail}. The table is positionally "
+            f"aligned to its DATA file; the transaction has been failed rather "
+            f"than committing a permutation."
+        )
+
+    @staticmethod
+    def _named_columns(change: CurationOp) -> list[str]:
+        """Every column name an op references, whatever role it plays in the op."""
+        names = [change.column]
+        if isinstance(change, RenameColumn):
+            names.append(change.new_name)
+        elif isinstance(change, MergeColumns):
+            names.append(change.key_column)
+            names.extend(c for row in change.rows for c in row)
+        elif isinstance(change, ExplodeColumn):
+            if change.position_column is not None:
+                names.append(change.position_column)
+        elif isinstance(change, WideToLong):
+            names.extend(change.groups)
+            names.extend(c for srcs in change.groups.values() for c in srcs)
+            if change.slot_label_column is not None:
+                names.append(change.slot_label_column)
+        return names
+
     def _validate(
         self,
         transaction: CurationTransaction,
         table: Any,
         allowed_columns: set[str] | None,
+        *,
+        allow_reserved: bool = False,
     ) -> None:
         """Check every op up front against the (simulated) evolving schema.
 
         Walking changes in order lets intra-transaction dependencies validate
         correctly (e.g. add a column then set it). Nothing is recorded or
         mutated if validation fails. Drops are exempt from ``allowed_columns``
-        since finalization must be free to remove any non-schema column.
+        since finalization must be free to remove any non-schema column -- but
+        not from the reserved-column guard, which only ``allow_reserved`` lifts.
         """
         columns = set(self._field_types(table))
+        positional = ROW_POSITION_COLUMN in columns
 
         for change in transaction.changes:
             kind = change.kind
+
+            if not allow_reserved:
+                reserved = sorted(set(self._named_columns(change)) & _RESERVED_COLUMNS)
+                if reserved:
+                    raise ValueError(
+                        f"Operation {kind.value} references reserved column(s) {reserved} "
+                        f"on table '{transaction.table_name}'. {ROW_POSITION_COLUMN!r} is "
+                        f"the positional anchor ingestion aligns DATA rows on and is "
+                        f"maintained by staging, not by curation."
+                    )
+
+            if positional and not change.preserves_row_order:
+                raise ValueError(
+                    f"Operation {kind.value} multiplies rows, which breaks the "
+                    f"correspondence between table '{transaction.table_name}' and its "
+                    f"DATA file (it carries {ROW_POSITION_COLUMN!r}). Reshape the raw "
+                    f"table before staging, or run the reshape on a table that is not "
+                    f"positionally aligned."
+                )
 
             if kind is OpKind.EXPLODE_COLUMN:
                 if change.column not in columns:
@@ -340,14 +456,9 @@ class CurationApplicator:
     ) -> tuple[int | None, int | None]:
         """Run one op against the Lance table; return (rows_updated, version)."""
         if isinstance(change, ReplaceValue):
-            where = build_where_clause(
-                change.column,
-                change.old_value,
-                field_types[change.column],
+            return self._replace_value_rewrite(
+                table_name, table, change, field_types[change.column]
             )
-            value = self._coerce_update_value(change.new_value, field_types[change.column])
-            result = table.update(where=where, values={change.column: value})
-            return result.rows_updated, result.version
 
         if isinstance(change, SetColumn):
             if change.value_sql is not None:
@@ -409,10 +520,7 @@ class CurationApplicator:
             return None, self._version_after(result, table)
 
         if isinstance(change, MergeColumns):
-            source = self._merge_source_table(change, table.schema)
-            result = table.merge_insert(change.key_column).when_matched_update_all().execute(source)
-            rows_updated = getattr(result, "num_updated_rows", None)
-            return rows_updated, self._version_after(result, table)
+            return self._merge_columns_rewrite(table_name, table, change)
 
         if isinstance(change, ExplodeColumn):
             new_df = self._explode_frame(change, table.to_pandas())
@@ -424,20 +532,48 @@ class CurationApplicator:
 
         raise ValueError(f"Unsupported operation: {type(change).__name__}")
 
-    @staticmethod
-    def _merge_source_table(change: MergeColumns, target_schema: pa.Schema) -> pa.Table:
-        """Build the merge source, casting columns to their target Lance types.
+    def _merge_columns_rewrite(
+        self, table_name: str, table: Any, change: MergeColumns
+    ) -> tuple[int, int | None]:
+        """Fill many columns from a keyed batch, keeping row order.
 
-        ``rows`` carries Python scalars; casting to the target schema's field
-        types makes coordinates land as ints, strands as strings, etc., and
-        keeps null-only columns typed rather than Arrow's ``null`` placeholder.
+        Lance's ``merge_insert`` would rewrite matched rows at the end of the
+        table and group duplicate keys together, so a fan-out resolution pass
+        over a feature registry would scramble the feature axis ingestion aligns
+        on. Locating each table row in the source batch and filling in place
+        keeps every row where it was, and fills *all* rows sharing a key rather
+        than collapsing them.
+
+        ``rows`` carries Python scalars; building each incoming array with the
+        target field's type makes coordinates land as ints, strands as strings,
+        and keeps all-null columns typed rather than Arrow's ``null`` placeholder.
         """
-        source = pa.Table.from_pylist(change.rows)
-        fields = [
-            target_schema.field(name) if name in target_schema.names else source.schema.field(name)
-            for name in source.column_names
-        ]
-        return source.cast(pa.schema(fields))
+        arrow = table.to_arrow()
+        keys = pa.array(
+            [row[change.key_column] for row in change.rows],
+            type=arrow.schema.field(change.key_column).type,
+        )
+        # Position of each table row within the source batch; null when the row's
+        # key is absent, which leaves that row untouched (update-only semantics).
+        index = pc.index_in(arrow.column(change.key_column), value_set=keys)
+        matched_mask = pc.is_valid(index)
+        matched = pc.sum(pc.cast(matched_mask, pa.int64())).as_py() or 0
+        if not matched:
+            return 0, getattr(table, "version", None)
+
+        # take() needs a null-free index; the mask decides which results survive.
+        gather = pc.fill_null(index, 0)
+        targets = [c for c in self._merge_columns_targets(change) if c != change.key_column]
+        for target in targets:
+            position = arrow.schema.get_field_index(target)
+            field = arrow.schema.field(position)
+            incoming = pa.array([row.get(target) for row in change.rows], type=field.type)
+            arrow = arrow.set_column(
+                position,
+                field,
+                pc.if_else(matched_mask, incoming.take(gather), arrow.column(target)),
+            )
+        return matched, self._overwrite_table(table_name, arrow)
 
     @staticmethod
     def _explode_frame(change: ExplodeColumn, df: pd.DataFrame) -> pd.DataFrame:
@@ -519,14 +655,44 @@ class CurationApplicator:
     def _append_column_values(
         self, table_name: str, arrow: pa.Table, field: pa.Field, values: Any
     ) -> tuple[None, int | None]:
+        return None, self._overwrite_table(table_name, arrow.append_column(field, values))
+
+    def _replace_value_rewrite(
+        self, table_name: str, table: Any, change: ReplaceValue, field_type: pa.DataType
+    ) -> tuple[int, int | None]:
+        """Find-and-replace one value, keeping row order.
+
+        Lance's predicated ``update`` rewrites matched rows at the end of the table, so
+        running a resolution pass over an obs or var table would silently permute it and
+        break the positional alignment ingestion relies on. Rewriting through Arrow keeps
+        every row where it was.
+
+        TODO: this rewrites the whole table once per op, which is fine for feature
+        registries and library tables but expensive for a multi-million-row obs table
+        with many replacements. Batch the ReplaceValue ops of a transaction into one
+        rewrite, keeping the per-op matched counts.
+        """
+        arrow = table.to_arrow()
+        index = arrow.schema.get_field_index(change.column)
+        column = arrow.column(change.column)
+
+        if change.old_value is None:
+            mask = pc.is_null(column)
+        else:
+            mask = pc.fill_null(pc.equal(column, pa.scalar(change.old_value, field_type)), False)
+        matched = pc.sum(pc.cast(mask, pa.int64())).as_py() or 0
+        if not matched:
+            return 0, getattr(table, "version", None)
+
+        replaced = pc.if_else(mask, pa.scalar(change.new_value, field_type), column)
+        arrow = arrow.set_column(index, arrow.schema.field(index), replaced)
+        return matched, self._overwrite_table(table_name, arrow)
+
+    def _overwrite_table(self, table_name: str, arrow: pa.Table) -> int | None:
         db = lancedb.connect(self.lance_db_path)
-        new_table = db.create_table(
-            table_name,
-            data=arrow.append_column(field, values),
-            mode="overwrite",
-        )
+        new_table = db.create_table(table_name, data=arrow, mode="overwrite")
         self._db = db
-        return None, getattr(new_table, "version", None)
+        return getattr(new_table, "version", None)
 
     @staticmethod
     def _version_after(result: Any, table: Any) -> int | None:
