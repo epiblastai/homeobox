@@ -137,8 +137,11 @@ Organize downloaded files into a collection data package using the Collection AP
 | `skills/create-data-package/scripts/write_metadata_json.py` | `python …/write_metadata_json.py <dir> GSE123456` | Fetch GEO metadata and write `<accession>_metadata.json`. |
 | `skills/create-data-package/scripts/list_geo_files.py` | `python …/list_geo_files.py GSE123456` | List supplementary files for a GEO accession. |
 | `skills/create-data-package/scripts/download_geo_file.py` | `python …/download_geo_file.py GSE123456 file.h5ad [dest]` | Download a supplementary file from GEO via FTP. |
+| `skills/create-data-package/scripts/list_figshare_files.py` | `python …/list_figshare_files.py 27261219` | List the files on a figshare article (any figshare portal). |
+| `skills/create-data-package/scripts/download_figshare_file.py` | `python …/download_figshare_file.py 64650261 <dest> --article-id 27261219` | Download a figshare file by id, with resume and md5 verification. |
 
-See `skills/create-data-package/references/geo_instructions.md` for GEO-specific guidance.
+See `skills/create-data-package/references/geo_instructions.md` for GEO-specific guidance and
+`skills/create-data-package/references/figshare_instructions.md` for figshare.
 
 ### 3. prepare-package-for-resolution
 

@@ -18,6 +18,8 @@ Arguments:
 from __future__ import annotations
 
 import argparse
+import gzip
+import itertools
 import json
 import os
 
@@ -67,14 +69,34 @@ def load_library_table(path: str, sheet_name: str | None = None) -> pd.DataFrame
     if lower.endswith(".parquet"):
         return pd.read_parquet(path)
     if lower.endswith((".tsv", ".tsv.gz")):
-        return pd.read_csv(path, sep="\t", comment="#")
+        return _read_delimited(path, "\t")
     if lower.endswith(".csv"):
-        return pd.read_csv(path, comment="#")
+        return _read_delimited(path, ",")
     if lower.endswith(".xlsx"):
         return pd.read_excel(path, sheet_name=sheet_name or 0)
     raise ValueError(
         f"Unsupported library format: {path}. Expected one of {', '.join(SUPPORTED_SUFFIXES)}."
     )
+
+
+def _read_delimited(path: str, sep: str) -> pd.DataFrame:
+    """Read a delimited library table, skipping a leading ``#`` comment block.
+
+    Pandas' ``comment="#"`` strips everything after a ``#`` anywhere in a line, so
+    a table with ``#``-prefixed column names (guide libraries count off-target
+    matches that way) silently loses every column from the first such header
+    onward. Only the leading comment block is skipped; a ``#`` line further down
+    now raises a parse error instead of truncating the table.
+    """
+    # low_memory=False: chunked type inference makes a column of digit strings come
+    # back as mixed int/str objects, which Arrow then refuses to convert.
+    return pd.read_csv(path, sep=sep, skiprows=_leading_comment_rows(path), low_memory=False)
+
+
+def _leading_comment_rows(path: str) -> int:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", newline="") as handle:
+        return sum(1 for _ in itertools.takewhile(lambda line: line.startswith("#"), handle))
 
 
 def warn_if_not_tagged_library(collection_root: str, library_path: str) -> None:

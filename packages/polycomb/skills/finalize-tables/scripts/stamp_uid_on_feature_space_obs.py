@@ -43,6 +43,30 @@ from polycomb.collection import Collection
 from polycomb.util import is_null
 
 UID_COLUMN = "uid"
+OBS_INDEX_COLUMN = "obs_index"
+
+
+def restore_data_order(table: pa.Table, label: str) -> pa.Table:
+    """Return ``table`` in staged DATA row order.
+
+    The artifact's whole purpose is that its ``uid`` column is positionally
+    aligned with the DATA file, but physical order is not preserved by every
+    curation op — ``MergeColumns`` reorders rows as a side effect of its
+    ``merge_insert``. Staging writes the positional ``obs_index`` column for
+    exactly this reason, so sort on it rather than trusting whatever order the
+    table happens to be in.
+    """
+    if OBS_INDEX_COLUMN not in table.column_names:
+        print(
+            f"  warning: {label} has no {OBS_INDEX_COLUMN!r} column; "
+            "assuming its physical order is still DATA order"
+        )
+        return table
+    positions = table.column(OBS_INDEX_COLUMN).to_pylist()
+    if positions == sorted(positions):
+        return table
+    print(f"  {label}: restoring DATA order from {OBS_INDEX_COLUMN}")
+    return table.sort_by(OBS_INDEX_COLUMN)
 
 
 def _barcode_to_uid(joined: pd.DataFrame, obs_class: str) -> dict[object, str]:
@@ -86,8 +110,14 @@ def _materialize_single_modality_artifact(
         )
     bare = db.open_table(obs_class).to_arrow()
     if UID_COLUMN not in bare.column_names:
+        if dry_run:
+            # assign_uids ran in dry-run too, so the column it would have written
+            # is not there to copy. Report the intent rather than failing the
+            # preview on a dependency the same preview chose not to satisfy.
+            print(f"  {artifact_name}: would materialize {bare.num_rows} {UID_COLUMN}(s)")
+            return True
         raise ValueError(f"{obs_class}: column {UID_COLUMN!r} missing; run assign_uids first")
-    artifact = bare.select([UID_COLUMN])
+    artifact = restore_data_order(bare, artifact_name).select([UID_COLUMN])
     print(
         f"  {artifact_name}: materialized {artifact.num_rows} {UID_COLUMN}(s) for ingestion lookup"
     )
@@ -130,6 +160,14 @@ def stamp_uid_on_feature_space_obs(
         )
 
     joined = db.open_table(obs_class).to_arrow().to_pandas()
+    if dry_run and UID_COLUMN not in joined.columns and JOIN_KEY in joined.columns:
+        # Same as the single-modality case: a dry-run assign_uids left nothing to
+        # stamp, so report what the real run would do.
+        for table_name in tables_by_space.values():
+            rows = db.open_table(table_name).count_rows()
+            print(f"  {table_name}: would stamp {rows} {UID_COLUMN}(s)")
+        print("(dry run — Lance not mutated)")
+        return True
     for column in (JOIN_KEY, UID_COLUMN):
         if column not in joined.columns:
             raise ValueError(
@@ -142,7 +180,9 @@ def stamp_uid_on_feature_space_obs(
     print(f"{lance_path}: stamping {UID_COLUMN} on {len(tables_by_space)} feature-space table(s)")
 
     for table_name in tables_by_space.values():
-        df = db.open_table(table_name).to_arrow().to_pandas()
+        # Same hazard as the single-modality path: the stamped uid column is
+        # only a valid ingestion lookup if these rows are still in DATA order.
+        df = restore_data_order(db.open_table(table_name).to_arrow(), table_name).to_pandas()
         if JOIN_KEY not in df.columns:
             raise ValueError(f"Column {JOIN_KEY!r} not in {table_name!r}")
         assert_unique_multimodal_barcode(df, table_name)

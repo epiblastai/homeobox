@@ -16,6 +16,11 @@ is the single pluggable hook — a ``Loader`` callable keyed by feature space (s
 :data:`Loader`). Converter and writer selection is homeobox's job, resolved from
 the feature-space spec; callers never pick them.
 
+Discrete-spatial feature spaces (one large image per group, addressed by per-obs
+boxes) are the one shape that is not a row stream. Their loaders return a
+:class:`SpatialLoaderResult` instead, and are dispatched to
+:meth:`homeobox.ingestion.Ingestor.write_spatial_array`.
+
 :func:`ingest_collection` drives the whole thing: open the atlas, copy registry
 tables, register features, then per dataset assemble obs, align DATA rows to obs
 positions, and let :class:`homeobox.ingestion.Ingestor` write the arrays and
@@ -39,7 +44,8 @@ import polars as pl
 import pyarrow as pa
 from homeobox.atlas import RaggedAtlas, create_or_open_atlas
 from homeobox.group_specs import get_spec
-from homeobox.ingestion import Ingestor, Reader
+from homeobox.ingestion import Ingestor, Reader, SpatialImageSource
+from homeobox.pointer_types import DiscreteSpatialPointer
 from homeobox.schema import PointerField, _extract_pointer_fields
 
 from polycomb.collection import Collection, FileTypeTag
@@ -67,6 +73,11 @@ class LoaderContext:
     # The per-dataset feature registry / var table, in finalized feature order,
     # or ``None`` for feature spaces with no registry (``has_var_df=False``).
     var_table: pa.Table | None
+    # The finalized bare obs table. Most loaders ignore it — matrix rows align
+    # to obs downstream — but a discrete-spatial loader needs it, because its
+    # boxes are a function of obs geometry (a cell's pixel coordinates) rather
+    # than of the image being read. Rows are in finalized obs order.
+    obs_table: pa.Table | None = None
 
 
 class LoaderResult(NamedTuple):
@@ -84,10 +95,43 @@ class LoaderResult(NamedTuple):
     n_vars: int
     # Required iff ``get_spec(feature_space).has_var_df``; must carry ``uid``.
     var_df: pd.DataFrame | None = None
+    # Rows held in memory per batch. The default suits feature vectors; a feature
+    # space whose row is a whole image tile needs a much smaller number, and only
+    # the loader knows how large its rows are.
+    batch_size: int | None = None
+    # Which obs pointer field to fill. Required only when the feature space backs
+    # more than one (see ``_SchemaModel.pointer_for``).
+    field_name: str | None = None
+
+
+class SpatialLoaderResult(NamedTuple):
+    """A discrete-spatial image plus the boxes obs rows address into it.
+
+    The counterpart to :class:`LoaderResult` for feature spaces whose pointer
+    type is ``DiscreteSpatialPointer``. Those store **one** image per group and
+    let many obs rows crop into it, so there is no row stream to align and no
+    feature axis to register — instead the loader supplies the boxes, which it
+    computes from ``LoaderContext.obs_table``.
+    """
+
+    source: SpatialImageSource
+    # {source layer name -> destination zarr layer}, e.g. {"image": "raw"}.
+    layer_mapping: dict[str, str]
+    # ``(n_rows, rank)`` integer arrays of half-open [min, max) boxes over the
+    # image's leading axes, one row per obs row in finalized obs order.
+    min_corners: object
+    max_corners: object
+    # Optional full-rank zarr chunk/shard shapes for the image.
+    chunk_shape: tuple[int, ...] | None = None
+    shard_shape: tuple[int, ...] | None = None
+    # Which obs pointer field to fill. Required only when the feature space backs
+    # more than one — an atlas with both an H&E and a morphology image declares
+    # two ``discrete_image`` pointers, and only the loader knows which it read.
+    field_name: str | None = None
 
 
 # A loader turns one feature space's DATA files into a homeobox source.
-Loader = Callable[[LoaderContext], LoaderResult]
+Loader = Callable[[LoaderContext], LoaderResult | SpatialLoaderResult]
 
 
 # ===========================================================================
@@ -124,11 +168,38 @@ class _SchemaModel:
                 out[p.feature_space] = cls
         return out
 
-    def pointer_for(self, feature_space: str) -> PointerField:
-        for p in self.pointers:
-            if p.feature_space == feature_space:
-                return p
-        raise KeyError(f"No obs pointer field for feature space {feature_space!r}")
+    def pointers_for(self, feature_space: str) -> list[PointerField]:
+        """Every obs pointer field bound to ``feature_space``, in declaration order."""
+        matches = [p for p in self.pointers if p.feature_space == feature_space]
+        if not matches:
+            raise KeyError(f"No obs pointer field for feature space {feature_space!r}")
+        return matches
+
+    def pointer_for(self, feature_space: str, field_name: str | None = None) -> PointerField:
+        """Resolve the one pointer field a write should populate.
+
+        A feature space may back several pointer fields — an atlas storing both
+        an H&E and a morphology image declares two ``discrete_image`` pointers —
+        and nothing in the collection manifest says which one a DATA file is
+        for. Guessing there silently fills the wrong column, so an ambiguous
+        feature space requires the loader to name its field.
+        """
+        matches = self.pointers_for(feature_space)
+        if field_name is not None:
+            for p in matches:
+                if p.field_name == field_name:
+                    return p
+            raise KeyError(
+                f"Obs pointer field {field_name!r} is not bound to feature space "
+                f"{feature_space!r}; candidates: {[p.field_name for p in matches]}"
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Feature space {feature_space!r} backs {len(matches)} pointer fields "
+                f"({[p.field_name for p in matches]}), so which one to fill is ambiguous. "
+                f"Set field_name= on the loader's result to choose."
+            )
+        return matches[0]
 
 
 def _resolve_schema(schema_path: str) -> _SchemaModel:
@@ -290,14 +361,31 @@ def _copy_registry_key_tables(
         copied[cls] = arrow.num_rows
         if cls not in dst_names:
             dst.create_table(cls, data=arrow)
-        else:
+        elif UID_COLUMN in arrow.column_names:
             (
                 dst.open_table(cls)
                 .merge_insert(on=UID_COLUMN)
                 .when_not_matched_insert_all()
                 .execute(arrow)
             )
+        else:
+            # `other_tables` in the schema are plain LanceModels with no uid —
+            # a section image, for instance, is identified by the section and
+            # modality it depicts, not by a key of its own. There is nothing to
+            # merge on, so dedupe on the whole row instead, which keeps the copy
+            # idempotent across re-runs without inventing an identity.
+            _insert_new_rows(dst, cls, arrow)
     return copied
+
+
+def _insert_new_rows(db: lancedb.DBConnection, table_name: str, arrow: pa.Table) -> None:
+    """Append only those rows of ``arrow`` not already in ``table_name``."""
+    existing = db.open_table(table_name).to_arrow()
+    seen = set(map(str, existing.to_pylist()))
+    fresh = [row for row in arrow.to_pylist() if str(row) not in seen]
+    if not fresh:
+        return
+    db.open_table(table_name).add(pa.Table.from_pylist(fresh, schema=existing.schema))
 
 
 def _register_feature_registries(
@@ -340,7 +428,7 @@ def _register_feature_registries(
 class _Plan(NamedTuple):
     feature_space: str
     field_name: str
-    result: LoaderResult
+    result: LoaderResult | SpatialLoaderResult
     dataset_record: object
     obs_indices: np.ndarray | None
 
@@ -369,10 +457,12 @@ def _ingest_dataset(
                 f"Pass one in loaders={{{feature_space!r}: ...}} or dataset_loaders."
             )
 
-        pointer = schema.pointer_for(feature_space)
+        # The feature registry is a property of the feature space, so it can be
+        # read before knowing which of its pointer fields this write fills —
+        # which only the loader's result says.
         var_table = (
-            _read_table(collection_root, name, pointer.feature_registry_schema)
-            if pointer.feature_registry_schema
+            _read_table(collection_root, name, _registry_class_for(schema, feature_space))
+            if _registry_class_for(schema, feature_space)
             else None
         )
         result = loader(
@@ -381,9 +471,11 @@ def _ingest_dataset(
                 feature_space=feature_space,
                 data_files=data_files,
                 var_table=var_table,
+                obs_table=bare_obs,
             )
         )
         _validate_loader_result(name, feature_space, result)
+        pointer = schema.pointer_for(feature_space, result.field_name)
 
         plans.append(
             _Plan(
@@ -403,22 +495,53 @@ def _ingest_dataset(
     ingestor = Ingestor(atlas, obs_df=obs_df, obs_table_name=obs_table_name)
     rows_per_feature_space: dict[str, int] = {}
     for plan in plans:
-        n = ingestor.write_array(
-            plan.result.reader,
-            field_name=plan.field_name,
-            layer_mapping=plan.result.layer_mapping,
-            dataset_record=plan.dataset_record,
-            n_vars=plan.result.n_vars,
-            var_df=plan.result.var_df,
-            required_pointer_type=get_spec(plan.feature_space).pointer_type,
-            obs_indices=plan.obs_indices,
-        )
+        if isinstance(plan.result, SpatialLoaderResult):
+            n = ingestor.write_spatial_array(
+                plan.result.source,
+                field_name=plan.field_name,
+                layer_mapping=plan.result.layer_mapping,
+                dataset_record=plan.dataset_record,
+                min_corners=plan.result.min_corners,
+                max_corners=plan.result.max_corners,
+                obs_indices=plan.obs_indices,
+                chunk_shape=plan.result.chunk_shape,
+                shard_shape=plan.result.shard_shape,
+            )
+        else:
+            n = ingestor.write_array(
+                plan.result.reader,
+                field_name=plan.field_name,
+                layer_mapping=plan.result.layer_mapping,
+                dataset_record=plan.dataset_record,
+                n_vars=plan.result.n_vars,
+                var_df=plan.result.var_df,
+                required_pointer_type=get_spec(plan.feature_space).pointer_type,
+                obs_indices=plan.obs_indices,
+                **(
+                    {} if plan.result.batch_size is None else {"batch_size": plan.result.batch_size}
+                ),
+            )
         rows_per_feature_space[plan.feature_space] = (
             rows_per_feature_space.get(plan.feature_space, 0) + n
         )
     n_obs = ingestor.write_obs_records()
     print(f"  added {n_obs} obs row(s)")
     return rows_per_feature_space
+
+
+def _registry_class_for(schema: _SchemaModel, feature_space: str) -> str | None:
+    """The feature registry class backing ``feature_space``, or ``None``.
+
+    Every pointer field bound to one feature space must agree, since the
+    registry belongs to the feature space and not to the column pointing at it.
+    """
+    declared = {p.feature_registry_schema for p in schema.pointers_for(feature_space)}
+    if len(declared) > 1:
+        raise ValueError(
+            f"Feature space {feature_space!r} is declared with conflicting feature registries "
+            f"{sorted(str(d) for d in declared)}; a feature space has exactly one feature axis."
+        )
+    return declared.pop()
 
 
 def _resolve_loader(
@@ -432,9 +555,42 @@ def _resolve_loader(
     return override.get(feature_space) or loaders.get(feature_space)
 
 
-def _validate_loader_result(name: str, feature_space: str, result: LoaderResult) -> None:
+def _validate_loader_result(
+    name: str, feature_space: str, result: LoaderResult | SpatialLoaderResult
+) -> None:
     if not result.layer_mapping:
         raise ValueError(f"{name}/{feature_space}: loader returned an empty layer_mapping")
+
+    # The two result types are not interchangeable — they drive different write
+    # paths — so mismatching one against its feature space is worth catching
+    # here, where the message can name both, rather than as an attribute error.
+    is_spatial = get_spec(feature_space).pointer_type is DiscreteSpatialPointer
+    if is_spatial and not isinstance(result, SpatialLoaderResult):
+        raise ValueError(
+            f"{name}/{feature_space}: this feature space stores one image addressed by "
+            f"boxes, so its loader must return a SpatialLoaderResult, not a "
+            f"{type(result).__name__}"
+        )
+    if not is_spatial and isinstance(result, SpatialLoaderResult):
+        raise ValueError(
+            f"{name}/{feature_space}: SpatialLoaderResult is only for discrete-spatial "
+            f"feature spaces; this one is "
+            f"{get_spec(feature_space).pointer_type.pointer_type_name}"
+        )
+    if is_spatial:
+        n_min = len(result.min_corners)
+        n_max = len(result.max_corners)
+        if n_min != n_max:
+            raise ValueError(
+                f"{name}/{feature_space}: loader returned {n_min} min_corner(s) but "
+                f"{n_max} max_corner(s)"
+            )
+        return
+
+    if result.batch_size is not None and result.batch_size < 1:
+        raise ValueError(
+            f"{name}/{feature_space}: batch_size must be at least 1, got {result.batch_size}"
+        )
 
     has_var_df = get_spec(feature_space).has_var_df
     if has_var_df:
@@ -506,7 +662,9 @@ def _prepare_obs_df(bare_obs: pa.Table, schema: _SchemaModel, plans: list[_Plan]
         flag = f"has_{plan.field_name}"
         if flag not in obs_df.columns:
             continue
-        values = np.asarray(obs_df[flag].fillna(False), dtype=bool)
+        # np.array, not np.asarray: pandas hands back a read-only view of the
+        # column's own buffer, which the assignment below cannot write into.
+        values = np.array(obs_df[flag].fillna(False), dtype=bool)
         covered = plan.obs_indices if plan.obs_indices is not None else slice(None)
         values[covered] = True
         obs_df[flag] = values
@@ -517,28 +675,45 @@ def _prepare_obs_df(bare_obs: pa.Table, schema: _SchemaModel, plans: list[_Plan]
 def _build_dataset_record(
     collection_root: str, name: str, schema: _SchemaModel, feature_space: str, bare_obs: pa.Table
 ) -> object:
-    """Reuse the finalized dataset row for this fs, filling SummaryFields from obs."""
+    """Reuse the finalized dataset row for this fs, filling SummaryFields from obs.
+
+    The row is read through Arrow rather than pandas: pandas represents a null
+    string as ``nan``, which the schema class then rejects as a float, so a
+    legitimately empty field (an accession the source database never issued)
+    would fail the write.
+    """
     table = _read_table(collection_root, name, schema.dataset_class)
     if table is None:
         raise ValueError(f"{name}: no dataset table {schema.dataset_class!r}")
-    df = table.to_pandas()
-    rows = df[df["feature_space"] == feature_space]
-    if rows.empty:
+    rows = [row for row in table.to_pylist() if row["feature_space"] == feature_space]
+    if not rows:
         raise ValueError(f"{name}: dataset table has no row for feature_space={feature_space!r}")
-    record = _fill_summary_fields(rows.iloc[0].to_dict(), schema, bare_obs)
+    record = _fill_summary_fields(rows[0], schema, bare_obs)
     return schema.dataset_cls(**record)
 
 
 def _fill_summary_fields(record: dict, schema: _SchemaModel, obs: pa.Table) -> dict:
-    """Fill the dataset record's SummaryFields (count / unique) from the obs table."""
+    """Fill the dataset record's SummaryFields from the obs table.
+
+    An op this function does not implement is a hard error, not a skip: the
+    field has a schema default (``0``, ``None``), so quietly leaving it alone
+    ships a dataset row whose summary looks computed and is wrong.
+    """
     for s in schema.info.summary_fields.get(schema.dataset_class, []):
         if s.target_field not in obs.column_names:
             continue
         values = obs.column(s.target_field).to_pylist()
+        present = {v for v in values if v is not None}
         if s.op == "count":
             record[s.field_name] = len(values)
         elif s.op == "unique":
-            record[s.field_name] = sorted({v for v in values if v is not None})
+            record[s.field_name] = sorted(present)
+        elif s.op == "nunique":
+            record[s.field_name] = len(present)
+        else:
+            raise ValueError(
+                f"{schema.dataset_class}.{s.field_name}: unsupported summary op {s.op!r}"
+            )
     return record
 
 

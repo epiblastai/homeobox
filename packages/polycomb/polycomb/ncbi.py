@@ -805,7 +805,13 @@ def _convert_pmid_to_pmcid(pmid: int) -> str | None:
         params={"ids": str(pmid), "format": "json"},
         timeout=30,
     )
-    resp.raise_for_status()
+    # FIXME: PMC returns 403 for python-requests from some hosts (identical curl
+    # requests succeed), which made every fetch_publication call for a PMID
+    # without a PubMed-supplied PMC ID a hard failure. Treat a non-200 as "no
+    # PMC ID" so metadata still resolves; the abstract-only fallback then kicks in.
+    if resp.status_code != 200:
+        print(f"PMC ID converter returned {resp.status_code} for PMID {pmid}; assuming no PMC ID")
+        return None
     data = resp.json()
     records = data.get("records", [])
     if records and records[0].get("pmcid"):

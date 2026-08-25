@@ -22,6 +22,8 @@ Arguments:
 from __future__ import annotations
 
 import argparse
+import gzip
+import itertools
 import json
 import os
 import sys
@@ -113,9 +115,26 @@ def resolve_file_path(collection_root: str, path: str) -> str:
 
 
 def read_delimited_table(path: str) -> pd.DataFrame:
-    """Read a delimited OBS/VAR table (.csv, .tsv, or .tsv.gz)."""
+    """Read a delimited OBS/VAR table (.csv, .tsv, or .tsv.gz), skipping a leading
+    ``#`` comment block.
+
+    Pandas' ``comment="#"`` strips everything after a ``#`` anywhere in a line,
+    which silently truncates tables whose column names contain ``#``. Only the
+    leading comment block is skipped; a ``#`` line further down now raises a parse
+    error instead of truncating the table.
+    """
     sep = "\t" if path.endswith((".tsv", ".tsv.gz")) else ","
-    return pd.read_csv(path, sep=sep, index_col=0, comment="#")
+    # low_memory=False: chunked type inference makes a column of digit strings come
+    # back as mixed int/str objects, which Arrow then refuses to convert.
+    return pd.read_csv(
+        path, sep=sep, index_col=0, skiprows=_leading_comment_rows(path), low_memory=False
+    )
+
+
+def _leading_comment_rows(path: str) -> int:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", newline="") as handle:
+        return sum(1 for _ in itertools.takewhile(lambda line: line.startswith("#"), handle))
 
 
 def load_indexed_table(path: str, index_name: str) -> pd.DataFrame:

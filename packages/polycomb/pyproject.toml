@@ -19,6 +19,7 @@ dependencies = [
     "homeobox>=0.2.8",
     "openpyxl",
     "pubchempy",
+    "tqdm",
 ]
 
 [project.optional-dependencies]
