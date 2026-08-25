@@ -118,11 +118,11 @@ class AntibodySchema(RegistryBaseSchema):
     )
     # The protein that gene encodes, when it could be resolved
     target_uniprot_id: str | None = CrossReferenceField.declare(
-        database_name="UNIPROT", default=None
+        database_name="UniProt", default=None
     )
 
     # The organism the target is annotated in, e.g. "Homo sapiens"
-    organism: str | None = OntologyAlignedField.declare(ontology_name="NCBITAXON", default=None)
+    organism: str | None = OntologyAlignedField.declare(ontology_name="NCBITaxon", default=None)
 
     # Provenance
     vendor: str | None = None
@@ -148,7 +148,7 @@ class ImageDatasetSchema(DatasetSchema):
     accession_id: str | None
     # The publication to cite for this data
     publication_doi: str | None = CrossReferenceField.declare(database_name="DOI", default=None)
-    publication_pmid: int | None = CrossReferenceField.declare(database_name="PUBMED", default=None)
+    publication_pmid: int | None = CrossReferenceField.declare(database_name="PubMed", default=None)
     # Free-text description of the source, imaging protocol, and any subsetting
     # applied before ingestion.
     dataset_description: str | None
@@ -193,8 +193,8 @@ class ImmunofluorescenceCellIndex(HoxBaseSchema):
     # immortalized-cell-line imaging panel (cell_type, tissue, disease,
     # development_stage, donor) are omitted rather than carried empty.
     assay: str = OntologyAlignedField.declare(ontology_name="EFO")
-    organism: str = OntologyAlignedField.declare(ontology_name="NCBITAXON")
-    cell_line: str | None = CrossReferenceField.declare(database_name="CELLOSAURUS")
+    organism: str = OntologyAlignedField.declare(ontology_name="NCBITaxon")
+    cell_line: str | None = CrossReferenceField.declare(database_name="Cellosaurus")
 
     # What was stained. The antibody is the whole answer: its target gene and
     # protein live on the reagent record, so "every image of gene X" resolves
