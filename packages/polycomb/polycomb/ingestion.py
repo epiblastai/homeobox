@@ -84,6 +84,10 @@ class LoaderResult(NamedTuple):
     n_vars: int
     # Required iff ``get_spec(feature_space).has_var_df``; must carry ``uid``.
     var_df: pd.DataFrame | None = None
+    # Rows held in memory per batch. The default suits feature vectors; a feature
+    # space whose row is a whole image tile needs a much smaller number, and only
+    # the loader knows how large its rows are.
+    batch_size: int | None = None
 
 
 # A loader turns one feature space's DATA files into a homeobox source.
@@ -412,6 +416,7 @@ def _ingest_dataset(
             var_df=plan.result.var_df,
             required_pointer_type=get_spec(plan.feature_space).pointer_type,
             obs_indices=plan.obs_indices,
+            **({} if plan.result.batch_size is None else {"batch_size": plan.result.batch_size}),
         )
         rows_per_feature_space[plan.feature_space] = (
             rows_per_feature_space.get(plan.feature_space, 0) + n
@@ -435,6 +440,11 @@ def _resolve_loader(
 def _validate_loader_result(name: str, feature_space: str, result: LoaderResult) -> None:
     if not result.layer_mapping:
         raise ValueError(f"{name}/{feature_space}: loader returned an empty layer_mapping")
+
+    if result.batch_size is not None and result.batch_size < 1:
+        raise ValueError(
+            f"{name}/{feature_space}: batch_size must be at least 1, got {result.batch_size}"
+        )
 
     has_var_df = get_spec(feature_space).has_var_df
     if has_var_df:
@@ -506,7 +516,9 @@ def _prepare_obs_df(bare_obs: pa.Table, schema: _SchemaModel, plans: list[_Plan]
         flag = f"has_{plan.field_name}"
         if flag not in obs_df.columns:
             continue
-        values = np.asarray(obs_df[flag].fillna(False), dtype=bool)
+        # np.array, not np.asarray: pandas hands back a read-only view of the
+        # column's own buffer, which the assignment below cannot write into.
+        values = np.array(obs_df[flag].fillna(False), dtype=bool)
         covered = plan.obs_indices if plan.obs_indices is not None else slice(None)
         values[covered] = True
         obs_df[flag] = values
@@ -517,15 +529,20 @@ def _prepare_obs_df(bare_obs: pa.Table, schema: _SchemaModel, plans: list[_Plan]
 def _build_dataset_record(
     collection_root: str, name: str, schema: _SchemaModel, feature_space: str, bare_obs: pa.Table
 ) -> object:
-    """Reuse the finalized dataset row for this fs, filling SummaryFields from obs."""
+    """Reuse the finalized dataset row for this fs, filling SummaryFields from obs.
+
+    The row is read through Arrow rather than pandas: pandas represents a null
+    string as ``nan``, which the schema class then rejects as a float, so a
+    legitimately empty field (an accession the source database never issued)
+    would fail the write.
+    """
     table = _read_table(collection_root, name, schema.dataset_class)
     if table is None:
         raise ValueError(f"{name}: no dataset table {schema.dataset_class!r}")
-    df = table.to_pandas()
-    rows = df[df["feature_space"] == feature_space]
-    if rows.empty:
+    rows = [row for row in table.to_pylist() if row["feature_space"] == feature_space]
+    if not rows:
         raise ValueError(f"{name}: dataset table has no row for feature_space={feature_space!r}")
-    record = _fill_summary_fields(rows.iloc[0].to_dict(), schema, bare_obs)
+    record = _fill_summary_fields(rows[0], schema, bare_obs)
     return schema.dataset_cls(**record)
 
 
