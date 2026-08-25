@@ -359,6 +359,13 @@ class CurationApplicator:
 
         if isinstance(change, AddColumn):
             if change.value_sql is not None:
+                if change.data_type is not None:
+                    field_type = arrow_type_from_alias(change.data_type)
+                    if pa.types.is_nested(field_type):
+                        field = pa.field(change.column, field_type)
+                        return self._append_expression_rewrite(
+                            table_name, table, field, change.value_sql
+                        )
                 result = table.add_columns({change.column: change.value_sql})
             elif change.value is not None:
                 field_type = (
@@ -491,6 +498,27 @@ class CurationApplicator:
         """Append nested columns via Arrow, bypassing Lance's nested add_columns path."""
         arrow = table.to_arrow()
         values = pa.array([value] * arrow.num_rows, type=field.type)
+        return self._append_column_values(table_name, arrow, field, values)
+
+    def _append_expression_rewrite(
+        self, table_name: str, table: Any, field: pa.Field, value_sql: str
+    ) -> tuple[None, int | None]:
+        """Append a nested column computed per row by a SQL expression.
+
+        Lance evaluates the expression during a scan but cannot materialize a nested
+        result through ``add_columns`` -- it writes an all-null column and reports
+        success -- so scan the expression and append the values as Arrow instead. Both
+        scans run against one pinned dataset version, so the rows stay aligned and in
+        order, which the obs tables depend on.
+        """
+        dataset = table.to_lance()
+        arrow = dataset.to_table()
+        values = dataset.to_table(columns={field.name: value_sql}).column(field.name)
+        return self._append_column_values(table_name, arrow, field, values.cast(field.type))
+
+    def _append_column_values(
+        self, table_name: str, arrow: pa.Table, field: pa.Field, values: Any
+    ) -> tuple[None, int | None]:
         db = lancedb.connect(self.lance_db_path)
         new_table = db.create_table(
             table_name,

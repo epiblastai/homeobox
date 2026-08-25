@@ -93,6 +93,11 @@ _SQL_CAST_KEYWORDS = {
 }
 
 
+# FIXME: temporal aliases have no entry, so a CastColumn to "timestamp[us]" or
+# "date64" falls through to the Arrow repr and emits `cast(col as timestamp[us])`,
+# which the SQL parser rejects. Retyping a datetime column (e.g. publication_date,
+# staged as an ISO string) currently has to go through add/drop/rename with an
+# explicit `arrow_cast(...)` expression instead.
 def arrow_alias_to_sql_cast(alias: str) -> str:
     """Translate a serialized Arrow type alias to a SQL CAST target keyword."""
     key = str(arrow_type_from_alias(alias))

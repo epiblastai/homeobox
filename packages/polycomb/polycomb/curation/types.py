@@ -103,6 +103,11 @@ class AddColumn(CurationOp):
     - ``value``: a constant applied to all rows.
     - ``value_sql``: a SQL expression evaluated per row (may reference columns).
     - neither, with ``data_type`` set: a null-initialized column of that type.
+
+    A ``value_sql`` expression that evaluates to a list or struct must declare its
+    ``data_type`` (e.g. ``"list<string>"``). Lance cannot materialize a nested column
+    through the SQL path, so without the declared type the column is written all-null
+    and no error is raised.
     """
 
     kind: ClassVar[OpKind] = OpKind.ADD_COLUMN

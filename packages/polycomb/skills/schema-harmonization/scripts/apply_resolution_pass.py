@@ -188,6 +188,10 @@ def apply_from_schema(
     input_type: str | None,
     dry_run: bool,
 ) -> list[ApplyResult | None]:
+    # TODO: passes are planned for every resolvable schema field, including nullable
+    # ones the table legitimately has no column for (a dataset with no disease or
+    # tissue annotation). The first such field aborts the whole run in _read_column,
+    # so any pass planned after it never executes. Skip absent columns instead.
     parsed = parsed_result_from_model(load_yaml_file(schema_path))
     schema_table = _schema_table(parsed, table_name)
     passes, skipped = plan_schema_resolution_passes(schema_table)
