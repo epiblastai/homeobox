@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-100 0 780 520" role="img">
+  <title>Multimodal schema with auxiliary metadata tables</title>
+  <desc>Three auxiliary metadata tables (datasets_table, feature_registries, aux_tables) on the far left, separated by a dashed vertical divider from the obs column and three modality columns (RNA, Protein, Images).</desc>
+  <style>
+    .lbl { font-family: sans-serif; font-weight: 500; }
+    .lbl-obs { fill: #5F4400; font-size: 16px; }
+    .lbl-var { fill: #042C53; font-size: 14px; }
+    .lbl-xg { fill: #173404; font-size: 18px; }
+    .lbl-xo { fill: #4A2810; font-size: 18px; }
+    .lbl-xr { fill: #501313; font-size: 18px; }
+    .lbl-mod { font-family: sans-serif; font-weight: 500; fill: #2C2C2A; font-size: 16px; }
+    .lbl-aux { font-family: sans-serif; font-weight: 500; fill: #3d2860; font-size: 13px; }
+  </style>
+
+  <rect x="-80" y="80" width="140" height="100" fill="#b893d4" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl-aux" x="-10" y="130" text-anchor="middle" dominant-baseline="central">datasets_table</text>
+
+  <rect x="-80" y="210" width="140" height="140" fill="#b893d4" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl-aux" x="-10" y="280" text-anchor="middle" dominant-baseline="central">feature_registries</text>
+
+  <rect x="-80" y="380" width="140" height="90" fill="#b893d4" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl-aux" x="-10" y="425" text-anchor="middle" dominant-baseline="central">aux_tables</text>
+
+  <line x1="80" y1="40" x2="80" y2="490" stroke="#888888" stroke-width="1.5" stroke-dasharray="5 5"/>
+
+  <text class="lbl-mod" x="310" y="30" text-anchor="middle" dominant-baseline="central">RNA</text>
+  <text class="lbl-mod" x="505" y="30" text-anchor="middle" dominant-baseline="central">Protein</text>
+  <text class="lbl-mod" x="620" y="30" text-anchor="middle" dominant-baseline="central">Images</text>
+
+  <rect x="100" y="60" width="60" height="420" fill="#efc41c" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-obs" x="130" y="270" text-anchor="middle" dominant-baseline="central">obs</text>
+
+  <rect x="190" y="60" width="200" height="30" fill="#2c96c0" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-var" x="290" y="75" text-anchor="middle" dominant-baseline="central">var</text>
+  <rect x="190" y="90" width="200" height="90" fill="#4fba6f" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-xg" x="290" y="135" text-anchor="middle" dominant-baseline="central">X₁</text>
+
+  <rect x="190" y="200" width="140" height="30" fill="#2c96c0" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-var" x="260" y="215" text-anchor="middle" dominant-baseline="central">var</text>
+  <rect x="190" y="230" width="140" height="130" fill="#4fba6f" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-xg" x="260" y="295" text-anchor="middle" dominant-baseline="central">X₂</text>
+
+  <rect x="190" y="380" width="240" height="30" fill="#2c96c0" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-var" x="310" y="395" text-anchor="middle" dominant-baseline="central">var</text>
+  <rect x="190" y="410" width="240" height="70" fill="#4fba6f" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-xg" x="310" y="445" text-anchor="middle" dominant-baseline="central">X₃</text>
+
+  <rect x="460" y="60" width="90" height="30" fill="#2c96c0" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-var" x="505" y="75" text-anchor="middle" dominant-baseline="central">var</text>
+  <rect x="460" y="90" width="90" height="90" fill="#ef9021" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-xo" x="505" y="135" text-anchor="middle" dominant-baseline="central">X₁</text>
+
+  <rect x="460" y="380" width="80" height="30" fill="#2c96c0" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-var" x="500" y="395" text-anchor="middle" dominant-baseline="central">var</text>
+  <rect x="460" y="410" width="80" height="70" fill="#ef9021" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-xo" x="500" y="445" text-anchor="middle" dominant-baseline="central">X₃</text>
+
+  <rect x="580" y="230" width="80" height="130" fill="#f15c5a" stroke="#010101" stroke-width="0.5"/>
+  <text class="lbl lbl-xr" x="620" y="295" text-anchor="middle" dominant-baseline="central">X₂</text>
+</svg>
