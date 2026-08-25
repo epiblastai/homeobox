@@ -361,14 +361,31 @@ def _copy_registry_key_tables(
         copied[cls] = arrow.num_rows
         if cls not in dst_names:
             dst.create_table(cls, data=arrow)
-        else:
+        elif UID_COLUMN in arrow.column_names:
             (
                 dst.open_table(cls)
                 .merge_insert(on=UID_COLUMN)
                 .when_not_matched_insert_all()
                 .execute(arrow)
             )
+        else:
+            # `other_tables` in the schema are plain LanceModels with no uid —
+            # a section image, for instance, is identified by the section and
+            # modality it depicts, not by a key of its own. There is nothing to
+            # merge on, so dedupe on the whole row instead, which keeps the copy
+            # idempotent across re-runs without inventing an identity.
+            _insert_new_rows(dst, cls, arrow)
     return copied
+
+
+def _insert_new_rows(db: lancedb.DBConnection, table_name: str, arrow: pa.Table) -> None:
+    """Append only those rows of ``arrow`` not already in ``table_name``."""
+    existing = db.open_table(table_name).to_arrow()
+    seen = set(map(str, existing.to_pylist()))
+    fresh = [row for row in arrow.to_pylist() if str(row) not in seen]
+    if not fresh:
+        return
+    db.open_table(table_name).add(pa.Table.from_pylist(fresh, schema=existing.schema))
 
 
 def _register_feature_registries(
