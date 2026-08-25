@@ -5,6 +5,9 @@ shared low-level building blocks it (and the functional API in
 :mod:`homeobox.ingestion.functions`) are built from.
 """
 
+import enum
+import typing
+
 import lancedb
 import numpy as np
 import pandas as pd
@@ -14,9 +17,14 @@ import pyarrow as pa
 from homeobox.atlas import RaggedAtlas
 from homeobox.group_specs import FeatureSpaceSpec, get_spec
 from homeobox.ingestion.readers import Reader
+from homeobox.ingestion.spatial import (
+    SpatialImageSource,
+    spatial_pointer_columns,
+    write_spatial_image,
+)
 from homeobox.ingestion.writers import _CHUNK_ELEMS, _SHARD_ELEMS, write_feature_space
 from homeobox.obs_alignment import _schema_obs_fields, validate_obs_columns
-from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
+from homeobox.pointer_types import DenseZarrPointer, DiscreteSpatialPointer, SparseZarrPointer
 from homeobox.schema import DatasetSchema, PointerField
 
 _DEFAULT_BATCH_ROWS = 8_192
@@ -38,6 +46,13 @@ class Ingestor:
     table from every accumulated pointer field — null-filling the rest — and
     inserts it. obs columns and the obs table are validated once, up front, so a
     bad obs frame fails before any zarr is written.
+
+    :meth:`write_spatial_array` is the discrete-spatial counterpart to
+    :meth:`write_array`, for a feature space whose group holds one large image
+    that many obs rows address boxes into. It accumulates into the same
+    ``_pointer_data``, so a dataset mixing a matrix and an image (spatial
+    transcriptomics with morphology) drives both from one ingestor and writes
+    its obs rows once.
 
     Parameters
     ----------
@@ -123,8 +138,10 @@ class Ingestor:
             Dataset record to register; ``dataset_record.zarr_group`` is the zarr
             group path.
         n_vars:
-            Number of features (matrix width). Only used to size dense-writer
-            chunks/shards; ignored for sparse layouts.
+            Number of values in one row — the matrix width, or for a feature
+            space whose row is an N-D block (``image_tiles``) the product of that
+            block's dimensions. Only used to size dense-writer chunks/shards;
+            ignored for sparse layouts.
         var_df:
             Pandas var table (one row per feature, positional order); its index
             is dropped before use. Required for feature spaces whose spec sets
@@ -135,8 +152,9 @@ class Ingestor:
         batch_size:
             Rows read and written per batch.
         chunk_shape, shard_shape:
-            Optional zarr chunk/shard shapes (1-element for sparse, 2-element for
-            dense). Default to this module's constants.
+            Optional zarr chunk/shard shapes (1-element for sparse; for dense,
+            rows first — only that leading count is used, since a row is always
+            written whole). Default to this module's constants.
         obs_indices:
             Optional integer positions into ``obs_df``. If omitted, emitted
             pointer row ``i`` is assigned to ``obs_df`` row ``i`` and the reader
@@ -152,34 +170,10 @@ class Ingestor:
         int
             Number of rows the reader emitted.
         """
-        if self._written:
-            raise RuntimeError("write_array() called after write_obs_records(); ingestor is spent.")
-        if field_name in self._pointer_data:
-            raise ValueError(f"Pointer field '{field_name}' was already written by this ingestor.")
-        if field_name not in self._pointer_fields:
-            raise ValueError(
-                f"No pointer field named '{field_name}' on obs table "
-                f"{self.obs_table_name!r}. Available: {sorted(self._pointer_fields)}"
-            )
-
-        if self._dataset_uid is None:
-            self._dataset_uid = dataset_record.dataset_uid
-        elif dataset_record.dataset_uid != self._dataset_uid:
-            raise ValueError(
-                f"All arrays feeding one obs write must share dataset_uid; field "
-                f"'{field_name}' has {dataset_record.dataset_uid!r}, expected "
-                f"{self._dataset_uid!r}."
-            )
-
-        if not layer_mapping:
-            raise ValueError("layer_mapping must map at least one source layer to a destination.")
-        layer_names = list(layer_mapping.values())
-        if len(set(layer_names)) != len(layer_names):
-            raise ValueError(f"layer_mapping destination names must be unique, got {layer_names}.")
-
-        pointer_field: PointerField = self._pointer_fields[field_name]
+        pointer_field, spec, layer_names = self._begin_field(
+            field_name, dataset_record, layer_mapping, caller="write_array"
+        )
         feature_space = pointer_field.feature_space
-        spec = get_spec(feature_space)
         if required_pointer_type is not None and spec.pointer_type is not required_pointer_type:
             raise ValueError(
                 f"This reader requires {required_pointer_type.pointer_type_name} feature "
@@ -225,6 +219,140 @@ class Ingestor:
         )
         self._pointer_data[pointer_field.field_name] = pointer_struct
         return n_emitted
+
+    def write_spatial_array(
+        self,
+        source: SpatialImageSource,
+        *,
+        field_name: str,
+        layer_mapping: dict[str, str],
+        dataset_record: DatasetSchema,
+        min_corners,
+        max_corners,
+        obs_indices: np.ndarray | None = None,
+        chunk_shape: tuple[int, ...] | None = None,
+        shard_shape: tuple[int, ...] | None = None,
+    ) -> int:
+        """Write one large image and stamp per-obs bounding boxes into it.
+
+        The discrete-spatial counterpart to :meth:`write_array`. The difference
+        is not the file format but the relationship between array and pointers:
+        :meth:`write_array` derives one pointer per emitted row, whereas here a
+        single image is written once and the caller supplies the boxes, because
+        they come from obs geometry (cell centroids, a tile grid) rather than
+        from the image itself. See :mod:`homeobox.ingestion.spatial`.
+
+        Parameters
+        ----------
+        source:
+            A :class:`~homeobox.ingestion.spatial.SpatialImageSource` that
+            declares the image's shape and streams it as blocks.
+        field_name:
+            Obs-schema attribute name for the pointer column to populate. Its
+            feature space must use ``DiscreteSpatialPointer``.
+        layer_mapping:
+            Maps each source layer to its destination in the spec's ``layers/``
+            group, e.g. ``{"image": "raw"}``.
+        dataset_record:
+            Dataset record to register; its ``zarr_group`` receives the image.
+        min_corners, max_corners:
+            ``(n_boxes, rank)`` integer arrays of half-open
+            ``[min_corner, max_corner)`` boxes over the image's leading axes.
+            One row per obs row, or one per ``obs_indices`` entry.
+        obs_indices:
+            Optional positions into ``obs_df``, exactly as in
+            :meth:`write_array`. Omit when every obs row gets a box.
+        chunk_shape, shard_shape:
+            Optional zarr chunk/shard shapes for the image, full rank. Default
+            to a square grid over the two trailing axes.
+
+        Returns
+        -------
+        int
+            Number of boxes stamped.
+        """
+        pointer_field, spec, _ = self._begin_field(
+            field_name, dataset_record, layer_mapping, caller="write_spatial_array"
+        )
+        if spec.pointer_type is not DiscreteSpatialPointer:
+            raise ValueError(
+                f"write_spatial_array requires a discrete_spatial feature space, but "
+                f"'{pointer_field.feature_space}' is {spec.pointer_type.pointer_type_name}. "
+                f"Use write_array instead."
+            )
+        if spec.has_var_df:
+            raise ValueError(
+                f"Feature space '{pointer_field.feature_space}' declares a feature registry, "
+                f"which a discrete-spatial image has no feature axis to fill."
+            )
+
+        self.atlas.register_dataset(dataset_record)
+        zarr_group = dataset_record.zarr_group
+        group = self.atlas.create_zarr_group(zarr_group)
+
+        shapes = write_spatial_image(
+            source,
+            spec,
+            group,
+            layer_mapping=layer_mapping,
+            chunk_shape=chunk_shape,
+            shard_shape=shard_shape,
+        )
+        pointer_columns = spatial_pointer_columns(
+            zarr_group,
+            min_corners,
+            max_corners,
+            # Every layer shares the addressed axes, so any one bounds the boxes.
+            image_shape=next(iter(shapes.values())),
+        )
+
+        arrow_schema = self._obs_schema.to_arrow_schema()
+        pointer_struct, n_emitted = _pointer_struct_for_obs(
+            pointer_columns,
+            arrow_schema.field(pointer_field.field_name).type,
+            obs_df=self.obs_df,
+            field_name=field_name,
+            obs_indices=obs_indices,
+        )
+        self._pointer_data[pointer_field.field_name] = pointer_struct
+        return n_emitted
+
+    def _begin_field(
+        self,
+        field_name: str,
+        dataset_record: DatasetSchema,
+        layer_mapping: dict[str, str],
+        *,
+        caller: str,
+    ) -> tuple[PointerField, FeatureSpaceSpec, list[str]]:
+        """Validate the guards every write shares; resolve the field's spec."""
+        if self._written:
+            raise RuntimeError(f"{caller}() called after write_obs_records(); ingestor is spent.")
+        if field_name in self._pointer_data:
+            raise ValueError(f"Pointer field '{field_name}' was already written by this ingestor.")
+        if field_name not in self._pointer_fields:
+            raise ValueError(
+                f"No pointer field named '{field_name}' on obs table "
+                f"{self.obs_table_name!r}. Available: {sorted(self._pointer_fields)}"
+            )
+
+        if self._dataset_uid is None:
+            self._dataset_uid = dataset_record.dataset_uid
+        elif dataset_record.dataset_uid != self._dataset_uid:
+            raise ValueError(
+                f"All arrays feeding one obs write must share dataset_uid; field "
+                f"'{field_name}' has {dataset_record.dataset_uid!r}, expected "
+                f"{self._dataset_uid!r}."
+            )
+
+        if not layer_mapping:
+            raise ValueError("layer_mapping must map at least one source layer to a destination.")
+        layer_names = list(layer_mapping.values())
+        if len(set(layer_names)) != len(layer_names):
+            raise ValueError(f"layer_mapping destination names must be unique, got {layer_names}.")
+
+        pointer_field: PointerField = self._pointer_fields[field_name]
+        return pointer_field, get_spec(pointer_field.feature_space), layer_names
 
     def write_obs_records(self) -> int:
         """Build one obs table from all accumulated pointer fields and insert it.
@@ -323,7 +451,50 @@ def _build_row_arrow_table(
         if col not in columns:
             columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)
 
+    for col in schema_fields:
+        columns[col] = _ensure_dictionary_vocabulary(columns[col], obs_schema, col)
+
     return pa.table(columns, schema=arrow_schema)
+
+
+def _enum_vocabulary(obs_schema, column: str) -> list[str] | None:
+    """The declared members of an enum-typed schema field, or None."""
+    field = obs_schema.model_fields.get(column)
+    if field is None:
+        return None
+    annotations = typing.get_args(field.annotation) or (field.annotation,)
+    for annotation in annotations:
+        if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+            return [str(member.value) for member in annotation]
+    return None
+
+
+def _ensure_dictionary_vocabulary(array: pa.Array, obs_schema, column: str) -> pa.Array:
+    """Give an empty-dictionary enum column its declared vocabulary.
+
+    An enum column in which every row is null encodes as a dictionary array
+    whose dictionary has length zero, and Lance cannot write that ("Value at
+    position 0 out of bounds"). A dictionary is only the encoding vocabulary, so
+    substituting the enum's declared members leaves every value untouched — the
+    indices stay null — while making the column writable. Any assay that does
+    not populate some optional enum (a capture-grid assay has no segmentation
+    method) would otherwise be unable to enter the atlas at all.
+    """
+    if not pa.types.is_dictionary(array.type):
+        return array
+    if isinstance(array, pa.ChunkedArray):
+        if array.num_chunks == 0:
+            return array
+        combined = array.combine_chunks()
+        array = combined.chunk(0) if isinstance(combined, pa.ChunkedArray) else combined
+    if len(array.dictionary) > 0:
+        return array
+    vocabulary = _enum_vocabulary(obs_schema, column)
+    if not vocabulary:
+        return array
+    return pa.DictionaryArray.from_arrays(
+        array.indices, pa.array(vocabulary, type=array.type.value_type)
+    )
 
 
 def _validate_obs_identity(obs_df: pd.DataFrame) -> None:
@@ -422,9 +593,13 @@ def _writer_create_kwargs(
 ) -> dict[str, int]:
     """Translate chunk/shard shapes into the new writer's create kwargs.
 
-    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers
-    take ``chunk_rows``/``shard_rows`` (the feature dimension is the full
-    width). Defaults match the rest of this module's constants.
+    Sparse writers take flat ``chunk_elems``/``shard_elems``; dense writers take
+    ``chunk_rows``/``shard_rows``, the rest of the row being written whole. Only
+    the row count is taken from an explicit dense ``chunk_shape``/``shard_shape``
+    for that reason, and the defaults divide this module's element budgets by
+    ``n_vars`` — the elements in one row, whether that row is a feature vector or
+    a whole image tile — so a chunk holds a similar number of values whatever the
+    rank.
     """
     if spec.pointer_type is SparseZarrPointer:
         chunk_shape = chunk_shape or (_CHUNK_ELEMS,)
@@ -439,22 +614,22 @@ def _writer_create_kwargs(
     if spec.pointer_type is DenseZarrPointer:
         if chunk_shape is None:
             chunk_rows = max(1, _CHUNK_ELEMS // n_vars)
-        elif len(chunk_shape) == 2:
+        elif len(chunk_shape) >= 2:
             chunk_rows = chunk_shape[0]
         else:
             raise ValueError(
-                f"Dense feature space '{spec.feature_space}' requires a 2-element chunk_shape, "
-                f"got {chunk_shape}"
+                f"Dense feature space '{spec.feature_space}' requires a chunk_shape of at least "
+                f"2 elements (rows first), got {chunk_shape}"
             )
         if shard_shape is None:
             shard_rows = max(1, _SHARD_ELEMS // n_vars)
             shard_rows = max(chunk_rows, (shard_rows // chunk_rows) * chunk_rows)
-        elif len(shard_shape) == 2:
+        elif len(shard_shape) >= 2:
             shard_rows = shard_shape[0]
         else:
             raise ValueError(
-                f"Dense feature space '{spec.feature_space}' requires a 2-element shard_shape, "
-                f"got {shard_shape}"
+                f"Dense feature space '{spec.feature_space}' requires a shard_shape of at least "
+                f"2 elements (rows first), got {shard_shape}"
             )
         return {"chunk_rows": chunk_rows, "shard_rows": shard_rows}
 

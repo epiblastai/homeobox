@@ -1,0 +1,209 @@
+schema:
+  name: hpa
+  doc: 'Schema for the Human Protein Atlas immunofluorescence cell-image atlas.
+
+
+    One obs row is a single segmented cell in a single immunofluorescence
+
+    microscopy image. The experimental variable is *which protein was stained*:
+
+    three of the four imaging channels are reference stains shared by every image
+
+    (nucleus, endoplasmic reticulum, microtubules) and the fourth carries an
+
+    antibody raised against one target protein. There is no perturbation.
+
+
+    Because the target varies per row rather than per column, an image tile is not
+
+    a feature vector: the `image_tiles` feature space has `has_var_df=False`, so
+
+    this atlas has no feature registry at all. The identity of what was measured
+
+    reaches the obs row through `antibody_uid`, which resolves to the reagent''s
+
+    target gene and protein in the antibodies table.'
+enums:
+  SubcellularLocation:
+    doc: 'Where a protein was observed in an immunofluorescence image.
+
+
+      The controlled vocabulary the Human Protein Atlas annotates its
+
+      immunofluorescence images with. Values are HPA''s own labels verbatim
+
+      (including the capitalisation of "Cell Junctions" and the ampersand in
+
+      "Rods & Rings") so that annotations round-trip against the source metadata.
+
+      Most of these correspond to a GO cellular component, but GO is not one of
+
+      the ontologies the resolver carries, so the column is not marked
+
+      `ontology_aligned`.'
+    values:
+      ACTIN_FILAMENTS: Actin filaments
+      AGGRESOME: Aggresome
+      CELL_JUNCTIONS: Cell Junctions
+      CENTRIOLAR_SATELLITE: Centriolar satellite
+      CENTROSOME: Centrosome
+      CLEAVAGE_FURROW: Cleavage furrow
+      CYTOKINETIC_BRIDGE: Cytokinetic bridge
+      CYTOPLASMIC_BODIES: Cytoplasmic bodies
+      CYTOSOL: Cytosol
+      ENDOPLASMIC_RETICULUM: Endoplasmic reticulum
+      ENDOSOMES: Endosomes
+      FOCAL_ADHESION_SITES: Focal adhesion sites
+      GOLGI_APPARATUS: Golgi apparatus
+      INTERMEDIATE_FILAMENTS: Intermediate filaments
+      KINETOCHORE: Kinetochore
+      LIPID_DROPLETS: Lipid droplets
+      LYSOSOMES: Lysosomes
+      MICRONUCLEUS: Micronucleus
+      MICROTUBULE_ENDS: Microtubule ends
+      MICROTUBULES: Microtubules
+      MIDBODY: Midbody
+      MIDBODY_RING: Midbody ring
+      MITOCHONDRIA: Mitochondria
+      MITOTIC_CHROMOSOME: Mitotic chromosome
+      MITOTIC_SPINDLE: Mitotic spindle
+      NUCLEAR_BODIES: Nuclear bodies
+      NUCLEAR_MEMBRANE: Nuclear membrane
+      NUCLEAR_SPECKLES: Nuclear speckles
+      NUCLEOLI: Nucleoli
+      NUCLEOLI_FIBRILLAR_CENTER: Nucleoli fibrillar center
+      NUCLEOLI_RIM: Nucleoli rim
+      NUCLEOPLASM: Nucleoplasm
+      PEROXISOMES: Peroxisomes
+      PLASMA_MEMBRANE: Plasma membrane
+      RODS_AND_RINGS: Rods & Rings
+      VESICLES: Vesicles
+obs_tables:
+- name: ImmunofluorescenceCellIndex
+  doc: One segmented cell in one immunofluorescence microscopy image.
+  fields:
+  - name: assay
+    type: str
+    ontology_aligned: EFO
+  - name: organism
+    type: str
+    ontology_aligned: NCBITaxon
+  - name: cell_line
+    type: str | None
+    cross_reference: Cellosaurus
+  - name: antibody_uid
+    type: str
+    registry_key:
+      target_schema: AntibodySchema
+  - name: subcellular_locations
+    type: list[SubcellularLocation] | None
+  - name: source_image_id
+    type: str
+  - name: plate_id
+    type: int | None
+  - name: well_position
+    type: str | None
+  - name: field_index
+    type: int | None
+  - name: cell_index
+    type: int | None
+  - name: image_tiles
+    type: DenseZarrPointer | None
+    default: null
+    pointer:
+      feature_space: image_tiles
+dataset_table:
+  name: ImageDatasetSchema
+  doc: 'One ingested batch of image tiles — one row per zarr group.
+
+
+    `image_channel_names` is the only record of what the pixels mean:
+
+    `image_tiles` has no feature registry, so without it nothing in the atlas
+
+    says which channel holds the antibody. It describes the zarr array this row
+
+    points at, so it belongs here rather than repeated on every cell.'
+  fields:
+  - name: accession_database
+    type: str | None
+  - name: accession_id
+    type: str | None
+  - name: publication_doi
+    type: str | None
+    default: null
+    cross_reference: DOI
+  - name: publication_pmid
+    type: int | None
+    default: null
+    cross_reference: PubMed
+  - name: dataset_description
+    type: str | None
+  - name: image_channel_names
+    type: list[str] | None
+    default: null
+  - name: organism
+    type: list[str] | None
+    default: null
+    summary:
+      target_schema: ImmunofluorescenceCellIndex
+      target_field: organism
+      op: unique
+  - name: cell_line
+    type: list[str] | None
+    default: null
+    summary:
+      target_schema: ImmunofluorescenceCellIndex
+      target_field: cell_line
+      op: unique
+  - name: n_rows
+    type: int
+    default: 0
+    summary:
+      target_schema: ImmunofluorescenceCellIndex
+      target_field: uid
+      op: count
+fk_registry_tables:
+- name: AntibodySchema
+  doc: 'An affinity reagent that stains one protein target.
+
+
+    An antibody is a reagent, not a measurement: the same antibody is imaged
+
+    across many cell lines and images, and which gene it "targets" is an
+
+    annotation of the reagent — the validated target of record — not ground
+
+    truth, since antibodies cross-react. Keeping it in its own table means
+
+    re-annotating a reagent touches one row rather than every cell it stained.
+
+
+    The assignment of antibodies to cells (obs) is a separate relationship and
+
+    is not stored here.'
+  fields:
+  - name: antibody_id
+    type: str
+    stable_uid: true
+  - name: target_gene_name
+    type: str | None
+    default: null
+  - name: target_ensembl_gene_id
+    type: str | None
+    default: null
+    cross_reference: ENSEMBL
+  - name: target_uniprot_id
+    type: str | None
+    default: null
+    cross_reference: UniProt
+  - name: organism
+    type: str | None
+    default: null
+    ontology_aligned: NCBITaxon
+  - name: vendor
+    type: str | None
+    default: null
+  - name: catalog_number
+    type: str | None
+    default: null
