@@ -6,6 +6,7 @@ resolver pipeline (see ``specs/resolver-framework.md``).
 """
 
 import re
+from typing import Literal
 
 import polars as pl
 from homeobox.util import sql_escape
@@ -25,12 +26,20 @@ from polycomb.resolvers import (
     AliasLookup,
     CanonicalAliasDisambiguator,
     Disambiguation,
+    LookupHit,
     ResolverContext,
     ResolverPipeline,
 )
 from polycomb.types import ProteinResolution, ResolutionReport
 
 _ENSEMBL_PROTEIN_INPUT_RE = re.compile(r"^ENS[A-Z]*[GTP]\d+(\.\d+)?$")
+
+# UniProtKB's own accession grammar, which is 6 or 10 characters and cannot be
+# confused with a gene symbol or protein name (the second character is always a
+# digit, and no symbol vocabulary has that shape).
+_UNIPROT_ACCESSION_RE = re.compile(
+    r"^([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})$"
+)
 
 
 def _batch_lookup_proteins(uniprot_ids: list[str]) -> dict[str, dict]:
@@ -104,6 +113,15 @@ def _is_ensembl_protein_input(value: str) -> bool:
     return bool(_ENSEMBL_PROTEIN_INPUT_RE.match(value.split(".")[0]))
 
 
+def _base_accession(value: str) -> str:
+    """Strip a UniProt isoform suffix (``P46013-2`` -> ``P46013``)."""
+    return value.strip().split("-")[0].upper()
+
+
+def _is_uniprot_accession(value: str) -> bool:
+    return bool(_UNIPROT_ACCESSION_RE.match(_base_accession(value)))
+
+
 class ProteinResultBuilder:
     """Build a ``ProteinResolution`` from the disambiguated UniProt id."""
 
@@ -127,6 +145,68 @@ class ProteinResultBuilder:
             uniprot_id=uniprot_id,
             organism=ctx.organism,
             alternatives=list(picked.alternatives),
+        )
+
+
+class ProteinAccessionLookup:
+    """Resolve UniProt accessions against the proteins table.
+
+    The alias table is keyed by *name* -- protein names, gene names, synonyms --
+    and never carries the accession itself, so an accession input misses it by
+    construction. This lane queries the accession column directly instead, the
+    same way Ensembl IDs bypass the gene alias table.
+
+    Scoped by organism like the name lane: an accession is globally unique in
+    UniProt, so a row for the wrong organism is a real mismatch worth surfacing
+    rather than a hit to accept.
+    """
+
+    def lookup(self, keys: list[str], ctx: ResolverContext) -> dict[str, LookupHit | None]:
+        if not keys:
+            return {}
+
+        scientific_name = _scientific_name_for_organism(ctx.organism) if ctx.organism else None
+        key_to_base = {key: _base_accession(key) for key in keys}
+        protein_map = _batch_lookup_proteins(list(set(key_to_base.values())))
+
+        hits: dict[str, LookupHit | None] = {}
+        for key in keys:
+            row = protein_map.get(key_to_base[key])
+            if row is not None and scientific_name and row["organism"] != scientific_name:
+                row = None
+            hits[key] = (
+                LookupHit(key=key, candidates=[row], source="lancedb") if row is not None else None
+            )
+        return hits
+
+
+class ProteinAccessionResultBuilder:
+    """Build a ``ProteinResolution`` directly from a matched protein row."""
+
+    def build(
+        self, key: str, original: str, picked: Disambiguation | None, ctx: ResolverContext
+    ) -> ProteinResolution:
+        if picked is None or picked.chosen is None:
+            return ProteinResolution(
+                input_value=original,
+                resolved_value=None,
+                confidence=0.0,
+                source="none",
+                organism=ctx.organism,
+            )
+        row = picked.chosen
+        uniprot_id = row["uniprot_id"]
+        return ProteinResolution(
+            input_value=original,
+            resolved_value=uniprot_id,
+            confidence=1.0,
+            source="lancedb",
+            uniprot_id=uniprot_id,
+            protein_name=row["protein_name"],
+            gene_name=row["gene_name"],
+            sequence=row["sequence"],
+            sequence_length=row["sequence_length"],
+            organism=ctx.organism,
         )
 
 
@@ -262,6 +342,17 @@ protein_pipeline: ResolverPipeline[ProteinResolution] = ResolverPipeline(
     fallbacks=[ProteinGgetFallback()],
 )
 
+# No preprocessor: accessions are matched as written (upper-cased by the lookup)
+# rather than lower-cased for the alias table. No fallback either -- gget cannot
+# resolve a UniProt accession, so a miss here means the accession is genuinely
+# absent from the reference cache, which is what a validation pass wants to
+# report rather than paper over.
+protein_accession_pipeline: ResolverPipeline[ProteinResolution] = ResolverPipeline(
+    tool="resolve_proteins",
+    result_builder=ProteinAccessionResultBuilder(),
+    local_lookup=ProteinAccessionLookup(),
+)
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -271,6 +362,7 @@ protein_pipeline: ResolverPipeline[ProteinResolution] = ResolverPipeline(
 def resolve_proteins(
     values: list[str],
     organism: str = "human",
+    input_type: Literal["name", "accession", "auto"] = "auto",
 ) -> ResolutionReport:
     """Resolve protein names or UniProt accessions to canonical UniProt IDs.
 
@@ -280,33 +372,65 @@ def resolve_proteins(
         Protein names, gene names, UniProt accessions, or a mix.
     organism
         Organism context for resolution (default ``"human"``).
+    input_type
+        ``"name"`` for protein/gene names, ``"accession"`` for UniProt
+        accessions, ``"auto"`` to detect per-value.
 
     Returns
     -------
     ResolutionReport
         One ``ProteinResolution`` per input value.
     """
-    extras: dict[str, object] = {}
-    if values:
+    # Route each input to the name or accession lane, tracking positions so the
+    # two sub-reports can be merged back into the caller's order. The lanes read
+    # different tables: names go through protein_aliases, accessions straight to
+    # the proteins table, which is the only place an accession appears.
+    if input_type == "auto":
+        name_idx = [i for i, v in enumerate(values) if not _is_uniprot_accession(v)]
+        accession_idx = [i for i, v in enumerate(values) if _is_uniprot_accession(v)]
+    elif input_type == "name":
+        name_idx = list(range(len(values)))
+        accession_idx = []
+    else:
+        name_idx = []
+        accession_idx = list(range(len(values)))
+
+    results: list[ProteinResolution] = [None] * len(values)  # type: ignore[list-item]
+
+    if name_idx:
         scientific_name = _scientific_name_for_organism(organism)
         if scientific_name is None:
-            results = [
-                ProteinResolution(
-                    input_value=value,
+            for i in name_idx:
+                results[i] = ProteinResolution(
+                    input_value=values[i],
                     resolved_value=None,
                     confidence=0.0,
                     source="none",
                     organism=organism,
                 )
-                for value in values
-            ]
-            return ResolutionReport(
-                tool="resolve_proteins",
-                total=len(results),
-                resolved=0,
-                unresolved=len(results),
-                ambiguous=0,
-                results=results,
+        else:
+            extras: dict[str, object] = {"scientific_name": scientific_name}
+            report = protein_pipeline.resolve(
+                [values[i] for i in name_idx], organism=organism, extras=extras
             )
-        extras["scientific_name"] = scientific_name
-    return protein_pipeline.resolve(values, organism=organism, extras=extras)
+            for i, res in zip(name_idx, report.results, strict=True):
+                results[i] = res
+
+    if accession_idx:
+        report = protein_accession_pipeline.resolve(
+            [values[i] for i in accession_idx], organism=organism
+        )
+        for i, res in zip(accession_idx, report.results, strict=True):
+            results[i] = res
+
+    resolved_count = sum(1 for r in results if r.resolved_value is not None)
+    ambiguous_count = sum(1 for r in results if len(r.alternatives) > 0)
+
+    return ResolutionReport(
+        tool="resolve_proteins",
+        total=len(values),
+        resolved=resolved_count,
+        unresolved=len(values) - resolved_count,
+        ambiguous=ambiguous_count,
+        results=results,
+    )
