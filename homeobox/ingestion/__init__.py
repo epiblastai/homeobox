@@ -37,6 +37,11 @@ from homeobox.ingestion.ingestor import (
     _writer_create_kwargs,
 )
 from homeobox.ingestion.readers import AnnDataReader, COOReader, FragmentReader, Reader
+from homeobox.ingestion.spatial import (
+    SpatialImageSource,
+    spatial_pointer_columns,
+    write_spatial_image,
+)
 from homeobox.ingestion.writers import (
     _CHUNK_ELEMS,
     _CHUNKS_PER_SHARD,
@@ -60,6 +65,7 @@ __all__ = [
     "Ingestor",
     "Reader",
     "SparseZarrWriter",
+    "SpatialImageSource",
     "_CHUNK_ELEMS",
     "_CHUNKS_PER_SHARD",
     "_DEFAULT_BATCH_ROWS",
@@ -77,6 +83,8 @@ __all__ = [
     "ingest_dataset",
     "ingest_multimodal",
     "register_converter",
+    "spatial_pointer_columns",
     "write_feature_space",
+    "write_spatial_image",
     "writer_for",
 ]
