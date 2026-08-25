@@ -5,6 +5,9 @@ shared low-level building blocks it (and the functional API in
 :mod:`homeobox.ingestion.functions`) are built from.
 """
 
+import enum
+import typing
+
 import lancedb
 import numpy as np
 import pandas as pd
@@ -448,7 +451,50 @@ def _build_row_arrow_table(
         if col not in columns:
             columns[col] = pa.nulls(n_rows, type=arrow_schema.field(col).type)
 
+    for col in schema_fields:
+        columns[col] = _ensure_dictionary_vocabulary(columns[col], obs_schema, col)
+
     return pa.table(columns, schema=arrow_schema)
+
+
+def _enum_vocabulary(obs_schema, column: str) -> list[str] | None:
+    """The declared members of an enum-typed schema field, or None."""
+    field = obs_schema.model_fields.get(column)
+    if field is None:
+        return None
+    annotations = typing.get_args(field.annotation) or (field.annotation,)
+    for annotation in annotations:
+        if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+            return [str(member.value) for member in annotation]
+    return None
+
+
+def _ensure_dictionary_vocabulary(array: pa.Array, obs_schema, column: str) -> pa.Array:
+    """Give an empty-dictionary enum column its declared vocabulary.
+
+    An enum column in which every row is null encodes as a dictionary array
+    whose dictionary has length zero, and Lance cannot write that ("Value at
+    position 0 out of bounds"). A dictionary is only the encoding vocabulary, so
+    substituting the enum's declared members leaves every value untouched — the
+    indices stay null — while making the column writable. Any assay that does
+    not populate some optional enum (a capture-grid assay has no segmentation
+    method) would otherwise be unable to enter the atlas at all.
+    """
+    if not pa.types.is_dictionary(array.type):
+        return array
+    if isinstance(array, pa.ChunkedArray):
+        if array.num_chunks == 0:
+            return array
+        combined = array.combine_chunks()
+        array = combined.chunk(0) if isinstance(combined, pa.ChunkedArray) else combined
+    if len(array.dictionary) > 0:
+        return array
+    vocabulary = _enum_vocabulary(obs_schema, column)
+    if not vocabulary:
+        return array
+    return pa.DictionaryArray.from_arrays(
+        array.indices, pa.array(vocabulary, type=array.type.value_type)
+    )
 
 
 def _validate_obs_identity(obs_df: pd.DataFrame) -> None:
