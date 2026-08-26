@@ -522,6 +522,10 @@ class CurationApplicator:
         if isinstance(change, MergeColumns):
             return self._merge_columns_rewrite(table_name, table, change)
 
+        # FIXME: lancedb Table.to_pandas() delegates to LanceDataset.to_pandas(),
+        # which no longer exists in the installed lance; both branches below raise
+        # AttributeError. Use table.to_arrow().to_pandas() instead. Caught by
+        # tests/curation/test_row_position.py::test_reshape_allowed_without_anchor.
         if isinstance(change, ExplodeColumn):
             new_df = self._explode_frame(change, table.to_pandas())
             return self._rewrite(table_name, new_df)

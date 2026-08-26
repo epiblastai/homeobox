@@ -258,6 +258,7 @@ def ingest_collection(
     *,
     dataset_loaders: Mapping[str, Mapping[str, Loader]] | None = None,
     obs_table_name: str | None = None,
+    atlas_table_names: Mapping[str, str] | None = None,
     store_kwargs: dict | None = None,
     skip_existing: bool = True,
 ) -> IngestReport:
@@ -279,7 +280,13 @@ def ingest_collection(
         Optional ``{dataset_name: {feature_space: Loader}}`` overrides that win
         over ``loaders`` for that one dataset.
     obs_table_name:
-        Obs lance table / atlas obs table name; defaults to the obs class name.
+        Name of the finalized obs table *in the collection*; defaults to the obs
+        class name.
+    atlas_table_names:
+        ``{schema class name: atlas table name}`` for atlases whose tables are
+        not named after their schema class. Covers the obs, dataset and
+        registry-key tables; feature registries resolve by feature space inside
+        ``create_or_open_atlas``. Unlisted classes keep their class name.
     skip_existing:
         Skip datasets whose ``dataset_uid`` is already in the atlas.
     """
@@ -289,18 +296,22 @@ def ingest_collection(
     collection = Collection.from_json(os.path.join(collection_root, "collection.json"))
     schema = _resolve_schema(schema_path)
     obs_table_name = obs_table_name or schema.obs_class
+    atlas_table_names = dict(atlas_table_names or {})
+    atlas_obs_table = atlas_table_names.get(schema.obs_class, obs_table_name)
 
     atlas = create_or_open_atlas(
         atlas_path,
-        obs_schemas={obs_table_name: schema.obs_cls},
-        dataset_table_name=schema.dataset_class,
+        obs_schemas={atlas_obs_table: schema.obs_cls},
+        dataset_table_name=atlas_table_names.get(schema.dataset_class, schema.dataset_class),
         dataset_schema=schema.dataset_cls,
         registry_schemas=schema.feature_space_registry(),
         store_kwargs=store_kwargs,
     )
 
     report = IngestReport()
-    report.registry_tables_copied = _copy_registry_key_tables(collection_root, atlas_path, schema)
+    report.registry_tables_copied = _copy_registry_key_tables(
+        collection_root, atlas_path, schema, atlas_table_names
+    )
     report.features_registered = _register_feature_registries(
         collection, collection_root, atlas, schema
     )
@@ -314,7 +325,15 @@ def ingest_collection(
             continue
         print(f"== ingesting {name} ==")
         rows = _ingest_dataset(
-            collection_root, atlas, schema, obs_table_name, name, dataset, loaders, dataset_loaders
+            collection_root,
+            atlas,
+            schema,
+            obs_table_name,
+            atlas_obs_table,
+            name,
+            dataset,
+            loaders,
+            dataset_loaders,
         )
         for fs, n in rows.items():
             report.rows_per_feature_space[fs] = report.rows_per_feature_space.get(fs, 0) + n
@@ -338,11 +357,16 @@ def _existing_dataset_uids(atlas: RaggedAtlas) -> set[str]:
 
 
 def _copy_registry_key_tables(
-    collection_root: str, atlas_path: str, schema: _SchemaModel
+    collection_root: str,
+    atlas_path: str,
+    schema: _SchemaModel,
+    atlas_table_names: Mapping[str, str],
 ) -> dict[str, int]:
     """Copy collection-level registry-key target tables into the atlas (dedup on uid).
 
     Homeobox has no helper for cross-db table copies, so polycomb owns this.
+    The collection names these tables after the schema class; the atlas may not,
+    so the destination name is resolved through *atlas_table_names*.
     """
     copied: dict[str, int] = {}
     src_path = os.path.join(collection_root, LANCE_DB_DIR)
@@ -357,13 +381,15 @@ def _copy_registry_key_tables(
         if cls not in src_names:
             continue
         arrow = src.open_table(cls).to_arrow()
-        print(f"  registry-key table {cls}: {arrow.num_rows} row(s)")
+        dst_name = atlas_table_names.get(cls, cls)
+        label = cls if dst_name == cls else f"{cls} -> {dst_name}"
+        print(f"  registry-key table {label}: {arrow.num_rows} row(s)")
         copied[cls] = arrow.num_rows
-        if cls not in dst_names:
-            dst.create_table(cls, data=arrow)
+        if dst_name not in dst_names:
+            dst.create_table(dst_name, data=arrow)
         elif UID_COLUMN in arrow.column_names:
             (
-                dst.open_table(cls)
+                dst.open_table(dst_name)
                 .merge_insert(on=UID_COLUMN)
                 .when_not_matched_insert_all()
                 .execute(arrow)
@@ -374,7 +400,7 @@ def _copy_registry_key_tables(
             # modality it depicts, not by a key of its own. There is nothing to
             # merge on, so dedupe on the whole row instead, which keeps the copy
             # idempotent across re-runs without inventing an identity.
-            _insert_new_rows(dst, cls, arrow)
+            _insert_new_rows(dst, dst_name, arrow)
     return copied
 
 
@@ -411,7 +437,7 @@ def _register_feature_registries(
             )
             continue
         for name in collection.datasets:
-            table = _read_table(collection_root, name, registry_cls.__name__)
+            table = _read_var_table(collection_root, name, registry_cls)
             if table is None:
                 continue
             n_new = atlas.register_features(feature_space, pl.from_arrow(table))
@@ -438,6 +464,7 @@ def _ingest_dataset(
     atlas: RaggedAtlas,
     schema: _SchemaModel,
     obs_table_name: str,
+    atlas_obs_table: str,
     name: str,
     dataset: object,
     loaders: Mapping[str, Loader],
@@ -460,9 +487,10 @@ def _ingest_dataset(
         # The feature registry is a property of the feature space, so it can be
         # read before knowing which of its pointer fields this write fills —
         # which only the loader's result says.
+        registry_class_name = _registry_class_for(schema, feature_space)
         var_table = (
-            _read_table(collection_root, name, _registry_class_for(schema, feature_space))
-            if _registry_class_for(schema, feature_space)
+            _read_var_table(collection_root, name, schema.info.live_class(registry_class_name))
+            if registry_class_name
             else None
         )
         result = loader(
@@ -492,7 +520,7 @@ def _ingest_dataset(
         )
 
     obs_df = _prepare_obs_df(bare_obs, schema, plans)
-    ingestor = Ingestor(atlas, obs_df=obs_df, obs_table_name=obs_table_name)
+    ingestor = Ingestor(atlas, obs_df=obs_df, obs_table_name=atlas_obs_table)
     rows_per_feature_space: dict[str, int] = {}
     for plan in plans:
         if isinstance(plan.result, SpatialLoaderResult):
@@ -726,3 +754,38 @@ def _read_table(collection_root: str, dataset_name: str, table_name: str) -> pa.
     if table_name not in db.list_tables().tables:
         return None
     return db.open_table(table_name).to_arrow()
+
+
+def _read_var_table(collection_root: str, dataset_name: str, registry_cls: type) -> pa.Table | None:
+    """Read a staged var table with ``uid`` recomputed from the registry schema.
+
+    The schema is the authority on feature identity. A collection finalized
+    before its registry declared a ``StableUIDField`` carries random uids, which
+    ``register_features`` would insert as brand new rows for features the atlas
+    already holds. Recomputing here — on the one read that feeds both feature
+    registration and the feature layout — keeps the two in agreement.
+    """
+    table = _read_table(collection_root, dataset_name, registry_cls.__name__)
+    if table is None:
+        return None
+    if UID_COLUMN not in table.column_names:
+        raise ValueError(
+            f"{dataset_name}: staged {registry_cls.__name__} table has no {UID_COLUMN!r} "
+            f"column; re-run finalize-tables for this collection"
+        )
+
+    staged = table.to_pandas()
+    rekeyed = registry_cls.compute_stable_uids(staged.copy())
+    n_changed = int((rekeyed[UID_COLUMN].to_numpy() != staged[UID_COLUMN].to_numpy()).sum())
+    if n_changed == 0:
+        return table
+
+    print(
+        f"  {dataset_name}/{registry_cls.__name__}: re-keyed {n_changed} of {len(staged)} "
+        f"staged uid(s) to the schema's stable uid"
+    )
+    uid_index = table.schema.get_field_index(UID_COLUMN)
+    uid_field = table.schema.field(uid_index)
+    return table.set_column(
+        uid_index, uid_field, pa.array(rekeyed[UID_COLUMN].tolist(), type=uid_field.type)
+    )

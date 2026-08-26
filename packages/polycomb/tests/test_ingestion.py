@@ -16,7 +16,7 @@ import numpy as np
 import pyarrow as pa
 import pytest
 from homeobox.ingestion import AnnDataReader, Ingestor
-from homeobox.schema import make_uid
+from homeobox.schema import FeatureBaseSchema, make_uid
 
 from polycomb.collection import Collection, Dataset, FileTypeTag
 from polycomb.ingestion import (
@@ -284,12 +284,12 @@ def test_shared_registry_registered_once(tmp_path, monkeypatch):
     """
     from polycomb.ingestion import _register_feature_registries
 
-    class _Reg:
-        __name__ = "FeatureSchema"
+    class FeatureSchema(FeatureBaseSchema):
+        pass
 
     class _Schema:
         def feature_space_registry(self):
-            return {"fs_a": _Reg, "fs_b": _Reg}
+            return {"fs_a": FeatureSchema, "fs_b": FeatureSchema}
 
     class _Collection:
         datasets = ["ds1", "ds2"]
