@@ -4,7 +4,7 @@ import json
 import os
 from collections import OrderedDict, defaultdict
 from collections.abc import Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from homeobox.group_reader import GroupReader, LayoutReader
@@ -947,7 +947,7 @@ class RaggedAtlas:
 
     # -- Maintenance --------------------------------------------------------
 
-    def optimize(self) -> None:
+    def optimize(self, optimize_kwargs: dict[str, Any] | None = None) -> None:
         """Compact tables and reindex feature registries.
 
         Calls ``table.optimize()`` on the obs, dataset, and registry tables
@@ -956,25 +956,47 @@ class RaggedAtlas:
         :func:`~homeobox.feature_layouts.reindex_registry`, and propagates
         updated indices to ``_feature_layouts`` via
         :func:`~homeobox.feature_layouts.sync_layouts_global_index`.
+
+        Parameters
+        ----------
+        optimize_kwargs:
+            Forwarded to every ``table.optimize()`` call. Note that lancedb
+            prunes versions older than 7 days unless ``cleanup_older_than``
+            says otherwise, which destroys the history that older
+            ``atlas_versions`` rows resolve through — pass a longer
+            ``cleanup_older_than`` to keep earlier snapshots checkout-able.
         """
+        optimize_kwargs = optimize_kwargs or {}
         for table in self._obs_tables.values():
-            table.optimize()
-        self._dataset_table.optimize()
+            table.optimize(**optimize_kwargs)
+        self._dataset_table.optimize(**optimize_kwargs)
         self._deduplicate_new_rows(
             self._feature_layouts_table, subset=["layout_uid", "feature_uid"]
         )
         for table, _spaces in self._registry_tables_by_name().values():
             self._deduplicate_new_rows(table, subset=["uid"])
             reindex_registry(table)
-            table.create_scalar_index("uid", replace=True)
-            table.optimize()
+            if not self._has_index(table, "uid"):
+                table.create_scalar_index("uid")
+            table.optimize(**optimize_kwargs)
             sync_layouts_global_index(self._feature_layouts_table, table)
 
         # FTS index creates an inverted table that makes it easy to find which
         # layouts have a given feature
-        self._feature_layouts_table.create_fts_index("feature_uid", replace=True)
-        self._feature_layouts_table.create_scalar_index("layout_uid", replace=True)
-        self._feature_layouts_table.optimize()
+        if not self._has_index(self._feature_layouts_table, "feature_uid"):
+            self._feature_layouts_table.create_fts_index("feature_uid")
+        if not self._has_index(self._feature_layouts_table, "layout_uid"):
+            self._feature_layouts_table.create_scalar_index("layout_uid")
+        self._feature_layouts_table.optimize(**optimize_kwargs)
+
+    @staticmethod
+    def _has_index(table: lancedb.table.Table, column: str) -> bool:
+        """Whether *column* already carries an index.
+
+        ``table.optimize()`` folds newly added rows into an existing index, so
+        recreating one every pass rebuilds it in full for nothing.
+        """
+        return any(column in index.columns for index in table.list_indices())
 
     @staticmethod
     def _deduplicate_new_rows(table: lancedb.table.Table, subset: list[str]) -> None:
@@ -1005,6 +1027,7 @@ class RaggedAtlas:
         check_zarr: bool = True,
         check_var_dfs: bool = True,
         check_registries: bool = True,
+        ignore_missing_zarr: bool = False,
     ) -> list[str]:
         """Validate atlas consistency. Returns a list of error strings.
 
@@ -1016,6 +1039,10 @@ class RaggedAtlas:
             For feature spaces with var_df, validate _feature_layouts rows.
         check_registries:
             Check that all registry rows have a global_index assigned.
+        ignore_missing_zarr:
+            Only checks zarr groups that are present and does not raise an
+            error if an expected zarr group is missing. This is useful when
+            working on a partial fork of an atlas.
         """
         errors: list[str] = []
 
@@ -1028,6 +1055,15 @@ class RaggedAtlas:
 
         # Collect unique zarr groups from dataset table
         zarr_groups_by_space = self._collect_zarr_groups()
+        if ignore_missing_zarr:
+            present = {
+                fs: {zg for zg in groups if self._root.get(zg) is not None}
+                for fs, groups in zarr_groups_by_space.items()
+            }
+            n_missing = sum(len(zarr_groups_by_space[fs]) - len(g) for fs, g in present.items())
+            if n_missing:
+                print(f"  validate(): skipped {n_missing} zarr group(s) absent from the store")
+            zarr_groups_by_space = present
 
         if check_zarr:
             errors.extend(self._validate_zarr_groups(zarr_groups_by_space))
@@ -1237,13 +1273,20 @@ class RaggedAtlas:
 
     # -- Versioning ---------------------------------------------------------
 
-    def snapshot(self) -> int:
+    def snapshot(self, *, ignore_missing_zarr: bool = False) -> int:
         """Record a consistent snapshot of all table versions.
 
         Returns the new atlas version number (0-indexed, monotonically increasing).
         Raises ``ValueError`` if validation errors are found, or ``RuntimeError``
         if any held table handle is behind the on-disk state (call
         :meth:`refresh` and retry).
+
+        Parameters
+        ----------
+        ignore_missing_zarr:
+            Only checks zarr groups that are present and does not raise an
+            error if an expected zarr group is missing. This is useful when
+            working on a partial fork of an atlas.
         """
         stale: list[tuple[str, int, int]] = []
         for table in self._iter_managed_tables():
@@ -1260,7 +1303,7 @@ class RaggedAtlas:
                 + details
             )
 
-        errors = self.validate()
+        errors = self.validate(ignore_missing_zarr=ignore_missing_zarr)
         if errors:
             raise ValueError(
                 "Atlas validation failed — fix errors before snapshotting:\n"

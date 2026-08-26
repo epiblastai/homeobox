@@ -522,12 +522,15 @@ class CurationApplicator:
         if isinstance(change, MergeColumns):
             return self._merge_columns_rewrite(table_name, table, change)
 
+        # lancedb's Table.to_pandas() routes on-disk tables through
+        # LanceDataset.to_pandas(), which lance no longer provides; go through
+        # Arrow, which both storage paths support.
         if isinstance(change, ExplodeColumn):
-            new_df = self._explode_frame(change, table.to_pandas())
+            new_df = self._explode_frame(change, table.to_arrow().to_pandas())
             return self._rewrite(table_name, new_df)
 
         if isinstance(change, WideToLong):
-            new_df = self._wide_to_long_frame(change, table.to_pandas())
+            new_df = self._wide_to_long_frame(change, table.to_arrow().to_pandas())
             return self._rewrite(table_name, new_df)
 
         raise ValueError(f"Unsupported operation: {type(change).__name__}")
