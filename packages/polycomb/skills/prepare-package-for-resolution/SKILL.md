@@ -40,6 +40,8 @@ If the script fails because the schema defines multiple obs tables, ask the user
 
 Staging also stamps two columns on every OBS/VAR table: `obs_key` / `var_key` (the source file's own index — a barcode or feature ID, i.e. a label, not a position) and `row_position` (an integer, the row's 0-based index in the source file). `row_position` is the anchor that keeps the table aligned to its DATA file through curation; nothing downstream may modify it, and finalization drops it once the ingestion artifact is built.
 
+For `.parquet` OBS/VAR these keys come from the file's pandas index, so a parquet written with an unnamed `RangeIndex` silently yields a positional `obs_key`/`var_key` that just duplicates `row_position`. Write hand-built parquets with a named index (e.g. `df.set_index("cell_barcode")`) before staging.
+
 ### 2. Stage LIBRARY tables
 
 Collection-level `LIBRARY` files (in `collection.json` → `shared_files`) may be staged into `<collection_root>/lance_db/`. Read the schema and decide which CamelCase table each library file belongs to (e.g. `GeneticPerturbationSchema`). If more than one table is plausible, ask the user.

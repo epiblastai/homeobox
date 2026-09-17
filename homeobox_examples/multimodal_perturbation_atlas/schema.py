@@ -6,7 +6,7 @@ if TYPE_CHECKING:
     import pandas as pd
 
 from lancedb.pydantic import LanceModel
-from pydantic import Field, model_validator
+from pydantic import model_validator
 
 from homeobox.pointer_types import DenseZarrPointer, SparseZarrPointer
 from homeobox.schema import (
@@ -23,7 +23,6 @@ from homeobox.schema import (
     SummaryField,
     _iter_pointer_annotations,
     combine_markers,
-    make_uid,
 )
 
 # ---------------------------------------------------------------------------
@@ -217,18 +216,10 @@ class DonorSchema(RegistryBaseSchema):
 class GenomicFeatureSchema(FeatureBaseSchema):
     """A single measurable genomic feature in a dataset's var space.
 
-    This schema is designed to serve as a feature registry across datasets
-    that may operate at different levels of resolution (gene, transcript,
-    isoform, etc.). Within a dataset, `feature_index` is the positional
-    index into the expression matrix. Across datasets, `ensembl_gene_id`
-    and `feature_type` enable joins and roll-ups to a shared feature space.
-
-    Multiple rows may share the same `ensembl_gene_id` when a dataset
-    contains sub-gene resolution features (e.g., isoforms). To collapse
-    back to gene-level, group by `ensembl_gene_id` and aggregate (e.g., sum).
+    Designed to serve as a feature registry across datasets that may operate
+    at different levels of resolution (gene, transcript, isoform, etc.).
+    One row per `feature_id`, which keys the stable uid.
     """
-
-    uid: str = Field(default_factory=make_uid)
 
     # The canonical gene this feature maps to, if applicable
     gene_name: str | None
@@ -237,7 +228,7 @@ class GenomicFeatureSchema(FeatureBaseSchema):
     # The specific feature identity.
     # For gene-level features this equals ensembl_gene_id.
     # For transcripts this would be e.g. ENST00000269305.
-    feature_id: str
+    feature_id: str = StableUIDField.declare(default=...)
 
     # What level of resolution this feature represents; uses the FeatureType enum
     feature_type: FeatureType
