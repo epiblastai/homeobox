@@ -3,7 +3,7 @@
 import json
 import os
 from collections import OrderedDict, defaultdict
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -605,6 +605,67 @@ class RaggedAtlas:
         if len(self._group_readers) > _MAX_GROUP_READERS:
             self._group_readers.popitem(last=False)
         return reader
+
+    def get_group_readers(
+        self, zarr_groups: Iterable[str], feature_space: str
+    ) -> "dict[str, GroupReader]":
+        """Return a GroupReader per zarr group, resolving every layout in one query.
+
+        ``get_group_reader`` queries the dataset table once per group, which is
+        0.2-0.6 s against object storage; a dataset spanning tens of thousands of
+        groups (scBaseCount is one group per source dataset) would spend hours on
+        those before reading a cell. This reads the feature space's dataset rows
+        once and filters them locally. Readers pass through the same LRU cache as
+        ``get_group_reader``, so the cache holds only the most recent ones.
+        """
+        from homeobox.group_reader import GroupReader, LayoutReader
+
+        wanted = list(dict.fromkeys(zarr_groups))
+        readers: dict[str, GroupReader] = {}
+        missing = []
+        for zarr_group in wanted:
+            key = (zarr_group, feature_space)
+            if key in self._group_readers:
+                self._group_readers.move_to_end(key)
+                readers[zarr_group] = self._group_readers[key]
+            else:
+                missing.append(zarr_group)
+        if not missing:
+            return readers
+
+        layout_by_group: dict[str, str | None] = {}
+        rows = (
+            self._dataset_table.search()
+            .where(f"feature_space = '{sql_escape(feature_space)}'", prefilter=True)
+            .select(["zarr_group", "layout_uid"])
+            .to_polars()
+            .filter(pl.col("zarr_group").is_in(missing))
+        )
+        for zarr_group, layout_uid in zip(rows["zarr_group"], rows["layout_uid"], strict=True):
+            layout_by_group.setdefault(zarr_group, layout_uid or None)
+
+        for zarr_group in missing:
+            layout_uid = layout_by_group.get(zarr_group)
+            layout_reader = None
+            if layout_uid is not None:
+                layout_reader = self._layout_readers.get(layout_uid)
+                if layout_reader is None:
+                    layout_reader = LayoutReader(
+                        layout_uid=layout_uid,
+                        feature_layouts_table=self._feature_layouts_table,
+                    )
+                    self._layout_readers[layout_uid] = layout_reader
+            reader = GroupReader.from_atlas_root(
+                zarr_group=zarr_group,
+                feature_space=feature_space,
+                store=self._store,
+                layout_reader=layout_reader,
+            )
+            readers[zarr_group] = reader
+            self._group_readers[(zarr_group, feature_space)] = reader
+            if len(self._group_readers) > _MAX_GROUP_READERS:
+                self._group_readers.popitem(last=False)
+        return readers
 
     @property
     def schemas(self) -> str:

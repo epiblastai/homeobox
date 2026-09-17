@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pyarrow as pa
+from homeobox.ingestion import _ensure_dictionary_vocabulary
 from homeobox.schema import DatasetSchema, _iter_pointer_annotations
 
 from polycomb.types import SchemaInfo, TableRef
@@ -64,6 +65,11 @@ def ensure_schema_columns_for_table(
     print(f"  {ref.table_name}: null-init {names}")
     for field in missing_fields:
         values = pa.array([None] * table.num_rows, type=field.type)
+        # An all-null enum column encodes as a dictionary array whose dictionary
+        # is empty, which Lance cannot write ("Value at position 0 out of
+        # bounds"). Substituting the enum's declared members leaves every value
+        # null and only supplies the encoding vocabulary.
+        values = _ensure_dictionary_vocabulary(values, cls, field.name)
         table = set_arrow_column(table, field.name, values)
     if not dry_run:
         overwrite_table(ref, table)

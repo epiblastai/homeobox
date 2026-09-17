@@ -32,6 +32,14 @@ fn ensure_bitpack_codec_registered() {
     BITPACK_CODEC_HANDLE.get_or_init(bitpack_codec::register_bitpack_codec);
 }
 
+/// One tokio runtime for every reader in the process. A runtime per reader costs a worker
+/// thread per core for every open array, and a dataset over tens of thousands of zarr groups
+/// keeps every reader alive, so it ran into the cgroup's thread limit and hung.
+fn shared_runtime() -> &'static Runtime {
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| Runtime::new().expect("failed to build the tokio runtime"))
+}
+
 use zarrs::array::codec::{CodecChain, ShardingCodecConfiguration};
 use zarrs::array::{
     Array, ArrayShardedExt, ArrayToBytesCodecTraits, BytesRepresentation, CodecMetadataOptions,
@@ -257,7 +265,6 @@ struct RustBatchReader {
     /// Shard index cache: shard_coord (N-D) -> flat Vec<u64> of [offset, size, ...].
     /// Capped at SHARD_INDEX_CACHE_CAP entries; LRU eviction prevents unbounded growth.
     shard_index_cache: Arc<tokio::sync::Mutex<LruCache<Vec<u64>, Vec<u64>>>>,
-    runtime: Arc<Runtime>,
     codec_options: CodecOptions,
 }
 
@@ -925,11 +932,7 @@ impl RustBatchReader {
 
         // 3. Build zarrs Array for metadata extraction
         let zarrs_store = Arc::new(AsyncObjectStore::new(Arc::clone(&store)));
-        let runtime = Arc::new(
-            Runtime::new()
-                .map_err(|e| PyRuntimeError::new_err(format!("tokio runtime: {e}")))?,
-        );
-        let array = runtime
+        let array = shared_runtime()
             .block_on(Array::async_open(zarrs_store, &store_path))
             .map_err(|e| PyRuntimeError::new_err(format!("failed to open zarr array: {e}")))?;
 
@@ -968,7 +971,6 @@ impl RustBatchReader {
             shard_index_cache: Arc::new(tokio::sync::Mutex::new(
                 LruCache::new(NonZeroUsize::new(SHARD_INDEX_CACHE_CAP).unwrap()),
             )),
-            runtime,
             codec_options,
         })
     }
@@ -1010,10 +1012,9 @@ impl RustBatchReader {
             .map_err(PyRuntimeError::new_err)?;
 
         // Phases 2-4 run without the GIL
-        let runtime = self.runtime.clone();
         let flat_data = py
             .detach(|| -> Result<Vec<u8>, String> {
-                let (compressed, fills) = runtime.block_on(
+                let (compressed, fills) = shared_runtime().block_on(
                     self.fetch_shard_data(shard_subchunks)
                 )?;
                 let decoded_map = self.decode_subchunks(&compressed, fills)?;
@@ -1070,10 +1071,9 @@ impl RustBatchReader {
             .map_boxes_to_subchunks(min_slice, max_slice, k, stack_uniform)
             .map_err(PyRuntimeError::new_err)?;
 
-        let runtime = self.runtime.clone();
         let flat_data = py
             .detach(|| -> Result<Vec<u8>, String> {
-                let (compressed, fills) = runtime.block_on(
+                let (compressed, fills) = shared_runtime().block_on(
                     self.fetch_shard_data(shard_subchunks),
                 )?;
                 let decoded_map = self.decode_subchunks(&compressed, fills)?;
