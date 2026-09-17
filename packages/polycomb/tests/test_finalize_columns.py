@@ -124,3 +124,43 @@ def test_non_nullable_fields_are_left_absent(tmp_path):
     table = lancedb.connect(db_path).open_table("AtlasDatasetSchema").to_arrow()
     assert "feature_space" not in table.column_names
     assert table.column("accession_id").to_pylist() == [None]
+
+
+def test_ensure_schema_columns_writes_all_null_enum_column(tmp_path):
+    """An all-null enum field must survive the Lance write.
+
+    A null-initialized enum column encodes as a dictionary array whose
+    dictionary has length zero, which Lance rejects with "Value at position 0
+    out of bounds (should be in [0, -1])". The column has to be given the
+    enum's declared vocabulary so the write succeeds with every value still
+    null.
+    """
+    info = _schema_info()
+
+    db_path = os.path.join(str(tmp_path), "lance_db")
+    os.makedirs(db_path)
+    lancedb.connect(db_path).create_table(
+        "GeneticPerturbationSchema",
+        data=pa.table(
+            {
+                "uid": ["abc"],
+                "perturbation_type": ["CRISPRi"],
+                "guide_sequence": ["ACGTACGTACGTACGTACGT"],
+            }
+        ),
+    )
+    ref = TableRef(
+        lance_db_path=db_path,
+        table_name="GeneticPerturbationSchema",
+        class_name="GeneticPerturbationSchema",
+        dataset=None,
+    )
+
+    added = ensure_schema_columns_for_table(ref, info)
+    assert "target_context" in added
+
+    table = lancedb.connect(db_path).open_table("GeneticPerturbationSchema").to_arrow()
+    context = table.column("target_context")
+    assert context.to_pylist() == [None]
+    # The declared dictionary type is preserved -- only the vocabulary was filled in.
+    assert pa.types.is_dictionary(context.type)

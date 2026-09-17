@@ -125,19 +125,19 @@ def collect_group_readers_from_atlas(
     if not spec.has_var_df and layouts_per_group is not None:
         raise ValueError("Cannot pass feature layouts to feature spaces with has_var_df==False")
 
+    zarr_groups = [_group_key_to_zg(key) for key, _group_rows in groups]
+    if not for_worker:
+        return atlas.get_group_readers(zarr_groups, spec.feature_space)
+
     group_readers: dict[str, GroupReader] = {}
-    for key, _group_rows in groups:
-        zg = _group_key_to_zg(key)
-        if for_worker:
-            layout_reader = layouts_per_group[zg] if layouts_per_group is not None else None
-            group_readers[zg] = GroupReader.for_worker(
-                zarr_group=zg,
-                feature_space=spec.feature_space,
-                store=atlas.store,
-                layout_reader=layout_reader,
-            )
-        else:
-            group_readers[zg] = atlas.get_group_reader(zg, spec.feature_space)
+    for zg in zarr_groups:
+        layout_reader = layouts_per_group[zg] if layouts_per_group is not None else None
+        group_readers[zg] = GroupReader.for_worker(
+            zarr_group=zg,
+            feature_space=spec.feature_space,
+            store=atlas.store,
+            layout_reader=layout_reader,
+        )
 
     return group_readers
 
@@ -168,9 +168,12 @@ def collect_remapped_layout_readers_from_atlas(
 
     group_to_layout_uid: dict[str, str] = {}
     layouts_per_layout_uid: LayoutsByLayoutUid = {}
-    for key, _group_rows in groups:
-        zg = _group_key_to_zg(key)
-        group_reader = atlas.get_group_reader(zg, spec.feature_space)
+    zarr_groups = [_group_key_to_zg(key) for key, _group_rows in groups]
+    # One dataset-table query for every group rather than one per group: a source with a
+    # zarr group per dataset would otherwise pay a remote query per group before reading.
+    group_readers = atlas.get_group_readers(zarr_groups, spec.feature_space)
+    for zg in zarr_groups:
+        group_reader = group_readers[zg]
         # raw_remap remaps features from the group into the global feature registry
         raw_remap = group_reader.get_remap()
         layout_uid = group_reader.layout_reader.layout_uid
